@@ -1,0 +1,11 @@
+toiletline
+----------------
+Raw CLI shell implementation, meant to be a tiny replacement of GNU Readline :3
+
+#define TOILETLINE_IMPL
+Before you include this file in C or C++ file to create the implementation.
+
+TODO
+----------------
+Does NOT support multi-byte characters YET.
+Does NOT work on Windows YET.
