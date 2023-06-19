@@ -9,7 +9,7 @@ int main(void)
         printf("Failed to enter raw mode!\n");
     }
 
-    printf("Welcome to toiletline test! This is raw mode! You can use up and down arrow to scroll history.\n");
+    printf("Welcome to toiletline test! This is raw mode!\nUse up and down arrows to view history.\n");
 
     char line_buffer[LINE_BUF_LEN];
 
