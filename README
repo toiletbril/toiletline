@@ -6,6 +6,8 @@ Accepts UTF-8 input. Parsed UTF-8 is not guranteed to be valid.
 #define TOILETLINE_IMPL
 Before you include this file in C or C++ file to create the implementation.
 
-TODO
+This probably contains 103 memory leaks an secret segfaults. Any help is appreciated.
+
+Notes
 ----------------
-Was not tested and does NOT work on Windows YET.
+Does NOT work on Windows but crashes under mysterious circustances. Works flawlessly on Linux.

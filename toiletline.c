@@ -369,7 +369,7 @@ static bool itl_le_putc(struct itl_le *le, const itl_utf8_c_t ch)
         le->lbuf->c = new_c;
     }
 
-    le->lbuf->size += 1;
+e    le->lbuf->size += 1;
     le->cursor_pos += 1;
 
     return true;
@@ -614,4 +614,4 @@ int tl_readline(char *line_buffer, size_t size)
 
 // TODO:
 // - autocompletion
-// - windows support (idk how to enter raw mode !!!)
+// - windows support (idk how to enter raw mode !!! (and fix segfaults))
