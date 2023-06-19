@@ -160,7 +160,7 @@ static itl_char_t itl_char_new(const itl_utf8_c_t utf8_c, itl_char_t *next)
 }
 
 static itl_char_t *itl_char_alloc() {
-    itl_char_t *ptr = (itl_char_t *)calloc(1, sizeof(itl_char_t *));
+    itl_char_t *ptr = (itl_char_t *)calloc(1, sizeof(itl_char_t));
     ptr->next = NULL;
     return ptr;
 }
@@ -200,7 +200,7 @@ static itl_string_t itl_string_new()
 }
 
 static itl_string_t *itl_string_alloc() {
-    itl_string_t *ptr = (itl_string_t *)calloc(1, sizeof(itl_string_t *));
+    itl_string_t *ptr = (itl_string_t *)calloc(1, sizeof(itl_string_t));
     ptr->size = 0;
     ptr->c = NULL;
     return ptr;
@@ -369,6 +369,7 @@ static bool itl_le_putc(struct itl_le *le, const itl_utf8_c_t ch)
         le->lbuf->c = new_c;
     }
 
+
     le->lbuf->size += 1;
     le->cursor_pos += 1;
 
@@ -445,7 +446,7 @@ static void itl_history_get(struct itl_le *le)
 // adds signal handle for c^c
 bool tl_init()
 {
-    itl_history = (itl_string_t **)calloc(TL_HISTORY_INIT_SIZE, sizeof(itl_string_t **));
+    itl_history = (itl_string_t **)calloc(TL_HISTORY_INIT_SIZE, sizeof(itl_string_t *));
 
     lbuf = itl_string_alloc();
 
