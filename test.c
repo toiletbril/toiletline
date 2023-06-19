@@ -7,7 +7,6 @@ int main(void)
 {
     if (!tl_init()) {
         printf("Failed to enter raw mode!\n");
-        return 1;
     }
 
     printf("Welcome to toiletline test! This is raw mode! You can use up and down arrow to scroll history.\n");
