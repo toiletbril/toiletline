@@ -615,4 +615,4 @@ int tl_readline(char *line_buffer, size_t size)
 
 // TODO:
 // - autocompletion
-// - windows support (idk how to enter raw mode !!! (and fix segfaults))
+// - windows support (idk how to enter raw mode !!!)
