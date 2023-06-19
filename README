@@ -1,11 +1,11 @@
 toiletline
 ----------------
-Raw CLI shell implementation, meant to be a tiny replacement of GNU Readline :3
+C framework for raw terminal applications, meant to be a tiny replacement for GNU Readline.
+Accepts UTF-8 input. Parsed UTF-8 is not guranteed to be valid.
 
 #define TOILETLINE_IMPL
 Before you include this file in C or C++ file to create the implementation.
 
 TODO
 ----------------
-Does NOT support multi-byte characters YET.
-Does NOT work on Windows YET.
+Was not tested and does NOT work on Windows YET.

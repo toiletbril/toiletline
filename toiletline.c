@@ -136,7 +136,7 @@ itl_utf8_c_t itl_utf8_new(const uint8_t *bytes, uint8_t length) {
 
 void itl_utf8_put(const itl_utf8_c_t *utf_c)
 {
-    for (int i = 0; i < utf_c->length; ++i)
+    for (size_t i = 0; i < utf_c->length; ++i)
         fputc(utf_c->bytes[i], stdout);
 }
 
@@ -145,7 +145,7 @@ typedef struct itl_char_t itl_char_t;
 // utf-8 string node
 struct itl_char_t
 {
-    const itl_utf8_c_t ch;
+    itl_utf8_c_t ch;
     itl_char_t *next;
 };
 
@@ -159,14 +159,20 @@ static itl_char_t itl_char_new(const itl_utf8_c_t utf8_c, itl_char_t *next)
     return c;
 }
 
-static itl_char_t *itl_char_copy(itl_char_t *c) {
+static itl_char_t *itl_char_alloc() {
     itl_char_t *ptr = (itl_char_t *)calloc(1, sizeof(itl_char_t *));
-    memcpy(ptr, c, sizeof(itl_char_t));
+    ptr->next = NULL;
     return ptr;
 }
 
+static void itl_char_copy(itl_char_t *dst, itl_char_t *src)
+{
+    memcpy(dst, src, sizeof(itl_char_t));
+}
+
 static void itl_char_free(itl_char_t *c) {
-    free(c);
+    if (c != NULL)
+        free(c);
 }
 
 void itl_char_put(const itl_char_t *c)
@@ -195,6 +201,8 @@ static itl_string_t itl_string_new()
 
 static itl_string_t *itl_string_alloc() {
     itl_string_t *ptr = (itl_string_t *)calloc(1, sizeof(itl_string_t *));
+    ptr->size = 0;
+    ptr->c = NULL;
     return ptr;
 }
 
@@ -207,7 +215,8 @@ static void itl_string_copy(itl_string_t *dst, itl_string_t *src)
     dst->c = NULL;
 
     while (src_c) {
-        new_c = itl_char_copy(src_c);
+        new_c = itl_char_alloc();
+        itl_char_copy(new_c, src_c);
 
         if (prev_new_c)
             prev_new_c->next = new_c;
@@ -224,13 +233,13 @@ static void itl_string_copy(itl_string_t *dst, itl_string_t *src)
 // frees every character in a string, does not free the string itself
 static void itl_string_clear(itl_string_t *str)
 {
-    itl_char_t *tc = str->c;
     itl_char_t *c = str->c;
+    itl_char_t *next;
 
-    while (tc) {
-        tc = tc->next;
+    while (c) {
+        next = c->next;
         itl_char_free(c);
-        c = tc;
+        c = next;
     }
 
     str->size = 0;
@@ -341,23 +350,23 @@ static bool itl_le_unputc(struct itl_le *le)
 
 // allocates memory for new characters
 // inserts character at cursor position
-static bool itl_le_putc(struct itl_le *le, const itl_utf8_c_t data)
+static bool itl_le_putc(struct itl_le *le, const itl_utf8_c_t ch)
 {
     if (le->cursor_pos > le->lbuf->size) {
         return false;
     }
 
-
-    itl_char_t new_c = itl_char_new(data, NULL);
+    itl_char_t *new_c = itl_char_alloc();
+    new_c->ch = ch;
 
     itl_char_t **cur_c = itl_string_at(le->lbuf, le->cursor_pos - 1);
 
     if (cur_c) {
-        new_c.next = (*cur_c)->next;
-        (*cur_c)->next = itl_char_copy(&new_c);
+        new_c->next = (*cur_c)->next;
+        (*cur_c)->next = new_c;
     } else {
-        new_c.next = le->lbuf->c;
-        le->lbuf->c = itl_char_copy(&new_c);
+        new_c->next = le->lbuf->c;
+        le->lbuf->c = new_c;
     }
 
     le->lbuf->size += 1;
@@ -393,7 +402,7 @@ static int itl_h_index    = 0;
 
 static void itl_history_free()
 {
-    for (size_t i = 0; i < itl_h_index; ++i) {
+    for (int i = 0; i < itl_h_index; ++i) {
         free(itl_history[i]);
     }
     free(itl_history);
@@ -428,10 +437,7 @@ static void itl_history_get(struct itl_le *le)
     }
 
     itl_string_t *h_entry = itl_history[le->h_item_sel];
-    size_t cursor_pos = h_entry->size;
-
     itl_string_copy(lbuf, h_entry);
-
     le->cursor_pos = lbuf->size;
 }
 
@@ -465,7 +471,7 @@ int tl_readline(char *line_buffer, size_t size)
 {
     struct itl_le le = itl_le_new(lbuf);
 
-    uint8_t bytes[4];
+    uint8_t bytes[4] = {0};
     uint8_t rem = 0;
     uint8_t length = 0;
 
