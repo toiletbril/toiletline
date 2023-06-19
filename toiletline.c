@@ -10,33 +10,33 @@
  */
 
 #ifndef TOILETLINE_H_
-#define TOILETLINE_H_
+    #define TOILETLINE_H_
 
-#ifdef _WIN32
-    #include <Windows.h>
-    #include <fcntl.h>
-    #include <conio.h>
-    #include <io.h>
-#else
-    #include <termios.h>
-    #include <unistd.h>
-#endif
+    #ifdef _WIN32
+        #include <Windows.h>
+        #include <conio.h>
+        #include <fcntl.h>
+        #include <io.h>
+    #else
+        #include <termios.h>
+        #include <unistd.h>
+    #endif
 
-#include <ctype.h>
-#include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
+    #include <ctype.h>
+    #include <signal.h>
+    #include <stdbool.h>
+    #include <stdint.h>
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
 
 /**
  * Initialize toiletline, enter raw mode.
-*/
+ */
 bool tl_init();
 /**
  * Exit toiletline and free history.
-*/
+ */
 bool tl_exit();
 /**
  * Read one line.
@@ -53,18 +53,21 @@ int tl_readline(char *line_buffer, size_t size);
 
 static bool itl_enter_raw_mode()
 {
-#ifdef _WIN32
+    #ifdef _WIN32
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
     if (hInput == INVALID_HANDLE_VALUE)
         return false;
 
-    if (!SetConsoleMode(hInput, 0))
+    // NOTE: ENABLE_VIRTUAL_TERMINAL_INPUT seems to not work on older versions of Windows
+    DWORD mode = ENABLE_EXTENDED_FLAGS | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_QUICK_EDIT_MODE;
+
+    if (!SetConsoleMode(hInput, mode))
         return false;
 
     _setmode(_fileno(stdin), _O_BINARY);
 
     return true;
-#else
+    #else
     struct termios term;
     if (tcgetattr(STDIN_FILENO, &term) != 0)
         return false;
@@ -78,12 +81,12 @@ static bool itl_enter_raw_mode()
         return false;
 
     return true;
-#endif
+    #endif
 }
 
 static bool itl_exit_raw_mode()
 {
-#ifdef _WIN32
+    #ifdef _WIN32
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
     if (hInput == INVALID_HANDLE_VALUE)
         return false;
@@ -95,7 +98,7 @@ static bool itl_exit_raw_mode()
     mode |= ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT;
     if (!SetConsoleMode(hInput, mode))
         return false;
-#else
+    #else
     struct termios term;
     if (tcgetattr(STDIN_FILENO, &term) != 0)
         return false;
@@ -104,7 +107,7 @@ static bool itl_exit_raw_mode()
 
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &term) != 0)
         return false;
-#endif
+    #endif
     return true;
 }
 
@@ -118,12 +121,14 @@ static void itl_handle_interrupt(int sign)
 }
 
 // utf-8 char
-typedef struct {
+typedef struct
+{
     uint8_t bytes[4];
     size_t length;
 } itl_utf8_c_t;
 
-itl_utf8_c_t itl_utf8_new(const uint8_t *bytes, uint8_t length) {
+itl_utf8_c_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
+{
     itl_utf8_c_t utf8_char;
     utf8_char.length = length;
 
@@ -152,16 +157,17 @@ struct itl_char_t
 static itl_char_t itl_char_new(const itl_utf8_c_t utf8_c, itl_char_t *next)
 {
     struct itl_char_t c = {
-        .ch = utf8_c,
+        .ch   = utf8_c,
         .next = next,
     };
 
     return c;
 }
 
-static itl_char_t *itl_char_alloc() {
+static itl_char_t *itl_char_alloc()
+{
     itl_char_t *ptr = (itl_char_t *)calloc(1, sizeof(itl_char_t));
-    ptr->next = NULL;
+    ptr->next       = NULL;
     return ptr;
 }
 
@@ -170,7 +176,8 @@ static void itl_char_copy(itl_char_t *dst, itl_char_t *src)
     memcpy(dst, src, sizeof(itl_char_t));
 }
 
-static void itl_char_free(itl_char_t *c) {
+static void itl_char_free(itl_char_t *c)
+{
     if (c != NULL)
         free(c);
 }
@@ -192,23 +199,24 @@ struct itl_string_t
 static itl_string_t itl_string_new()
 {
     itl_string_t str = {
-        .c = NULL,
+        .c    = NULL,
         .size = 0,
     };
 
     return str;
 }
 
-static itl_string_t *itl_string_alloc() {
+static itl_string_t *itl_string_alloc()
+{
     itl_string_t *ptr = (itl_string_t *)calloc(1, sizeof(itl_string_t));
-    ptr->size = 0;
-    ptr->c = NULL;
+    ptr->size         = 0;
+    ptr->c            = NULL;
     return ptr;
 }
 
 static void itl_string_copy(itl_string_t *dst, itl_string_t *src)
 {
-    itl_char_t *src_c = src->c;
+    itl_char_t *src_c      = src->c;
     itl_char_t *prev_new_c = NULL;
     itl_char_t *new_c;
 
@@ -224,7 +232,7 @@ static void itl_string_copy(itl_string_t *dst, itl_string_t *src)
             dst->c = new_c;
 
         prev_new_c = new_c;
-        src_c = src_c->next;
+        src_c      = src_c->next;
     }
 
     dst->size = src->size;
@@ -243,7 +251,7 @@ static void itl_string_clear(itl_string_t *str)
     }
 
     str->size = 0;
-    str->c = NULL;
+    str->c    = NULL;
 }
 
 static void itl_string_free(itl_string_t *str)
@@ -267,7 +275,7 @@ static void itl_string_put(itl_string_t *str)
 
 static itl_char_t **itl_string_at(itl_string_t *str, size_t pos)
 {
-    size_t i = 0;
+    size_t i       = 0;
     itl_char_t **c = &(str->c);
 
     while (i++ != pos) {
@@ -283,7 +291,8 @@ static itl_char_t **itl_string_at(itl_string_t *str, size_t pos)
 static void itl_string_to_cstr(itl_string_t *str, char *cstr, size_t size)
 {
     itl_char_t *c = str->c;
-    size_t i = 0;;
+    size_t i      = 0;
+    ;
 
     while (c && i < size) {
         for (size_t j = 0; j != c->ch.length && i < size; ++j)
@@ -308,9 +317,9 @@ struct itl_le
 static struct itl_le itl_le_new(itl_string_t *lbuf)
 {
     struct itl_le le = {
-        .lbuf        = lbuf,
-        .cursor_pos  = 0,
-        .h_item_sel  = -1,
+        .lbuf       = lbuf,
+        .cursor_pos = 0,
+        .h_item_sel = -1,
     };
 
     return le;
@@ -328,15 +337,15 @@ static bool itl_le_unputc(struct itl_le *le)
     itl_char_t **cur_c = itl_string_at(le->lbuf, le->cursor_pos - 2);
 
     if (le->cursor_pos == 0) {
-        to_free = le->lbuf->c;
+        to_free        = le->lbuf->c;
         (*cur_c)->next = to_free->next;
     }
     else if (cur_c && *cur_c) {
-        to_free = (*cur_c)->next;
+        to_free        = (*cur_c)->next;
         (*cur_c)->next = to_free->next;
     }
     else {
-        to_free = le->lbuf->c;
+        to_free     = le->lbuf->c;
         le->lbuf->c = to_free->next;
     }
 
@@ -357,18 +366,18 @@ static bool itl_le_putc(struct itl_le *le, const itl_utf8_c_t ch)
     }
 
     itl_char_t *new_c = itl_char_alloc();
-    new_c->ch = ch;
+    new_c->ch         = ch;
 
     itl_char_t **cur_c = itl_string_at(le->lbuf, le->cursor_pos - 1);
 
     if (cur_c) {
-        new_c->next = (*cur_c)->next;
+        new_c->next    = (*cur_c)->next;
         (*cur_c)->next = new_c;
-    } else {
+    }
+    else {
         new_c->next = le->lbuf->c;
         le->lbuf->c = new_c;
     }
-
 
     le->lbuf->size += 1;
     le->cursor_pos += 1;
@@ -395,11 +404,11 @@ static void itl_le_clear(struct itl_le *le)
     le->cursor_pos = 0;
 }
 
-#define TL_HISTORY_INIT_SIZE 16
+    #define TL_HISTORY_INIT_SIZE 16
 
 static itl_string_t **itl_history = NULL;
-static int itl_h_size     = TL_HISTORY_INIT_SIZE;
-static int itl_h_index    = 0;
+static int itl_h_size             = TL_HISTORY_INIT_SIZE;
+static int itl_h_index            = 0;
 
 static void itl_history_free()
 {
@@ -473,8 +482,8 @@ int tl_readline(char *line_buffer, size_t size)
     struct itl_le le = itl_le_new(lbuf);
 
     uint8_t bytes[4] = {0};
-    uint8_t rem = 0;
-    uint8_t length = 0;
+    uint8_t rem      = 0;
+    uint8_t length   = 0;
 
     uint8_t esc_pos = 0;
 
@@ -533,7 +542,6 @@ int tl_readline(char *line_buffer, size_t size)
                 case 72: { // home
                     // todo
                 } break;
-
             }
 
             itl_le_update(&le);
@@ -545,31 +553,32 @@ int tl_readline(char *line_buffer, size_t size)
             esc_pos = 0;
         }
 
+        // trigger escape code
         if (in == '\x1b') {
             esc_pos = 1;
             continue;
         }
 
-        // utf-8 sequence
+        // trigger utf-8 sequence
         if (rem == 0) {
             if ((in & 0x80) == 0) { // 1 byte
                 bytes[0] = in;
-                length = 1;
+                length   = 1;
             }
             else if ((in & 0xE0) == 0xC0) { // 2 byte
                 bytes[0] = in;
-                rem = 1;
-                length = 2;
+                rem      = 1;
+                length   = 2;
             }
             else if ((in & 0xF8) == 0xF0) { // 3 byte
                 bytes[0] = in;
-                rem = 2;
-                length = 3;
+                rem      = 2;
+                length   = 3;
             }
             else if ((in & 0xF8) == 0xF0) { // 4 byte
                 bytes[0] = in;
-                rem = 3;
-                length = 4;
+                rem      = 3;
+                length   = 4;
             }
         }
         else
@@ -582,7 +591,7 @@ int tl_readline(char *line_buffer, size_t size)
 
         if (utf8_c.length == 1) {
             switch (utf8_c.bytes[0]) {
-                case 3: {  // c^c
+                case 3: { // c^c
                     return -1;
                 } break;
 
@@ -615,4 +624,4 @@ int tl_readline(char *line_buffer, size_t size)
 
 // TODO:
 // - autocompletion
-// - windows support (idk how to enter raw mode !!!)
+// - performant line update
