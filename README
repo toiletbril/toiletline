@@ -19,18 +19,27 @@ Current features
 
 Usage
 ----------------
+Before you include this file in C or C++ file, to create the implementation:
 #define TOILETLINE_IMPL
-Before you include this file in C or C++ file to create the implementation.
 
-To initialize toiletline mode, use:
-bool tl_init(void);
+To initialize toiletline mode:
+int tl_init(void);
 
-To read lines while in toiletline mode, use:
+Returns 1 on success.
+
+To read a line while in toiletline mode:
 int tl_readline(char *line_buffer, size_t size);
 
 Submitted input will be written to *line_buffer as a null-terminated string.
 
-To exit, use:
-bool tl_exit(void);
+Returns:
+- 0 when a line was submitted;
+- 1 on Ctrl-C, 2 when line read exceeded *line_buffer.
+- -1 means internal error, and should be unreachable.
+
+To exit:
+int tl_exit(void);
+
+Returns 1 on success.
 
 For example program, take a look at example.c.
