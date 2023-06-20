@@ -1,15 +1,14 @@
 toiletline
 ----------------
-C framework for raw terminal applications, meant to be a tiny replacement for GNU Readline.
-Accepts UTF-8 input. Parsed UTF-8 is not guranteed to be valid.
+Single-file framework library for raw terminal applications,
+meant to replace a small subset of GNU Readline.
 
-#define TOILETLINE_IMPL
-Before you include this file in C or C++ file to create the implementation.
+Accepts UTF-8 characters. For very specific cases, parsed UTF-8 may not be valid.
 
-Notes
-----------------
+Library was tested and is working on Linux and Windows.
 Any help finding bugs is appreciated.
 
-Documentation
+Usage
 ----------------
-*todo*
+#define TOILETLINE_IMPL
+Before you include this file in C or C++ file to create the implementation.
