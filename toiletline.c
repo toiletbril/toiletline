@@ -478,7 +478,7 @@ typedef struct
   int length;
 } itl_pbuf;
 
-void itl_pbuf_append(itl_pbuf *pbuf, const char *s, int len)
+static void itl_pbuf_append(itl_pbuf *pbuf, const char *s, int len)
 {
     char *new = itl_realloc(pbuf->string, pbuf->length + len);
     if (new == NULL)
@@ -490,12 +490,12 @@ void itl_pbuf_append(itl_pbuf *pbuf, const char *s, int len)
     pbuf->length += len;
 }
 
-void itl_pbuf_free(itl_pbuf *ab)
+static void itl_pbuf_free(itl_pbuf *ab)
 {
     itl_free(ab->string);
 }
 
-int itl_tty_update(itl_le *le)
+static int itl_tty_update(itl_le *le)
 {
     itl_pbuf pbuf = {NULL, 0};
     char buf[256];
