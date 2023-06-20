@@ -37,16 +37,16 @@
     #include <io.h>
     #define STDIN_FILENO 0
     #define STDOUT_FILENO 1
-#else
+#else // Linux
     #include <termios.h>
     #include <unistd.h>
-#endif
+#endif // Linux
 
 // for no asserts, define TL_ASSERT before including
 #ifndef TL_ASSERT
     #include <assert.h>
     #define TL_ASSERT(boolval) assert(boolval)
-#endif
+#endif // TL_ASSERT
 
 #include <ctype.h>
 #include <signal.h>
@@ -67,15 +67,23 @@ bool tl_exit(void);
 /**
  *  Read one line.
  *  Returns:
- *       0 on success;
- *      -1 exited;
- *      -2 line_buffer size exceeded;
+ *      0 on success.
+ *      1 when exited.
+ *      2 internal error.
  */
 int tl_readline(char *line_buffer, size_t size);
 
 #endif // TOILETLINE_H_
 
 #ifdef TOILETLINE_IMPL
+
+// general debug messages
+#ifdef TL_DEBUG
+    #define ITL_DBG(message, val) \
+        printf("%s: %d\n", message, val)
+#else
+    #define ITL_DBG(message, val)
+#endif
 
 static bool itl_enter_raw_mode(void)
 {
@@ -92,9 +100,10 @@ static bool itl_enter_raw_mode(void)
         return false;
 
     _setmode(_fileno(stdin), _O_BINARY);
+    SetConsoleCP(CP_UTF8);
 
     return true;
-#else
+#else // Linux
     struct termios term;
     if (tcgetattr(STDIN_FILENO, &term) != 0)
         return false;
@@ -108,7 +117,7 @@ static bool itl_enter_raw_mode(void)
         return false;
 
     return true;
-#endif
+#endif // Linux
 }
 
 static bool itl_exit_raw_mode(void)
@@ -125,7 +134,7 @@ static bool itl_exit_raw_mode(void)
     mode |= ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT;
     if (!SetConsoleMode(hInput, mode))
         return false;
-#else
+#else // Linux
     struct termios term;
     if (tcgetattr(STDIN_FILENO, &term) != 0)
         return false;
@@ -134,7 +143,7 @@ static bool itl_exit_raw_mode(void)
 
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &term) != 0)
         return false;
-#endif
+#endif // Linux
     return true;
 }
 
@@ -150,12 +159,12 @@ static void itl_handle_interrupt(int sign)
 static int itl_alloc_count = 0;
 
 // messages about allocations
-#ifdef TL_DEBUG
+#ifdef TL_DEBUG_ALLOC
     #define ITL_ALLOC_DBG(message) \
         printf("\n%s, alloc: %d\n", message, itl_alloc_count)
 #else
     #define ITL_ALLOC_DBG(message)
-#endif
+#endif // TL_DEBUG_ALLOC
 
 inline static void *itl_malloc(size_t size)
 {
@@ -186,18 +195,18 @@ inline static void *itl_realloc(void *block, size_t size)
         }                          \
     } while (0)
 
-typedef struct itl_utf8char_t itl_utf8char_t;
+typedef struct itl_utf8_t itl_utf8_t;
 
-struct itl_utf8char_t
+struct itl_utf8_t
 {
     uint8_t bytes[4];
-    size_t length;
+    size_t size;
 };
 
-static itl_utf8char_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
+static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
 {
-    itl_utf8char_t utf8_char;
-    utf8_char.length = length;
+    itl_utf8_t utf8_char;
+    utf8_char.size = length;
 
     for (uint8_t i = 0; i < length; i++)
         utf8_char.bytes[i] = bytes[i];
@@ -205,9 +214,9 @@ static itl_utf8char_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
     return utf8_char;
 }
 
-static void itl_utf8_put(const itl_utf8char_t *utf_c)
+static void itl_utf8_put(const itl_utf8_t *utf_c)
 {
-    for (size_t i = 0; i < utf_c->length; ++i)
+    for (size_t i = 0; i < utf_c->size; ++i)
         fputc(utf_c->bytes[i], stdout);
 }
 
@@ -216,7 +225,7 @@ typedef struct itl_char_t itl_char_t;
 // utf-8 string node
 struct itl_char_t
 {
-    itl_utf8char_t ch;
+    itl_utf8_t ch;
     itl_char_t *next;
 };
 
@@ -244,7 +253,7 @@ void itl_char_put(const itl_char_t *c)
 
 typedef struct itl_string_t itl_string_t;
 
-// string, a linked list of utf-8 chars
+// linked list of utf-8 chars
 struct itl_string_t
 {
     itl_char_t *c;
@@ -328,7 +337,7 @@ static void itl_string_to_cstr(itl_string_t *str, char *cstr, size_t size)
     size_t i = 0;
 
     while (c && i < size) {
-        for (size_t j = 0; j != c->ch.length && i < size; ++j)
+        for (size_t j = 0; j != c->ch.size && i < size; ++j)
             cstr[i++] = (char)c->ch.bytes[j];
         c = c->next;
     }
@@ -345,14 +354,18 @@ typedef struct
     struct itl_string_t *lbuf;
     size_t cursor_pos;
     int h_item_sel;
+    char *out;
+    size_t out_size;
 } itl_le;
 
-static itl_le itl_le_new(itl_string_t *lbuf)
+static itl_le itl_le_new(itl_string_t *intern_lbuf, char *out_buffer, size_t out_size)
 {
     itl_le le = {
-        .lbuf = lbuf,
+        .lbuf = intern_lbuf,
         .cursor_pos = 0,
         .h_item_sel = -1,
+        .out = out_buffer,
+        .out_size = out_size,
     };
 
     return le;
@@ -392,7 +405,7 @@ static bool itl_le_unputc(itl_le *le)
 
 // allocates memory for new characters
 // inserts character at cursor position
-static bool itl_le_putc(itl_le *le, const itl_utf8char_t ch)
+static bool itl_le_putc(itl_le *le, const itl_utf8_t ch)
 {
     if (le->cursor_pos > le->lbuf->size)
         return false;
@@ -548,151 +561,287 @@ bool tl_exit(void)
     return itl_exit_raw_mode();
 }
 
-//  0 on success
-// -1 exited;
-// -2 line_buffer size exceeded;
+#ifdef _WIN32
+    #define read_byte() _getch()
+#else // Linux
+    #define read_byte() fgetc(stdin)
+#endif // Linux
+
+typedef enum
+{
+    ITL_KEY_CHAR = 0,
+    ITL_KEY_UNKN,
+    ITL_KEY_UP,
+    ITL_KEY_DOWN,
+    ITL_KEY_RIGHT,
+    ITL_KEY_LEFT,
+    ITL_KEY_END,
+    ITL_KEY_HOME,
+    ITL_KEY_ENTER,
+    ITL_KEY_BACKSPACE,
+    ITL_KEY_CTRL_BACKSPACE,
+    ITL_KEY_DELETE,
+    ITL_KEY_CTRL_DELETE,
+    ITL_KEY_TAB,
+    ITL_KEY_INTERRUPT,
+} ITL_KEY_KIND;
+
+#define ITL_CTRL_BIT  32
+#define ITL_SHIFT_BIT 64
+#define ITL_ALT_BIT   128
+
+static ITL_KEY_KIND itl_parse_esc(int byte)
+{
+    ITL_KEY_KIND event = ITL_KEY_UNKN;
+
+    switch (byte) { // plain bytes
+        case 3:
+            return ITL_KEY_INTERRUPT;
+        case 9:
+            return ITL_KEY_TAB;
+        case 10: // newline
+        case 13: // cr
+            return ITL_KEY_ENTER;
+        case 23: { // ctrl bs
+            return ITL_KEY_BACKSPACE | ITL_CTRL_BIT;
+        }
+        case 8:
+        case 127:
+            return ITL_KEY_BACKSPACE;
+    }
+
+#ifdef _WIN32
+    if (byte == 224) { // escape
+        switch (read_byte()) {
+            case 72: {
+                event = ITL_KEY_UP;
+            } break;
+
+            case 75: {
+                event = ITL_KEY_LEFT;
+            } break;
+
+            case 77: {
+                event = ITL_KEY_RIGHT;
+            } break;
+
+            case 71: {
+                event = ITL_KEY_HOME;
+            } break;
+
+            case 79: {
+                event = ITL_KEY_END;
+            } break;
+
+            case 80: {
+                event = ITL_KEY_DOWN;
+            } break;
+
+            case 83: {
+                event = ITL_KEY_DELETE;
+            } break;
+
+            case 147: { // ctrl del
+                event = ITL_KEY_DELETE;
+                event |= ITL_CTRL_BIT;
+            } break;
+
+            default:
+                event = ITL_KEY_UNKN;
+        }
+    } else {
+        return ITL_KEY_CHAR;
+    }
+#else // Linux
+    if (byte == 27) { // \x1b
+        byte = read_byte();
+
+        if (byte != 91) { // [
+            return ITL_KEY_CHAR | ITL_ALT_BIT;
+        }
+
+        switch (read_byte()) { // escape codes based on xterm
+            case 51: {
+                event = ITL_KEY_DELETE;
+            } break;
+
+            case 65: {
+                return ITL_KEY_UP;
+            } break;
+
+            case 66: {
+                return ITL_KEY_DOWN;
+            } break;
+
+            case 67: {
+                return ITL_KEY_RIGHT;
+            } break;
+
+            case 68: {
+                return ITL_KEY_LEFT;
+            } break;
+
+            case 70: {
+                return ITL_KEY_END;
+            } break;
+
+            case 72: {
+                return ITL_KEY_HOME;
+            } break;
+
+            default:
+                event = ITL_KEY_UNKN;
+        }
+    } else {
+        return ITL_KEY_CHAR;
+    }
+
+    byte = read_byte();
+
+    if (byte == 59) { // ;
+        switch (read_byte()) {
+            case 53: {
+                event |= ITL_CTRL_BIT;
+            } break;
+
+            case 51: {
+                event |= ITL_SHIFT_BIT;
+            } break;
+        }
+
+        byte = read_byte();
+    }
+
+    if (byte != '~')
+        event = ITL_KEY_UNKN;
+#endif // Linux
+    return event;
+}
+
+static itl_utf8_t itl_parse_utf8(int byte)
+{
+    uint8_t bytes[4] = {byte, 0, 0, 0};
+    uint8_t len = 0;
+
+    if ((byte & 0x80) == 0) // 1 byte
+        len = 1;
+    else if ((byte & 0xE0) == 0xC0) // 2 byte
+        len = 2;
+    else if ((byte & 0xF8) == 0xF0) // 3 byte
+        len = 3;
+    else if ((byte & 0xF8) == 0xF0) // 4 byte
+        len = 4;
+
+    for (uint8_t i = 1; i < len; ++i) // consequent bytes
+        bytes[i] = byte;
+
+    return itl_utf8_new(bytes, len);
+}
+
+//  0 on enter
+//  1 on interrupt
+// -1 if should continue
+static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
+{
+    ITL_DBG("\nhandling key", esc);
+    switch (esc) {
+        case ITL_KEY_UP: {
+            if (le->h_item_sel == -1) {
+                le->h_item_sel = itl_h_index;
+                if (le->lbuf->size > 0 && itl_h_index > 0) {
+                    itl_history_append(le->lbuf);
+                }
+            }
+
+            if (le->h_item_sel > 0) {
+                le->h_item_sel -= 1;
+                itl_le_clear(le);
+                itl_history_get(le);
+            }
+        } break;
+
+        case ITL_KEY_DOWN: {
+            if (le->h_item_sel < itl_h_index - 1 && le->h_item_sel >= 0) {
+                le->h_item_sel += 1;
+                itl_le_clear(le);
+                itl_history_get(le);
+            }
+            else {
+                itl_le_clear(le);
+                le->h_item_sel = -1;
+            }
+        } break;
+
+        case ITL_KEY_RIGHT: {
+            if (le->cursor_pos >= 0 && le->cursor_pos < le->lbuf->size) {
+                le->cursor_pos += 1;
+            }
+        } break;
+
+         case ITL_KEY_LEFT: {
+            if (le->cursor_pos > 0 && le->cursor_pos <= le->lbuf->size) {
+                le->cursor_pos -= 1;
+            }
+        } break;
+
+        case ITL_KEY_END: { // end
+            le->cursor_pos = le->lbuf->size;
+        } break;
+
+        case ITL_KEY_HOME: {
+            le->cursor_pos = 0;
+        } break;
+
+        case ITL_KEY_ENTER: {
+            itl_history_append(le->lbuf);
+            itl_string_to_cstr(le->lbuf, le->out, le->out_size);
+            itl_le_clear(le);
+            return 0;
+        } break;
+
+        case ITL_KEY_BACKSPACE: {
+            itl_le_unputc(le);
+        } break;
+
+        case ITL_KEY_INTERRUPT: {
+            return 1;
+        } break;
+
+        default:
+            ITL_DBG("key wasn't handled", esc);
+    }
+
+    return -1;
+}
+
+// 0 on success
+// 1 on interrupt
+// -1 internal error (reserved)
 int tl_readline(char *line_buffer, size_t size)
 {
-    itl_le le = itl_le_new(lbuf);
-
-    uint8_t bytes[4] = {0};
-    uint8_t rem = 0;
-    uint8_t length = 0;
-
-    uint8_t esc_pos = 0;
+    itl_le le = itl_le_new(lbuf, line_buffer, size);
+    int esc;
+    int in;
 
     while (true) {
-        int in = fgetc(stdin);
+        in = read_byte();
 
-        if (in == 0) // this happens when console sends invalid bytes
-            continue;
+        // printf("%d", in);
+        // continue;
 
-        if (esc_pos == 1 && in == '[') {
-            esc_pos = 2;
-            continue;
-        }
-        else if (esc_pos == 2) { // escape codes based on xterm
-            switch (in) {
-                case 65: { // up
-                    if (le.h_item_sel == -1) {
-                        le.h_item_sel = itl_h_index;
-                        if (le.lbuf->size > 0 && itl_h_index > 0) {
-                            itl_history_append(le.lbuf);
-                        }
-                    }
-
-                    if (le.h_item_sel > 0) {
-                        le.h_item_sel -= 1;
-                        itl_le_clear(&le);
-                        itl_history_get(&le);
-                    }
-                } break;
-
-                case 66: { // down
-                    if (le.h_item_sel < itl_h_index - 1 && le.h_item_sel >= 0) {
-                        le.h_item_sel += 1;
-                        itl_le_clear(&le);
-                        itl_history_get(&le);
-                    }
-                    else {
-                        itl_le_clear(&le);
-                        le.h_item_sel = -1;
-                    }
-                } break;
-
-                case 67: { // right
-                    if (le.cursor_pos >= 0 && le.cursor_pos < le.lbuf->size) {
-                        le.cursor_pos += 1;
-                    }
-                } break;
-
-                case 68: { // left
-                    if (le.cursor_pos > 0 && le.cursor_pos <= le.lbuf->size) {
-                        le.cursor_pos -= 1;
-                    }
-                } break;
-
-                case 70: { // end
-                    le.cursor_pos = le.lbuf->size;
-                } break;
-
-                case 72: { // home
-                    le.cursor_pos = 0;
-                } break;
-            }
-
-            itl_tty_update(&le);
-            esc_pos = 0;
-
-            continue;
-        }
-        else if (esc_pos == 1) {
-            esc_pos = 0;
-        }
-
-        // trigger escape code
-        if (in == '\x1b') {
-            esc_pos = 1;
-            continue;
-        }
-
-        // trigger utf-8 sequence
-        if (rem == 0) {
-            if ((in & 0x80) == 0) { // 1 byte
-                bytes[0] = in;
-                length = 1;
-            }
-            else if ((in & 0xE0) == 0xC0) { // 2 byte
-                bytes[0] = in;
-                rem = 1;
-                length = 2;
-            }
-            else if ((in & 0xF8) == 0xF0) { // 3 byte
-                bytes[0] = in;
-                rem = 2;
-                length = 3;
-            }
-            else if ((in & 0xF8) == 0xF0) { // 4 byte
-                bytes[0] = in;
-                rem = 3;
-                length = 4;
+        if ((esc = itl_parse_esc(in)) != ITL_KEY_CHAR) {
+            if ((esc = itl_handle_esc(&le, esc)) != -1) {
+                return esc;
             }
         }
-        else
-            bytes[length - rem--] = in; // consequent bytes
-
-        if (rem != 0)
-            continue;
-
-        itl_utf8char_t utf8_c = itl_utf8_new(bytes, length);
-
-        if (utf8_c.length == 1) {
-            switch (utf8_c.bytes[0]) {
-                case 3: { // c^c
-                    return -1;
-                } break;
-
-                case 10:   // newline
-                case 13: { // cr
-                    itl_history_append(le.lbuf);
-                    itl_string_to_cstr(le.lbuf, line_buffer, size);
-                    itl_le_clear(&le);
-                    return 0;
-                } break;
-
-                case 127: { // backspace
-                    itl_le_unputc(&le);
-                } break;
-
-                default:
-                    itl_le_putc(&le, utf8_c);
-            }
+        else {
+            itl_utf8_t ch = itl_parse_utf8(in);
+            itl_le_putc(&le, ch);
         }
-        else
-            itl_le_putc(&le, utf8_c);
 
         itl_tty_update(&le);
     }
+
     return -1;
 }
 
