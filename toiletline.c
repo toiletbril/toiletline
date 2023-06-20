@@ -50,7 +50,6 @@
 
 #include <ctype.h>
 #include <signal.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,11 +58,11 @@
 /**
  *  Initialize toiletline, enter raw mode.
  */
-bool tl_init(void);
+int tl_init(void);
 /**
  *  Exit toiletline and free history.
  */
-bool tl_exit(void);
+int tl_exit(void);
 /**
  *  Read one line.
  *  Returns:
@@ -85,28 +84,26 @@ int tl_readline(char *line_buffer, size_t size);
     #define ITL_DBG(message, val)
 #endif
 
-static bool itl_enter_raw_mode(void)
+static int itl_enter_raw_mode(void)
 {
 #ifdef _WIN32
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
     if (hInput == INVALID_HANDLE_VALUE)
-        return false;
+        return 0;
 
     // NOTE:
     // ENABLE_VIRTUAL_TERMINAL_INPUT seems to not work on older versions of Windows
     DWORD mode = ENABLE_EXTENDED_FLAGS | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_QUICK_EDIT_MODE;
 
     if (!SetConsoleMode(hInput, mode))
-        return false;
+        return 0;
 
     _setmode(_fileno(stdin), _O_BINARY);
     SetConsoleCP(CP_UTF8);
-
-    return true;
 #else // Linux
     struct termios term;
     if (tcgetattr(STDIN_FILENO, &term) != 0)
-        return false;
+        return 0;
 
     struct termios raw = term;
     raw.c_lflag &= ~(ICANON | ECHO);
@@ -114,37 +111,37 @@ static bool itl_enter_raw_mode(void)
     raw.c_cc[VTIME] = 0;
 
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0)
-        return false;
+        return 0;
 
-    return true;
 #endif // Linux
+    return 1;
 }
 
-static bool itl_exit_raw_mode(void)
+static int itl_exit_raw_mode(void)
 {
 #ifdef _WIN32
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
     if (hInput == INVALID_HANDLE_VALUE)
-        return false;
+        return 0;
 
     DWORD mode;
     if (!GetConsoleMode(hInput, &mode))
-        return false;
+        return 0;
 
     mode |= ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT;
     if (!SetConsoleMode(hInput, mode))
-        return false;
+        return 0;
 #else // Linux
     struct termios term;
     if (tcgetattr(STDIN_FILENO, &term) != 0)
-        return false;
+        return 0;
 
     term.c_lflag |= ICANON | ECHO;
 
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &term) != 0)
-        return false;
+        return 0;
 #endif // Linux
-    return true;
+    return 1;
 }
 
 static void itl_handle_interrupt(int sign)
@@ -313,21 +310,25 @@ static void itl_string_free(itl_string_t *str)
     itl_free(str);
 }
 
-static void itl_string_to_cstr(itl_string_t *str, char *cstr, size_t size)
+static int itl_string_to_cstr(itl_string_t *str, char *cstr, size_t size)
 {
     itl_char_t *c = str->begin;
     size_t i = 0;
 
     while (c) {
-        for (size_t j = 0; j != c->c.size && i < size; ++j) {
+        for (size_t j = 0; j != c->c.size && i < size; ++j)
             cstr[i++] = c->c.bytes[j];
-        }
+
         if (c != c->next)
             c = c->next;
     }
 
     if (i < size)
         cstr[i] = '\0';
+    else
+        return 2;
+
+    return 0;
 }
 
 static itl_string_t *lbuf = NULL;
@@ -358,7 +359,7 @@ static itl_le itl_le_new(itl_string_t *intern_lbuf, char *out_buffer, size_t out
 }
 
 // removes and frees characters at cursor position
-static void itl_le_unputc(itl_le *le, size_t count, bool behind)
+static void itl_le_unputc(itl_le *le, size_t count, int behind)
 {
     size_t i = 0;
     itl_char_t *to_free = NULL;
@@ -575,7 +576,7 @@ static void itl_history_get(itl_le *le)
 
 // allocates memory for global history and line buffer
 // adds signal handle for c^c
-bool tl_init(void)
+int tl_init(void)
 {
     itl_history_alloc();
     lbuf = itl_string_alloc();
@@ -586,7 +587,7 @@ bool tl_init(void)
 
 // frees memory for global history and line buffer
 // removes signal handle for c^c
-bool tl_exit(void)
+int tl_exit(void)
 {
     itl_history_free();
     itl_string_free(lbuf);
@@ -837,17 +838,17 @@ static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
 
         case ITL_KEY_ENTER: {
             itl_history_append(le->lbuf);
-            itl_string_to_cstr(le->lbuf, le->out, le->out_size);
+            int code = itl_string_to_cstr(le->lbuf, le->out, le->out_size);
             itl_le_clear(le);
-            return 0;
+            return code;
         } break;
 
         case ITL_KEY_BACKSPACE: {
-            itl_le_unputc(le, 1, true);
+            itl_le_unputc(le, 1, 1);
         } break;
 
         case ITL_KEY_DELETE: {
-            itl_le_unputc(le, 1, false);
+            itl_le_unputc(le, 1, 0);
         } break;
 
         case ITL_KEY_INTERRUPT: {
@@ -872,7 +873,7 @@ int tl_readline(char *line_buffer, size_t size)
     int esc;
     int in;
 
-    while (true) {
+    while (1) {
         in = read_byte();
 
         if ((esc = itl_parse_esc(in)) != ITL_KEY_CHAR) {
