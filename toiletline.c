@@ -733,7 +733,7 @@ static itl_utf8_t itl_parse_utf8(int byte)
         len = 4;
 
     for (uint8_t i = 1; i < len; ++i) // consequent bytes
-        bytes[i] = byte;
+        bytes[i] = read_byte();
 
     return itl_utf8_new(bytes, len);
 }
@@ -826,9 +826,6 @@ int tl_readline(char *line_buffer, size_t size)
     while (true) {
         in = read_byte();
 
-        // printf("%d", in);
-        // continue;
-
         if ((esc = itl_parse_esc(in)) != ITL_KEY_CHAR) {
             if ((esc = itl_handle_esc(&le, esc)) != -1) {
                 return esc;
@@ -850,7 +847,5 @@ int tl_readline(char *line_buffer, size_t size)
 /**
  * TODO:
  *  - autocompletion
- *  - support delete key
- *  - ctrl backspace/delete word deletion
  *  - documentation
  */
