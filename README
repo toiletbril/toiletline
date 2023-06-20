@@ -5,7 +5,11 @@ meant to replace a small subset of GNU Readline.
 
 Accepts UTF-8 characters. For very specific cases, parsed UTF-8 may not be valid.
 
-Library was tested and is working on Linux and Windows.
+Notes
+----------------
+On Windows, the console API doesn't support reading multibyte UTF-8 input, instead replacing it with \0 bytes.
+This means only ASCII characters are supported.
+
 Any help finding bugs is appreciated.
 
 Usage
