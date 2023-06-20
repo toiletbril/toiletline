@@ -3,7 +3,7 @@ toiletline
 Single-file framework library for raw terminal applications,
 meant to replace a small subset of GNU Readline.
 
-toiletline allows you to input characters, press up and down keys to navigate history,
+It allows you to input characters, press up and down keys to navigate history,
 left and right to navigate in the line, all while in raw mode.
 
 Accepts UTF-8 characters. For very specific cases, parsed UTF-8 may not be valid.
