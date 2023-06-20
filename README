@@ -8,11 +8,28 @@ left and right to navigate line, all while in raw mode.
 
 Accepts UTF-8 characters. For very specific cases, parsed UTF-8 may not be valid.
 
-Notes
-----------------
 Any help finding bugs is appreciated.
+
+Current features
+----------------
+- Up/Down to navigate history.
+- Right/Left, End/Home to navigate line.
+- Enter to submit the line.
+- CTRL-C to exit
 
 Usage
 ----------------
 #define TOILETLINE_IMPL
 Before you include this file in C or C++ file to create the implementation.
+
+To initialize toiletline mode, use:
+bool tl_init(void);
+
+To read lines while in toiletline mode, use:
+int tl_readline(char *line_buffer, size_t size);
+Submitted input will be written to *line_buffer as a null-terminated string.
+
+To exit, use:
+bool tl_exit(void);
+
+For example program, take a look at test.c.
