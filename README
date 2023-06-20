@@ -15,7 +15,7 @@ Current features
 - Up/Down to navigate history.
 - Right/Left, End/Home to navigate line.
 - Enter to submit the line.
-- CTRL-C to exit
+- Ctrl-C to exit.
 
 Usage
 ----------------
@@ -27,9 +27,10 @@ bool tl_init(void);
 
 To read lines while in toiletline mode, use:
 int tl_readline(char *line_buffer, size_t size);
+
 Submitted input will be written to *line_buffer as a null-terminated string.
 
 To exit, use:
 bool tl_exit(void);
 
-For example program, take a look at test.c.
+For example program, take a look at example.c.
