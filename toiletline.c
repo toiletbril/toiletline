@@ -459,6 +459,7 @@ static void itl_le_left(itl_le *le, size_t steps)
             le->cur_char = le->lbuf->end;
             le->cur_pos -= 1;
         }
+        else
             return;
     }
 }
@@ -826,12 +827,12 @@ static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
             }
         } break;
 
-        case ITL_KEY_END: { // end
-            le->cur_pos = le->lbuf->size;
+        case ITL_KEY_END: {
+            itl_le_right(le, le->lbuf->size - le->cur_pos);
         } break;
 
         case ITL_KEY_HOME: {
-            le->cur_pos = 0;
+            itl_le_left(le, le->cur_pos);
         } break;
 
         case ITL_KEY_ENTER: {
@@ -896,5 +897,4 @@ int tl_readline(char *line_buffer, size_t size)
  * TODO:
  *  - autocompletion
  *  - modifiers implementation
- *  - documentation
  */
