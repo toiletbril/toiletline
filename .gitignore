@@ -3,5 +3,6 @@
 !README
 !*/
 !*.*
-*.exe
 .vscode/
+temp/
+*.exe
