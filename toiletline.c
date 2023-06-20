@@ -6,8 +6,6 @@
  *  #define TOILETLINE_IMPL
  *  Before you include this file in C or C++ file to create the implementation.
  *
- *  MIT License
- *
  *  Copyright (c) 2023 toiletbril
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -40,6 +38,12 @@
 #else
     #include <termios.h>
     #include <unistd.h>
+#endif
+
+// for no asserts, define TL_ASSERT before including
+#ifndef TL_ASSERT
+    #include <assert.h>
+    #define TL_ASSERT(boolval) assert(boolval)
 #endif
 
 #include <ctype.h>
@@ -141,6 +145,39 @@ static void itl_handle_interrupt(int sign)
     exit(0);
 }
 
+static int itl_alloc_count = 0;
+
+// messages about allocations
+#ifdef TL_DEBUG
+    #define ITL_ALLOC_DBG(message) \
+        printf("\n%s, alloc: %d\n", message, itl_alloc_count)
+#else
+    #define ITL_ALLOC_DBG(message)
+#endif
+
+inline static void *itl_malloc(size_t size)
+{
+    itl_alloc_count += 1;
+    ITL_ALLOC_DBG("malloc");
+    return malloc(size);
+}
+
+inline static void *itl_calloc(size_t count, size_t size)
+{
+    itl_alloc_count += 1;
+    ITL_ALLOC_DBG("calloc");
+    return calloc(count, size);
+}
+
+#define itl_free(ptr)              \
+    do {                           \
+        if (ptr) {                 \
+            itl_alloc_count -= 1;  \
+            ITL_ALLOC_DBG("free"); \
+            free(ptr);             \
+        }                          \
+    } while (0)
+
 typedef struct itl_utf8_c_t itl_utf8_c_t;
 
 // utf-8 char
@@ -188,7 +225,7 @@ static itl_char_t itl_char_new(const itl_utf8_c_t utf8_c, itl_char_t *next)
 
 static itl_char_t *itl_char_alloc()
 {
-    itl_char_t *ptr = (itl_char_t *)calloc(1, sizeof(itl_char_t));
+    itl_char_t *ptr = (itl_char_t *)itl_malloc(sizeof(itl_char_t));
     ptr->next = NULL;
     return ptr;
 }
@@ -200,8 +237,7 @@ static void itl_char_copy(itl_char_t *dst, itl_char_t *src)
 
 static void itl_char_free(itl_char_t *c)
 {
-    if (c != NULL)
-        free(c);
+    itl_free(c);
 }
 
 void itl_char_put(const itl_char_t *c)
@@ -230,7 +266,7 @@ static itl_string_t itl_string_new()
 
 static itl_string_t *itl_string_alloc()
 {
-    itl_string_t *ptr = (itl_string_t *)calloc(1, sizeof(itl_string_t));
+    itl_string_t *ptr = (itl_string_t *)itl_malloc(sizeof(itl_string_t));
     ptr->size = 0;
     ptr->c = NULL;
     return ptr;
@@ -279,7 +315,7 @@ static void itl_string_clear(itl_string_t *str)
 static void itl_string_free(itl_string_t *str)
 {
     itl_string_clear(str);
-    free(str);
+    itl_free(str);
 }
 
 // prints out a string
@@ -435,8 +471,8 @@ static int itl_h_index = 0;
 static void itl_history_free()
 {
     for (int i = 0; i < itl_h_index; ++i)
-        free(itl_history[i]);
-    free(itl_history);
+        itl_string_free(itl_history[i]);
+    itl_free(itl_history);
 }
 
 // copies string to global history
@@ -476,7 +512,7 @@ static void itl_history_get(struct itl_le *le)
 bool tl_init()
 {
     itl_history = (itl_string_t **)
-        calloc(TL_HISTORY_INIT_SIZE, sizeof(itl_string_t *));
+        itl_calloc(TL_HISTORY_INIT_SIZE, sizeof(itl_string_t *));
 
     lbuf = itl_string_alloc();
 
@@ -492,6 +528,9 @@ bool tl_exit()
     itl_string_free(lbuf);
 
     signal(SIGINT, SIG_DFL);
+    ITL_ALLOC_DBG("exit");
+    TL_ASSERT(itl_alloc_count == 0);
+
     return itl_exit_raw_mode();
 }
 
@@ -643,9 +682,10 @@ int tl_readline(char *line_buffer, size_t size)
 #endif // TOILETLINE_IMPLEMENTATION
 
 /**
- *  TODO:
- *     - autocompletion
- *     - performant line update
- *     - support delete key
- *     - ctrl backspace/delete word deletion
+ * TODO:
+ *  - autocompletion
+ *  - performant line update
+ *  - support delete key
+ *  - ctrl backspace/delete word deletion
+ *  - documentation
  */
