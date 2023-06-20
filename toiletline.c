@@ -493,6 +493,8 @@ static void itl_pbuf_append(itl_pbuf *pbuf, const char *s, int len)
 static void itl_pbuf_free(itl_pbuf *pbuf)
 {
     itl_free(pbuf->string);
+    // NOTE: realloc does not increase global count
+    itl_global_alloc_count += 1;
 }
 
 static int itl_tty_update(itl_le *le)
