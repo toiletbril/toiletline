@@ -156,26 +156,26 @@ static void itl_handle_interrupt(int sign)
     exit(0);
 }
 
-static int itl_alloc_count = 0;
+static int itl_global_alloc_count = 0;
 
 // messages about allocations
 #ifdef TL_DEBUG_ALLOC
     #define ITL_ALLOC_DBG(message) \
-        printf("\n%s, alloc: %d\n", message, itl_alloc_count)
+        printf("\n%s, alloc: %d\n", message, itl_global_alloc_count)
 #else
     #define ITL_ALLOC_DBG(message)
 #endif // TL_DEBUG_ALLOC
 
 inline static void *itl_malloc(size_t size)
 {
-    itl_alloc_count += 1;
+    itl_global_alloc_count += 1;
     ITL_ALLOC_DBG("malloc");
     return malloc(size);
 }
 
 inline static void *itl_calloc(size_t count, size_t size)
 {
-    itl_alloc_count += 1;
+    itl_global_alloc_count += 1;
     ITL_ALLOC_DBG("calloc");
     return calloc(count, size);
 }
@@ -189,7 +189,7 @@ inline static void *itl_realloc(void *block, size_t size)
 #define itl_free(ptr)              \
     do {                           \
         if (ptr) {                 \
-            itl_alloc_count -= 1;  \
+            itl_global_alloc_count -= 1;  \
             ITL_ALLOC_DBG("free"); \
             free(ptr);             \
         }                          \
@@ -555,8 +555,8 @@ bool tl_exit(void)
     itl_string_free(lbuf);
 
     signal(SIGINT, SIG_DFL);
-    ITL_ALLOC_DBG("exit");
-    TL_ASSERT(itl_alloc_count == 0);
+    ITL_DBG("exit, alloc count", itl_global_alloc_count);
+    TL_ASSERT(itl_global_alloc_count == 0);
 
     return itl_exit_raw_mode();
 }
@@ -589,6 +589,9 @@ typedef enum
 #define ITL_CTRL_BIT  32
 #define ITL_SHIFT_BIT 64
 #define ITL_ALT_BIT   128
+
+#define ITL_KEY_MASK  63
+#define ITL_MOD_MASK  448
 
 static ITL_KEY_KIND itl_parse_esc(int byte)
 {
@@ -744,7 +747,7 @@ static itl_utf8_t itl_parse_utf8(int byte)
 static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
 {
     ITL_DBG("\nhandling key", esc);
-    switch (esc) {
+    switch (esc & ITL_KEY_MASK) {
         case ITL_KEY_UP: {
             if (le->h_item_sel == -1) {
                 le->h_item_sel = itl_h_index;
@@ -807,8 +810,10 @@ static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
             return 1;
         } break;
 
-        default:
-            ITL_DBG("key wasn't handled", esc);
+        default: {
+            ITL_DBG("key wasn't handled", esc | ITL_KEY_MASK);
+            ITL_DBG("modifier", esc | ITL_MOD_MASK);
+        }
     }
 
     return -1;
@@ -825,6 +830,7 @@ int tl_readline(char *line_buffer, size_t size)
 
     while (true) {
         in = read_byte();
+        ITL_DBG("char", in);
 
         if ((esc = itl_parse_esc(in)) != ITL_KEY_CHAR) {
             if ((esc = itl_handle_esc(&le, esc)) != -1) {
@@ -847,5 +853,6 @@ int tl_readline(char *line_buffer, size_t size)
 /**
  * TODO:
  *  - autocompletion
+ *  - ctrl modifier
  *  - documentation
  */
