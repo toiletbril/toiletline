@@ -35,6 +35,8 @@
     #include <conio.h>
     #include <fcntl.h>
     #include <io.h>
+    #define STDIN_FILENO 0
+    #define STDOUT_FILENO 1
 #else
     #include <termios.h>
     #include <unistd.h>
@@ -55,19 +57,19 @@
 #include <string.h>
 
 /**
- * Initialize toiletline, enter raw mode.
+ *  Initialize toiletline, enter raw mode.
  */
-bool tl_init();
+bool tl_init(void);
 /**
- * Exit toiletline and free history.
+ *  Exit toiletline and free history.
  */
-bool tl_exit();
+bool tl_exit(void);
 /**
- * Read one line.
- * Returns:
- *  0 on success;
- * -1 exited;
- * -2 line_buffer size exceeded;
+ *  Read one line.
+ *  Returns:
+ *       0 on success;
+ *      -1 exited;
+ *      -2 line_buffer size exceeded;
  */
 int tl_readline(char *line_buffer, size_t size);
 
@@ -75,7 +77,7 @@ int tl_readline(char *line_buffer, size_t size);
 
 #ifdef TOILETLINE_IMPL
 
-static bool itl_enter_raw_mode()
+static bool itl_enter_raw_mode(void)
 {
 #ifdef _WIN32
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
@@ -109,7 +111,7 @@ static bool itl_enter_raw_mode()
 #endif
 }
 
-static bool itl_exit_raw_mode()
+static bool itl_exit_raw_mode(void)
 {
 #ifdef _WIN32
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
@@ -169,6 +171,12 @@ inline static void *itl_calloc(size_t count, size_t size)
     return calloc(count, size);
 }
 
+inline static void *itl_realloc(void *block, size_t size)
+{
+    ITL_ALLOC_DBG("realloc");
+    return realloc(block, size);
+}
+
 #define itl_free(ptr)              \
     do {                           \
         if (ptr) {                 \
@@ -178,18 +186,17 @@ inline static void *itl_calloc(size_t count, size_t size)
         }                          \
     } while (0)
 
-typedef struct itl_utf8_c_t itl_utf8_c_t;
+typedef struct itl_utf8char_t itl_utf8char_t;
 
-// utf-8 char
-struct itl_utf8_c_t
+struct itl_utf8char_t
 {
     uint8_t bytes[4];
     size_t length;
 };
 
-itl_utf8_c_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
+static itl_utf8char_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
 {
-    itl_utf8_c_t utf8_char;
+    itl_utf8char_t utf8_char;
     utf8_char.length = length;
 
     for (uint8_t i = 0; i < length; i++)
@@ -198,7 +205,7 @@ itl_utf8_c_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
     return utf8_char;
 }
 
-void itl_utf8_put(const itl_utf8_c_t *utf_c)
+static void itl_utf8_put(const itl_utf8char_t *utf_c)
 {
     for (size_t i = 0; i < utf_c->length; ++i)
         fputc(utf_c->bytes[i], stdout);
@@ -209,21 +216,11 @@ typedef struct itl_char_t itl_char_t;
 // utf-8 string node
 struct itl_char_t
 {
-    itl_utf8_c_t ch;
+    itl_utf8char_t ch;
     itl_char_t *next;
 };
 
-static itl_char_t itl_char_new(const itl_utf8_c_t utf8_c, itl_char_t *next)
-{
-    struct itl_char_t c = {
-        .ch = utf8_c,
-        .next = next,
-    };
-
-    return c;
-}
-
-static itl_char_t *itl_char_alloc()
+static itl_char_t *itl_char_alloc(void)
 {
     itl_char_t *ptr = (itl_char_t *)itl_malloc(sizeof(itl_char_t));
     ptr->next = NULL;
@@ -254,17 +251,7 @@ struct itl_string_t
     size_t size;
 };
 
-static itl_string_t itl_string_new()
-{
-    itl_string_t str = {
-        .c = NULL,
-        .size = 0,
-    };
-
-    return str;
-}
-
-static itl_string_t *itl_string_alloc()
+static itl_string_t *itl_string_alloc(void)
 {
     itl_string_t *ptr = (itl_string_t *)itl_malloc(sizeof(itl_string_t));
     ptr->size = 0;
@@ -318,19 +305,6 @@ static void itl_string_free(itl_string_t *str)
     itl_free(str);
 }
 
-// prints out a string
-static void itl_string_put(itl_string_t *str)
-{
-    itl_char_t *c = str->c;
-
-    while (c) {
-        itl_char_put(c);
-        c = c->next;
-    }
-
-    fflush(stdout);
-}
-
 // pointer to a pointer to get the original linked list node
 // looks weird to me but it did not work otherwise
 static itl_char_t **itl_string_at(itl_string_t *str, size_t pos)
@@ -366,16 +340,16 @@ static void itl_string_to_cstr(itl_string_t *str, char *cstr, size_t size)
 static itl_string_t *lbuf = NULL;
 
 // line editor
-struct itl_le
+typedef struct
 {
     struct itl_string_t *lbuf;
     size_t cursor_pos;
     int h_item_sel;
-};
+} itl_le;
 
-static struct itl_le itl_le_new(itl_string_t *lbuf)
+static itl_le itl_le_new(itl_string_t *lbuf)
 {
-    struct itl_le le = {
+    itl_le le = {
         .lbuf = lbuf,
         .cursor_pos = 0,
         .h_item_sel = -1,
@@ -386,7 +360,7 @@ static struct itl_le itl_le_new(itl_string_t *lbuf)
 
 // removes character at cursor position - 1 (like backspace)
 // frees removed characters
-static bool itl_le_unputc(struct itl_le *le)
+static bool itl_le_unputc(itl_le *le)
 {
     if (le->lbuf->c == NULL) {
         return false;
@@ -418,7 +392,7 @@ static bool itl_le_unputc(struct itl_le *le)
 
 // allocates memory for new characters
 // inserts character at cursor position
-static bool itl_le_putc(struct itl_le *le, const itl_utf8_c_t ch)
+static bool itl_le_putc(itl_le *le, const itl_utf8char_t ch)
 {
     if (le->cursor_pos > le->lbuf->size)
         return false;
@@ -443,23 +417,59 @@ static bool itl_le_putc(struct itl_le *le, const itl_utf8_c_t ch)
     return true;
 }
 
-int itl_le_update(struct itl_le *le)
-{
-    fputs("\x1b[2K", stdout);
-    fputc('\r', stdout);
-    itl_string_put(le->lbuf);
-    printf("\x1b[%zuG", le->cursor_pos + 1);
-
-    return fflush(stdout);
-}
-
 // frees line buffer's string's characters, does not free the string itself
-static void itl_le_clear(struct itl_le *le)
+static void itl_le_clear(itl_le *le)
 {
     itl_string_clear(le->lbuf);
 
     le->lbuf->size = 0;
     le->cursor_pos = 0;
+}
+
+// buffer output before writing it all to stdout
+typedef struct
+{
+  char *string;
+  int length;
+} itl_pbuf;
+
+void itl_pbuf_append(itl_pbuf *ab, const char *s, int len)
+{
+    char *new = itl_realloc(ab->string, ab->length + len);
+    if (new == NULL)
+        return;
+
+    memcpy(&new[ab->length], s, len);
+
+    ab->string = new;
+    ab->length += len;
+}
+
+void itl_pbuf_free(itl_pbuf *ab)
+{
+    itl_free(ab->string);
+}
+
+int itl_tty_update(itl_le *le)
+{
+    itl_pbuf ab = {NULL, 0};
+    char buf[256];
+
+    itl_pbuf_append(&ab, "\x1b[?25l", 6);
+
+    itl_pbuf_append(&ab, "\r", 1);
+    itl_pbuf_append(&ab, "\x1b[0K", 4);
+    itl_string_to_cstr(le->lbuf, buf, 256);
+    itl_pbuf_append(&ab, buf, strlen(buf));
+
+    snprintf(buf, sizeof(buf), "\x1b[%zuG", le->cursor_pos + 1);
+    itl_pbuf_append(&ab, buf, strlen(buf));
+
+    itl_pbuf_append(&ab, "\x1b[?25h", 6);
+
+    write(STDOUT_FILENO, ab.string, ab.length);
+
+    return fflush(stdout);
 }
 
 #define TL_HISTORY_INIT_SIZE 16
@@ -468,7 +478,13 @@ static itl_string_t **itl_history = NULL;
 static int itl_h_size = TL_HISTORY_INIT_SIZE;
 static int itl_h_index = 0;
 
-static void itl_history_free()
+static void itl_history_alloc(void)
+{
+    itl_history = (itl_string_t **)
+        itl_calloc(TL_HISTORY_INIT_SIZE, sizeof(itl_string_t *));
+}
+
+static void itl_history_free(void)
 {
     for (int i = 0; i < itl_h_index; ++i)
         itl_string_free(itl_history[i]);
@@ -486,7 +502,7 @@ static void itl_history_append(itl_string_t *str)
     if (itl_h_index >= itl_h_size) {
         itl_h_size *= 2;
         itl_history = (itl_string_t **)
-            realloc(itl_history, itl_h_size * sizeof(itl_string_t *));
+            itl_realloc(itl_history, itl_h_size * sizeof(itl_string_t *));
     }
 
     itl_string_t *new_str = itl_string_alloc();
@@ -497,7 +513,7 @@ static void itl_history_append(itl_string_t *str)
 
 // copies string from history to line editor
 // does not free anything
-static void itl_history_get(struct itl_le *le)
+static void itl_history_get(itl_le *le)
 {
     if (le->h_item_sel >= itl_h_index)
         return;
@@ -509,11 +525,9 @@ static void itl_history_get(struct itl_le *le)
 
 // allocates memory for global history and line buffer
 // adds signal handle for c^c
-bool tl_init()
+bool tl_init(void)
 {
-    itl_history = (itl_string_t **)
-        itl_calloc(TL_HISTORY_INIT_SIZE, sizeof(itl_string_t *));
-
+    itl_history_alloc();
     lbuf = itl_string_alloc();
 
     signal(SIGINT, itl_handle_interrupt);
@@ -522,7 +536,7 @@ bool tl_init()
 
 // frees memory for global history and line buffer
 // removes signal handle for c^c
-bool tl_exit()
+bool tl_exit(void)
 {
     itl_history_free();
     itl_string_free(lbuf);
@@ -539,7 +553,7 @@ bool tl_exit()
 // -2 line_buffer size exceeded;
 int tl_readline(char *line_buffer, size_t size)
 {
-    struct itl_le le = itl_le_new(lbuf);
+    itl_le le = itl_le_new(lbuf);
 
     uint8_t bytes[4] = {0};
     uint8_t rem = 0;
@@ -549,6 +563,9 @@ int tl_readline(char *line_buffer, size_t size)
 
     while (true) {
         int in = fgetc(stdin);
+
+        if (in == 0) // this happens when console sends invalid bytes
+            continue;
 
         if (esc_pos == 1 && in == '[') {
             esc_pos = 2;
@@ -604,7 +621,7 @@ int tl_readline(char *line_buffer, size_t size)
                 } break;
             }
 
-            itl_le_update(&le);
+            itl_tty_update(&le);
             esc_pos = 0;
 
             continue;
@@ -647,7 +664,7 @@ int tl_readline(char *line_buffer, size_t size)
         if (rem != 0)
             continue;
 
-        itl_utf8_c_t utf8_c = itl_utf8_new(bytes, length);
+        itl_utf8char_t utf8_c = itl_utf8_new(bytes, length);
 
         if (utf8_c.length == 1) {
             switch (utf8_c.bytes[0]) {
@@ -674,7 +691,7 @@ int tl_readline(char *line_buffer, size_t size)
         else
             itl_le_putc(&le, utf8_c);
 
-        itl_le_update(&le);
+        itl_tty_update(&le);
     }
     return -1;
 }
@@ -684,7 +701,6 @@ int tl_readline(char *line_buffer, size_t size)
 /**
  * TODO:
  *  - autocompletion
- *  - performant line update
  *  - support delete key
  *  - ctrl backspace/delete word deletion
  *  - documentation
