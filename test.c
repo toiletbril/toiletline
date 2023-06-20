@@ -15,7 +15,7 @@ int main(void)
     int i = 0;
 
     while (tl_readline(line_buffer, LINE_BUF_LEN) == 0) {
-        printf("\nreceived string: '%s'\n", line_buffer);
+        printf("\nReceived string: '%s'\n", line_buffer);
         fflush(stdout);
         if (i++ >= 10) {
             printf("Reached 10 messages, exiting!\n");
