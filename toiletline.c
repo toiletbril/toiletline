@@ -490,9 +490,9 @@ static void itl_pbuf_append(itl_pbuf *pbuf, const char *s, int len)
     pbuf->length += len;
 }
 
-static void itl_pbuf_free(itl_pbuf *ab)
+static void itl_pbuf_free(itl_pbuf *pbuf)
 {
-    itl_free(ab->string);
+    itl_free(pbuf->string);
 }
 
 static int itl_tty_update(itl_le *le)
@@ -513,6 +513,8 @@ static int itl_tty_update(itl_le *le)
     itl_pbuf_append(&pbuf, "\x1b[?25h", 6);
 
     write(STDOUT_FILENO, pbuf.string, pbuf.length);
+
+    itl_pbuf_free(&pbuf);
 
     return fflush(stdout);
 }
