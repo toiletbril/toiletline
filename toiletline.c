@@ -611,9 +611,7 @@ typedef enum
     ITL_KEY_HOME,
     ITL_KEY_ENTER,
     ITL_KEY_BACKSPACE,
-    ITL_KEY_CTRL_BACKSPACE,
     ITL_KEY_DELETE,
-    ITL_KEY_CTRL_DELETE,
     ITL_KEY_TAB,
     ITL_KEY_INTERRUPT,
 } ITL_KEY_KIND;
@@ -677,8 +675,7 @@ static ITL_KEY_KIND itl_parse_esc(int byte)
             } break;
 
             case 147: { // ctrl del
-                event = ITL_KEY_DELETE;
-                event |= ITL_CTRL_BIT;
+                event = ITL_KEY_DELETE | ITL_CTRL_BIT;
             } break;
 
             default:
