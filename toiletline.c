@@ -1,5 +1,5 @@
 /**
- *  toiletline 0.0.1
+ *  toiletline 0.0.2
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -196,6 +196,13 @@ inline static void *itl_realloc(void *block, size_t size)
 
 typedef struct itl_utf8_t itl_utf8_t;
 
+#define itl_max(a, b) \
+  ({ \
+    __typeof__(a) _a = (a); \
+    __typeof__(b) _b = (b); \
+    _a > _b ? _a : _b; \
+  })
+
 struct itl_utf8_t
 {
     uint8_t bytes[4];
@@ -322,8 +329,8 @@ static int itl_string_to_cstr(itl_string_t *str, char *cstr, size_t size)
     itl_char_t *c = str->begin;
     size_t i = 0;
 
-    while (c) {
-        for (size_t j = 0; j != c->c.size && i < size; ++j)
+    while (c && size - i > c->c.size) {
+        for (size_t j = 0; j != c->c.size; ++j)
             cstr[i++] = c->c.bytes[j];
 
         if (c != c->next)
@@ -521,7 +528,11 @@ inline static void itl_pbuf_free(itl_pbuf *pbuf)
 static int itl_tty_update(itl_le *le)
 {
     itl_pbuf pbuf = {NULL, 0};
-    char buf[256];
+    size_t buf_size = itl_max(le->lbuf->size + 1, strlen(le->prompt));
+
+    char *buf = (char *)itl_malloc(buf_size);
+    if (!buf)
+        return 0;
 
     itl_pbuf_append(&pbuf, "\x1b[?25l", 6);
 
@@ -531,7 +542,7 @@ static int itl_tty_update(itl_le *le)
     size_t pr_len = strlen(le->prompt);
     itl_pbuf_append(&pbuf, le->prompt, pr_len);
 
-    itl_string_to_cstr(le->lbuf, buf, 256);
+    itl_string_to_cstr(le->lbuf, buf, buf_size);
     itl_pbuf_append(&pbuf, buf, strlen(buf));
 
     snprintf(buf, sizeof(buf), "\x1b[%zuG", le->cur_pos + pr_len + 1);
@@ -542,6 +553,7 @@ static int itl_tty_update(itl_le *le)
     write(STDOUT_FILENO, pbuf.string, pbuf.size);
 
     itl_pbuf_free(&pbuf);
+    itl_free(buf);
 
     return fflush(stdout);
 }
@@ -866,9 +878,14 @@ static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
         } break;
 
         case ITL_KEY_ENTER: {
-            itl_history_append(le->lbuf);
             int code = itl_string_to_cstr(le->lbuf, le->out, le->out_size);
+            itl_history_append(le->lbuf);
+
             itl_le_clear(le);
+
+            if (code == 0)
+                fputc('\n', stdout);
+
             return code;
         } break;
 
@@ -881,6 +898,7 @@ static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
         } break;
 
         case ITL_KEY_INTERRUPT: {
+            itl_string_to_cstr(le->lbuf, le->out, le->out_size);
             return 1;
         } break;
 
@@ -928,8 +946,8 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /**
  * TODO:
- *  - autocompletion
- *  - modifiers implementation
- *  - limit memory allocations more
  *  - fix strings longer than terminal width
+ *  - modifiers implementation
+ *  - replace history instead of ignoring it on limit
+ *  - autocompletion
  */
