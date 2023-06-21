@@ -1,5 +1,5 @@
 #define TOILETLINE_IMPL
-#include "toiletline.c"
+#include "toiletline.h"
 
 #define LINE_BUF_LEN 32
 
