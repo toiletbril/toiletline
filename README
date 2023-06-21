@@ -3,8 +3,8 @@ toiletline
 Single-file framework library for raw terminal applications,
 meant to replace a small subset of GNU Readline, and work on both Linux and Windows.
 
-It allows you to input characters, press up and down keys to navigate history,
-left and right to navigate line, all while in raw mode.
+It behaves like a regular shell, while the terminal is in raw mode,
+with all features implemented from scratch.
 
 Accepts UTF-8 characters. For very specific cases, parsed UTF-8 may not be valid.
 
@@ -28,13 +28,14 @@ int tl_init(void);
 Returns 1 on success.
 
 To read a line while in toiletline mode:
-int tl_readline(char *line_buffer, size_t size);
+int tl_readline(char *line_buffer, size_t size, const char *prompt);
 
 Submitted input will be written to *line_buffer as a null-terminated string.
 
 Returns:
 - 0 when a line was submitted;
-- 1 on Ctrl-C, 2 when line read exceeded *line_buffer.
+- 1 on Ctrl-C,
+- 2 when line read exceeded *line_buffer.
 - -1 means internal error, and should be unreachable.
 
 To exit:
