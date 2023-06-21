@@ -70,7 +70,7 @@ int tl_exit(void);
  *     1 when exited.
  *    -1 internal error.
  */
-int tl_readline(char *line_buffer, size_t size);
+int tl_readline(char *line_buffer, size_t size, const char *prompt);
 
 #endif // TOILETLINE_H_
 
@@ -349,9 +349,10 @@ typedef struct
     int h_item_sel;
     char *out;
     size_t out_size;
+    const char *prompt;
 } itl_le;
 
-static itl_le itl_le_new(itl_string_t *intern_lbuf, char *out_buffer, size_t out_size)
+static itl_le itl_le_new(itl_string_t *intern_lbuf, char *out_buffer, size_t out_size, const char *prompt)
 {
     itl_le le = {
         .lbuf = intern_lbuf,
@@ -360,6 +361,7 @@ static itl_le itl_le_new(itl_string_t *intern_lbuf, char *out_buffer, size_t out
         .h_item_sel = -1,
         .out = out_buffer,
         .out_size = out_size,
+        .prompt = prompt,
     };
 
     return le;
@@ -525,10 +527,14 @@ static int itl_tty_update(itl_le *le)
 
     itl_pbuf_append(&pbuf, "\r", 1);
     itl_pbuf_append(&pbuf, "\x1b[0K", 4);
+
+    size_t pr_len = strlen(le->prompt);
+    itl_pbuf_append(&pbuf, le->prompt, pr_len);
+
     itl_string_to_cstr(le->lbuf, buf, 256);
     itl_pbuf_append(&pbuf, buf, strlen(buf));
 
-    snprintf(buf, sizeof(buf), "\x1b[%zuG", le->cur_pos + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%zuG", le->cur_pos + pr_len + 1);
     itl_pbuf_append(&pbuf, buf, strlen(buf));
 
     itl_pbuf_append(&pbuf, "\x1b[?25h", 6);
@@ -890,9 +896,12 @@ static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
 //  0 on success
 //  1 on interrupt
 // -1 internal error (reserved)
-int tl_readline(char *line_buffer, size_t size)
+int tl_readline(char *line_buffer, size_t size, const char *prompt)
 {
-    itl_le le = itl_le_new(lbuf, line_buffer, size);
+    itl_le le = itl_le_new(lbuf, line_buffer, size, prompt);
+
+    itl_tty_update(&le);
+
     int esc;
     int in;
 
@@ -921,9 +930,6 @@ int tl_readline(char *line_buffer, size_t size)
  * TODO:
  *  - autocompletion
  *  - modifiers implementation
- *  - factor out string insertion and erasion
- *  - refactor functions to work on strings
- *  - limit memory allocations
+ *  - limit memory allocations more
  *  - fix strings longer than terminal width
- *  - read history from file if specified
  */

@@ -14,7 +14,7 @@ int main(void)
     char line_buffer[LINE_BUF_LEN];
     int i = 0;
 
-    while (tl_readline(line_buffer, LINE_BUF_LEN) == 0) {
+    while (tl_readline(line_buffer, LINE_BUF_LEN, "$ ") == 0) {
         printf("\nReceived string: '%s'\n", line_buffer);
         fflush(stdout);
         if (i++ >= 10) {
