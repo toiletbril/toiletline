@@ -434,6 +434,9 @@ static int itl_le_putc(itl_le *le, const itl_utf8_t ch)
     if (le->lbuf->size >= le->out_size - 1)
         return 0;
 
+    if (le->out_size - 1 < le->lbuf->size + ch.size)
+        return 0;
+
     itl_char_t *new_c = itl_char_alloc();
     new_c->c = ch;
 
