@@ -648,9 +648,9 @@ int tl_exit(void)
 }
 
 #ifdef _WIN32
-    #define read_byte() _getch()
+    #define itl_read_byte() _getch()
 #else // Linux
-    #define read_byte() fgetc(stdin)
+    #define itl_read_byte() fgetc(stdin)
 #endif // Linux
 
 typedef enum
@@ -699,7 +699,7 @@ static ITL_KEY_KIND itl_parse_esc(int byte)
 
 #ifdef _WIN32
     if (byte == 224) { // escape
-        switch (read_byte()) {
+        switch (itl_read_byte()) {
             case 72: {
                 event = ITL_KEY_UP;
             } break;
@@ -740,13 +740,13 @@ static ITL_KEY_KIND itl_parse_esc(int byte)
     }
 #else // Linux
     if (byte == 27) { // \x1b
-        byte = read_byte();
+        byte = itl_read_byte();
 
         if (byte != 91) { // [
             return ITL_KEY_CHAR | ITL_ALT_BIT;
         }
 
-        switch (read_byte()) { // escape codes based on xterm
+        switch (itl_read_byte()) { // escape codes based on xterm
             case 51: {
                 event = ITL_KEY_DELETE;
             } break;
@@ -782,10 +782,10 @@ static ITL_KEY_KIND itl_parse_esc(int byte)
         return ITL_KEY_CHAR;
     }
 
-    byte = read_byte();
+    byte = itl_read_byte();
 
     if (byte == 59) { // ;
-        switch (read_byte()) {
+        switch (itl_read_byte()) {
             case 53: {
                 event |= ITL_CTRL_BIT;
             } break;
@@ -795,7 +795,7 @@ static ITL_KEY_KIND itl_parse_esc(int byte)
             } break;
         }
 
-        byte = read_byte();
+        byte = itl_read_byte();
     }
 
     if (byte != 126) // ~
@@ -819,7 +819,7 @@ static itl_utf8_t itl_parse_utf8(int byte)
         len = 4;
 
     for (uint8_t i = 1; i < len; ++i) // consequent bytes
-        bytes[i] = read_byte();
+        bytes[i] = itl_read_byte();
 
 #ifdef TL_DEBUG
     printf("\nutf8 char bytes: '");
@@ -931,7 +931,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
     int in;
 
     while (1) {
-        in = read_byte();
+        in = itl_read_byte();
 
         if ((esc = itl_parse_esc(in)) != ITL_KEY_CHAR) {
             if ((esc = itl_handle_esc(&le, esc)) != -1) {
@@ -957,6 +957,8 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /**
  * TODO:
+ *  - tl_getc()
+ *  - option to prevent adding a line to history
  *  - fix strings longer than terminal width
  *  - modifiers implementation
  *  - replace history instead of ignoring it on limit
