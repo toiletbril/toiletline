@@ -35,7 +35,7 @@
     #include <conio.h>
     #include <fcntl.h>
     #include <io.h>
-    #define STDIN_FILENO 0
+    #define STDIN_FILENO  0
     #define STDOUT_FILENO 1
 #else // Linux
     #include <termios.h>
@@ -84,7 +84,7 @@ int tl_readline(char *line_buffer, size_t size);
     #define ITL_DBG(message, val)
 #endif
 
-static int itl_enter_raw_mode(void)
+inline static int itl_enter_raw_mode(void)
 {
 #ifdef _WIN32
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
@@ -117,7 +117,7 @@ static int itl_enter_raw_mode(void)
     return 1;
 }
 
-static int itl_exit_raw_mode(void)
+inline static int itl_exit_raw_mode(void)
 {
 #ifdef _WIN32
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
@@ -144,7 +144,7 @@ static int itl_exit_raw_mode(void)
     return 1;
 }
 
-static void itl_handle_interrupt(int sign)
+inline static void itl_handle_interrupt(int sign)
 {
     signal(sign, SIG_IGN);
     fputc('\n', stdout);
@@ -180,6 +180,8 @@ inline static void *itl_calloc(size_t count, size_t size)
 inline static void *itl_realloc(void *block, size_t size)
 {
     ITL_ALLOC_DBG("realloc");
+    if (block == NULL)
+        itl_global_alloc_count += 1;
     return realloc(block, size);
 }
 
@@ -246,15 +248,19 @@ struct itl_string_t
 {
     itl_char_t *begin;
     itl_char_t *end;
+    size_t length;
     size_t size;
 };
 
 static itl_string_t *itl_string_alloc(void)
 {
     itl_string_t *ptr = (itl_string_t *)itl_malloc(sizeof(itl_string_t));
-    ptr->size = 0;
+
     ptr->begin = NULL;
     ptr->end = NULL;
+    ptr->length = 0;
+    ptr->size = 0;
+
     return ptr;
 }
 
@@ -275,15 +281,15 @@ static void itl_string_copy(itl_string_t *dst, itl_string_t *src)
             prev_new_c->next = new_c;
             new_c->prev = prev_new_c;
         }
-        else {
+        else
             dst->begin = new_c;
-        }
 
         prev_new_c = new_c;
         src_c = src_c->next;
     }
 
     dst->end = prev_new_c;
+    dst->length = src->length;
     dst->size = src->size;
 }
 
@@ -299,12 +305,13 @@ static void itl_string_clear(itl_string_t *str)
         c = next;
     }
 
-    str->size = 0;
     str->begin = NULL;
     str->end = NULL;
+    str->length = 0;
+    str->size = 0;
 }
 
-static void itl_string_free(itl_string_t *str)
+inline static void itl_string_free(itl_string_t *str)
 {
     itl_string_clear(str);
     itl_free(str);
@@ -359,7 +366,7 @@ static itl_le itl_le_new(itl_string_t *intern_lbuf, char *out_buffer, size_t out
 }
 
 // removes and frees characters at cursor position
-static void itl_le_unputc(itl_le *le, size_t count, int behind)
+static int itl_le_unputc(itl_le *le, size_t count, int behind)
 {
     size_t i = 0;
     itl_char_t *to_free = NULL;
@@ -367,24 +374,24 @@ static void itl_le_unputc(itl_le *le, size_t count, int behind)
     while (i++ < count) {
         if (behind) {
             if (le->cur_pos == 0)
-                return;
+                return 0;
             else if (le->cur_char) {
                 to_free = le->cur_char->prev;
                 le->cur_pos -= 1;
             }
-            else if (le->cur_pos == le->lbuf->size) {
+            else if (le->cur_pos == le->lbuf->length) {
                 to_free = le->lbuf->end;
                 le->lbuf->end = le->lbuf->end->prev;
                 le->cur_pos -= 1;
             }
         }
         else {
-            if (le->cur_pos == le->lbuf->size)
-                return;
+            if (le->cur_pos == le->lbuf->length)
+                return 0;
             else if (le->cur_char) {
                 to_free = le->cur_char;
                 le->cur_char = le->cur_char->next;
-                if (le->cur_pos == le->lbuf->size - 1)
+                if (le->cur_pos == le->lbuf->length - 1)
                     le->lbuf->end = le->lbuf->end->prev;
             }
         }
@@ -397,14 +404,23 @@ static void itl_le_unputc(itl_le *le, size_t count, int behind)
         if (to_free->next)
             to_free->next->prev = to_free->prev;
 
+        le->lbuf->size -= to_free->c.size;
+        le->lbuf->length -= 1;
+
         itl_char_free(to_free);
-        le->lbuf->size -= 1;
+
+        return 1;
     }
+
+    return 0;
 }
 
 // inserts character at cursor position
-static void itl_le_putc(itl_le *le, const itl_utf8_t ch)
+static int itl_le_putc(itl_le *le, const itl_utf8_t ch)
 {
+    if (le->lbuf->size >= le->out_size - 1)
+        return 0;
+
     itl_char_t *new_c = itl_char_alloc();
     new_c->c = ch;
 
@@ -416,7 +432,7 @@ static void itl_le_putc(itl_le *le, const itl_utf8_t ch)
         if (le->lbuf->end == NULL)
             le->lbuf->end = new_c;
     }
-    else if (le->cur_pos == le->lbuf->size) {
+    else if (le->cur_pos == le->lbuf->length) {
         if (le->lbuf->end)
             le->lbuf->end->next = new_c;
         new_c->prev = le->lbuf->end;
@@ -431,8 +447,11 @@ static void itl_le_putc(itl_le *le, const itl_utf8_t ch)
         le->cur_char->prev = new_c;
     }
 
-    le->lbuf->size += 1;
+    le->lbuf->length += 1;
+    le->lbuf->size += ch.size;
     le->cur_pos += 1;
+
+    return 1;
 }
 
 static void itl_le_right(itl_le *le, size_t steps)
@@ -456,7 +475,7 @@ static void itl_le_left(itl_le *le, size_t steps)
             le->cur_char = le->cur_char->prev;
             le->cur_pos -= 1;
         }
-        else if (le->cur_pos == le->lbuf->size) {
+        else if (le->cur_pos == le->lbuf->length) {
             le->cur_char = le->lbuf->end;
             le->cur_pos -= 1;
         }
@@ -466,10 +485,10 @@ static void itl_le_left(itl_le *le, size_t steps)
 }
 
 // frees line buffer's string's characters, does not free the string itself
-static void itl_le_clear(itl_le *le)
+inline static void itl_le_clear(itl_le *le)
 {
     itl_string_clear(le->lbuf);
-    le->lbuf->size = 0;
+    le->lbuf->length = 0;
     le->cur_pos = 0;
 }
 
@@ -477,26 +496,24 @@ static void itl_le_clear(itl_le *le)
 typedef struct
 {
   char *string;
-  int length;
+  int size;
 } itl_pbuf;
 
 static void itl_pbuf_append(itl_pbuf *pbuf, const char *s, int len)
 {
-    char *new = itl_realloc(pbuf->string, pbuf->length + len);
+    char *new = itl_realloc(pbuf->string, pbuf->size + len);
     if (new == NULL)
         return;
 
-    memcpy(&new[pbuf->length], s, len);
+    memcpy(&new[pbuf->size], s, len);
 
     pbuf->string = new;
-    pbuf->length += len;
+    pbuf->size += len;
 }
 
-static void itl_pbuf_free(itl_pbuf *pbuf)
+inline static void itl_pbuf_free(itl_pbuf *pbuf)
 {
     itl_free(pbuf->string);
-    // NOTE: realloc does not increase global count
-    itl_global_alloc_count += 1;
 }
 
 static int itl_tty_update(itl_le *le)
@@ -516,7 +533,7 @@ static int itl_tty_update(itl_le *le)
 
     itl_pbuf_append(&pbuf, "\x1b[?25h", 6);
 
-    write(STDOUT_FILENO, pbuf.string, pbuf.length);
+    write(STDOUT_FILENO, pbuf.string, pbuf.size);
 
     itl_pbuf_free(&pbuf);
 
@@ -524,6 +541,7 @@ static int itl_tty_update(itl_le *le)
 }
 
 #define TL_HISTORY_INIT_SIZE 16
+#define ITL_HISTORY_MAX_SIZE 128
 
 static itl_string_t **itl_history = NULL;
 static int itl_h_size = TL_HISTORY_INIT_SIZE;
@@ -545,12 +563,15 @@ static void itl_history_free(void)
 // copies string to global history
 // allocates memory for a new string
 // allocates memory for history array if needed by multiplying it's size by 2
-static void itl_history_append(itl_string_t *str)
+static int itl_history_append(itl_string_t *str)
 {
-    if (str->size <= 0)
-        return;
+    if (str->length <= 0)
+        return 0;
 
-    if (itl_h_index >= itl_h_size) {
+    if (itl_h_size >= ITL_HISTORY_MAX_SIZE)
+        return 0;
+
+    if (itl_h_index >= itl_h_size && itl_h_size < ITL_HISTORY_MAX_SIZE) {
         itl_h_size *= 2;
         itl_history = (itl_string_t **)
             itl_realloc(itl_history, itl_h_size * sizeof(itl_string_t *));
@@ -560,6 +581,8 @@ static void itl_history_append(itl_string_t *str)
     itl_string_copy(new_str, str);
 
     itl_history[itl_h_index++] = new_str;
+
+    return 1;
 }
 
 // copies string from history to line editor
@@ -571,7 +594,7 @@ static void itl_history_get(itl_le *le)
 
     itl_string_t *h_entry = itl_history[le->h_item_sel];
     itl_string_copy(lbuf, h_entry);
-    le->cur_pos = lbuf->size;
+    le->cur_pos = lbuf->length;
 }
 
 // allocates memory for global history and line buffer
@@ -750,7 +773,7 @@ static ITL_KEY_KIND itl_parse_esc(int byte)
         byte = read_byte();
     }
 
-    if (byte != '~')
+    if (byte != 126) // ~
         event = ITL_KEY_UNKN;
 #endif // Linux
     return event;
@@ -792,7 +815,7 @@ static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
         case ITL_KEY_UP: {
             if (le->h_item_sel == -1) {
                 le->h_item_sel = itl_h_index;
-                if (le->lbuf->size > 0 && itl_h_index > 0) {
+                if (le->lbuf->length > 0 && itl_h_index > 0) {
                     itl_history_append(le->lbuf);
                 }
             }
@@ -817,19 +840,19 @@ static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
         } break;
 
         case ITL_KEY_RIGHT: {
-            if (le->cur_pos >= 0 && le->cur_pos < le->lbuf->size) {
+            if (le->cur_pos >= 0 && le->cur_pos < le->lbuf->length) {
                 itl_le_right(le, 1);
             }
         } break;
 
          case ITL_KEY_LEFT: {
-            if (le->cur_pos > 0 && le->cur_pos <= le->lbuf->size) {
+            if (le->cur_pos > 0 && le->cur_pos <= le->lbuf->length) {
                 itl_le_left(le, 1);
             }
         } break;
 
         case ITL_KEY_END: {
-            itl_le_right(le, le->lbuf->size - le->cur_pos);
+            itl_le_right(le, le->lbuf->length - le->cur_pos);
         } break;
 
         case ITL_KEY_HOME: {
@@ -898,4 +921,9 @@ int tl_readline(char *line_buffer, size_t size)
  * TODO:
  *  - autocompletion
  *  - modifiers implementation
+ *  - factor out string insertion and erasion
+ *  - refactor functions to work on strings
+ *  - limit memory allocations
+ *  - fix strings longer than terminal width
+ *  - read history from file if specified
  */
