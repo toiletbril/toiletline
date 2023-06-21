@@ -1,7 +1,7 @@
 #define TOILETLINE_IMPL
 #include "toiletline.c"
 
-#define LINE_BUF_LEN 1024
+#define LINE_BUF_LEN 32
 
 int main(void)
 {
