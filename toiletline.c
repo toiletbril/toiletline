@@ -66,9 +66,9 @@ int tl_exit(void);
 /**
  *  Read one line.
  *  Returns:
- *      0 on success.
- *      1 when exited.
- *      2 internal error.
+ *     0 on success.
+ *     1 when exited.
+ *    -1 internal error.
  */
 int tl_readline(char *line_buffer, size_t size);
 

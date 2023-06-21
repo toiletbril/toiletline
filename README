@@ -1,7 +1,7 @@
 toiletline
 ----------------
 Single-file framework library for raw terminal applications,
-meant to replace a small subset of GNU Readline.
+meant to replace a small subset of GNU Readline, and work on both Linux and Windows.
 
 It allows you to input characters, press up and down keys to navigate history,
 left and right to navigate line, all while in raw mode.
