@@ -1,9 +1,9 @@
 /**
- *  toiletline 0.0.2
+ *  toiletline 1.0.0
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
- *  #define TOILETLINE_IMPL
+ *  #define TOILETLINE_IMPLEMENTATION
  *  Before you include this file in C or C++ file to create the implementation.
  *
  *  Copyright (c) 2023 toiletbril
@@ -39,8 +39,8 @@ extern "C" {
     #include <conio.h>
     #include <fcntl.h>
     #include <io.h>
-    #define STDIN_FILENO  0
-    #define STDOUT_FILENO 1
+    #define STDIN_FILENO  _fileno(stdin)
+    #define STDOUT_FILENO _fileno(stdout)
 #else // Linux
     #include <termios.h>
     #include <unistd.h>
@@ -68,7 +68,18 @@ int tl_init(void);
  */
 int tl_exit(void);
 /**
+ *  Read one character without waiting for Enter.
+ *  This does not append to history.
+ *
+ *  Returns:
+ *     0 on success.
+ *     1 when exited.
+ *    -1 internal error.
+ */
+int tl_getc(char *buffer, size_t size, const char *prompt);
+/**
  *  Read one line.
+ *
  *  Returns:
  *     0 on success.
  *     1 when exited.
@@ -78,7 +89,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt);
 
 #endif // TOILETLINE_H_
 
-#ifdef TOILETLINE_IMPL
+#ifdef TOILETLINE_IMPLEMENTATION
 
 // general debug messages
 #ifdef TL_DEBUG
@@ -98,12 +109,16 @@ inline static int itl_enter_raw_mode(void)
     // NOTE:
     // ENABLE_VIRTUAL_TERMINAL_INPUT seems to not work on older versions of Windows
     DWORD mode = ENABLE_EXTENDED_FLAGS | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_QUICK_EDIT_MODE;
+    // TODO: test ENABLE_PROCESSED_INPUT
 
     if (!SetConsoleMode(hInput, mode))
         return 0;
 
-    _setmode(_fileno(stdin), _O_BINARY);
-    SetConsoleCP(CP_UTF8);
+    if (_setmode(STDIN_FILENO, _O_BINARY) == -1)
+        return 0;
+
+    if (SetConsoleCP(CP_UTF8) == 0)
+        return 0;
 #else // Linux
     struct termios term;
     if (tcgetattr(STDIN_FILENO, &term) != 0)
@@ -200,11 +215,11 @@ inline static void *itl_realloc(void *block, size_t size)
 
 typedef struct itl_utf8_t itl_utf8_t;
 
-#define itl_max(a, b) \
-  ({ \
+#define itl_max(a, b)       \
+  ({                        \
     __typeof__(a) _a = (a); \
     __typeof__(b) _b = (b); \
-    _a > _b ? _a : _b; \
+    _a > _b ? _a : _b;      \
   })
 
 struct itl_utf8_t
@@ -328,21 +343,21 @@ inline static void itl_string_free(itl_string_t *str)
     itl_free(str);
 }
 
-static int itl_string_to_cstr(itl_string_t *str, char *cstr, size_t size)
+static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
 {
     itl_char_t *c = str->begin;
     size_t i = 0;
 
     while (c && size - i > c->c.size) {
         for (size_t j = 0; j != c->c.size; ++j)
-            cstr[i++] = c->c.bytes[j];
+            c_str[i++] = c->c.bytes[j];
 
         if (c != c->next)
             c = c->next;
     }
 
     if (i < size)
-        cstr[i] = '\0';
+        c_str[i] = '\0';
     else
         return 2;
 
@@ -535,8 +550,8 @@ inline static void itl_pbuf_free(itl_pbuf *pbuf)
 static int itl_tty_update(itl_le *le)
 {
     itl_pbuf pbuf = {NULL, 0};
-    size_t buf_size = itl_max(le->lbuf->size + 1, strlen(le->prompt));
 
+    size_t buf_size = itl_max(le->lbuf->size + 1, strlen(le->prompt));
     char *buf = (char *)itl_malloc(buf_size);
     if (!buf)
         return 0;
@@ -552,7 +567,7 @@ static int itl_tty_update(itl_le *le)
     itl_string_to_cstr(le->lbuf, buf, buf_size);
     itl_pbuf_append(&pbuf, buf, strlen(buf));
 
-    snprintf(buf, sizeof(buf), "\x1b[%zuG", le->cur_pos + pr_len + 1);
+    snprintf(buf, buf_size, "\x1b[%zuG", le->cur_pos + pr_len + 1);
     itl_pbuf_append(&pbuf, buf, strlen(buf));
 
     itl_pbuf_append(&pbuf, "\x1b[?25h", 6);
@@ -677,7 +692,7 @@ typedef enum
 #define ITL_KEY_MASK  63
 #define ITL_MOD_MASK  448
 
-static ITL_KEY_KIND itl_parse_esc(int byte)
+static int itl_parse_esc(int byte)
 {
     ITL_KEY_KIND event = ITL_KEY_UNKN;
 
@@ -834,7 +849,7 @@ static itl_utf8_t itl_parse_utf8(int byte)
 //  0 on enter
 //  1 on interrupt
 // -1 if should continue
-static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
+static int itl_handle_esc(itl_le *le, int esc)
 {
     switch (esc & ITL_KEY_MASK) {
         case ITL_KEY_UP: {
@@ -865,7 +880,7 @@ static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
         } break;
 
         case ITL_KEY_RIGHT: {
-            if (le->cur_pos >= 0 && le->cur_pos < le->lbuf->length) {
+            if (le->cur_pos < le->lbuf->length) {
                 itl_le_right(le, 1);
             }
         } break;
@@ -918,6 +933,28 @@ static int itl_handle_esc(itl_le *le, ITL_KEY_KIND esc)
     return -1;
 }
 
+int tl_getc(char *buffer, size_t size, const char *prompt)
+{
+    itl_le le = itl_le_new(lbuf, buffer, size, prompt);
+
+    int esc;
+    int in = itl_read_byte();
+
+    if ((esc = itl_parse_esc(in)) != ITL_KEY_CHAR) {
+            if ((esc = itl_handle_esc(&le, esc)) != -1) {
+                return esc;
+            }
+        }
+    else {
+        itl_utf8_t ch = itl_parse_utf8(in);
+        itl_le_putc(&le, ch);
+        itl_string_to_cstr(le.lbuf, buffer, size);
+        itl_le_clear(&le);
+    }
+
+    return 0;
+};
+
 //  0 on success
 //  1 on interrupt
 // -1 internal error (reserved)
@@ -957,8 +994,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /**
  * TODO:
- *  - tl_getc()
- *  - option to prevent adding a line to history
+ *  - option to disable/enable C^C
  *  - fix strings longer than terminal width
  *  - modifiers implementation
  *  - replace history instead of ignoring it on limit

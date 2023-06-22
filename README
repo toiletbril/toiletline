@@ -20,7 +20,7 @@ Current features
 Usage
 ----------------
 Before you include this file in C or C++ file, to create the implementation:
-#define TOILETLINE_IMPL
+#define TOILETLINE_IMPLEMENTATION
 
 To initialize toiletline mode:
 int tl_init(void);
@@ -30,6 +30,10 @@ Returns 1 on success.
 To read a line while in toiletline mode:
 int tl_readline(char *line_buffer, size_t size, const char *prompt);
 
+To read a character without waiting for enter:
+int tl_getc(char *buffer, size_t size, const char *prompt)
+
+To support multi-byte characters and null at the end, size needs to be at least 2 or more.
 Submitted input will be written to *line_buffer as a null-terminated string.
 
 Returns:
