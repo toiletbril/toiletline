@@ -105,7 +105,6 @@ inline static int itl_enter_raw_mode(void)
     // NOTE:
     // ENABLE_VIRTUAL_TERMINAL_INPUT seems to not work on older versions of Windows
     DWORD mode = ENABLE_EXTENDED_FLAGS | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_QUICK_EDIT_MODE;
-    // TODO: test ENABLE_PROCESSED_INPUT
 
     if (!SetConsoleMode(hInput, mode))
         return 0;
@@ -1140,6 +1139,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 /**
  * TODO:
  *  - option to disable/enable C^C
+ *  - test ENABLE_PROCESSED_INPUT on Windows
  *  - test escape parsing
  *  - fix strings longer than terminal width
  *  - replace history instead of ignoring it on limit
