@@ -13,8 +13,12 @@ Any help finding bugs is appreciated.
 Current features
 ----------------
 - Up/Down to navigate history.
-- Right/Left, End/Home to navigate line.
-- Enter to submit the line.
+- Right/Left, to move one character,
+  with to Ctrl move a word.
+- End/Home to jump to end/beginning.
+- Backspace/Delete to delete characters,
+  with Ctrl to delete a word.
+- Enter to submit a line.
 - Ctrl-C to exit.
 
 Usage
@@ -30,7 +34,7 @@ Returns 1 on success.
 To read a line while in toiletline mode:
 int tl_readline(char *line_buffer, size_t size, const char *prompt);
 
-To read a character without waiting for enter:
+To read a character without waiting for Enter:
 int tl_getc(char *buffer, size_t size, const char *prompt)
 
 To support multi-byte characters and null at the end, size needs to be at least 2 or more.
