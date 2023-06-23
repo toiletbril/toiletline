@@ -27,10 +27,6 @@
  *  SOFTWARE.
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #ifndef TOILETLINE_H_
 #define TOILETLINE_H_
 
@@ -1140,10 +1136,6 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 }
 
 #endif // TOILETLINE_IMPLEMENTATION
-
-#ifdef __cplusplus
-}
-#endif
 
 /**
  * TODO:
