@@ -518,6 +518,7 @@ static void itl_le_move_left(itl_le_t *le, size_t steps)
 
 #define itl_isdelim(c) (ispunct(c) || isspace(c))
 
+// number of characters to get to the next word
 static size_t itl_le_next_word(itl_le_t *le, int behind)
 {
     itl_char_t *ch = le->cur_char;
@@ -549,6 +550,7 @@ static size_t itl_le_next_word(itl_le_t *le, int behind)
     return steps;
 }
 
+// number of characters to get to the next whitespace
 static size_t itl_le_next_whitespace(itl_le_t *le, int behind)
 {
     itl_char_t *ch = le->cur_char;
@@ -618,11 +620,12 @@ inline static void itl_pbuf_free(itl_pbuf_t *pbuf)
     itl_free(pbuf->string);
 }
 
-int itl_tty_cur_pos(size_t *rows, size_t *cols) {
+// gets you maximum terminal column width and current row
+int itl_tty_size(size_t *rows, size_t *cols) {
     char buf[32];
     size_t i = 0;
 
-    fputs("\x1b[999C\x1b[999B", stdout);
+    fputs("\x1b[999C", stdout);
     fputs("\x1b[6n", stdout);
 
     while (i < sizeof(buf) - 1) {
@@ -641,8 +644,9 @@ int itl_tty_cur_pos(size_t *rows, size_t *cols) {
     return 0;
 }
 
-static int itl_get_window_size(size_t *rows, size_t *cols) {
-    if (itl_tty_cur_pos(rows, cols))
+inline static int itl_get_window_size(size_t *rows, size_t *cols)
+{
+    if (itl_tty_size(rows, cols))
         return 1;
     return 0;
 }
@@ -650,7 +654,6 @@ static int itl_get_window_size(size_t *rows, size_t *cols) {
 static int itl_le_update_tty(itl_le_t *le)
 {
     fputs("\x1b[?25l", stdout);
-
     size_t cstr_size = le->lbuf->length + 1;
     itl_pbuf_t pbuf = { .string = NULL, .size = 0 };
     size_t pr_len = strlen(le->prompt);
@@ -793,7 +796,6 @@ typedef enum
     ITL_KEY_BACKSPACE,
     ITL_KEY_DELETE,
     ITL_KEY_TAB,
-    ITL_KEY_ESC,
     ITL_KEY_INTERRUPT,
 } ITL_KEY_KIND;
 
@@ -804,6 +806,8 @@ typedef enum
 #define ITL_KEY_MASK  15
 #define ITL_MOD_MASK  224
 
+// this is very weird and I don't like it
+// but it works
 static int itl_parse_esc(int byte)
 {
     ITL_KEY_KIND event = 0;
@@ -967,6 +971,8 @@ static int itl_parse_esc(int byte)
     return event;
 }
 
+// this does not cover special cases with invalid bytes
+// maybe i'll remember about that soon tm
 static itl_utf8_t itl_parse_utf8(int byte)
 {
     uint8_t bytes[4] = {byte, 0, 0, 0};
@@ -1136,6 +1142,7 @@ static int itl_handle_esc(itl_le_t *le, int esc)
     return -1;
 }
 
+// gets one character, does not wait for Enter
 int tl_getc(char *buffer, size_t size, const char *prompt)
 {
     itl_le_t le = itl_le_new(lbuf, buffer, size, prompt);
