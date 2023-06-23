@@ -371,6 +371,7 @@ typedef struct
     struct itl_string_t *lbuf;
     itl_char_t *cur_char;
     size_t cur_pos;
+    size_t cur_col;
     int h_item_sel;
     char *out;
     size_t out_size;
@@ -383,6 +384,7 @@ static itl_le_t itl_le_new(itl_string_t *intern_lbuf, char *out_buffer, size_t o
         .lbuf = intern_lbuf,
         .cur_char = NULL,
         .cur_pos = 0,
+        .cur_col = 0,
         .h_item_sel = -1,
         .out = out_buffer,
         .out_size = out_size,
@@ -586,6 +588,12 @@ inline static void itl_le_clear(itl_le_t *le)
     le->cur_pos = 0;
 }
 
+#ifdef _WIN32
+    #define itl_read_byte() _getch()
+#else // Linux
+    #define itl_read_byte() fgetc(stdin)
+#endif // Linux
+
 // buffer output before writing it all to stdout
 typedef struct
 {
@@ -595,13 +603,13 @@ typedef struct
 
 static void itl_pbuf_append(itl_pbuf *pbuf, const char *s, int len)
 {
-    char *new = itl_realloc(pbuf->string, pbuf->size + len);
-    if (new == NULL)
+    char *n_s = itl_realloc(pbuf->string, pbuf->size + len);
+    if (n_s == NULL)
         return;
 
-    memcpy(&new[pbuf->size], s, len);
+    memcpy(&n_s[pbuf->size], s, len);
 
-    pbuf->string = new;
+    pbuf->string = n_s;
     pbuf->size += len;
 }
 
@@ -610,12 +618,46 @@ inline static void itl_pbuf_free(itl_pbuf *pbuf)
     itl_free(pbuf->string);
 }
 
+int itl_tty_cur_pos(int *rows, int *cols) {
+    char buf[32];
+    size_t i = 0;
+
+    fputs("\x1b[999C\x1b[999B", stdout);
+    fputs("\x1b[6n", stdout);
+
+    while (i < sizeof(buf) - 1) {
+        buf[i] = itl_read_byte();
+        if (buf[i] == 'R')
+            break;
+        i++;
+    }
+    buf[i] = '\0';
+
+    if (buf[0] != '\x1b' || buf[1] != '[')
+        return 1;
+    if (sscanf(&buf[2], "%d;%d", rows, cols) != 2)
+        return 1;
+
+    return 0;
+}
+
+static int itl_tty_window_size(int *rows, int *cols) {
+    fputs("\x1b\x37", stdout);
+    if (itl_tty_cur_pos(rows, cols))
+        return 1;
+    fputs("\x1b\x38", stdout);
+    return 0;
+}
+
 static int itl_tty_update(itl_le_t *le)
 {
-    itl_pbuf pbuf = {NULL, 0};
+    fputs("\x1b[?25l", stdout);
 
+    itl_pbuf pbuf = { .string = NULL, .size = 0 };
     size_t pr_len = strlen(le->prompt);
     size_t buf_size = itl_max(le->lbuf->size + 1, (size_t)8) * sizeof(char);
+
+    size_t cstr_size = le->lbuf->size + 1;
 
     char *buf = (char *)itl_malloc(buf_size);
     if (!buf)
@@ -629,18 +671,18 @@ static int itl_tty_update(itl_le_t *le)
     itl_pbuf_append(&pbuf, le->prompt, pr_len);
 
     itl_string_to_cstr(le->lbuf, buf, buf_size);
-    itl_pbuf_append(&pbuf, buf, strlen(buf));
 
+    itl_pbuf_append(&pbuf, buf, cstr_size);
     snprintf(buf, buf_size, "\x1b[%zuG", le->cur_pos + pr_len + 1);
-    itl_pbuf_append(&pbuf, buf, strlen(buf));
 
-    itl_pbuf_append(&pbuf, "\x1b[?25h", 6);
+    itl_pbuf_append(&pbuf, buf, strlen(buf));
 
     write(STDOUT_FILENO, pbuf.string, pbuf.size);
 
     itl_pbuf_free(&pbuf);
     itl_free(buf);
 
+    fputs("\x1b[?25h", stdout);
     return fflush(stdout);
 }
 
@@ -726,12 +768,6 @@ int tl_exit(void)
     return itl_exit_raw_mode();
 }
 
-#ifdef _WIN32
-    #define itl_read_byte() _getch()
-#else // Linux
-    #define itl_read_byte() fgetc(stdin)
-#endif // Linux
-
 typedef enum
 {
     ITL_KEY_CHAR = 0,
@@ -771,8 +807,6 @@ static int itl_parse_esc(int byte)
             return ITL_KEY_ENTER;
         case 23:
             return ITL_KEY_BACKSPACE | ITL_CTRL_BIT;
-        case 27:
-            return ITL_KEY_ESC;
         case 8:
         case 127:
             return ITL_KEY_BACKSPACE;
@@ -840,7 +874,6 @@ static int itl_parse_esc(int byte)
         byte = itl_read_byte();
 
         if (byte == 49) {
-
             if (itl_read_byte() != 59) // ;
                 return ITL_KEY_UNKN;
 
@@ -955,6 +988,7 @@ static itl_utf8_t itl_parse_utf8(int byte)
 // -1 if should continue
 static int itl_handle_esc(itl_le_t *le, int esc)
 {
+    printf("esc: %d\n", esc);
     switch (esc & ITL_KEY_MASK) {
         case ITL_KEY_UP: {
             if (le->h_item_sel == -1) {
@@ -1132,6 +1166,9 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
     while (1) {
         in = itl_read_byte();
 
+        // printf("%d\n", in);
+        // continue;
+
         if ((esc = itl_parse_esc(in)) != ITL_KEY_CHAR) {
             if ((esc = itl_handle_esc(&le, esc)) != -1) {
                 return esc;
@@ -1157,8 +1194,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 /**
  * TODO:
  *  - option to disable/enable C^C
- *  - test ENABLE_PROCESSED_INPUT on Windows
- *  - test escape parsing
+ *  - test this on old Windows
  *  - fix strings longer than terminal width
  *  - replace history instead of ignoring it on limit
  *  - autocompletion
