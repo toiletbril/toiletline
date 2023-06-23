@@ -746,6 +746,7 @@ typedef enum
     ITL_KEY_BACKSPACE,
     ITL_KEY_DELETE,
     ITL_KEY_TAB,
+    ITL_KEY_ESC,
     ITL_KEY_INTERRUPT,
 } ITL_KEY_KIND;
 
@@ -768,9 +769,10 @@ static int itl_parse_esc(int byte)
         case 10: // newline
         case 13: // cr
             return ITL_KEY_ENTER;
-        case 23: { // ctrl bs
+        case 23:
             return ITL_KEY_BACKSPACE | ITL_CTRL_BIT;
-        }
+        case 27:
+            return ITL_KEY_ESC;
         case 8:
         case 127:
             return ITL_KEY_BACKSPACE;
@@ -805,6 +807,14 @@ static int itl_parse_esc(int byte)
 
             case 83: {
                 event = ITL_KEY_DELETE;
+            } break;
+
+            case 115: {
+                event = ITL_KEY_LEFT | ITL_CTRL_BIT;
+            } break;
+
+            case 116: {
+                event = ITL_KEY_RIGHT | ITL_CTRL_BIT;
             } break;
 
             case 147: { // ctrl del
@@ -1105,7 +1115,7 @@ int tl_getc(char *buffer, size_t size, const char *prompt)
     }
 
     return 0;
-};
+}
 
 //  0 on success
 //  1 on interrupt
