@@ -1,5 +1,5 @@
 /**
- *  toiletline 0.0.3
+ *  toiletline 0.0.4
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -394,8 +394,8 @@ static itl_le_t itl_le_new(itl_string_t *intern_lbuf, char *out_buffer, size_t o
     return le;
 }
 
-// removes and frees characters at cursor position
-static int itl_le_unputc(itl_le_t *le, size_t count, int behind)
+// removes and frees characters from cursor position
+static int itl_le_erase(itl_le_t *le, size_t count, int behind)
 {
     size_t i = 0;
     itl_char_t *to_free = NULL;
@@ -484,7 +484,7 @@ static int itl_le_putc(itl_le_t *le, const itl_utf8_t ch)
     return 1;
 }
 
-static void itl_le_right(itl_le_t *le, size_t steps)
+static void itl_le_move_right(itl_le_t *le, size_t steps)
 {
     size_t i = 0;
     while (i++ < steps) {
@@ -497,7 +497,7 @@ static void itl_le_right(itl_le_t *le, size_t steps)
     }
 }
 
-static void itl_le_left(itl_le_t *le, size_t steps)
+static void itl_le_move_left(itl_le_t *le, size_t steps)
 {
     size_t i = 0;
     while (i++ < steps) {
@@ -518,7 +518,7 @@ static void itl_le_left(itl_le_t *le, size_t steps)
 
 #define itl_isdelim(c) (ispunct(c) || isspace(c))
 
-static size_t itl_le_nextword(itl_le_t *le, int behind)
+static size_t itl_le_next_word(itl_le_t *le, int behind)
 {
     itl_char_t *ch = le->cur_char;
     size_t steps = 1;
@@ -549,7 +549,7 @@ static size_t itl_le_nextword(itl_le_t *le, int behind)
     return steps;
 }
 
-static size_t itl_le_nextws(itl_le_t *le, int behind)
+static size_t itl_le_next_whitespace(itl_le_t *le, int behind)
 {
     itl_char_t *ch = le->cur_char;
     size_t steps = 1;
@@ -599,9 +599,9 @@ typedef struct
 {
   char *string;
   int size;
-} itl_pbuf;
+} itl_pbuf_t;
 
-static void itl_pbuf_append(itl_pbuf *pbuf, const char *s, int len)
+static void itl_pbuf_append(itl_pbuf_t *pbuf, const char *s, int len)
 {
     char *n_s = itl_realloc(pbuf->string, pbuf->size + len);
     if (n_s == NULL)
@@ -613,12 +613,12 @@ static void itl_pbuf_append(itl_pbuf *pbuf, const char *s, int len)
     pbuf->size += len;
 }
 
-inline static void itl_pbuf_free(itl_pbuf *pbuf)
+inline static void itl_pbuf_free(itl_pbuf_t *pbuf)
 {
     itl_free(pbuf->string);
 }
 
-int itl_tty_cur_pos(int *rows, int *cols) {
+int itl_tty_cur_pos(size_t *rows, size_t *cols) {
     char buf[32];
     size_t i = 0;
 
@@ -635,35 +635,47 @@ int itl_tty_cur_pos(int *rows, int *cols) {
 
     if (buf[0] != '\x1b' || buf[1] != '[')
         return 1;
-    if (sscanf(&buf[2], "%d;%d", rows, cols) != 2)
+    if (sscanf(&buf[2], "%zu;%zu", rows, cols) != 2)
         return 1;
 
     return 0;
 }
 
-static int itl_tty_window_size(int *rows, int *cols) {
-    fputs("\x1b\x37", stdout);
+static int itl_get_window_size(size_t *rows, size_t *cols) {
     if (itl_tty_cur_pos(rows, cols))
         return 1;
-    fputs("\x1b\x38", stdout);
     return 0;
 }
 
-static int itl_tty_update(itl_le_t *le)
+static int itl_le_update_tty(itl_le_t *le)
 {
     fputs("\x1b[?25l", stdout);
 
-    itl_pbuf pbuf = { .string = NULL, .size = 0 };
+    size_t cstr_size = le->lbuf->length + 1;
+    itl_pbuf_t pbuf = { .string = NULL, .size = 0 };
     size_t pr_len = strlen(le->prompt);
-    size_t buf_size = itl_max(le->lbuf->size + 1, (size_t)8) * sizeof(char);
+    size_t buf_size = itl_max(cstr_size, (size_t)8) * sizeof(char);
 
-    size_t cstr_size = le->lbuf->size + 1;
+    size_t rows, cols;
+    itl_get_window_size(&rows, &cols);
+
+    size_t wrap_value = wrap_value = (le->lbuf->length + pr_len) / cols;
+    size_t wrap_cursor_pos = le->cur_pos + pr_len - wrap_value * cols + 1;
+
+    ITL_DBG("len", le->lbuf->length);
+    ITL_DBG("cols", cols);
+    ITL_DBG("wrap_value", wrap_value);
+    ITL_DBG("wrap_cursor_pos", wrap_cursor_pos);
 
     char *buf = (char *)itl_malloc(buf_size);
     if (!buf)
         return 0;
 
-    itl_pbuf_append(&pbuf, "\x1b[?25l", 6);
+    // TODO
+    if (wrap_value > 0 && wrap_cursor_pos > 1) {
+        snprintf(buf, buf_size, "\x1b[%zuF", wrap_value);
+        itl_pbuf_append(&pbuf, buf, strlen(buf));
+    }
 
     itl_pbuf_append(&pbuf, "\r", 1);
     itl_pbuf_append(&pbuf, "\x1b[0K", 4);
@@ -671,10 +683,9 @@ static int itl_tty_update(itl_le_t *le)
     itl_pbuf_append(&pbuf, le->prompt, pr_len);
 
     itl_string_to_cstr(le->lbuf, buf, buf_size);
-
     itl_pbuf_append(&pbuf, buf, cstr_size);
-    snprintf(buf, buf_size, "\x1b[%zuG", le->cur_pos + pr_len + 1);
 
+    snprintf(buf, buf_size, "\x1b[%zuG", wrap_cursor_pos);
     itl_pbuf_append(&pbuf, buf, strlen(buf));
 
     write(STDOUT_FILENO, pbuf.string, pbuf.size);
@@ -988,7 +999,6 @@ static itl_utf8_t itl_parse_utf8(int byte)
 // -1 if should continue
 static int itl_handle_esc(itl_le_t *le, int esc)
 {
-    printf("esc: %d\n", esc);
     switch (esc & ITL_KEY_MASK) {
         case ITL_KEY_UP: {
             if (le->h_item_sel == -1) {
@@ -1022,16 +1032,16 @@ static int itl_handle_esc(itl_le_t *le, int esc)
                 size_t count = 1;
 
                 if (esc & ITL_CTRL_BIT) {
-                    size_t next_ws = itl_le_nextws(le, 0);
+                    size_t next_ws = itl_le_next_whitespace(le, 0);
 
                     if (next_ws <= 1) {
-                        count = itl_le_nextword(le, 0);
+                        count = itl_le_next_word(le, 0);
                     }
                     else
                         count = next_ws;
                 }
 
-                itl_le_right(le, count);
+                itl_le_move_right(le, count);
             }
         } break;
 
@@ -1040,28 +1050,28 @@ static int itl_handle_esc(itl_le_t *le, int esc)
                 size_t count = 1;
 
                 if (esc & ITL_CTRL_BIT) {
-                    size_t next_ws = itl_le_nextws(le, 1);
+                    size_t next_ws = itl_le_next_whitespace(le, 1);
 
                     if (next_ws <= 1) {
-                        count = itl_le_nextword(le, 1);
-                        itl_le_left(le, count);
+                        count = itl_le_next_word(le, 1);
+                        itl_le_move_left(le, count);
 
-                        count = itl_le_nextws(le, 1) - 1;
+                        count = itl_le_next_whitespace(le, 1) - 1;
                     }
                     else
                         count = next_ws - 1;
                 }
 
-                itl_le_left(le, count);
+                itl_le_move_left(le, count);
             }
         } break;
 
         case ITL_KEY_END: {
-            itl_le_right(le, le->lbuf->length - le->cur_pos);
+            itl_le_move_right(le, le->lbuf->length - le->cur_pos);
         } break;
 
         case ITL_KEY_HOME: {
-            itl_le_left(le, le->cur_pos);
+            itl_le_move_left(le, le->cur_pos);
         } break;
 
         case ITL_KEY_ENTER: {
@@ -1080,38 +1090,36 @@ static int itl_handle_esc(itl_le_t *le, int esc)
             size_t count = 1;
 
             if (esc & ITL_CTRL_BIT) {
-                size_t next_ws = itl_le_nextws(le, 1);
+                size_t next_ws = itl_le_next_whitespace(le, 1);
 
                 if (next_ws <= 1) {
-                    count = itl_le_nextword(le, 1);
-                    itl_le_unputc(le, count, 1);
-
-                    count = itl_le_nextws(le, 1) - 1;
+                    count = itl_le_next_word(le, 1);
+                    itl_le_erase(le, count, 1);
+                    count = itl_le_next_whitespace(le, 1) - 1;
                 }
                 else
                     count = next_ws - 1;
             }
 
-            itl_le_unputc(le, count, 1);
+            itl_le_erase(le, count, 1);
         } break;
 
         case ITL_KEY_DELETE: {
             size_t count = 1;
 
             if (esc & ITL_CTRL_BIT) {
-                size_t next_ws = itl_le_nextws(le, 0);
+                size_t next_ws = itl_le_next_whitespace(le, 0);
 
                 if (next_ws <= 1) {
-                    count = itl_le_nextword(le, 0);
-                    itl_le_unputc(le, count, 0);
-
-                    count = itl_le_nextws(le, 0);
+                    count = itl_le_next_word(le, 0);
+                    itl_le_erase(le, count, 0);
+                    count = itl_le_next_whitespace(le, 0);
                 }
                 else
                     count = next_ws;
             }
 
-            itl_le_unputc(le, count, 0);
+            itl_le_erase(le, count, 0);
         } break;
 
         case ITL_KEY_INTERRUPT: {
@@ -1143,7 +1151,6 @@ int tl_getc(char *buffer, size_t size, const char *prompt)
     else {
         itl_utf8_t ch = itl_parse_utf8(in);
         itl_le_putc(&le, ch);
-
         itl_string_to_cstr(le.lbuf, buffer, size);
         itl_le_clear(&le);
     }
@@ -1158,7 +1165,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 {
     itl_le_t le = itl_le_new(lbuf, line_buffer, size, prompt);
 
-    itl_tty_update(&le);
+    itl_le_update_tty(&le);
 
     int esc;
     int in;
@@ -1181,7 +1188,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
             itl_le_putc(&le, ch);
         }
 
-        itl_tty_update(&le);
+        itl_le_update_tty(&le);
     }
 
     return -1;
@@ -1197,7 +1204,8 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
  * TODO:
  *  - option to disable/enable C^C
  *  - test this on old Windows
- *  - fix strings longer than terminal width
+ *  - wrapper around itl_string_to_cstr which also inserts \n\r when exceeding column width
  *  - replace history instead of ignoring it on limit
  *  - autocompletion
+ *  - tty struct refactor
  */
