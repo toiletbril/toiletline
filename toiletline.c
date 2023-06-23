@@ -1166,8 +1166,10 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
     while (1) {
         in = itl_read_byte();
 
-        // printf("%d\n", in);
-        // continue;
+#ifdef TL_SEE_BYTES
+        printf("%d\n", in);
+        continue;
+#endif
 
         if ((esc = itl_parse_esc(in)) != ITL_KEY_CHAR) {
             if ((esc = itl_handle_esc(&le, esc)) != -1) {
