@@ -212,14 +212,14 @@ inline static void *itl_realloc(void *block, size_t size)
         }                                 \
     } while (0)
 
-typedef struct itl_utf8_t itl_utf8_t;
-
 #define itl_max(a, b)       \
   ({                        \
     __typeof__(a) _a = (a); \
     __typeof__(b) _b = (b); \
     _a > _b ? _a : _b;      \
   })
+
+typedef struct itl_utf8_t itl_utf8_t;
 
 struct itl_utf8_t
 {
