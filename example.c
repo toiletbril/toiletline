@@ -15,8 +15,10 @@ int main(void)
 
     int i = 0;
     while ((code = tl_readline(line_buffer, LINE_BUF_LEN, "$ ")) == 0) {
-        printf("Received string: '%s'\n", line_buffer);
+        printf("Received string: '%s' of length %zu, of size %zu\n",
+               line_buffer, tl_utf8_strlen(line_buffer), strlen(line_buffer));
         fflush(stdout);
+
         if (i++ >= 10) {
             printf("Reached 10 messages, exiting!\n");
             break;
