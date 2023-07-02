@@ -19,41 +19,41 @@ Current features
 * Enter to submit a line.
 * Ctrl-C to exit.
 
-Usage
+Documentation
 ----------------
 Before you include this file in C or C++ file,
 define "TOILETLINE_IMPLEMENTATION" to create the implementation.
 
-* To initialize toiletline and put terminal into raw mode:
-    int tl_init(void);
+> int tl_init(void);
 
-    Returns 1 on success.
+Initialize toiletline and put terminal into raw mode:
+Returns 1 on success.
 
-* To read a line while in toiletline mode:
-    int tl_readline(char *line_buffer, size_t size, const char *prompt);
+> int tl_readline(char *line_buffer, size_t size, const char *prompt);
 
-    To support multi-byte characters and null at the end, size needs to be at least 2 or more.
-    Submitted input will be written to *line_buffer as a null-terminated string.
+Read a line while in toiletline mode.
+To support multi-byte characters and null at the end, size needs to be at least 2 or more.
+Submitted input will be written to *line_buffer as a null-terminated string.
 
-    Returns:
-    * -1 on internal error;
-    * 0 on Enter;
-    * 1 on Ctrl-C;
-    * 2 when line read exceeded *line_buffer size.
+Returns:
+* -1 on internal error;
+* 0 on Enter;
+* 1 on Ctrl-C;
+* 2 when line read exceeded *line_buffer size.
 
-* To read a character without waiting for Enter:
-    int tl_getc(char *buffer, size_t size, const char *prompt)
+> int tl_getc(char *buffer, size_t size, const char *prompt);
+Read a character without waiting for Enter.
+Return values are the same as of tl_readline.
 
-* To exit:
-    int tl_exit(void);
+> int tl_exit(void);
+Exit.
+Returns 1 on success.
 
-    Returns 1 on success.
+> size_t tl_utf8_strlen(const char *s);
+Get the amount of characters in a UTF-8 string:
 
-* To get the amount of characters in a UTF-8 string:
-    size_t tl_utf8_strlen(const char *s);
-
-    Since number of bytes can be bigger than amount of characters,
-    regular strlen will not work, and will only return the number of bytes before \0.
+Since number of bytes can be bigger than amount of characters,
+regular strlen will not work, and will only return the number of bytes before \0.
 
 Examples
 ----------------
