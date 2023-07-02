@@ -1,5 +1,5 @@
 /**
- *  toiletline 0.0.4
+ *  toiletline 0.0.5
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -171,27 +171,27 @@ inline static void itl_handle_interrupt(int sign)
     exit(0);
 }
 
-static int itl_global_alloc_count = 0;
+static int ITL_GLOBAL_ALLOC_COUNT = 0;
 
 // messages about allocations
 #ifdef TL_DEBUG_ALLOC
     #define ITL_ALLOC_DBG(message) \
-        printf("\n%s, alloc: %d\n", message, itl_global_alloc_count)
+        printf("\n%s, alloc: %d\n", message, ITL_GLOBAL_ALLOC_COUNT)
 #else
     #define ITL_ALLOC_DBG(message)
 #endif // TL_DEBUG_ALLOC
 
 inline static void *itl_malloc(size_t size)
 {
-    itl_global_alloc_count += 1;
+    ITL_GLOBAL_ALLOC_COUNT += 1;
     ITL_ALLOC_DBG("malloc");
     return malloc(size);
 }
 
 inline static void *itl_calloc(size_t count, size_t size)
 {
-    itl_global_alloc_count += 1;
     ITL_ALLOC_DBG("calloc");
+    ITL_GLOBAL_ALLOC_COUNT += 1;
     return calloc(count, size);
 }
 
@@ -199,25 +199,20 @@ inline static void *itl_realloc(void *block, size_t size)
 {
     ITL_ALLOC_DBG("realloc");
     if (block == NULL)
-        itl_global_alloc_count += 1;
+        ITL_GLOBAL_ALLOC_COUNT += 1;
     return realloc(block, size);
 }
 
-#define itl_free(ptr)                     \
+#define ITL_FREE(ptr)                     \
     do {                                  \
         if (ptr != NULL) {                \
-            itl_global_alloc_count -= 1;  \
+            ITL_GLOBAL_ALLOC_COUNT -= 1;  \
             ITL_ALLOC_DBG("free");        \
             free(ptr);                    \
         }                                 \
     } while (0)
 
-#define itl_max(a, b)       \
-  ({                        \
-    __typeof__(a) _a = (a); \
-    __typeof__(b) _b = (b); \
-    _a > _b ? _a : _b;      \
-  })
+#define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 
 typedef struct itl_utf8_t itl_utf8_t;
 
@@ -263,7 +258,7 @@ static void itl_char_copy(itl_char_t *dst, itl_char_t *src)
 
 static void itl_char_free(itl_char_t *c)
 {
-    itl_free(c);
+    ITL_FREE(c);
 }
 
 typedef struct itl_string_t itl_string_t;
@@ -339,7 +334,7 @@ static void itl_string_clear(itl_string_t *str)
 inline static void itl_string_free(itl_string_t *str)
 {
     itl_string_clear(str);
-    itl_free(str);
+    ITL_FREE(str);
 }
 
 static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
@@ -516,7 +511,7 @@ static void itl_le_move_left(itl_le_t *le, size_t steps)
     }
 }
 
-#define itl_isdelim(c) (ispunct(c) || isspace(c))
+#define ITL_IS_DELIM(c) (ispunct(c) || isspace(c))
 
 // number of characters to get to the next word
 static size_t itl_le_next_word(itl_le_t *le, int behind)
@@ -536,7 +531,7 @@ static size_t itl_le_next_word(itl_le_t *le, int behind)
             return 0;
 
     while (ch) {
-        if (!itl_isdelim(ch->c.bytes[0]))
+        if (!ITL_IS_DELIM(ch->c.bytes[0]))
             break;
 
         steps += 1;
@@ -568,7 +563,7 @@ static size_t itl_le_next_whitespace(itl_le_t *le, int behind)
             return 0;
 
     while (ch) {
-        if (itl_isdelim(ch->c.bytes[0]))
+        if (ITL_IS_DELIM(ch->c.bytes[0]))
             break;
 
         steps += 1;
@@ -591,9 +586,9 @@ inline static void itl_le_clear(itl_le_t *le)
 }
 
 #ifdef _WIN32
-    #define itl_read_byte() _getch()
+    #define ITL_READ_BYTE() _getch()
 #else // Linux
-    #define itl_read_byte() fgetc(stdin)
+    #define ITL_READ_BYTE() fgetc(stdin)
 #endif // Linux
 
 // buffer output before writing it all to stdout
@@ -603,21 +598,21 @@ typedef struct
   int size;
 } itl_pbuf_t;
 
-static void itl_pbuf_append(itl_pbuf_t *pbuf, const char *s, int len)
+static void itl_pbuf_append(itl_pbuf_t *pbuf, const char *s, size_t size)
 {
-    char *n_s = itl_realloc(pbuf->string, pbuf->size + len);
+    char *n_s = itl_realloc(pbuf->string, pbuf->size + size);
     if (n_s == NULL)
         return;
 
-    memcpy(&n_s[pbuf->size], s, len);
+    memcpy(&n_s[pbuf->size], s, size);
 
     pbuf->string = n_s;
-    pbuf->size += len;
+    pbuf->size += size;
 }
 
 inline static void itl_pbuf_free(itl_pbuf_t *pbuf)
 {
-    itl_free(pbuf->string);
+    ITL_FREE(pbuf->string);
 }
 
 // gets you maximum terminal column width and current row
@@ -629,7 +624,7 @@ int itl_tty_size(size_t *rows, size_t *cols) {
     fputs("\x1b[6n", stdout);
 
     while (i < sizeof(buf) - 1) {
-        buf[i] = itl_read_byte();
+        buf[i] = ITL_READ_BYTE();
         if (buf[i] == 'R')
             break;
         i++;
@@ -657,7 +652,7 @@ static int itl_le_update_tty(itl_le_t *le)
     size_t cstr_size = le->lbuf->length + 1;
     itl_pbuf_t pbuf = { .string = NULL, .size = 0 };
     size_t pr_len = strlen(le->prompt);
-    size_t buf_size = itl_max(cstr_size, (size_t)8) * sizeof(char);
+    size_t buf_size = ITL_MAX(size_t, cstr_size, 8) * sizeof(char);
 
     size_t rows, cols;
     itl_get_window_size(&rows, &cols);
@@ -694,7 +689,7 @@ static int itl_le_update_tty(itl_le_t *le)
     write(STDOUT_FILENO, pbuf.string, pbuf.size);
 
     itl_pbuf_free(&pbuf);
-    itl_free(buf);
+    ITL_FREE(buf);
 
     fputs("\x1b[?25h", stdout);
     return fflush(stdout);
@@ -717,7 +712,7 @@ static void itl_history_free(void)
 {
     for (int i = 0; i < itl_h_index; ++i)
         itl_string_free(itl_history[i]);
-    itl_free(itl_history);
+    ITL_FREE(itl_history);
 }
 
 // copies string to global history
@@ -776,8 +771,8 @@ int tl_exit(void)
     itl_string_free(lbuf);
 
     signal(SIGINT, SIG_DFL);
-    ITL_DBG("exit, alloc count", itl_global_alloc_count);
-    TL_ASSERT(itl_global_alloc_count == 0);
+    ITL_DBG("exit, alloc count", ITL_GLOBAL_ALLOC_COUNT);
+    TL_ASSERT(ITL_GLOBAL_ALLOC_COUNT == 0);
 
     return itl_exit_raw_mode();
 }
@@ -829,7 +824,7 @@ static int itl_parse_esc(int byte)
 
 #ifdef _WIN32
     if (byte == 224) { // escape
-        switch (itl_read_byte()) {
+        switch (ITL_READ_BYTE()) {
             case 72: {
                 event = ITL_KEY_UP;
             } break;
@@ -880,19 +875,19 @@ static int itl_parse_esc(int byte)
     int read_mod = 0;
 
     if (byte == 27) { // \x1b
-        byte = itl_read_byte();
+        byte = ITL_READ_BYTE();
 
         if (byte != 91) { // [
             return ITL_KEY_CHAR | ITL_ALT_BIT;
         }
 
-        byte = itl_read_byte();
+        byte = ITL_READ_BYTE();
 
         if (byte == 49) {
-            if (itl_read_byte() != 59) // ;
+            if (ITL_READ_BYTE() != 59) // ;
                 return ITL_KEY_UNKN;
 
-            switch (itl_read_byte()) {
+            switch (ITL_READ_BYTE()) {
                 case 50: {
                     event |= ITL_SHIFT_BIT;
                 } break;
@@ -903,7 +898,7 @@ static int itl_parse_esc(int byte)
             }
 
             read_mod = 1;
-            byte = itl_read_byte();
+            byte = ITL_READ_BYTE();
         }
 
         switch (byte) { // escape codes based on xterm
@@ -948,10 +943,10 @@ static int itl_parse_esc(int byte)
         return ITL_KEY_CHAR;
 
     if (!read_mod) {
-        byte = itl_read_byte();
+        byte = ITL_READ_BYTE();
 
         if (byte == 59) { // ;
-            switch (itl_read_byte()) {
+            switch (ITL_READ_BYTE()) {
                 case 53: {
                     event |= ITL_CTRL_BIT;
                 } break;
@@ -961,7 +956,7 @@ static int itl_parse_esc(int byte)
                 } break;
             }
 
-            byte = itl_read_byte();
+            byte = ITL_READ_BYTE();
         }
 
         if (byte != 126) // ~
@@ -988,7 +983,7 @@ static itl_utf8_t itl_parse_utf8(int byte)
         len = 4;
 
     for (uint8_t i = 1; i < len; ++i) // consequent bytes
-        bytes[i] = itl_read_byte();
+        bytes[i] = ITL_READ_BYTE();
 
 #ifdef TL_DEBUG
     printf("\nutf8 char bytes: '");
@@ -1148,7 +1143,7 @@ int tl_getc(char *buffer, size_t size, const char *prompt)
     itl_le_t le = itl_le_new(lbuf, buffer, size, prompt);
 
     int esc;
-    int in = itl_read_byte();
+    int in = ITL_READ_BYTE();
 
     if ((esc = itl_parse_esc(in)) != ITL_KEY_CHAR) {
             if ((esc = itl_handle_esc(&le, esc)) != -1) {
@@ -1178,7 +1173,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
     int in;
 
     while (1) {
-        in = itl_read_byte();
+        in = ITL_READ_BYTE();
 
 #ifdef TL_SEE_BYTES
         printf("%d\n", in);
@@ -1207,12 +1202,13 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 }
 #endif
 
-/**
+/*
  * TODO:
  *  - option to disable/enable C^C
  *  - test this on old Windows
  *  - wrapper around itl_string_to_cstr which also inserts \n\r when exceeding column width
  *  - replace history instead of ignoring it on limit
+ *  - don't add new entry to history if it is the same
  *  - autocompletion
  *  - tty struct refactor
  */
