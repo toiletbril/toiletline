@@ -86,6 +86,13 @@ int tl_getc(char *buffer, size_t size, const char *prompt);
  *    -1 internal error.
  */
 int tl_readline(char *line_buffer, size_t size, const char *prompt);
+/**
+ *  Returns the number of UTF-8 characters.
+ *
+ *  Since number of bytes can be bigger than amount of characters,
+ *  regular strlen will not work, and will only return the number of bytes before \0.
+ */
+size_t tl_utf8_strlen(const char *s);
 
 #endif // TOILETLINE_H_
 
@@ -218,8 +225,8 @@ typedef struct itl_utf8_t itl_utf8_t;
 
 struct itl_utf8_t
 {
-    uint8_t bytes[4];
     size_t size;
+    uint8_t bytes[4];
 };
 
 static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
@@ -649,7 +656,7 @@ inline static int itl_get_window_size(size_t *rows, size_t *cols)
 static int itl_le_update_tty(itl_le_t *le)
 {
     fputs("\x1b[?25l", stdout);
-    size_t cstr_size = le->lbuf->length + 1;
+    size_t cstr_size = le->lbuf->size + 1;
     itl_pbuf_t pbuf = { .string = NULL, .size = 0 };
     size_t pr_len = strlen(le->prompt);
     size_t buf_size = ITL_MAX(size_t, cstr_size, 8) * sizeof(char);
@@ -775,6 +782,20 @@ int tl_exit(void)
     TL_ASSERT(ITL_GLOBAL_ALLOC_COUNT == 0);
 
     return itl_exit_raw_mode();
+}
+
+// returns the number of utf8 characters in a char array
+size_t tl_utf8_strlen(const char *s)
+{
+  int len = 0;
+
+  while (*s) {
+    if ((*s & 0xC0) != 0x80)
+        ++len;
+    ++s;
+  }
+
+  return len;
 }
 
 typedef enum
@@ -967,7 +988,7 @@ static int itl_parse_esc(int byte)
 }
 
 // this does not cover special cases with invalid bytes
-// maybe i'll remember about that soon tm
+// TODO: codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid
 static itl_utf8_t itl_parse_utf8(int byte)
 {
     uint8_t bytes[4] = {byte, 0, 0, 0};
@@ -1205,6 +1226,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 /*
  * TODO:
  *  - option to disable/enable C^C
+ *  - variadic utf8_t struct size
  *  - test this on old Windows
  *  - wrapper around itl_string_to_cstr which also inserts \n\r when exceeding column width
  *  - replace history instead of ignoring it on limit
