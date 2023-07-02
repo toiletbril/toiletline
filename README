@@ -12,43 +12,49 @@ Any help finding bugs is appreciated.
 
 Current features
 ----------------
-- Up/Down to navigate history.
-- Right/Left, to move one character,
-  with to Ctrl move a word.
-- End/Home to jump to end/beginning.
-- Backspace/Delete to delete characters,
-  with Ctrl to delete a word.
-- Enter to submit a line.
-- Ctrl-C to exit.
+* Up/Down to navigate history.
+* Right/Left, to move one character, with to Ctrl move a word.
+* End/Home to jump to end/beginning.
+* Backspace/Delete to delete characters, with Ctrl to delete a word.
+* Enter to submit a line.
+* Ctrl-C to exit.
 
 Usage
 ----------------
-Before you include this file in C or C++ file, to create the implementation:
-#define TOILETLINE_IMPLEMENTATION
+Before you include this file in C or C++ file,
+define "TOILETLINE_IMPLEMENTATION" to create the implementation.
 
-To initialize toiletline mode:
-int tl_init(void);
+* To initialize toiletline and put terminal into raw mode:
+    int tl_init(void);
 
-Returns 1 on success.
+    Returns 1 on success.
 
-To read a line while in toiletline mode:
-int tl_readline(char *line_buffer, size_t size, const char *prompt);
+* To read a line while in toiletline mode:
+    int tl_readline(char *line_buffer, size_t size, const char *prompt);
 
-To read a character without waiting for Enter:
-int tl_getc(char *buffer, size_t size, const char *prompt)
+    To support multi-byte characters and null at the end, size needs to be at least 2 or more.
+    Submitted input will be written to *line_buffer as a null-terminated string.
 
-To support multi-byte characters and null at the end, size needs to be at least 2 or more.
-Submitted input will be written to *line_buffer as a null-terminated string.
+    Returns:
+    * -1 on internal error;
+    * 0 on Enter;
+    * 1 on Ctrl-C;
+    * 2 when line read exceeded *line_buffer size.
 
-Returns:
-- 0 when a line was submitted;
-- 1 on Ctrl-C,
-- 2 when line read exceeded *line_buffer.
-- -1 means internal error, and should be unreachable.
+* To read a character without waiting for Enter:
+    int tl_getc(char *buffer, size_t size, const char *prompt)
 
-To exit:
-int tl_exit(void);
+* To exit:
+    int tl_exit(void);
 
-Returns 1 on success.
+    Returns 1 on success.
 
-For example program, take a look at example.c.
+* To get the amount of characters in a UTF-8 string:
+    size_t tl_utf8_strlen(const char *s);
+
+    Since number of bytes can be bigger than amount of characters,
+    regular strlen will not work, and will only return the number of bytes before \0.
+
+Examples
+----------------
+For an example program, take a look at example.c
