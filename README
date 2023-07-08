@@ -41,7 +41,7 @@ Returns:
 * 1 on Ctrl-C;
 * 2 when line read exceeded *line_buffer size.
 
-int tl_getc(char *buffer, size_t size, const char *prompt);
+int tl_getc(char *char_buffer, size_t size, const char *prompt);
 --------
 Read a character without waiting for Enter.
 Return values are the same as of tl_readline.
@@ -51,7 +51,7 @@ int tl_exit(void);
 Exit and deallocate memory.
 Returns 1 on success.
 
-size_t tl_utf8_strlen(const char *s);
+size_t tl_utf8_strlen(const char *utf8_str);
 --------
 Get the amount of characters in a UTF-8 string:
 
