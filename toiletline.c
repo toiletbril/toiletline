@@ -664,7 +664,7 @@ static int itl_le_update_tty(itl_le_t *le)
     size_t rows, cols;
     itl_get_window_size(&rows, &cols);
 
-    size_t wrap_value = wrap_value = (le->lbuf->length + pr_len) / cols;
+    size_t wrap_value = wrap_value = (le->lbuf->length + pr_len) / ITL_MAX(size_t, 1, cols);
     size_t wrap_cursor_pos = le->cur_pos + pr_len - wrap_value * cols + 1;
 
     ITL_DBG("len", le->lbuf->length);
@@ -898,7 +898,7 @@ static int itl_parse_esc(int byte)
     if (byte == 27) { // \x1b
         byte = ITL_READ_BYTE();
 
-        if (byte != 91) { // [
+        if (byte != 91 && byte != 79) { // [
             return ITL_KEY_CHAR | ITL_ALT_BIT;
         }
 
@@ -1150,8 +1150,8 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         } break;
 
         default: {
-            ITL_DBG("key wasn't handled", esc | ITL_KEY_MASK);
-            ITL_DBG("modifier", esc | ITL_MOD_MASK);
+            ITL_DBG("key wasn't handled", esc & ITL_KEY_MASK);
+            ITL_DBG("modifier", esc & ITL_MOD_MASK);
         }
     }
 
@@ -1229,8 +1229,8 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
  *  - variadic utf8_t struct size
  *  - test this on old Windows
  *  - wrapper around itl_string_to_cstr which also inserts \n\r when exceeding column width
- *  - replace history instead of ignoring it on limit
- *  - don't add new entry to history if it is the same
+ *  - replace history on limit
+ *  - don't add new entry to history if it is the same (string comparison)
  *  - autocompletion
  *  - tty struct refactor
  */
