@@ -1,5 +1,5 @@
 /**
- *  toiletline 0.0.5
+ *  toiletline 0.0.6
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -630,6 +630,9 @@ int itl_tty_size(size_t *rows, size_t *cols) {
     fputs("\x1b[999C", stdout);
     fputs("\x1b[6n", stdout);
 
+    // This does not work without flushing if setvbuf was called previously
+    fflush(stdout);
+
     while (i < sizeof(buf) - 1) {
         buf[i] = ITL_READ_BYTE();
         if (buf[i] == 'R')
@@ -646,13 +649,6 @@ int itl_tty_size(size_t *rows, size_t *cols) {
     return 0;
 }
 
-inline static int itl_get_window_size(size_t *rows, size_t *cols)
-{
-    if (itl_tty_size(rows, cols))
-        return 1;
-    return 0;
-}
-
 static int itl_le_update_tty(itl_le_t *le)
 {
     fputs("\x1b[?25l", stdout);
@@ -662,7 +658,7 @@ static int itl_le_update_tty(itl_le_t *le)
     size_t buf_size = ITL_MAX(size_t, cstr_size, 8) * sizeof(char);
 
     size_t rows, cols;
-    itl_get_window_size(&rows, &cols);
+    itl_tty_size(&rows, &cols);
 
     size_t wrap_value = wrap_value = (le->lbuf->length + pr_len) / ITL_MAX(size_t, 1, cols);
     size_t wrap_cursor_pos = le->cur_pos + pr_len - wrap_value * cols + 1;
