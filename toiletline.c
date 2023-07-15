@@ -325,9 +325,7 @@ static int itl_string_cmp(itl_string_t *str1, itl_string_t *str2)
         if (sizeof(str1_c->c) != sizeof(str1_c->c))
             return -1;
 
-        int cmp_result = memcmp(str1_c->c.bytes,
-                                str2_c->c.bytes,
-                                sizeof(uint8_t) * 4);
+        int cmp_result = memcmp(str1_c->c.bytes, str2_c->c.bytes, 4);
 
         if (cmp_result != 0)
             return -1;
@@ -429,7 +427,7 @@ inline static int itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t 
 }
 
 
-static itl_string_t *line_buf = NULL;
+static itl_string_t *ITL_LINE_BUF = NULL;
 
 // Line editor
 typedef struct
@@ -772,22 +770,22 @@ static int itl_le_update_tty(itl_le_t *le)
 #define TL_HISTORY_INIT_SIZE 16
 #define ITL_HISTORY_MAX_SIZE 128
 
-static itl_string_t **itl_history = NULL;
-static int itl_h_size = TL_HISTORY_INIT_SIZE;
-static int itl_h_index = 0;
+static itl_string_t **ITL_HISTORY = NULL;
+static int ITL_HIST_SIZE = TL_HISTORY_INIT_SIZE;
+static int ITL_HIST_INDEX = 0;
 
 static void itl_history_alloc(void)
 {
-    itl_history = (itl_string_t **)
+    ITL_HISTORY = (itl_string_t **)
         itl_calloc(TL_HISTORY_INIT_SIZE, sizeof(itl_string_t *));
 }
 
 static void itl_history_free(void)
 {
-    for (int i = 0; i < itl_h_index; ++i)
-        itl_string_free(itl_history[i]);
+    for (int i = 0; i < ITL_HIST_INDEX; ++i)
+        itl_string_free(ITL_HISTORY[i]);
 
-    ITL_FREE(itl_history);
+    ITL_FREE(ITL_HISTORY);
 }
 
 // Copies string to global history.
@@ -797,21 +795,23 @@ static int itl_history_append(itl_string_t *str)
     if (str->length <= 0)
         return 0;
 
-    if (itl_h_size >= ITL_HISTORY_MAX_SIZE)
+    if (ITL_HIST_SIZE >= ITL_HISTORY_MAX_SIZE)
         return 0;
 
     // Allocate more memory if needed.
-    if (itl_h_index >= itl_h_size && itl_h_size < ITL_HISTORY_MAX_SIZE) {
-        itl_h_size *= 2;
-        itl_history = (itl_string_t **)
-            itl_realloc(itl_history, itl_h_size * sizeof(itl_string_t *));
+    if (ITL_HIST_INDEX >= ITL_HIST_SIZE && ITL_HIST_SIZE < ITL_HISTORY_MAX_SIZE) {
+        ITL_HIST_SIZE *= 2;
+        ITL_HISTORY = (itl_string_t **)
+            itl_realloc(ITL_HISTORY, ITL_HIST_SIZE * sizeof(itl_string_t *));
     }
 
-    // Avoid adding the same string to history.
-    if (itl_h_index > 0) {
-        int cmp_result = itl_string_cmp(itl_history[itl_h_index - 1], str);
+    if (ITL_HISTORY)
 
-        if (itl_h_index > 0 && cmp_result == 0)
+    // Avoid adding the same string to history.
+    if (ITL_HIST_INDEX > 0) {
+        int cmp_result = itl_string_cmp(ITL_HISTORY[ITL_HIST_INDEX - 1], str);
+
+        if (cmp_result == 0)
             return 0;
     }
 
@@ -819,7 +819,7 @@ static int itl_history_append(itl_string_t *str)
 
     itl_string_copy(new_str, str);
 
-    itl_history[itl_h_index++] = new_str;
+    ITL_HISTORY[ITL_HIST_INDEX++] = new_str;
 
     return 1;
 }
@@ -828,14 +828,14 @@ static int itl_history_append(itl_string_t *str)
 // Does not free anything
 static void itl_history_get(itl_le_t *le)
 {
-    if (le->h_item_sel >= itl_h_index)
+    if (le->h_item_sel >= ITL_HIST_INDEX)
         return;
 
-    itl_string_t *h_entry = itl_history[le->h_item_sel];
+    itl_string_t *h_entry = ITL_HISTORY[le->h_item_sel];
 
-    itl_string_copy(line_buf, h_entry);
+    itl_string_copy(ITL_LINE_BUF, h_entry);
 
-    le->cur_pos = line_buf->length;
+    le->cur_pos = ITL_LINE_BUF->length;
 }
 
 // allocates memory for global history and line buffer
@@ -844,7 +844,7 @@ int tl_init(void)
 {
     itl_history_alloc();
 
-    line_buf = itl_string_alloc();
+    ITL_LINE_BUF = itl_string_alloc();
 
     signal(SIGINT, itl_handle_interrupt);
 
@@ -856,7 +856,7 @@ int tl_init(void)
 int tl_exit(void)
 {
     itl_history_free();
-    itl_string_free(line_buf);
+    itl_string_free(ITL_LINE_BUF);
 
     signal(SIGINT, SIG_DFL);
 
@@ -1110,8 +1110,8 @@ static int itl_handle_esc(itl_le_t *le, int esc)
     switch (esc & ITL_KEY_MASK) {
         case ITL_KEY_UP: {
             if (le->h_item_sel == -1) {
-                le->h_item_sel = itl_h_index;
-                if (le->line->length > 0 && itl_h_index > 0) {
+                le->h_item_sel = ITL_HIST_INDEX;
+                if (le->line->length > 0 && ITL_HIST_INDEX > 0) {
                     itl_history_append(le->line);
                 }
             }
@@ -1126,13 +1126,13 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         } break;
 
         case ITL_KEY_DOWN: {
-            if (le->h_item_sel < itl_h_index - 1 && le->h_item_sel >= 0) {
+            if (le->h_item_sel < ITL_HIST_INDEX - 1 && le->h_item_sel >= 0) {
                 le->h_item_sel += 1;
 
                 itl_le_clear(le);
                 itl_history_get(le);
             }
-            else if (itl_h_index > 0) {
+            else if (ITL_HIST_INDEX > 0) {
                 itl_le_clear(le);
                 le->h_item_sel = -1;
             }
@@ -1257,7 +1257,7 @@ static int itl_handle_esc(itl_le_t *le, int esc)
 // Gets one character, does not wait for Enter
 int tl_getc(char *char_buffer, size_t size, const char *prompt)
 {
-    itl_le_t le = itl_le_new(line_buf, char_buffer, size, prompt);
+    itl_le_t le = itl_le_new(ITL_LINE_BUF, char_buffer, size, prompt);
 
     int esc;
     int in = ITL_READ_BYTE();
@@ -1284,7 +1284,7 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
 // -1 internal error (reserved)
 int tl_readline(char *line_buffer, size_t size, const char *prompt)
 {
-    itl_le_t le = itl_le_new(line_buf, line_buffer, size, prompt);
+    itl_le_t le = itl_le_new(ITL_LINE_BUF, line_buffer, size, prompt);
 
     itl_le_update_tty(&le);
 
