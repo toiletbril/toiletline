@@ -311,6 +311,34 @@ static itl_string_t *itl_string_alloc(void)
     return ptr;
 }
 
+//  0 if strings are the same,
+// -1 if they are not.
+static int itl_string_cmp(itl_string_t *str1, itl_string_t *str2)
+{
+    if (str1->size != str2->size)
+        return -1;
+
+    itl_char_t *str1_c = str1->begin;
+    itl_char_t *str2_c = str2->begin;
+
+    while (str1_c != NULL) {
+        if (sizeof(str1_c->c) != sizeof(str1_c->c))
+            return -1;
+
+        int cmp_result = memcmp(str1_c->c.bytes,
+                                str2_c->c.bytes,
+                                sizeof(uint8_t) * 4);
+
+        if (cmp_result != 0)
+            return -1;
+
+        str1_c = str1_c->next;
+        str2_c = str2_c->next;
+    }
+
+    return 0;
+}
+
 static void itl_string_copy(itl_string_t *dst, itl_string_t *src)
 {
     itl_char_t *src_c = src->begin;
@@ -762,9 +790,8 @@ static void itl_history_free(void)
     ITL_FREE(itl_history);
 }
 
-// Copies string to global history
-// Allocates memory for a new string
-// Allocates memory for history array if needed by multiplying it's size by 2
+// Copies string to global history.
+// Allocates memory for a new string.
 static int itl_history_append(itl_string_t *str)
 {
     if (str->length <= 0)
@@ -773,10 +800,19 @@ static int itl_history_append(itl_string_t *str)
     if (itl_h_size >= ITL_HISTORY_MAX_SIZE)
         return 0;
 
+    // Allocate more memory if needed.
     if (itl_h_index >= itl_h_size && itl_h_size < ITL_HISTORY_MAX_SIZE) {
         itl_h_size *= 2;
         itl_history = (itl_string_t **)
             itl_realloc(itl_history, itl_h_size * sizeof(itl_string_t *));
+    }
+
+    // Avoid adding the same string to history.
+    if (itl_h_index > 0) {
+        int cmp_result = itl_string_cmp(itl_history[itl_h_index - 1], str);
+
+        if (itl_h_index > 0 && cmp_result == 0)
+            return 0;
     }
 
     itl_string_t *new_str = itl_string_alloc();
@@ -1287,12 +1323,10 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /*
  * TODO:
- *  - option to disable/enable C^C
  *  - variadic utf8_t struct size
  *  - test this on old Windows
  *  - wrapper around itl_string_to_cstr which also inserts \n\r when exceeding column width
  *  - replace history on limit
- *  - don't add new entry to history if it is the same (string comparison)
  *  - autocompletion
  *  - tty struct refactor
  */
