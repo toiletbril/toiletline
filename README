@@ -3,21 +3,16 @@ toiletline
 Single-file framework library for raw terminal applications,
 meant to replace a small subset of GNU Readline, and work on both Linux and Windows.
 
-It behaves like a regular shell, while the terminal is in raw mode,
-with all features implemented from scratch.
-
-Accepts UTF-8 characters. For very specific cases, parsed UTF-8 may not be valid.
+It behaves like a regular shell, with all features implemented from scratch in raw mode.
 
 Any help finding bugs is appreciated.
 
 Current features
 ----------------
-* Up/Down to navigate history.
-* Right/Left, to move one character, with to Ctrl move a word.
+* UTF-8 support.
+* In-memory history.
+* CTRL to move/erase a word.
 * End/Home to jump to end/beginning.
-* Backspace/Delete to delete characters, with Ctrl to delete a word.
-* Enter to submit a line.
-* Ctrl-C to exit.
 
 Documentation
 ----------------
@@ -26,12 +21,13 @@ define "TOILETLINE_IMPLEMENTATION" to create the implementation.
 
 int tl_init(void);
 --------
-Initialize toiletline and put terminal into raw mode:
+Initialize toiletline and put terminal into raw mode.
 Returns 1 on success.
 
 int tl_readline(char *line_buffer, size_t size, const char *prompt);
 --------
 Read a line while in toiletline mode.
+
 To support multi-byte characters and null at the end, size needs to be at least 2 or more.
 Submitted input will be written to *line_buffer as a null-terminated string.
 
