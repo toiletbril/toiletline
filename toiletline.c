@@ -1,5 +1,5 @@
 /**
- *  toiletline 0.0.7
+ *  toiletline 0.1.0
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -239,9 +239,9 @@ inline static void *itl_realloc(void *block, size_t size)
 
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 
-typedef struct itl_utf8_t itl_utf8_t;
+typedef struct itl_utf8 itl_utf8_t;
 
-struct itl_utf8_t
+struct itl_utf8
 {
     size_t size;
     uint8_t bytes[4];
@@ -258,10 +258,10 @@ static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
     return utf8_char;
 }
 
-typedef struct itl_char_t itl_char_t;
+typedef struct itl_char itl_char_t;
 
 // UTF-8 string list node
-struct itl_char_t
+struct itl_char
 {
     itl_utf8_t c;
     itl_char_t *next;
@@ -288,10 +288,10 @@ static void itl_char_free(itl_char_t *c)
     ITL_FREE(c);
 }
 
-typedef struct itl_string_t itl_string_t;
+typedef struct itl_string itl_string_t;
 
 // Linked list of utf-8 characters
-struct itl_string_t
+struct itl_string
 {
     itl_char_t *begin;
     itl_char_t *end;
@@ -426,13 +426,14 @@ inline static int itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t 
     return itl_string_to_cstr(str, c_str, size);
 }
 
-
 static itl_string_t *ITL_LINE_BUF = NULL;
 
+typedef struct itl_le itl_le_t;
+
 // Line editor
-typedef struct
+struct itl_le
 {
-    struct itl_string_t *line;
+    itl_string_t *line;
     itl_char_t *cur_char;
     size_t cur_pos;
     size_t cur_col;
@@ -440,7 +441,7 @@ typedef struct
     char *out_buf;
     size_t out_size;
     const char *prompt;
-} itl_le_t;
+};
 
 static itl_le_t itl_le_new(itl_string_t *line_buf, char *out_buf, size_t out_size, const char *prompt)
 {
@@ -661,12 +662,14 @@ inline static void itl_le_clear(itl_le_t *le)
     #define ITL_READ_BYTE() fgetc(stdin)
 #endif // Linux
 
+typedef struct itl_pbuf itl_pbuf_t;
+
 // Buffer output before writing it all to stdout
-typedef struct
+struct itl_pbuf
 {
   char *string;
   int size;
-} itl_pbuf_t;
+};
 
 static void itl_pbuf_append(itl_pbuf_t *pbuf, const char *s, size_t size)
 {
@@ -719,7 +722,14 @@ static int itl_le_update_tty(itl_le_t *le)
 
     itl_pbuf_t pbuf = { .string = NULL, .size = 0 };
 
-    size_t pr_len = strlen(le->prompt);
+    size_t pr_len;
+
+    // prompt = NULL is valid
+    if (le->prompt != NULL)
+        pr_len = strlen(le->prompt)
+    else
+        pr_len = 0;
+
     size_t cstr_size = le->line->size + 1;
 
     size_t buf_size = ITL_MAX(size_t, cstr_size, 8) * sizeof(char);
@@ -1257,6 +1267,9 @@ static int itl_handle_esc(itl_le_t *le, int esc)
 // Gets one character, does not wait for Enter
 int tl_getc(char *char_buffer, size_t size, const char *prompt)
 {
+    TL_ASSERT(size > 2);
+    TL_ASSERT(char_buffer != NULL);
+
     itl_le_t le = itl_le_new(ITL_LINE_BUF, char_buffer, size, prompt);
 
     int esc;
@@ -1284,6 +1297,10 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
 // -1 internal error (reserved)
 int tl_readline(char *line_buffer, size_t size, const char *prompt)
 {
+    // Size required for at least one 1-byte character and a null-terminator
+    TL_ASSERT(size > 2);
+    TL_ASSERT(line_buffer != NULL);
+
     itl_le_t le = itl_le_new(ITL_LINE_BUF, line_buffer, size, prompt);
 
     itl_le_update_tty(&le);
@@ -1323,6 +1340,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /*
  * TODO:
+ *  - fix CTRL+BS for Linux
  *  - variadic utf8_t struct size
  *  - test this on old Windows
  *  - wrapper around itl_string_to_cstr which also inserts \n\r when exceeding column width
