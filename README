@@ -19,6 +19,10 @@ Documentation
 Before you include this file in C or C++ file,
 define "TOILETLINE_IMPLEMENTATION" to create the implementation.
 
+If you want to use this library in C++ or other languages, you will need to create a .c file
+which creates implementation and includes the library. Then, compile that file with to
+object file (-c flag in gcc/clang) and link your code with the object file.
+
 int tl_init(void);
 --------
 Initialize toiletline and put terminal into raw mode.
