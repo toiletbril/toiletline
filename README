@@ -31,6 +31,9 @@ Read a line while in toiletline mode.
 To support multi-byte characters and null at the end, size needs to be at least 2 or more.
 Submitted input will be written to *line_buffer as a null-terminated string.
 
+Beware of characters like '\t' (Tab) and such, as they may break cursor position.
+Althrough they are considered as a single character, they occupy more than one space.
+
 Returns:
 * -1 on internal error;
 * 0 on Enter;
