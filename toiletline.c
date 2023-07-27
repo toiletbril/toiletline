@@ -1276,7 +1276,7 @@ static int itl_handle_esc(itl_le_t *le, int esc)
 // Gets one character, does not wait for Enter
 int tl_getc(char *char_buffer, size_t size, const char *prompt)
 {
-    TL_ASSERT(size > 2);
+    TL_ASSERT(size > 1);
     TL_ASSERT(char_buffer != NULL);
 
     itl_le_t le = itl_le_new(ITL_LINE_BUF, char_buffer, size, prompt);
@@ -1307,7 +1307,7 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
 int tl_readline(char *line_buffer, size_t size, const char *prompt)
 {
     // Size required for at least one 1-byte character and a null-terminator
-    TL_ASSERT(size > 2);
+    TL_ASSERT(size > 1);
     TL_ASSERT(line_buffer != NULL);
 
     itl_le_t le = itl_le_new(ITL_LINE_BUF, line_buffer, size, prompt);
