@@ -1281,6 +1281,8 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
 
     itl_le_t le = itl_le_new(ITL_LINE_BUF, char_buffer, size, prompt);
 
+    itl_le_update_tty(&le);
+
     int esc;
     int in = ITL_READ_BYTE();
 
