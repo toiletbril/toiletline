@@ -1215,6 +1215,8 @@ static int itl_handle_esc(itl_le_t *le, int esc)
             if (code == 0)
                 fputc('\n', stdout);
 
+            fflush(stdout);
+
             return code;
         } break;
 
@@ -1298,6 +1300,10 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
         itl_string_to_cstr(le.line, char_buffer, size);
 
         itl_le_clear(&le);
+
+        fputc('\n', stdout);
+
+        fflush(stdout);
     }
 
     return 0;
