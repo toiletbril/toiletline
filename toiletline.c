@@ -1,5 +1,5 @@
 /**
- *  toiletline 0.1.1
+ *  toiletline 0.1.2
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -393,11 +393,14 @@ inline static void itl_string_free(itl_string_t *str)
     ITL_FREE(str);
 }
 
+// 0 - success, -1 - *str did not fit in *c_str
+// This function should not result in any errors.
 static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
 {
     itl_char_t *c = str->begin;
     size_t i = 0;
 
+    // NOTE: This can cause bugs if (size - i - 1) wraps around
     while (c && size - i > c->c.size) {
         for (size_t j = 0; j != c->c.size; ++j)
             c_str[i++] = c->c.bytes[j];
@@ -406,18 +409,19 @@ static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
             c = c->next;
     }
 
-    if (i < size)
-        c_str[i] = '\0';
-    else
-        return 2;
+    c_str[i] = '\0';
+
+    // If *c exists, then size was exceeded. This should not happen ever.
+    if (c)
+        return -1;
 
     return 0;
 }
 
-// TODO
-// Inserts \n to fit multiple columns
-inline static int itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
-                                  size_t cols, size_t pr_len, size_t *cur_offset)
+// TODO: Inserts \n to fit multiple columns
+inline static int
+itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
+                       size_t cols, size_t pr_len, size_t *cur_offset)
 {
     (void)cols;
     (void)pr_len;
@@ -732,7 +736,8 @@ static int itl_le_update_tty(itl_le_t *le)
 
     size_t cstr_size = le->line->size + 1;
 
-    size_t buf_size = ITL_MAX(size_t, cstr_size, 8) * sizeof(char);
+    size_t buf_size =
+        ITL_MAX(size_t, cstr_size, 8) * sizeof(char) + 2;
 
     size_t rows, cols;
     itl_tty_size(&rows, &cols);
@@ -1344,10 +1349,10 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /*
  * TODO:
- *  - variadic utf8_t struct size
- *  - test this on old Windows
- *  - wrapper around itl_string_to_cstr which also inserts \n\r when exceeding column width
- *  - replace history on limit
- *  - autocompletion
- *  - tty struct refactor
+ *  - Refactoring to allow better handling of terminal properties.
+ *  - itl_string_to_tty_cstr().
+ *  - Replace history on limit.
+ *  - Autocompletion.
+ *  - Variadic utf8_t struct size.
+ *  - Test this on old Windows.
  */
