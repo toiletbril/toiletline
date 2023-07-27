@@ -726,7 +726,7 @@ static int itl_le_update_tty(itl_le_t *le)
 
     // prompt = NULL is valid
     if (le->prompt != NULL)
-        pr_len = strlen(le->prompt)
+        pr_len = strlen(le->prompt);
     else
         pr_len = 0;
 
@@ -1055,8 +1055,12 @@ static int itl_parse_esc(int byte)
             default:
                 event |= ITL_KEY_UNKN;
         }
-    } else
-        return ITL_KEY_CHAR;
+    } else {
+        if (!iscntrl(byte))
+            return ITL_KEY_CHAR;
+        else
+            return ITL_KEY_UNKN;
+    }
 
     if (!read_mod) {
         byte = ITL_READ_BYTE();
@@ -1126,7 +1130,7 @@ static int itl_handle_esc(itl_le_t *le, int esc)
                 }
             }
 
-            if (le->h_item_sel > 0) {
+           if (le->h_item_sel > 0) {
                 le->h_item_sel -= 1;
 
                 itl_le_clear(le);
@@ -1340,7 +1344,6 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /*
  * TODO:
- *  - fix CTRL+BS for Linux
  *  - variadic utf8_t struct size
  *  - test this on old Windows
  *  - wrapper around itl_string_to_cstr which also inserts \n\r when exceeding column width
