@@ -1,6 +1,6 @@
 toiletline
 ----------------
-Single-file framework library for raw terminal applications,
+Single-header library for raw terminal applications,
 meant to replace a small subset of GNU Readline, and work on both Linux and Windows.
 
 It behaves like a regular shell, with all features implemented from scratch in raw mode.
