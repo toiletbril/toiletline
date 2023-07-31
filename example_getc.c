@@ -15,16 +15,29 @@ int main(void)
     int code = -1;
 
     int i = 0;
-    while (code <= 0) {
+    while (code <= 0 && code != TL_PRESSED_CTRLC) {
         code = tl_getc(char_buffer, CHAR_BUF_SIZE, "> ");
 
-        if (code == TL_PRESSED_CONTROL_SEQUENCE) {
-            fputc('\n', stdout); // LF will not be displayed
+        switch (code) {
+        case TL_PRESSED_ENTER: {
+            printf("Received Enter, control sequence %d\n", tl_last_control);
+        } break;
+
+        case TL_PRESSED_CTRLC: {
+            // If a control character other than Enter was pressed, LF will not be displayed
+            fputc('\n', stdout);
+            printf("Interrupted.\n");
+        } break;
+
+        case TL_PRESSED_CONTROL_SEQUENCE: {
+            fputc('\n', stdout);
             printf("Received control sequence %d\n", tl_last_control);
-        }
-        else {
+        } break;
+
+        default: {
             printf("Received character: '%s' of of size %zu\n",
-                   char_buffer, strlen(char_buffer));
+                    char_buffer, strlen(char_buffer));
+        }
         }
 
         fflush(stdout);
@@ -35,9 +48,7 @@ int main(void)
         }
     }
 
-    if (code == TL_PRESSED_CTRLC)
-        printf("\nInterrupted.\n");
-    else if (code != TL_SUCCESS)
+    if (code > 0)
         printf("\nAn error occured.");
 
     tl_exit();
