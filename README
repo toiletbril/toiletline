@@ -24,7 +24,7 @@ define "TOILETLINE_IMPLEMENTATION" to create the implementation.
 
 If you want to use this library in C++ or other languages, you will need
 to make a .c file which creates implementation and includes the library.
-Compile that file with to object file (-c flag in gcc/clang) and link
+Compile that file with to object file ('-c' flag in gcc/clang) and link
 your code with it.
 
 
@@ -83,6 +83,9 @@ Beware of characters like '\t' (Tab) and such, as they may break cursor
 position. Althrough they are considered as a single character, they
 occupy more than one space.
 
+All control sequences except Enter and Interrupt will be internally
+handled.
+
 Returns:
 * TL_PRESSED_ENTER on Enter;
 * TL_PRESSED_CTRLC on Ctrl-C;
@@ -91,9 +94,12 @@ Returns:
 int tl_getc(char *char_buffer, size_t size, const char *prompt);
 --------
 Read a character without waiting for Enter.
+
 Returns:
-* TL_SUCCESS when pressed a character;
-* TL_PRESSED_CONTROL_SEQUENCE when pressed a control sequence.
+* TL_SUCCESS on a character;
+* TL_PRESSED_ENTER on Enter;
+* TL_PRESSED_CTRLC on Ctrl-C;
+* TL_PRESSED_CONTROL_SEQUENCE on other control sequences.
 
 
 int tl_exit(void);
