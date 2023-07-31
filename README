@@ -28,12 +28,42 @@ Compile that file with to object file (-c flag in gcc/clang) and link
 your code with it.
 
 
-API
-----------------
-Error codes are always above 0, and defined as follows:
+Definitions
+--------
+
+Int functions can return error codes. They are always above 0, and
+defined as:
 * TL_ERROR       1;
 * TL_ERROR_SIZE  2;
 * TL_ERROR_ALLOC 3.
+
+Last pressed control sequence will be stored in 'tl_last_control' as int.
+Note that last control sequence for tl_readline() can only be Enter or
+Interrupt. Related values:
+
+Bit masks:
+* TL_KEY_MASK;
+* TL_MOD_MASK.
+
+Possible mod values:
+* TL_CTRL_BIT;
+* TL_SHIFT_BIT;
+* TL_ALT_BIT.
+
+Possible key values:
+* TL_KEY_CHAR;
+* TL_KEY_UNKN;
+* TL_KEY_UP;
+* TL_KEY_DOWN;
+* TL_KEY_RIGHT;
+* TL_KEY_LEFT;
+* TL_KEY_END;
+* TL_KEY_HOME;
+* TL_KEY_ENTER;
+* TL_KEY_BACKSPACE;
+* TL_KEY_DELETE;
+* TL_KEY_TAB;
+* TL_KEY_INTERRUPT.
 
 
 int tl_init(void);
@@ -65,32 +95,6 @@ Read a character without waiting for Enter.
 Returns:
 * TL_SUCCESS when pressed a character;
 * TL_PRESSED_CONTROL_SEQUENCE when pressed a control sequence.
-
-Last pressed control sequence will be stored in 'tl_last_control'.
-
-Bit masks:
-* TL_KEY_MASK;
-* TL_MOD_MASK.
-
-Possible mod values are:
-* TL_CTRL_BIT;
-* TL_SHIFT_BIT;
-* TL_ALT_BIT.
-
-Possible key values are:
-* TL_KEY_CHAR;
-* TL_KEY_UNKN;
-* TL_KEY_UP;
-* TL_KEY_DOWN;
-* TL_KEY_RIGHT;
-* TL_KEY_LEFT;
-* TL_KEY_END;
-* TL_KEY_HOME;
-* TL_KEY_ENTER;
-* TL_KEY_BACKSPACE;
-* TL_KEY_DELETE;
-* TL_KEY_TAB;
-* TL_KEY_INTERRUPT.
 
 
 int tl_exit(void);
