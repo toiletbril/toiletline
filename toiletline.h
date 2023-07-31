@@ -34,17 +34,7 @@ extern "C" {
 #ifndef TOILETLINE_H_
 #define TOILETLINE_H_
 
-#ifdef _WIN32
-    #include <Windows.h>
-    #include <conio.h>
-    #include <fcntl.h>
-    #include <io.h>
-    #define STDIN_FILENO  _fileno(stdin)
-    #define STDOUT_FILENO _fileno(stdout)
-#else // Linux
-    #include <termios.h>
-    #include <unistd.h>
-#endif // Linux
+#include <stddef.h>
 
 // for no asserts, define TL_ASSERT before including
 #ifndef TL_ASSERT
@@ -52,12 +42,6 @@ extern "C" {
     #define TL_ASSERT(boolval) assert(boolval)
 #endif // TL_ASSERT
 
-#include <ctype.h>
-#include <signal.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /**
  *  Initialize toiletline, enter raw mode.
