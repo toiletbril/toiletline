@@ -83,8 +83,8 @@ Beware of characters like '\t' (Tab) and such, as they may break cursor
 position. Althrough they are considered as a single character, they
 occupy more than one space.
 
-All control sequences except Enter and Interrupt will be internally
-handled.
+All control sequences except Enter and Interrupt will be handled
+internally.
 
 Returns:
 * TL_PRESSED_ENTER on Enter;
@@ -110,7 +110,7 @@ Returns TL_SUCCESS.
 
 size_t tl_utf8_strlen(const char *utf8_str);
 --------
-Get the amount of characters in a UTF-8 string:
+Get the amount of characters in a UTF-8 string.
 
 Since number of bytes can be bigger than amount of characters, regular
 strlen will not work, and will only return the number of bytes before \0.
