@@ -328,9 +328,9 @@ typedef struct itl_char itl_char_t;
 // UTF-8 string list node
 struct itl_char
 {
-    itl_utf8_t c;
     itl_char_t *next;
     itl_char_t *prev;
+    itl_utf8_t c;
 };
 
 static itl_char_t *itl_char_alloc(void)
@@ -1365,6 +1365,6 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
  *  - itl_string_to_tty_cstr().
  *  - Replace history on limit.
  *  - Autocompletion.
- *  - Variadic utf8_t struct size.
+ *  - Preallocation?.
  *  - Test this on old Windows.
  */
