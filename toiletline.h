@@ -65,6 +65,7 @@ extern "C" {
 #define TL_ERROR 1
 #define TL_ERROR_SIZE 2
 #define TL_ERROR_ALLOC 3
+
 /**
  *  Control sequences.
  *  Last control sequence used will be stored in 'tl_last_control'.
@@ -94,7 +95,8 @@ int tl_last_control = TL_KEY_UNKN;
 
 #define TL_KEY_MASK  15
 #define TL_MOD_MASK  224
- /**
+
+/**
  *  Initialize toiletline, enter raw mode.
  */
 int tl_init(void);
@@ -103,8 +105,7 @@ int tl_init(void);
  */
 int tl_exit(void);
 /**
- *  Read one character without waiting for Enter.
- *  This does not append to history.
+ *  Read one character without waiting for Enter. Does not append to history.
  */
 int tl_getc(char *char_buffer, size_t size, const char *prompt);
 /**
@@ -233,7 +234,10 @@ inline static void itl_handle_interrupt(int sign)
 
     fputc('\n', stdout);
     printf("Interrupted.\n");
+
     fflush(stdout);
+
+    tl_exit();
 
     exit(0);
 }
@@ -290,6 +294,35 @@ static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
 }
 
 // TODO: Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid
+static itl_utf8_t itl_utf8_parse(int byte)
+{
+    uint8_t bytes[4] = {byte, 0, 0, 0};
+    uint8_t len = 0;
+
+    if ((byte & 0x80) == 0) // 1 byte
+        len = 1;
+    else if ((byte & 0xE0) == 0xC0) // 2 byte
+        len = 2;
+    else if ((byte & 0xF8) == 0xF0) // 3 byte
+        len = 3;
+    else if ((byte & 0xF8) == 0xF0) // 4 byte
+        len = 4;
+
+    for (uint8_t i = 1; i < len; ++i) // consequent bytes
+        bytes[i] = ITL_READ_BYTE();
+
+#ifdef TL_DEBUG
+    printf("\nutf8 char bytes: '");
+
+    for (uint8_t i = 0; i < len - 1; ++i)
+        printf("%02X ", bytes[i]);
+
+    printf("%02X'\n", bytes[len - 1]);
+#endif
+
+    return itl_utf8_new(bytes, len);
+}
+
 typedef struct itl_char itl_char_t;
 
 // UTF-8 string list node
@@ -801,7 +834,8 @@ static int itl_le_update_tty(itl_le_t *le)
 
     fputs("\x1b[?25h", stdout);
 
-    return fflush(stdout);
+    fflush(stdout);
+
     return TL_SUCCESS;
 }
 
@@ -842,16 +876,14 @@ static int itl_history_append(itl_string_t *str)
             itl_realloc(ITL_HISTORY, ITL_HIST_SIZE * sizeof(itl_string_t *));
     }
 
-    if (ITL_HISTORY)
-
-    if (ITL_HIST_INDEX > 0) {
-        int cmp_result = itl_string_cmp(ITL_HISTORY[ITL_HIST_INDEX - 1], str);
+    if (ITL_HISTORY) {
         // Avoid adding the same string to history
+        if (ITL_HIST_INDEX > 0) {
+            int cmp_result = itl_string_cmp(ITL_HISTORY[ITL_HIST_INDEX - 1], str);
 
-        if (cmp_result == 0)
-            return 0;
             if (cmp_result == TL_SUCCESS)
                 return TL_ERROR;
+        }
     }
     else
         return TL_ERROR_ALLOC;
@@ -924,9 +956,7 @@ size_t tl_utf8_strlen(const char *utf8_str)
 
 static int itl_esc_parse(int byte)
 {
-static int itl_parse_esc(int byte)
-{
-    ITL_KEY_KIND event = 0;
+    TL_KEY_KIND event = 0;
 
     switch (byte) { // plain bytes
         case 3:
@@ -1090,35 +1120,6 @@ static int itl_parse_esc(int byte)
     }
 #endif // ITL_POSIX
     return event;
-}
-
-static itl_utf8_t itl_parse_utf8(int byte)
-{
-    uint8_t bytes[4] = {byte, 0, 0, 0};
-    uint8_t len = 0;
-
-    if ((byte & 0x80) == 0) // 1 byte
-        len = 1;
-    else if ((byte & 0xE0) == 0xC0) // 2 byte
-        len = 2;
-    else if ((byte & 0xF8) == 0xF0) // 3 byte
-        len = 3;
-    else if ((byte & 0xF8) == 0xF0) // 4 byte
-        len = 4;
-
-    for (uint8_t i = 1; i < len; ++i) // consequent bytes
-        bytes[i] = ITL_READ_BYTE();
-
-#ifdef TL_DEBUG
-    printf("\nutf8 char bytes: '");
-
-    for (uint8_t i = 0; i < len - 1; ++i)
-        printf("%02X ", bytes[i]);
-
-    printf("%02X'\n", bytes[len - 1]);
-#endif
-
-    return itl_utf8_new(bytes, len);
 }
 
 static int itl_handle_esc(itl_le_t *le, int esc)
@@ -1342,7 +1343,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
                 return code;
         }
         else {
-            itl_utf8_t ch = itl_parse_utf8(in);
+            itl_utf8_t ch = itl_utf8_parse(in);
             itl_le_putc(&le, ch);
         }
 
@@ -1360,7 +1361,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /*
  * TODO:
- *  - Refactoring to allow better handling of terminal properties.
+ *  - Terminal properties.
  *  - itl_string_to_tty_cstr().
  *  - Replace history on limit.
  *  - Autocompletion.
