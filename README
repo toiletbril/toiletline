@@ -1,66 +1,103 @@
 toiletline
 ----------------
-Single-header library for raw terminal applications,
-meant to replace a small subset of GNU Readline, and work on both Linux and Windows.
+Single-header library for raw terminal applications, meant to replace a
+small subset of GNU Readline, and work on both Linux and Windows.
 
-It behaves like a regular shell, with all features implemented from scratch in raw mode.
+It behaves like a regular shell, with all features implemented from
+scratch in raw mode.
 
 Any help finding bugs is appreciated.
 
+
 Current features
 ----------------
-* UTF-8 support.
-* In-memory history.
-* CTRL to move/erase a word.
+* UTF-8 support;
+* In-memory history;
+* CTRL to move/erase a word;
 * End/Home to jump to end/beginning.
+
 
 Documentation
 ----------------
 Before you include this file in C or C++ file,
 define "TOILETLINE_IMPLEMENTATION" to create the implementation.
 
-If you want to use this library in C++ or other languages, you will need to create a .c file
-which creates implementation and includes the library. Then, compile that file with to
-object file (-c flag in gcc/clang) and link your code with the object file.
+If you want to use this library in C++ or other languages, you will need
+to create a .c file which creates implementation and includes the
+library. Compile that file with to object file (-c flag in gcc/clang) and
+link your code with it.
+
+
+API
+----------------
+Error codes are always above 0, and defined as follows:
+* TL_ERROR       1;
+* TL_ERROR_SIZE  2;
+* TL_ERROR_ALLOC 3.
+
 
 int tl_init(void);
 --------
 Initialize toiletline and put terminal into raw mode.
-Returns 1 on success.
+Returns TL_SUCCESS.
+
 
 int tl_readline(char *line_buffer, size_t size, const char *prompt);
 --------
-Read a line while in toiletline mode.
+Read a line while in raw mode.
 
-To support multi-byte characters and null at the end, size needs to be at least 2 or more.
-Submitted input will be written to *line_buffer as a null-terminated string.
+To support multi-byte characters and null at the end, size needs to be
+at least 2 or more. Submitted input will be written to *line_buffer as a
+null-terminated string.
 
-Beware of characters like '\t' (Tab) and such, as they may break cursor position.
-Althrough they are considered as a single character, they occupy more than one space.
+Beware of characters like '\t' (Tab) and such, as they may break cursor
+position. Althrough they are considered as a single character, they
+occupy more than one space.
 
 Returns:
-* -1 on internal error;
-* 0 on Enter;
-* 1 on Ctrl-C;
-* 2 when line read exceeded *line_buffer size.
+* TL_PRESSED_ENTER on Enter;
+* TL_PRESSED_CTRLC on Ctrl-C;
+
 
 int tl_getc(char *char_buffer, size_t size, const char *prompt);
 --------
 Read a character without waiting for Enter.
-Return values are the same as of tl_readline.
+Returns:
+* TL_SUCCESS when pressed a character;
+* TL_PRESSED_CONTROL_SEQUENCE when pressed a control sequence.
+
+Last pressed control sequence will be stored in 'tl_last_control'.
+
+Possible values are:
+* TL_KEY_CHAR;
+* TL_KEY_UNKN;
+* TL_KEY_UP;
+* TL_KEY_DOWN;
+* TL_KEY_RIGHT;
+* TL_KEY_LEFT;
+* TL_KEY_END;
+* TL_KEY_HOME;
+* TL_KEY_ENTER;
+* TL_KEY_BACKSPACE;
+* TL_KEY_DELETE;
+* TL_KEY_TAB;
+* TL_KEY_INTERRUPT.
+
 
 int tl_exit(void);
 --------
 Exit and deallocate memory.
-Returns 1 on success.
+Returns TL_SUCCESS.
+
 
 size_t tl_utf8_strlen(const char *utf8_str);
 --------
 Get the amount of characters in a UTF-8 string:
 
-Since number of bytes can be bigger than amount of characters,
-regular strlen will not work, and will only return the number of bytes before \0.
+Since number of bytes can be bigger than amount of characters, regular
+strlen will not work, and will only return the number of bytes before \0.
+
 
 Examples
 ----------------
-For an example program, take a look at example.c
+For an example programs, take a look at example.c and example_getc.c
