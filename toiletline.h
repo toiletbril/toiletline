@@ -65,6 +65,35 @@ extern "C" {
 #define TL_ERROR 1
 #define TL_ERROR_SIZE 2
 #define TL_ERROR_ALLOC 3
+/**
+ *  Control sequences.
+ *  Last control sequence used will be stored in 'tl_last_control'.
+ */
+typedef enum
+{
+    TL_KEY_CHAR = 0,
+    TL_KEY_UNKN,
+    TL_KEY_UP,
+    TL_KEY_DOWN,
+    TL_KEY_RIGHT,
+    TL_KEY_LEFT,
+    TL_KEY_END,
+    TL_KEY_HOME,
+    TL_KEY_ENTER,
+    TL_KEY_BACKSPACE,
+    TL_KEY_DELETE,
+    TL_KEY_TAB,
+    TL_KEY_INTERRUPT,
+} TL_KEY_KIND;
+
+int tl_last_control = TL_KEY_UNKN;
+
+#define TL_CTRL_BIT  32
+#define TL_SHIFT_BIT 64
+#define TL_ALT_BIT   128
+
+#define TL_KEY_MASK  15
+#define TL_MOD_MASK  224
  *  Initialize toiletline, enter raw mode.
  *
  *  Returns 1 on success.
