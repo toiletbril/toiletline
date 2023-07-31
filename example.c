@@ -1,22 +1,25 @@
 #define TOILETLINE_IMPLEMENTATION
 #include "toiletline.h"
 
-#define LINE_BUF_LEN 128
+#define LINE_BUF_SIZE 128
 
 int main(void)
 {
-    if (!tl_init())
+    if (tl_init() != TL_SUCCESS)
         printf("Failed to enter raw mode!\n");
 
-    printf("Welcome to toiletline test! This is raw mode!\nUse up and down arrows to view history.\n");
+    printf("Welcome to toiletline test! This is tl_readline.\nUse up and down arrows to view history.\n");
 
-    char line_buffer[LINE_BUF_LEN] = {0};
-    int code;
+    char line_buffer[LINE_BUF_SIZE] = {0};
+    int code = -1;
 
     int i = 0;
-    while ((code = tl_readline(line_buffer, LINE_BUF_LEN, "$ ")) == 0) {
+    while (code < 0) {
+        code = tl_readline(line_buffer, LINE_BUF_SIZE, "$ ");
+
         printf("Received string: '%s' of length %zu, of size %zu\n",
                line_buffer, tl_utf8_strlen(line_buffer), strlen(line_buffer));
+
         fflush(stdout);
 
         if (i++ >= 10) {
@@ -25,9 +28,9 @@ int main(void)
         }
     }
 
-    if (code == 1)
+    if (code == TL_PRESSED_CTRLC)
         printf("\nInterrupted.\n");
-    else if (code != 0)
+    else if (code != TL_SUCCESS)
         printf("\nAn error occured.");
 
     tl_exit();
