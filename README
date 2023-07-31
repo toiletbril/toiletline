@@ -30,12 +30,11 @@ your code with it.
 
 Definitions
 --------
-
 Int functions can return error codes. They are always above 0, and
 defined as:
-* TL_ERROR       1;
-* TL_ERROR_SIZE  2;
-* TL_ERROR_ALLOC 3.
+* TL_ERROR;
+* TL_ERROR_SIZE;
+* TL_ERROR_ALLOC.
 
 Last pressed control sequence will be stored in 'tl_last_control' as int.
 Note that last control sequence for tl_readline() can only be Enter or
