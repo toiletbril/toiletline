@@ -1,5 +1,5 @@
 /**
- *  toiletline 0.1.2
+ *  toiletline 0.2.0
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
