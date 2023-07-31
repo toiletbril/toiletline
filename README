@@ -23,9 +23,9 @@ Before you include this file in C or C++ file,
 define "TOILETLINE_IMPLEMENTATION" to create the implementation.
 
 If you want to use this library in C++ or other languages, you will need
-to create a .c file which creates implementation and includes the
-library. Compile that file with to object file (-c flag in gcc/clang) and
-link your code with it.
+to make a .c file which creates implementation and includes the library.
+Compile that file with to object file (-c flag in gcc/clang) and link
+your code with it.
 
 
 API
@@ -68,7 +68,16 @@ Returns:
 
 Last pressed control sequence will be stored in 'tl_last_control'.
 
-Possible values are:
+Bit masks:
+* TL_KEY_MASK;
+* TL_MOD_MASK.
+
+Possible mod values are:
+* TL_CTRL_BIT;
+* TL_SHIFT_BIT;
+* TL_ALT_BIT.
+
+Possible key values are:
 * TL_KEY_CHAR;
 * TL_KEY_UNKN;
 * TL_KEY_UP;
