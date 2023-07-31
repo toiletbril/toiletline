@@ -19,25 +19,25 @@ int main(void)
         code = tl_getc(char_buffer, CHAR_BUF_SIZE, "> ");
 
         switch (code) {
-        case TL_PRESSED_ENTER: {
-            printf("Received Enter, control sequence %d\n", tl_last_control);
-        } break;
+            case TL_PRESSED_ENTER: {
+                printf("Received Enter, control sequence %d\n", tl_last_control);
+            } break;
 
-        case TL_PRESSED_CTRLC: {
-            // If a control character other than Enter was pressed, LF will not be displayed
-            fputc('\n', stdout);
-            printf("Interrupted.\n");
-        } break;
+            case TL_PRESSED_CTRLC: {
+                // If a control character other than Enter was pressed, LF will not be displayed
+                fputc('\n', stdout);
+                printf("Interrupted.\n");
+            } break;
 
-        case TL_PRESSED_CONTROL_SEQUENCE: {
-            fputc('\n', stdout);
-            printf("Received control sequence %d\n", tl_last_control);
-        } break;
+            case TL_PRESSED_CONTROL_SEQUENCE: {
+                fputc('\n', stdout);
+                printf("Received control sequence %d\n", tl_last_control);
+            } break;
 
-        default: {
-            printf("Received character: '%s' of of size %zu\n",
-                    char_buffer, strlen(char_buffer));
-        }
+            default: {
+                printf("Received character: '%s' of of size %zu\n",
+                        char_buffer, strlen(char_buffer));
+            }
         }
 
         fflush(stdout);
