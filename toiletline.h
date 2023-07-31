@@ -36,7 +36,7 @@ extern "C" {
 
 #include <stddef.h>
 
-// for no asserts, define TL_ASSERT before including
+// To disable asserts, define TL_ASSERT before including.
 #ifndef TL_ASSERT
     #include <assert.h>
     #define TL_ASSERT(boolval) assert(boolval)
@@ -94,34 +94,21 @@ int tl_last_control = TL_KEY_UNKN;
 
 #define TL_KEY_MASK  15
 #define TL_MOD_MASK  224
+ /**
  *  Initialize toiletline, enter raw mode.
- *
- *  Returns 1 on success.
  */
 int tl_init(void);
 /**
  *  Exit toiletline and free history.
- *
- *  Returns 1 on success.
  */
 int tl_exit(void);
 /**
  *  Read one character without waiting for Enter.
  *  This does not append to history.
- *
- *  Returns:
- *     0 on success.
- *     1 when exited.
- *    -1 internal error.
  */
 int tl_getc(char *char_buffer, size_t size, const char *prompt);
 /**
  *  Read one line.
- *
- *  Returns:
- *     0 on success.
- *     1 when exited.
- *    -1 internal error.
  */
 int tl_readline(char *line_buffer, size_t size, const char *prompt);
 /**
@@ -136,7 +123,6 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
 #ifdef TOILETLINE_IMPLEMENTATION
 
-// general debug messages
 #ifdef TL_DEBUG
     #define ITL_DBG(message, val) \
         printf("%s: %d\n", message, val)
@@ -225,8 +211,6 @@ inline static void itl_handle_interrupt(int sign)
 
 static int ITL_GLOBAL_ALLOC_COUNT = 0;
 
-// TODO: Remove this, since allocations are mostly figured out
-// Messages about allocations.
 #ifdef TL_DEBUG_ALLOC
     #define ITL_ALLOC_DBG(message) \
         printf("\n%s, alloc: %d\n", message, ITL_GLOBAL_ALLOC_COUNT)
@@ -292,6 +276,7 @@ static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
     return utf8_char;
 }
 
+// TODO: Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid
 typedef struct itl_char itl_char_t;
 
 // UTF-8 string list node
@@ -345,8 +330,6 @@ static itl_string_t *itl_string_alloc(void)
     return ptr;
 }
 
-//  0 if strings are the same,
-// -1 if they are not.
 static int itl_string_cmp(itl_string_t *str1, itl_string_t *str2)
 {
     if (str1->size != str2->size)
@@ -427,14 +410,12 @@ inline static void itl_string_free(itl_string_t *str)
     ITL_FREE(str);
 }
 
-// 0 - success, -1 - *str did not fit in *c_str
-// This function should not result in any errors.
 static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
 {
     itl_char_t *c = str->begin;
     size_t i = 0;
 
-    // NOTE: This can cause bugs if (size - i - 1) wraps around
+    // NOTE: (size - i - 1) can wrap around?
     while (c && size - i > c->c.size) {
         for (size_t j = 0; j != c->c.size; ++j)
             c_str[i++] = c->c.bytes[j];
@@ -445,7 +426,7 @@ static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
 
     c_str[i] = '\0';
 
-    // If *c exists, then size was exceeded. This should not happen ever.
+    // If *c exists, then size was exceeded
     if (c)
         return -1;
 
@@ -702,7 +683,7 @@ inline static void itl_le_clear(itl_le_t *le)
 
 typedef struct itl_pbuf itl_pbuf_t;
 
-// Buffer output before writing it all to stdout
+// Buffer for output before writing it to stdout
 struct itl_pbuf
 {
   char *string;
@@ -837,8 +818,7 @@ static void itl_history_free(void)
     ITL_FREE(ITL_HISTORY);
 }
 
-// Copies string to global history.
-// Allocates memory for a new string.
+// Copies string to global history. Allocates memory for a new string
 static int itl_history_append(itl_string_t *str)
 {
     if (str->length <= 0)
@@ -847,7 +827,7 @@ static int itl_history_append(itl_string_t *str)
     if (ITL_HIST_SIZE >= ITL_HISTORY_MAX_SIZE)
         return 0;
 
-    // Allocate more memory if needed.
+    // Allocate more memory if needed
     if (ITL_HIST_INDEX >= ITL_HIST_SIZE && ITL_HIST_SIZE < ITL_HISTORY_MAX_SIZE) {
         ITL_HIST_SIZE *= 2;
         ITL_HISTORY = (itl_string_t **)
@@ -856,9 +836,9 @@ static int itl_history_append(itl_string_t *str)
 
     if (ITL_HISTORY)
 
-    // Avoid adding the same string to history.
     if (ITL_HIST_INDEX > 0) {
         int cmp_result = itl_string_cmp(ITL_HISTORY[ITL_HIST_INDEX - 1], str);
+        // Avoid adding the same string to history
 
         if (cmp_result == 0)
             return 0;
@@ -873,8 +853,7 @@ static int itl_history_append(itl_string_t *str)
     return 1;
 }
 
-// Copies string from history to line editor
-// Does not free anything
+// Copies string from history to line editor. Does not free anything
 static void itl_history_get(itl_le_t *le)
 {
     if (le->h_item_sel >= ITL_HIST_INDEX)
@@ -887,8 +866,7 @@ static void itl_history_get(itl_le_t *le)
     le->cur_pos = ITL_LINE_BUF->length;
 }
 
-// allocates memory for global history and line buffer
-// adds signal handle for c^c
+// Allocates memory for history and line buffer. Adds signal handle for C^c
 int tl_init(void)
 {
     itl_history_alloc();
@@ -900,8 +878,7 @@ int tl_init(void)
     return itl_enter_raw_mode();
 }
 
-// Frees memory for global history and line buffer
-// Removes signal handle for c^c
+// Frees memory for history and line buffer. Removes signal handle for C^c
 int tl_exit(void)
 {
     itl_history_free();
@@ -918,7 +895,7 @@ int tl_exit(void)
     return code;
 }
 
-// Returns the number of utf8 characters in a char array
+// Returns the number of UTF8 characters in a char array
 size_t tl_utf8_strlen(const char *utf8_str)
 {
     int len = 0;
@@ -1125,7 +1102,6 @@ static int itl_parse_esc(int byte)
     return event;
 }
 
-// TODO: Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid
 static itl_utf8_t itl_parse_utf8(int byte)
 {
     uint8_t bytes[4] = {byte, 0, 0, 0};
@@ -1155,9 +1131,6 @@ static itl_utf8_t itl_parse_utf8(int byte)
     return itl_utf8_new(bytes, len);
 }
 
-//  0 on enter
-//  1 on interrupt
-// -1 if should continue
 static int itl_handle_esc(itl_le_t *le, int esc)
 {
     switch (esc & ITL_KEY_MASK) {
