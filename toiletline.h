@@ -123,9 +123,6 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
 #ifdef TOILETLINE_IMPLEMENTATION
 
-#ifdef TL_DEBUG
-    #define ITL_DBG(message, val) \
-        printf("%s: %d\n", message, val)
 #if defined(_WIN32)
     #include <Windows.h>
     #include <conio.h>
@@ -140,6 +137,14 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #else // __linux__ || BSD || __APPLE__
     #error "Your system is not supported"
 #endif
+
+#include <ctype.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #ifdef ITL_DEBUG
     #define ITL_DBG(...) \
         fprintf(stderr, __VA_ARGS__)
@@ -239,8 +244,6 @@ inline static void *itl_malloc(size_t size)
 {
     ITL_GLOBAL_ALLOC_COUNT += 1;
 
-    ITL_ALLOC_DBG("malloc");
-
     return TL_MALLOC(size);
 }
 
@@ -266,7 +269,6 @@ inline static void *itl_realloc(void *block, size_t size)
             free(ptr);                    \
         }                                 \
     } while (0)
-
 
 typedef struct itl_utf8 itl_utf8_t;
 
@@ -920,30 +922,8 @@ size_t tl_utf8_strlen(const char *utf8_str)
     return len;
 }
 
-typedef enum
+static int itl_esc_parse(int byte)
 {
-    ITL_KEY_CHAR = 0,
-    ITL_KEY_UNKN,
-    ITL_KEY_UP,
-    ITL_KEY_DOWN,
-    ITL_KEY_RIGHT,
-    ITL_KEY_LEFT,
-    ITL_KEY_END,
-    ITL_KEY_HOME,
-    ITL_KEY_ENTER,
-    ITL_KEY_BACKSPACE,
-    ITL_KEY_DELETE,
-    ITL_KEY_TAB,
-    ITL_KEY_INTERRUPT,
-} ITL_KEY_KIND;
-
-#define ITL_CTRL_BIT  32
-#define ITL_SHIFT_BIT 64
-#define ITL_ALT_BIT   128
-
-#define ITL_KEY_MASK  15
-#define ITL_MOD_MASK  224
-
 static int itl_parse_esc(int byte)
 {
     ITL_KEY_KIND event = 0;
