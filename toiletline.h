@@ -179,7 +179,7 @@ inline static int itl_enter_raw_mode(void)
         return TL_ERROR;
 
     if (SetConsoleCP(CP_UTF8) == 0)
-        return ITL_ERROR;
+        return TL_ERROR;
 #elif defined(ITL_POSIX)
     struct termios term;
     if (tcgetattr(STDIN_FILENO, &term) != 0)
