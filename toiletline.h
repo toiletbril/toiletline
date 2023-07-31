@@ -42,8 +42,29 @@ extern "C" {
     #define TL_ASSERT(boolval) assert(boolval)
 #endif // TL_ASSERT
 
+// To use different allocation functions, define these before including.
+#ifndef TL_MALLOC
+    #define TL_MALLOC(size) malloc(size)
+    #define TL_CALLOC(count, size) calloc(count, size)
+    #define TL_REALLOC(block, size) realloc(block, size)
+#endif
 
 /**
+ *  Zero is reserved as a successful result.
+ */
+#define TL_SUCCESS 0
+/**
+ *  Codes which are returned from read functions.
+ */
+#define TL_PRESSED_ENTER -1
+#define TL_PRESSED_CTRLC -2
+#define TL_PRESSED_CONTROL_SEQUENCE -3
+/**
+ *  Codes above 0 are errors.
+ */
+#define TL_ERROR 1
+#define TL_ERROR_SIZE 2
+#define TL_ERROR_ALLOC 3
  *  Initialize toiletline, enter raw mode.
  *
  *  Returns 1 on success.
