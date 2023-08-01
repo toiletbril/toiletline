@@ -17,6 +17,9 @@ int main(void)
     while (code < 0) {
         code = tl_readline(line_buffer, LINE_BUF_SIZE, "$ ");
 
+        if (code == TL_PRESSED_CTRLC)
+            break;
+
         printf("Received string: '%s' of length %zu, of size %zu\n",
                line_buffer, tl_utf8_strlen(line_buffer), strlen(line_buffer));
 
@@ -30,7 +33,7 @@ int main(void)
 
     if (code == TL_PRESSED_CTRLC)
         printf("\nInterrupted.\n");
-    else if (code != TL_SUCCESS)
+    else if (code > 0)
         printf("\nAn error occured.");
 
     tl_exit();
