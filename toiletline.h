@@ -156,9 +156,9 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 
 #if defined(_WIN32)
-    #define ITL_READ_BYTE() _getch()
+    #define itl_read_byte() _getch()
 #elif defined(ITL_POSIX)
-    #define ITL_READ_BYTE() fgetc(stdin)
+    #define itl_read_byte() fgetc(stdin)
 #endif // ITL_POSIX
 
 inline static int itl_enter_raw_mode(void)
@@ -242,18 +242,18 @@ inline static void itl_handle_interrupt(int sign)
     exit(0);
 }
 
-static int ITL_GLOBAL_ALLOC_COUNT = 0;
+static int itl_global_alloc_count = 0;
 
 inline static void *itl_malloc(size_t size)
 {
-    ITL_GLOBAL_ALLOC_COUNT += 1;
+    itl_global_alloc_count += 1;
 
     return TL_MALLOC(size);
 }
 
 inline static void *itl_calloc(size_t count, size_t size)
 {
-    ITL_GLOBAL_ALLOC_COUNT += 1;
+    itl_global_alloc_count += 1;
 
     return TL_CALLOC(count, size);
 }
@@ -261,15 +261,15 @@ inline static void *itl_calloc(size_t count, size_t size)
 inline static void *itl_realloc(void *block, size_t size)
 {
     if (block == NULL)
-        ITL_GLOBAL_ALLOC_COUNT += 1;
+        itl_global_alloc_count += 1;
 
     return TL_REALLOC(block, size);
 }
 
-#define ITL_FREE(ptr)                     \
+#define itl_free(ptr)                     \
     do {                                  \
         if (ptr != NULL) {                \
-            ITL_GLOBAL_ALLOC_COUNT -= 1;  \
+            itl_global_alloc_count -= 1;  \
             free(ptr);                    \
         }                                 \
     } while (0)
@@ -309,7 +309,7 @@ static itl_utf8_t itl_utf8_parse(int byte)
         len = 4;
 
     for (uint8_t i = 1; i < len; ++i) // consequent bytes
-        bytes[i] = ITL_READ_BYTE();
+        bytes[i] = itl_read_byte();
 
 #ifdef TL_DEBUG
     printf("\nutf8 char bytes: '");
@@ -350,7 +350,7 @@ static void itl_char_copy(itl_char_t *dst, itl_char_t *src)
 
 static void itl_char_free(itl_char_t *c)
 {
-    ITL_FREE(c);
+    itl_free(c);
 }
 
 typedef struct itl_string itl_string_t;
@@ -449,12 +449,11 @@ static void itl_string_clear(itl_string_t *str)
     str->size = 0;
 }
 
-inline static void itl_string_free(itl_string_t *str)
-{
-    itl_string_clear(str);
-
-    ITL_FREE(str);
-}
+#define itl_string_free(str)   \
+    do {                       \
+        itl_string_clear(str); \
+        itl_free(str);         \
+    } while (0)                \
 
 static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
 {
@@ -491,7 +490,7 @@ itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
     return itl_string_to_cstr(str, c_str, size);
 }
 
-static itl_string_t *ITL_LINE_BUF = NULL;
+static itl_string_t *itl_global_line_buffer = NULL;
 
 typedef struct itl_le itl_le_t;
 
@@ -646,71 +645,53 @@ static void itl_le_move_left(itl_le_t *le, size_t steps)
     }
 }
 
-#define ITL_IS_DELIM(c) (ispunct(c) || isspace(c))
+#define itl_is_delim(c) (ispunct(c) || isspace(c))
+
+#define ITL_TOKEN_WHITESPACE 0
+#define ITL_TOKEN_WORD 1
+
+static size_t itl_le_next_token(itl_le_t *le, int behind, int token)
+{
+    itl_char_t *ch = le->cur_char;
+    size_t steps = 1;
+
+    if (ch)
+        if (behind)
+            ch = ch->prev;
+        else
+            ch = ch->next;
+    else
+        if (le->cur_pos == le->line->size && behind)
+            ch = le->line->end;
+        else
+            return 0;
+
+    while (ch) {
+        if (token == ITL_TOKEN_WHITESPACE) {
+            if (itl_is_delim(ch->c.bytes[0]))
+                break;
+        }
+        else {
+            if (!itl_is_delim(ch->c.bytes[0]))
+                break;
+        }
+
+        steps += 1;
+
+        if (behind)
+            ch = ch->prev;
+        else
+            ch = ch->next;
+    }
+
+    return steps;
+}
 
 // Number of characters to get to the next word
-static size_t itl_le_next_word(itl_le_t *le, int behind)
-{
-    itl_char_t *ch = le->cur_char;
-    size_t steps = 1;
-
-    if (ch)
-        if (behind)
-            ch = ch->prev;
-        else
-            ch = ch->next;
-    else
-        if (le->cur_pos == le->line->size && behind)
-            ch = le->line->end;
-        else
-            return 0;
-
-    while (ch) {
-        if (!ITL_IS_DELIM(ch->c.bytes[0]))
-            break;
-
-        steps += 1;
-
-        if (behind)
-            ch = ch->prev;
-        else
-            ch = ch->next;
-    }
-
-    return steps;
-}
+#define itl_le_next_word(le, behind) itl_le_next_token(le, behind, ITL_TOKEN_WORD);
 
 // Number of characters to get to the next whitespace
-static size_t itl_le_next_whitespace(itl_le_t *le, int behind)
-{
-    itl_char_t *ch = le->cur_char;
-    size_t steps = 1;
-
-    if (ch)
-        if (behind)
-            ch = ch->prev;
-        else
-            ch = ch->next;
-    else
-        if (le->cur_pos == le->line->size && behind)
-            ch = le->line->end;
-        else
-            return 0;
-
-    while (ch) {
-        if (ITL_IS_DELIM(ch->c.bytes[0]))
-            break;
-
-        steps += 1;
-
-        if (behind)
-            ch = ch->prev;
-        else
-            ch = ch->next;
-    }
-
-    return steps;
-}
+#define itl_le_next_whitespace(le, behind) itl_le_next_token(le, behind, ITL_TOKEN_WHITESPACE)
 
 // Frees line buffer's string's characters, does not free the string itself
 inline static void itl_le_clear(itl_le_t *le)
@@ -721,16 +702,16 @@ inline static void itl_le_clear(itl_le_t *le)
     le->cur_pos = 0;
 }
 
-typedef struct itl_pbuf itl_pbuf_t;
+typedef struct itl_char_buf itl_char_buf_t;
 
 // Buffer for output before writing it to stdout
-struct itl_pbuf
+struct itl_char_buf
 {
   char *string;
   int size;
 };
 
-static void itl_pbuf_append(itl_pbuf_t *pbuf, const char *s, size_t size)
+static void itl_char_buf_append(itl_char_buf_t *pbuf, const char *s, size_t size)
 {
     char *n_s = itl_realloc(pbuf->string, pbuf->size + size);
     if (n_s == NULL)
@@ -742,9 +723,9 @@ static void itl_pbuf_append(itl_pbuf_t *pbuf, const char *s, size_t size)
     pbuf->size += size;
 }
 
-inline static void itl_pbuf_free(itl_pbuf_t *pbuf)
+inline static void itl_char_buf_free(itl_char_buf_t *pbuf)
 {
-    ITL_FREE(pbuf->string);
+    itl_free(pbuf->string);
 }
 
 // Gets you maximum terminal column width and current row
@@ -759,7 +740,7 @@ int itl_tty_size(size_t *rows, size_t *cols) {
     fflush(stdout);
 
     while (i < sizeof(buf) - 1) {
-        buf[i] = ITL_READ_BYTE();
+        buf[i] = itl_read_byte();
         if (buf[i] == 'R')
             break;
         i++;
@@ -779,7 +760,7 @@ static int itl_le_update_tty(itl_le_t *le)
 {
     fputs("\x1b[?25l", stdout);
 
-    itl_pbuf_t pbuf = { .string = NULL, .size = 0 };
+    itl_char_buf_t pbuf = { .string = NULL, .size = 0 };
 
     size_t pr_len;
 
@@ -811,26 +792,26 @@ static int itl_le_update_tty(itl_le_t *le)
 
     if (wrap_value > 0 && wrap_cursor_pos > 1) {
         snprintf(buf, buf_size, "\x1b[%zuF", wrap_value);
-        itl_pbuf_append(&pbuf, buf, strlen(buf));
+        itl_char_buf_append(&pbuf, buf, strlen(buf));
     }
 
-    itl_pbuf_append(&pbuf, "\r", 1);
-    itl_pbuf_append(&pbuf, "\x1b[0K", 4);
+    itl_char_buf_append(&pbuf, "\r", 1);
+    itl_char_buf_append(&pbuf, "\x1b[0K", 4);
 
-    itl_pbuf_append(&pbuf, le->prompt, pr_len);
+    itl_char_buf_append(&pbuf, le->prompt, pr_len);
 
     size_t cur_offset = 0;
     itl_string_to_tty_cstr(le->line, buf, buf_size, cols, pr_len, &cur_offset);
 
-    itl_pbuf_append(&pbuf, buf, cstr_size + cur_offset);
+    itl_char_buf_append(&pbuf, buf, cstr_size + cur_offset);
 
     snprintf(buf, buf_size, "\x1b[%zuG", wrap_cursor_pos + cur_offset);
-    itl_pbuf_append(&pbuf, buf, strlen(buf));
+    itl_char_buf_append(&pbuf, buf, strlen(buf));
 
     write(STDOUT_FILENO, pbuf.string, pbuf.size);
 
-    itl_pbuf_free(&pbuf);
-    ITL_FREE(buf);
+    itl_char_buf_free(&pbuf);
+    itl_free(buf);
 
     fputs("\x1b[?25h", stdout);
 
@@ -840,46 +821,46 @@ static int itl_le_update_tty(itl_le_t *le)
 }
 
 #define TL_HISTORY_INIT_SIZE 16
-#define ITL_HISTORY_MAX_SIZE 128
+#define TL_HISTORY_MAX_SIZE 128
 
-static itl_string_t **ITL_HISTORY = NULL;
-static int ITL_HIST_SIZE = TL_HISTORY_INIT_SIZE;
-static int ITL_HIST_INDEX = 0;
+static itl_string_t **itl_global_history = NULL;
+static int itl_global_history_size = TL_HISTORY_INIT_SIZE;
+static int itl_global_history_index = 0;
 
-static void itl_history_alloc(void)
+static void itl_global_history_alloc(void)
 {
-    ITL_HISTORY = (itl_string_t **)
+    itl_global_history = (itl_string_t **)
         itl_calloc(TL_HISTORY_INIT_SIZE, sizeof(itl_string_t *));
 }
 
-static void itl_history_free(void)
+static void itl_global_history_free(void)
 {
-    for (int i = 0; i < ITL_HIST_INDEX; ++i)
-        itl_string_free(ITL_HISTORY[i]);
+    for (int i = 0; i < itl_global_history_index; ++i)
+        itl_string_free(itl_global_history[i]);
 
-    ITL_FREE(ITL_HISTORY);
+    itl_free(itl_global_history);
 }
 
 // Copies string to global history. Allocates memory for a new string
-static int itl_history_append(itl_string_t *str)
+static int itl_global_history_append(itl_string_t *str)
 {
     if (str->length <= 0)
         return TL_ERROR;
 
-    if (ITL_HIST_SIZE >= ITL_HISTORY_MAX_SIZE)
+    if (itl_global_history_size >= TL_HISTORY_MAX_SIZE)
         return TL_ERROR;
 
     // Allocate more memory if needed
-    if (ITL_HIST_INDEX >= ITL_HIST_SIZE && ITL_HIST_SIZE < ITL_HISTORY_MAX_SIZE) {
-        ITL_HIST_SIZE *= 2;
-        ITL_HISTORY = (itl_string_t **)
-            itl_realloc(ITL_HISTORY, ITL_HIST_SIZE * sizeof(itl_string_t *));
+    if (itl_global_history_index >= itl_global_history_size && itl_global_history_size < TL_HISTORY_MAX_SIZE) {
+        itl_global_history_size *= 2;
+        itl_global_history = (itl_string_t **)
+            itl_realloc(itl_global_history, itl_global_history_size * sizeof(itl_string_t *));
     }
 
-    if (ITL_HISTORY) {
+    if (itl_global_history) {
         // Avoid adding the same string to history
-        if (ITL_HIST_INDEX > 0) {
-            int cmp_result = itl_string_cmp(ITL_HISTORY[ITL_HIST_INDEX - 1], str);
+        if (itl_global_history_index > 0) {
+            int cmp_result = itl_string_cmp(itl_global_history[itl_global_history_index - 1], str);
 
             if (cmp_result == TL_SUCCESS)
                 return TL_ERROR;
@@ -892,30 +873,30 @@ static int itl_history_append(itl_string_t *str)
 
     itl_string_copy(new_str, str);
 
-    ITL_HISTORY[ITL_HIST_INDEX++] = new_str;
+    itl_global_history[itl_global_history_index++] = new_str;
 
     return TL_SUCCESS;
 }
 
 // Copies string from history to line editor. Does not free anything
-static void itl_history_get(itl_le_t *le)
+static void itl_global_history_get(itl_le_t *le)
 {
-    if (le->h_item_sel >= ITL_HIST_INDEX)
+    if (le->h_item_sel >= itl_global_history_index)
         return;
 
-    itl_string_t *h_entry = ITL_HISTORY[le->h_item_sel];
+    itl_string_t *h_entry = itl_global_history[le->h_item_sel];
 
-    itl_string_copy(ITL_LINE_BUF, h_entry);
+    itl_string_copy(itl_global_line_buffer, h_entry);
 
-    le->cur_pos = ITL_LINE_BUF->length;
+    le->cur_pos = itl_global_line_buffer->length;
 }
 
 // Allocates memory for history and line buffer. Adds signal handle for C^c
 int tl_init(void)
 {
-    itl_history_alloc();
+    itl_global_history_alloc();
 
-    ITL_LINE_BUF = itl_string_alloc();
+    itl_global_line_buffer = itl_string_alloc();
 
     signal(SIGINT, itl_handle_interrupt);
 
@@ -925,16 +906,16 @@ int tl_init(void)
 // Frees memory for history and line buffer. Removes signal handle for C^c
 int tl_exit(void)
 {
-    itl_history_free();
-    itl_string_free(ITL_LINE_BUF);
+    itl_global_history_free();
+    itl_string_free(itl_global_line_buffer);
 
     signal(SIGINT, SIG_DFL);
 
-    ITL_DBG("exit, alloc count", ITL_GLOBAL_ALLOC_COUNT);
+    ITL_DBG("exit, alloc count", itl_global_alloc_count);
 
     int code = itl_exit_raw_mode();
 
-    TL_ASSERT(ITL_GLOBAL_ALLOC_COUNT == 0);
+    TL_ASSERT(itl_global_alloc_count == 0);
 
     return code;
 }
@@ -975,7 +956,7 @@ static int itl_esc_parse(int byte)
 
 #if defined(_WIN32)
     if (byte == 224) { // escape
-        switch (ITL_READ_BYTE()) {
+        switch (itl_read_byte()) {
             case 72: {
                 event = TL_KEY_UP;
             } break;
@@ -1026,19 +1007,19 @@ static int itl_esc_parse(int byte)
     int read_mod = 0;
 
     if (byte == 27) { // \x1b
-        byte = ITL_READ_BYTE();
+        byte = itl_read_byte();
 
         if (byte != 91 && byte != 79) { // [
             return TL_KEY_CHAR | TL_ALT_BIT;
         }
 
-        byte = ITL_READ_BYTE();
+        byte = itl_read_byte();
 
         if (byte == 49) {
-            if (ITL_READ_BYTE() != 59) // ;
+            if (itl_read_byte() != 59) // ;
                 return TL_KEY_UNKN;
 
-            switch (ITL_READ_BYTE()) {
+            switch (itl_read_byte()) {
                 case 50: {
                     event |= TL_SHIFT_BIT;
                 } break;
@@ -1050,7 +1031,7 @@ static int itl_esc_parse(int byte)
 
             read_mod = 1;
 
-            byte = ITL_READ_BYTE();
+            byte = itl_read_byte();
         }
 
         switch (byte) { // escape codes based on xterm
@@ -1099,10 +1080,10 @@ static int itl_esc_parse(int byte)
     }
 
     if (!read_mod) {
-        byte = ITL_READ_BYTE();
+        byte = itl_read_byte();
 
         if (byte == 59) { // ;
-            switch (ITL_READ_BYTE()) {
+            switch (itl_read_byte()) {
                 case 53: {
                     event |= TL_CTRL_BIT;
                 } break;
@@ -1112,7 +1093,7 @@ static int itl_esc_parse(int byte)
                 } break;
             }
 
-            byte = ITL_READ_BYTE();
+            byte = itl_read_byte();
         }
 
         if (byte != 126) // ~
@@ -1129,9 +1110,9 @@ static int itl_handle_esc(itl_le_t *le, int esc)
     switch (esc & TL_KEY_MASK) {
         case TL_KEY_UP: {
             if (le->h_item_sel == -1) {
-                le->h_item_sel = ITL_HIST_INDEX;
-                if (le->line->length > 0 && ITL_HIST_INDEX > 0) {
-                    itl_history_append(le->line);
+                le->h_item_sel = itl_global_history_index;
+                if (le->line->length > 0 && itl_global_history_index > 0) {
+                    itl_global_history_append(le->line);
                 }
             }
 
@@ -1140,18 +1121,18 @@ static int itl_handle_esc(itl_le_t *le, int esc)
 
                 itl_le_clear(le);
 
-                itl_history_get(le);
+                itl_global_history_get(le);
             }
         } break;
 
         case TL_KEY_DOWN: {
-            if (le->h_item_sel < ITL_HIST_INDEX - 1 && le->h_item_sel >= 0) {
+            if (le->h_item_sel < itl_global_history_index - 1 && le->h_item_sel >= 0) {
                 le->h_item_sel += 1;
 
                 itl_le_clear(le);
-                itl_history_get(le);
+                itl_global_history_get(le);
             }
-            else if (ITL_HIST_INDEX > 0) {
+            else if (itl_global_history_index > 0) {
                 itl_le_clear(le);
                 le->h_item_sel = -1;
             }
@@ -1208,7 +1189,7 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         case TL_KEY_ENTER: {
             int err = itl_string_to_cstr(le->line, le->out_buf, le->out_size);
 
-            itl_history_append(le->line);
+            itl_global_history_append(le->line);
 
             itl_le_clear(le);
 
@@ -1283,11 +1264,11 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
     TL_ASSERT(size > 1);
     TL_ASSERT(char_buffer != NULL);
 
-    itl_le_t le = itl_le_new(ITL_LINE_BUF, char_buffer, size, prompt);
+    itl_le_t le = itl_le_new(itl_global_line_buffer, char_buffer, size, prompt);
 
     itl_le_update_tty(&le);
 
-    int in = ITL_READ_BYTE();
+    int in = itl_read_byte();
     int esc = itl_esc_parse(in);
 
     if (esc != TL_KEY_CHAR) {
@@ -1320,7 +1301,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
     TL_ASSERT(size > 1);
     TL_ASSERT(line_buffer != NULL);
 
-    itl_le_t le = itl_le_new(ITL_LINE_BUF, line_buffer, size, prompt);
+    itl_le_t le = itl_le_new(itl_global_line_buffer, line_buffer, size, prompt);
 
     itl_le_update_tty(&le);
 
@@ -1328,7 +1309,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
     int in;
 
     while (1) {
-        in = ITL_READ_BYTE();
+        in = itl_read_byte();
 
 #ifdef TL_SEE_BYTES
         printf("%d\n", in);
@@ -1361,6 +1342,8 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /*
  * TODO:
+ *  - Holding CTRL creates weird inputs on Windows.
+ *  - Pasting support.
  *  - Terminal properties.
  *  - itl_string_to_tty_cstr().
  *  - Replace history on limit.
