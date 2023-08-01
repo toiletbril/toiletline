@@ -18,13 +18,14 @@ int main(void)
     while (code <= 0 && code != TL_PRESSED_CTRLC) {
         code = tl_getc(char_buffer, CHAR_BUF_SIZE, "> ");
 
+        // Note that If a control character other than Enter was pressed,
+        // LF will not be displayed.
         switch (code) {
             case TL_PRESSED_ENTER: {
                 printf("Received Enter, control sequence %d\n", tl_last_control);
             } break;
 
             case TL_PRESSED_CTRLC: {
-                // If a control character other than Enter was pressed, LF will not be displayed
                 fputc('\n', stdout);
                 printf("Interrupted.\n");
             } break;
