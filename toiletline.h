@@ -348,10 +348,7 @@ static void itl_char_copy(itl_char_t *dst, itl_char_t *src)
     memcpy(dst, src, sizeof(itl_char_t));
 }
 
-static void itl_char_free(itl_char_t *c)
-{
-    itl_free(c);
-}
+#define itl_char_free(c) itl_free(c)
 
 typedef struct itl_string itl_string_t;
 
@@ -711,22 +708,19 @@ struct itl_char_buf
   int size;
 };
 
-static void itl_char_buf_append(itl_char_buf_t *pbuf, const char *s, size_t size)
+static void itl_char_buf_append(itl_char_buf_t *buf, const char *s, size_t size)
 {
-    char *n_s = itl_realloc(pbuf->string, pbuf->size + size);
+    char *n_s = itl_realloc(buf->string, buf->size + size);
     if (n_s == NULL)
         return;
 
-    memcpy(&n_s[pbuf->size], s, size);
+    memcpy(&n_s[buf->size], s, size);
 
-    pbuf->string = n_s;
-    pbuf->size += size;
+    buf->string = n_s;
+    buf->size += size;
 }
 
-inline static void itl_char_buf_free(itl_char_buf_t *pbuf)
-{
-    itl_free(pbuf->string);
-}
+#define itl_char_buf_free(char_buf) itl_free((char_buf)->string)
 
 // Gets you maximum terminal column width and current row
 int itl_tty_size(size_t *rows, size_t *cols) {
@@ -760,15 +754,15 @@ static int itl_le_update_tty(itl_le_t *le)
 {
     fputs("\x1b[?25l", stdout);
 
-    itl_char_buf_t pbuf = { .string = NULL, .size = 0 };
+    itl_char_buf_t to_be_printed = { .string = NULL, .size = 0 };
 
-    size_t pr_len;
+    size_t prompt_len;
 
     // prompt = NULL is valid
     if (le->prompt != NULL)
-        pr_len = strlen(le->prompt);
+        prompt_len = strlen(le->prompt);
     else
-        pr_len = 0;
+        prompt_len = 0;
 
     size_t cstr_size = le->line->size + 1;
 
@@ -778,40 +772,40 @@ static int itl_le_update_tty(itl_le_t *le)
     size_t rows, cols;
     itl_tty_size(&rows, &cols);
 
-    size_t wrap_value = wrap_value = (le->line->length + pr_len) / ITL_MAX(size_t, 1, cols);
-    size_t wrap_cursor_pos = le->cur_pos + pr_len - wrap_value * cols + 1;
+    size_t wrap_value = wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
+    size_t wrap_cursor_pos = le->cur_pos + prompt_len - wrap_value * cols + 1;
 
     ITL_DBG("len", le->line->length);
     ITL_DBG("cols", cols);
     ITL_DBG("wrap_value", wrap_value);
     ITL_DBG("wrap_cursor_pos", wrap_cursor_pos);
 
-    char *buf = (char *)itl_malloc(buf_size);
-    if (!buf)
+    char *temp_buf = (char *)itl_malloc(buf_size);
+    if (!temp_buf)
         return TL_ERROR_ALLOC;
 
     if (wrap_value > 0 && wrap_cursor_pos > 1) {
-        snprintf(buf, buf_size, "\x1b[%zuF", wrap_value);
-        itl_char_buf_append(&pbuf, buf, strlen(buf));
+        snprintf(temp_buf, buf_size, "\x1b[%zuF", wrap_value);
+        itl_char_buf_append(&to_be_printed, temp_buf, strlen(temp_buf));
     }
 
-    itl_char_buf_append(&pbuf, "\r", 1);
-    itl_char_buf_append(&pbuf, "\x1b[0K", 4);
+    itl_char_buf_append(&to_be_printed, "\r", 1);
+    itl_char_buf_append(&to_be_printed, "\x1b[0K", 4);
 
-    itl_char_buf_append(&pbuf, le->prompt, pr_len);
+    itl_char_buf_append(&to_be_printed, le->prompt, prompt_len);
 
     size_t cur_offset = 0;
-    itl_string_to_tty_cstr(le->line, buf, buf_size, cols, pr_len, &cur_offset);
+    itl_string_to_tty_cstr(le->line, temp_buf, buf_size, cols, prompt_len, &cur_offset);
 
-    itl_char_buf_append(&pbuf, buf, cstr_size + cur_offset);
+    itl_char_buf_append(&to_be_printed, temp_buf, cstr_size + cur_offset);
 
-    snprintf(buf, buf_size, "\x1b[%zuG", wrap_cursor_pos + cur_offset);
-    itl_char_buf_append(&pbuf, buf, strlen(buf));
+    snprintf(temp_buf, buf_size, "\x1b[%zuG", wrap_cursor_pos + cur_offset);
+    itl_char_buf_append(&to_be_printed, temp_buf, strlen(temp_buf));
 
-    write(STDOUT_FILENO, pbuf.string, pbuf.size);
+    write(STDOUT_FILENO, to_be_printed.string, to_be_printed.size);
 
-    itl_char_buf_free(&pbuf);
-    itl_free(buf);
+    itl_char_buf_free(&to_be_printed);
+    itl_free(temp_buf);
 
     fputs("\x1b[?25h", stdout);
 
@@ -827,13 +821,13 @@ static itl_string_t **itl_global_history = NULL;
 static int itl_global_history_size = TL_HISTORY_INIT_SIZE;
 static int itl_global_history_index = 0;
 
-static void itl_global_history_alloc(void)
+inline static void itl_global_history_alloc(void)
 {
     itl_global_history = (itl_string_t **)
         itl_calloc(TL_HISTORY_INIT_SIZE, sizeof(itl_string_t *));
 }
 
-static void itl_global_history_free(void)
+inline static void itl_global_history_free(void)
 {
     for (int i = 0; i < itl_global_history_index; ++i)
         itl_string_free(itl_global_history[i]);
