@@ -36,8 +36,15 @@ int main(void)
             } break;
 
             default: {
-                printf("Received character: '%s' of of size %zu\n",
-                        char_buffer, strlen(char_buffer));
+                size_t size = strlen(char_buffer);
+
+                printf("Received character: '%s' of of size %zu. Bytes:",
+                        char_buffer, size);
+
+                for (size_t i = 0; i < size; ++i)
+                    printf(" %d", (uint8_t)char_buffer[i]);
+
+                fputc('\n', stdout);
             }
         }
 
