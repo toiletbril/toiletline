@@ -36,18 +36,18 @@ extern "C" {
 
 #include <stddef.h>
 
-// To disable asserts, define TL_ASSERT before including.
+/* To disable asserts, define TL_ASSERT before including. */
 #ifndef TL_ASSERT
     #include <assert.h>
     #define TL_ASSERT(boolval) assert(boolval)
-#endif // TL_ASSERT
+#endif /* TL_ASSERT */
 
-// To use different allocation functions, define these before including.
+/* To use different allocation functions, define these before including. */
 #ifndef TL_MALLOC
     #define TL_MALLOC(size) malloc(size)
     #define TL_CALLOC(count, size) calloc(count, size)
     #define TL_REALLOC(block, size) realloc(block, size)
-#endif
+#endif /* TL_MALLOC */
 
 /**
  *  Zero is reserved as a successful result.
@@ -87,6 +87,9 @@ typedef enum
     TL_KEY_INTERRUPT,
 } TL_KEY_KIND;
 
+/**
+ * Last pressed control sequence.
+*/
 int tl_last_control = TL_KEY_UNKN;
 
 #define TL_CTRL_BIT  32
@@ -120,7 +123,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt);
  */
 size_t tl_utf8_strlen(const char *utf8_str);
 
-#endif // TOILETLINE_H_
+#endif /* TOILETLINE_H_ */
 
 #ifdef TOILETLINE_IMPLEMENTATION
 
@@ -135,7 +138,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #define ITL_POSIX
     #include <termios.h>
     #include <unistd.h>
-#else // __linux__ || BSD || __APPLE__
+#else /* __linux__ || BSD || __APPLE__ */
     #error "Your system is not supported"
 #endif
 
@@ -147,10 +150,10 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #include <string.h>
 
 #ifdef ITL_DEBUG
-    #define ITL_DBG(...) \
+    #define itl_trace(...) \
         fprintf(stderr, __VA_ARGS__)
 #else
-    #define ITL_DBG(...)
+    #define itl_trace(...)
 #endif
 
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
@@ -159,7 +162,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #define itl_read_byte() _getch()
 #elif defined(ITL_POSIX)
     #define itl_read_byte() fgetc(stdin)
-#endif // ITL_POSIX
+#endif /* ITL_POSIX */
 
 inline static int itl_enter_raw_mode(void)
 {
@@ -168,8 +171,7 @@ inline static int itl_enter_raw_mode(void)
     if (hInput == INVALID_HANDLE_VALUE)
         return TL_ERROR;
 
-    // NOTE:
-    // ENABLE_VIRTUAL_TERMINAL_INPUT seems to not work on older versions of Windows
+    // NOTE: ENABLE_VIRTUAL_TERMINAL_INPUT seems to not work on older versions of Windows
     DWORD mode = ENABLE_EXTENDED_FLAGS | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_QUICK_EDIT_MODE;
 
     if (!SetConsoleMode(hInput, mode))
@@ -192,7 +194,7 @@ inline static int itl_enter_raw_mode(void)
 
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0)
         return TL_ERROR;
-#endif
+#endif /* ITL_POSIX */
     return TL_SUCCESS;
 }
 
@@ -224,7 +226,7 @@ inline static int itl_exit_raw_mode(void)
 
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &term) != 0)
         return TL_ERROR;
-#endif
+#endif /* ITL_POSIX */
     return TL_SUCCESS;
 }
 
@@ -343,7 +345,7 @@ static itl_char_t *itl_char_alloc(void)
     return ptr;
 }
 
-static void itl_char_copy(itl_char_t *dst, itl_char_t *src)
+inline static void itl_char_copy(itl_char_t *dst, itl_char_t *src)
 {
     memcpy(dst, src, sizeof(itl_char_t));
 }
@@ -476,7 +478,7 @@ static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
 }
 
 // TODO: Inserts \n to fit multiple columns
-inline static int
+static int
 itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
                        size_t cols, size_t pr_len, size_t *cur_offset)
 {
@@ -723,7 +725,7 @@ static void itl_char_buf_append(itl_char_buf_t *buf, const char *s, size_t size)
 #define itl_char_buf_free(char_buf) itl_free((char_buf)->string)
 
 // Gets you maximum terminal column width and current row
-int itl_tty_size(size_t *rows, size_t *cols) {
+static int itl_tty_size(size_t *rows, size_t *cols) {
     char buf[32];
     size_t i = 0;
 
@@ -775,10 +777,10 @@ static int itl_le_update_tty(itl_le_t *le)
     size_t wrap_value = wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
     size_t wrap_cursor_pos = le->cur_pos + prompt_len - wrap_value * cols + 1;
 
-    ITL_DBG("len", le->line->length);
-    ITL_DBG("cols", cols);
-    ITL_DBG("wrap_value", wrap_value);
-    ITL_DBG("wrap_cursor_pos", wrap_cursor_pos);
+    itl_trace("len", le->line->length);
+    itl_trace("cols", cols);
+    itl_trace("wrap_value", wrap_value);
+    itl_trace("wrap_cursor_pos", wrap_cursor_pos);
 
     char *temp_buf = (char *)itl_malloc(buf_size);
     if (!temp_buf)
@@ -883,50 +885,6 @@ static void itl_global_history_get(itl_le_t *le)
     itl_string_copy(itl_global_line_buffer, h_entry);
 
     le->cur_pos = itl_global_line_buffer->length;
-}
-
-// Allocates memory for history and line buffer. Adds signal handle for C^c
-int tl_init(void)
-{
-    itl_global_history_alloc();
-
-    itl_global_line_buffer = itl_string_alloc();
-
-    signal(SIGINT, itl_handle_interrupt);
-
-    return itl_enter_raw_mode();
-}
-
-// Frees memory for history and line buffer. Removes signal handle for C^c
-int tl_exit(void)
-{
-    itl_global_history_free();
-    itl_string_free(itl_global_line_buffer);
-
-    signal(SIGINT, SIG_DFL);
-
-    ITL_DBG("exit, alloc count", itl_global_alloc_count);
-
-    int code = itl_exit_raw_mode();
-
-    TL_ASSERT(itl_global_alloc_count == 0);
-
-    return code;
-}
-
-// Returns the number of UTF8 characters in a char array
-size_t tl_utf8_strlen(const char *utf8_str)
-{
-    int len = 0;
-
-    while (*utf8_str) {
-        if ((*utf8_str & 0xC0) != 0x80)
-            ++len;
-
-        ++utf8_str;
-    }
-
-    return len;
 }
 
 static int itl_esc_parse(int byte)
@@ -1093,7 +1051,7 @@ static int itl_esc_parse(int byte)
         if (byte != 126) // ~
             event = TL_KEY_UNKN;
     }
-#endif // ITL_POSIX
+#endif /* ITL_POSIX */
     return event;
 }
 
@@ -1244,12 +1202,54 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         } break;
 
         default: {
-            ITL_DBG("key wasn't handled", esc & TL_KEY_MASK);
-            ITL_DBG("modifier", esc & TL_MOD_MASK);
+            itl_trace("key wasn't handled", esc & TL_KEY_MASK);
+            itl_trace("modifier", esc & TL_MOD_MASK);
         }
     }
 
     return TL_SUCCESS;
+}
+
+int tl_init(void)
+{
+    itl_global_history_alloc();
+
+    itl_global_line_buffer = itl_string_alloc();
+
+    signal(SIGINT, itl_handle_interrupt);
+
+    return itl_enter_raw_mode();
+}
+
+int tl_exit(void)
+{
+    itl_global_history_free();
+    itl_string_free(itl_global_line_buffer);
+
+    signal(SIGINT, SIG_DFL);
+
+    itl_trace("exit, alloc count", itl_global_alloc_count);
+
+    int code = itl_exit_raw_mode();
+
+    TL_ASSERT(itl_global_alloc_count == 0);
+
+    return code;
+}
+
+// Returns the number of UTF-8 characters in a null terminated string
+size_t tl_utf8_strlen(const char *utf8_str)
+{
+    int len = 0;
+
+    while (*utf8_str) {
+        if ((*utf8_str & 0xC0) != 0x80)
+            ++len;
+
+        ++utf8_str;
+    }
+
+    return len;
 }
 
 // Gets one character, does not wait for Enter
@@ -1328,7 +1328,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
     return TL_ERROR;
 }
 
-#endif // TOILETLINE_IMPLEMENTATION
+#endif /* TOILETLINE_IMPLEMENTATION */
 
 #ifdef __cplusplus
 }
