@@ -5,8 +5,10 @@
 
 int main(void)
 {
-    if (tl_init() != TL_SUCCESS)
+    if (tl_init() != TL_SUCCESS) {
         printf("Failed to enter raw mode!\n");
+        return 1;
+    }
 
     printf("Welcome to toiletline test! This is tl_readline.\nUse up and down arrows to view history.\n");
 
@@ -17,11 +19,13 @@ int main(void)
     while (code < 0) {
         code = tl_readline(line_buffer, LINE_BUF_SIZE, "$ ");
 
-        if (code == TL_PRESSED_CTRLC)
+        if (code == TL_PRESSED_CTRLC) {
+            printf("\nInterrupted.\n");
             break;
+        }
 
         printf("Received string: '%s' of length %zu, of size %zu\n",
-               line_buffer, tl_utf8_strlen(line_buffer), strlen(line_buffer));
+                line_buffer, tl_utf8_strlen(line_buffer), strlen(line_buffer));
 
         fflush(stdout);
 
@@ -31,10 +35,8 @@ int main(void)
         }
     }
 
-    if (code == TL_PRESSED_CTRLC)
-        printf("\nInterrupted.\n");
-    else if (code > 0)
-        printf("\nAn error occured.");
+    if (code > 0)
+        printf("An error occured.\n");
 
     tl_exit();
 
