@@ -1,5 +1,5 @@
 /**
- *  toiletline 0.2.2
+ *  toiletline 0.2.3
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -128,6 +128,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #ifdef TOILETLINE_IMPLEMENTATION
 
 #if defined(_WIN32)
+    #define WIN32_LEAN_AND_MEAN
     #include <Windows.h>
     #include <conio.h>
     #include <fcntl.h>
@@ -138,6 +139,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #define ITL_POSIX
     #include <termios.h>
     #include <unistd.h>
+    #include <sys/ioctl.h>
 #else /* __linux__ || BSD || __APPLE__ */
     #error "Your system is not supported"
 #endif
@@ -154,7 +156,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
         fprintf(stderr, __VA_ARGS__)
 #else
     #define itl_trace(...)
-#endif
+#endif /* ITL_DEBUG */
 
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 
@@ -244,7 +246,7 @@ inline static void itl_handle_interrupt(int sign)
     exit(0);
 }
 
-static int itl_global_alloc_count = 0;
+static size_t itl_global_alloc_count = 0;
 
 inline static void *itl_malloc(size_t size)
 {
@@ -296,6 +298,7 @@ static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
 }
 
 // TODO: Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid
+// TODO: Do something sane on invalid characters
 static itl_utf8_t itl_utf8_parse(int byte)
 {
     uint8_t bytes[4] = {byte, 0, 0, 0};
@@ -309,19 +312,22 @@ static itl_utf8_t itl_utf8_parse(int byte)
         len = 3;
     else if ((byte & 0xF8) == 0xF0) // 4 byte
         len = 4;
+    else { // invalid character
+        fprintf(stderr, "ERROR: Invalid UTF-8 sequence unhandled");
+        exit(1);
+    }
 
     for (uint8_t i = 1; i < len; ++i) // consequent bytes
         bytes[i] = itl_read_byte();
 
-#ifdef TL_DEBUG
+#ifdef ITL_DEBUG
     printf("\nutf8 char bytes: '");
 
     for (uint8_t i = 0; i < len - 1; ++i)
         printf("%02X ", bytes[i]);
 
     printf("%02X'\n", bytes[len - 1]);
-#endif
-
+#endif /* ITL_DEBUG */
     return itl_utf8_new(bytes, len);
 }
 
@@ -477,17 +483,56 @@ static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
     return TL_SUCCESS;
 }
 
-// TODO: Inserts \n to fit multiple columns
 static int
 itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
                        size_t cols, size_t pr_len, size_t *cur_offset)
 {
-    (void)cols;
-    (void)pr_len;
-    (void)cur_offset;
+    itl_char_t *c = str->begin;
 
-    return itl_string_to_cstr(str, c_str, size);
+    size_t inserted = 0;
+
+    int first_line = 1;
+    size_t i = 0;
+
+    while (c && size - i > c->c.size) {
+        size_t c_len = c->c.size;
+        // cols: 24
+        // c_size: 2
+        // i: 32
+        // i % 24 =
+
+        for (size_t j = 0; j != c_len; ++j)
+            c_str[i++] = c->c.bytes[j];
+
+        if (c != c->next)
+            c = c->next;
+
+        inserted++;
+       
+        if (first_line && inserted + pr_len >= cols - 2) {
+            c_str[i++] = '\r';
+            c_str[i++] = '\n';
+            first_line = 0;
+            inserted += 2;
+            continue;
+        }
+        else if (inserted > 0 && inserted + c_len % (cols - 2) == 0) {
+            c_str[i++] = '\r';
+            c_str[i++] = '\n';
+            inserted += 2;
+            continue;
+        }
+    }
+
+    c_str[i] = '\0';
+
+    // If *c exists, then size was exceeded
+    if (c)
+        return TL_ERROR_SIZE;
+
+    return TL_SUCCESS;
 }
+
 
 static itl_string_t *itl_global_line_buffer = NULL;
 
@@ -724,7 +769,7 @@ static void itl_char_buf_append(itl_char_buf_t *buf, const char *s, size_t size)
 
 #define itl_char_buf_free(char_buf) itl_free((char_buf)->string)
 
-// Gets you maximum terminal column width and current row
+#if defined(TL_SIZE_USE_ESCAPES)
 static int itl_tty_size(size_t *rows, size_t *cols) {
     char buf[32];
     size_t i = 0;
@@ -751,6 +796,32 @@ static int itl_tty_size(size_t *rows, size_t *cols) {
 
     return TL_SUCCESS;
 }
+#else /* TL_SIZE_ESCAPES */
+static int itl_tty_size(size_t *rows, size_t *cols) {
+#if defined (_WIN32)
+    CONSOLE_SCREEN_BUFFER_INFO buffer_info;
+
+    int success = GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &buffer_info);
+
+    if (!success)
+        return TL_ERROR;
+
+    (*cols) = buffer_info.srWindow.Right - buffer_info.srWindow.Left + 1;
+    (*rows) = buffer_info.srWindow.Bottom - buffer_info.srWindow.Top + 1;
+#elif defined(ITL_POSIX)
+    struct winsize window;
+
+    int err = ioctl(STDOUT_FILENO, TIOCGWINSZ, &window);
+
+    if (err)
+        return TL_ERROR;
+
+    (*rows) = (size_t)window.ws_row;
+    (*cols) = (size_t)window.ws_col;
+#endif /* ITL_POSIX */
+    return TL_SUCCESS;
+}
+#endif /* native size */
 
 static int itl_le_update_tty(itl_le_t *le)
 {
@@ -777,10 +848,11 @@ static int itl_le_update_tty(itl_le_t *le)
     size_t wrap_value = wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
     size_t wrap_cursor_pos = le->cur_pos + prompt_len - wrap_value * cols + 1;
 
-    itl_trace("len", le->line->length);
-    itl_trace("cols", cols);
-    itl_trace("wrap_value", wrap_value);
-    itl_trace("wrap_cursor_pos", wrap_cursor_pos);
+    itl_trace("len: %zu\n", le->line->length);
+    itl_trace("cols: %zu\n", cols);
+    itl_trace("rows: %zu\n", rows);
+    itl_trace("wrap_value: %zu\n", wrap_value);
+    itl_trace("wrap_cursor_pos: %zu\n", wrap_cursor_pos);
 
     char *temp_buf = (char *)itl_malloc(buf_size);
     if (!temp_buf)
@@ -1202,8 +1274,8 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         } break;
 
         default: {
-            itl_trace("key wasn't handled", esc & TL_KEY_MASK);
-            itl_trace("modifier", esc & TL_MOD_MASK);
+            itl_trace("key '%d' wasn't handled", esc & TL_KEY_MASK);
+            itl_trace("modifier '%d'", esc & TL_MOD_MASK);
         }
     }
 
@@ -1228,7 +1300,7 @@ int tl_exit(void)
 
     signal(SIGINT, SIG_DFL);
 
-    itl_trace("exit, alloc count", itl_global_alloc_count);
+    itl_trace("exit, alloc count: %zu", itl_global_alloc_count);
 
     int code = itl_exit_raw_mode();
 
@@ -1308,7 +1380,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 #ifdef TL_SEE_BYTES
         printf("%d\n", in);
         continue;
-#endif
+#endif /* TL_SEE_BYTES */
         esc = itl_esc_parse(in);
 
         if (esc != TL_KEY_CHAR) {
@@ -1337,11 +1409,9 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 /*
  * TODO:
  *  - Holding CTRL creates weird inputs on Windows.
- *  - Pasting support.
- *  - Terminal properties.
+ *  - Allow to paste.
  *  - itl_string_to_tty_cstr().
  *  - Replace history on limit.
  *  - Autocompletion.
- *  - Preallocation?.
  *  - Test this on old Windows.
  */
