@@ -10,7 +10,7 @@ int main(void)
         return 1;
     }
 
-    printf("Welcome to toiletline test! This is tl_readline.\nUse up and down arrows to view history.\n");
+    printf("Welcome to tl_readline example!\nUse up and down arrows to view history.\n");
 
     char line_buffer[LINE_BUF_SIZE] = {0};
     int code = -1;
@@ -37,6 +37,8 @@ int main(void)
 
     if (code > 0)
         printf("An error occured.\n");
+
+    fflush(stdout);
 
     tl_exit();
 

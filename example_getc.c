@@ -1,8 +1,8 @@
 #define TOILETLINE_IMPLEMENTATION
 #include "toiletline.h"
 
-// Characters can be of multiple bytes
-#define CHAR_BUF_SIZE 8
+// Character buffer can be as large as 4 bytes, plus \0 at the end
+#define CHAR_BUF_SIZE 5
 
 int main(void)
 {
@@ -11,25 +11,25 @@ int main(void)
         return 1;
     }
 
-    printf("Welcome to toiletline test! This is tl_getc.\n");
+    printf("Welcome to tl_getc example!\nTry to press keys while holding Control or Alt.\nYou can also use non-latin keyboard layout.\n");
 
     char char_buffer[CHAR_BUF_SIZE] = {0};
     int code = -1;
 
     int i = 0;
-    while (code <= 0 && code != TL_PRESSED_CTRLC) {
+    while (code <= 0) {
         code = tl_getc(char_buffer, CHAR_BUF_SIZE, "> ");
 
+        if (code == TL_PRESSED_CTRLC) {
+            printf("\nInterrupted.\n");
+            break;
+        }
+
         // Note that if a control character other than Enter was pressed,
-        // LF will not be displayed.
+        // LF will not be displayed
         switch (code) {
             case TL_PRESSED_ENTER: {
                 printf("Received Enter, control sequence %d\n", tl_last_control);
-            } break;
-
-            case TL_PRESSED_CTRLC: {
-                fputc('\n', stdout);
-                printf("Interrupted.\n");
             } break;
 
             case TL_PRESSED_CONTROL_SEQUENCE: {
@@ -60,6 +60,8 @@ int main(void)
 
     if (code > 0)
         printf("An error occured.\n");
+
+    fflush(stdout);
 
     tl_exit();
 
