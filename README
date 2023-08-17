@@ -1,10 +1,10 @@
 toiletline
 ----------------
-Single-header library for raw terminal applications, meant to replace a
-small subset of GNU Readline, and work on both Linux and Windows.
+Single-header library for raw terminal applications, meant to replace a small
+subset of GNU Readline, and work on both Linux and Windows.
 
-It behaves like a regular shell, with all features implemented from
-scratch in raw mode.
+It behaves like a regular shell, with all features implemented from scratch in
+raw mode.
 
 Any help finding bugs is appreciated.
 
@@ -19,35 +19,34 @@ Current features
 
 Documentation
 ----------------
-Before you include this file in C or C++ file,
-define "TOILETLINE_IMPLEMENTATION" to create the implementation.
+Before you include this file in C or C++ file, define
+"TOILETLINE_IMPLEMENTATION" to create the implementation.
 
-If you want to use this library in C++ or other languages, you will need
-to make a .c file which creates implementation and includes the library.
-Compile that file with to object file ('-c' flag in gcc/clang) and link
-your code with it.
+If you want to use this library in C++ or other languages, you will need to
+make a .c file which creates implementation and includes the library. Compile
+it to object file ('-c' flag in gcc/clang) and link your code against it.
 
 
 Definitions
 --------
-Int functions can return error codes. They are always above 0, and
-defined as:
+Int functions can return error codes. They are always above 0, and defined as:
 * TL_ERROR;
 * TL_ERROR_SIZE;
 * TL_ERROR_ALLOC.
 
-Last pressed control sequence will be stored in 'tl_last_control' as int.
-Note that last control sequence for tl_readline() can only be Enter or
-Interrupt. Related values:
+Last pressed control sequence will be stored in 'tl_last_control' as int. Note
+that last control sequence for tl_readline() can only be Enter or Interrupt. 
+
+Related values:
 
 Bit masks:
-* TL_KEY_MASK;
-* TL_MOD_MASK.
+* TL_MASK_KEY;
+* TL_MASK_MOD.
 
 Possible mod values:
-* TL_CTRL_BIT;
-* TL_SHIFT_BIT;
-* TL_ALT_BIT.
+* TL_MOD_CTRL;
+* TL_MOD_SHIFT;
+* TL_MOD_ALT.
 
 Possible key values:
 * TL_KEY_CHAR;
@@ -64,6 +63,8 @@ Possible key values:
 * TL_KEY_TAB;
 * TL_KEY_INTERRUPT.
 
+They can be tested with bitwise AND (&).
+
 
 int tl_init(void);
 --------
@@ -75,16 +76,15 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt);
 --------
 Read a line while in raw mode.
 
-To support multi-byte characters and null at the end, size needs to be
-at least 2 or more. Submitted input will be written to *line_buffer as a
-null-terminated string.
+To support multi-byte characters and null at the end, size needs to be at least
+2 or more. Submitted input will be written to *line_buffer as a null-terminated
+string.
 
 Beware of characters like '\t' (Tab) and such, as they may break cursor
-position. Althrough they are considered as a single character, they
-occupy more than one space.
+position. Althrough they are considered as a single character, they occupy more
+than one space.
 
-All control sequences except Enter and Interrupt will be handled
-internally.
+All control sequences except Enter and Interrupt will be handled internally.
 
 Returns:
 * TL_PRESSED_ENTER on Enter;
@@ -112,8 +112,8 @@ size_t tl_utf8_strlen(const char *utf8_str);
 --------
 Get the amount of characters in a UTF-8 string.
 
-Since number of bytes can be bigger than amount of characters, regular
-strlen will not work, and will only return the number of bytes before \0.
+Since number of bytes can be bigger than amount of characters, regular strlen
+will not work, and will only return the number of bytes before \0.
 
 
 Examples

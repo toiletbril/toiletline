@@ -92,12 +92,12 @@ typedef enum
 */
 int tl_last_control = TL_KEY_UNKN;
 
-#define TL_CTRL_BIT  32
-#define TL_SHIFT_BIT 64
-#define TL_ALT_BIT   128
+#define TL_MOD_CTRL  32
+#define TL_MOD_SHIFT 64
+#define TL_MOD_ALT   128
 
-#define TL_KEY_MASK  15
-#define TL_MOD_MASK  224
+#define TL_MASK_KEY  15
+#define TL_MASK_MOD  224
 
 /**
  *  Initialize toiletline, enter raw mode.
@@ -615,6 +615,9 @@ static int itl_le_erase(itl_le_t *le, size_t count, int behind)
     return TL_SUCCESS;
 }
 
+#define itl_le_erase_forward(le, count) itl_le_erase(le, count, 0)
+#define itl_le_erase_backward(le, count) itl_le_erase(le, count, 1)
+
 // Inserts character at cursor position
 static int itl_le_putc(itl_le_t *le, const itl_utf8_t ch)
 {
@@ -694,7 +697,8 @@ static void itl_le_move_left(itl_le_t *le, size_t steps)
 #define ITL_TOKEN_WHITESPACE 0
 #define ITL_TOKEN_WORD 1
 
-static size_t itl_le_next_token(itl_le_t *le, int behind, int token)
+// Returns amount of steps required to reach specified token
+static size_t itl_le_goto_token(itl_le_t *le, int behind, int token)
 {
     itl_char_t *ch = le->cur_char;
     size_t steps = 1;
@@ -731,11 +735,10 @@ static size_t itl_le_next_token(itl_le_t *le, int behind, int token)
     return steps;
 }
 
-// Number of characters to get to the next word
-#define itl_le_next_word(le, behind) itl_le_next_token(le, behind, ITL_TOKEN_WORD);
-
-// Number of characters to get to the next whitespace
-#define itl_le_next_whitespace(le, behind) itl_le_next_token(le, behind, ITL_TOKEN_WHITESPACE)
+#define itl_le_next_word(le) itl_le_goto_token(le, 0, ITL_TOKEN_WORD)
+#define itl_le_prev_word(le) itl_le_goto_token(le, 1, ITL_TOKEN_WORD)
+#define itl_le_next_whitespace(le) itl_le_goto_token(le, 0, ITL_TOKEN_WHITESPACE)
+#define itl_le_prev_whitespace(le) itl_le_goto_token(le, 1, ITL_TOKEN_WHITESPACE)
 
 // Frees line buffer's string's characters, does not free the string itself
 inline static void itl_le_clear(itl_le_t *le)
@@ -972,7 +975,7 @@ static int itl_esc_parse(int byte)
         case 13: // cr
             return TL_KEY_ENTER;
         case 23:
-            return TL_KEY_BACKSPACE | TL_CTRL_BIT;
+            return TL_KEY_BACKSPACE | TL_MOD_CTRL;
         case 8:
         case 127:
             return TL_KEY_BACKSPACE;
@@ -1010,15 +1013,15 @@ static int itl_esc_parse(int byte)
             } break;
 
             case 115: {
-                event = TL_KEY_LEFT | TL_CTRL_BIT;
+                event = TL_KEY_LEFT | TL_MOD_CTRL;
             } break;
 
             case 116: {
-                event = TL_KEY_RIGHT | TL_CTRL_BIT;
+                event = TL_KEY_RIGHT | TL_MOD_CTRL;
             } break;
 
             case 147: { // ctrl del
-                event = TL_KEY_DELETE | TL_CTRL_BIT;
+                event = TL_KEY_DELETE | TL_MOD_CTRL;
             } break;
 
             default:
@@ -1034,7 +1037,7 @@ static int itl_esc_parse(int byte)
         byte = itl_read_byte();
 
         if (byte != 91 && byte != 79) { // [
-            return TL_KEY_CHAR | TL_ALT_BIT;
+            return TL_KEY_CHAR | TL_MOD_ALT;
         }
 
         byte = itl_read_byte();
@@ -1045,11 +1048,11 @@ static int itl_esc_parse(int byte)
 
             switch (itl_read_byte()) {
                 case 50: {
-                    event |= TL_SHIFT_BIT;
+                    event |= TL_MOD_SHIFT;
                 } break;
 
                 case 53: {
-                    event |= TL_CTRL_BIT;
+                    event |= TL_MOD_CTRL;
                 } break;
             }
 
@@ -1109,11 +1112,11 @@ static int itl_esc_parse(int byte)
         if (byte == 59) { // ;
             switch (itl_read_byte()) {
                 case 53: {
-                    event |= TL_CTRL_BIT;
+                    event |= TL_MOD_CTRL;
                 } break;
 
                 case 51: {
-                    event |= TL_SHIFT_BIT;
+                    event |= TL_MOD_SHIFT;
                 } break;
             }
 
@@ -1131,7 +1134,7 @@ static int itl_handle_esc(itl_le_t *le, int esc)
 {
     tl_last_control = esc;
 
-    switch (esc & TL_KEY_MASK) {
+    switch (esc & TL_MASK_KEY) {
         case TL_KEY_UP: {
             if (le->h_item_sel == -1) {
                 le->h_item_sel = itl_global_history_index;
@@ -1166,11 +1169,11 @@ static int itl_handle_esc(itl_le_t *le, int esc)
             if (le->cur_pos < le->line->length) {
                 size_t count = 1;
 
-                if (esc & TL_CTRL_BIT) {
-                    size_t next_ws = itl_le_next_whitespace(le, 0);
+                if (esc & TL_MOD_CTRL) {
+                    size_t next_ws = itl_le_next_whitespace(le);
 
                     if (next_ws <= 1) {
-                        count = itl_le_next_word(le, 0);
+                        count = itl_le_next_word(le);
                     }
                     else
                         count = next_ws;
@@ -1184,15 +1187,15 @@ static int itl_handle_esc(itl_le_t *le, int esc)
             if (le->cur_pos > 0 && le->cur_pos <= le->line->length) {
                 size_t count = 1;
 
-                if (esc & TL_CTRL_BIT) {
-                    size_t next_ws = itl_le_next_whitespace(le, 1);
+                if (esc & TL_MOD_CTRL) {
+                    size_t next_ws = itl_le_prev_whitespace(le);
 
                     if (next_ws <= 1) {
-                        count = itl_le_next_word(le, 1);
+                        count = itl_le_prev_word(le);
 
                         itl_le_move_left(le, count);
 
-                        count = itl_le_next_whitespace(le, 1) - 1;
+                        count = itl_le_prev_whitespace(le) - 1;
                     }
                     else
                         count = next_ws - 1;
@@ -1230,15 +1233,15 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         case TL_KEY_BACKSPACE: {
             size_t count = 1;
 
-            if (esc & TL_CTRL_BIT) {
-                size_t next_ws = itl_le_next_whitespace(le, 1);
+            if (esc & TL_MOD_CTRL) {
+                size_t next_ws = itl_le_prev_whitespace(le);
 
                 if (next_ws <= 1) {
-                    count = itl_le_next_word(le, 1);
+                    count = itl_le_prev_word(le);
 
-                    itl_le_erase(le, count, 1);
+                    itl_le_erase_backward(le, count);
 
-                    count = itl_le_next_whitespace(le, 1) - 1;
+                    count = itl_le_prev_whitespace(le) - 1;
                 }
                 else
                     count = next_ws - 1;
@@ -1250,15 +1253,15 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         case TL_KEY_DELETE: {
             size_t count = 1;
 
-            if (esc & TL_CTRL_BIT) {
-                size_t next_ws = itl_le_next_whitespace(le, 0);
+            if (esc & TL_MOD_CTRL) {
+                size_t next_ws = itl_le_next_whitespace(le);
 
                 if (next_ws <= 1) {
-                    count = itl_le_next_word(le, 0);
+                    count = itl_le_next_word(le);
 
-                    itl_le_erase(le, count, 0);
+                    itl_le_erase_forward(le, count);
 
-                    count = itl_le_next_whitespace(le, 0);
+                    count = itl_le_next_whitespace(le);
                 }
                 else
                     count = next_ws;
@@ -1274,8 +1277,8 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         } break;
 
         default: {
-            itl_trace("key '%d' wasn't handled", esc & TL_KEY_MASK);
-            itl_trace("modifier '%d'", esc & TL_MOD_MASK);
+            itl_trace("key '%d' wasn't handled", esc & TL_MASK_KEY);
+            itl_trace("modifier '%d'", esc & TL_MASK_MOD);
         }
     }
 
@@ -1327,7 +1330,7 @@ size_t tl_utf8_strlen(const char *utf8_str)
 // Gets one character, does not wait for Enter
 int tl_getc(char *char_buffer, size_t size, const char *prompt)
 {
-    TL_ASSERT(size > 1);
+    TL_ASSERT(size > 1 && "Size should be enough at least for one byte and a null terminator");
     TL_ASSERT(char_buffer != NULL);
 
     itl_le_t le = itl_le_new(itl_global_line_buffer, char_buffer, size, prompt);
@@ -1348,8 +1351,8 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
         itl_utf8_t ch = itl_utf8_parse(in);
         itl_le_putc(&le, ch);
 
-        itl_string_to_cstr(le.line, char_buffer, size);
         itl_le_update_tty(&le);
+        itl_string_to_cstr(le.line, char_buffer, size);
 
         itl_le_clear(&le);
 
@@ -1363,8 +1366,7 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
 
 int tl_readline(char *line_buffer, size_t size, const char *prompt)
 {
-    // Size required for at least one 1-byte character and a null-terminator
-    TL_ASSERT(size > 1);
+    TL_ASSERT(size > 1 && "Size should be enough at least for one byte and a null terminator");
     TL_ASSERT(line_buffer != NULL);
 
     itl_le_t le = itl_le_new(itl_global_line_buffer, line_buffer, size, prompt);
