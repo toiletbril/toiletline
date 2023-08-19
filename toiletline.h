@@ -303,7 +303,6 @@ static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
 }
 
 // TODO: Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid
-// TODO: Do something sane on invalid characters
 static itl_utf8_t itl_utf8_parse(int byte)
 {
     uint8_t bytes[4] = {byte, 0, 0, 0};
@@ -318,8 +317,10 @@ static itl_utf8_t itl_utf8_parse(int byte)
     else if ((byte & 0xF8) == 0xF0) // 4 byte
         len = 4;
     else { // invalid character
-        fprintf(stderr, "ERROR: Invalid UTF-8 sequence unhandled");
-        exit(1);
+        itl_trace("*** Invalid UTF-8 sequence unhandled. First byte: '%d'\n",
+                (uint8_t)byte);
+        uint8_t replacement_character[3] = { 0xEF, 0xBF, 0xBD };
+        return itl_utf8_new(replacement_character, 3);
     }
 
     for (uint8_t i = 1; i < len; ++i) // consequent bytes
@@ -861,9 +862,8 @@ static int itl_le_update_tty(itl_le_t *le)
     size_t wrap_value = wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
     size_t wrap_cursor_pos = le->cur_pos + prompt_len - wrap_value * cols + 1;
 
-    itl_trace("len: %zu\n", le->line->length);
-    itl_trace("cols: %zu\n", cols);
-    itl_trace("rows: %zu\n", rows);
+    itl_trace("Line length: %zu\n", le->line->length);
+    itl_trace("Dimensions: %zu, %zu\n", rows, cols);
     itl_trace("wrap_value: %zu\n", wrap_value);
     itl_trace("wrap_cursor_pos: %zu\n", wrap_cursor_pos);
 
@@ -1287,8 +1287,9 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         } break;
 
         default: {
-            itl_trace("key '%d' wasn't handled", esc & TL_MASK_KEY);
-            itl_trace("modifier '%d'", esc & TL_MASK_MOD);
+            itl_trace("*** Key '%d' with modifier '%d' wasn't handled\n",
+                    esc & TL_MASK_KEY, esc & TL_MASK_MOD);
+
         }
     }
 
@@ -1313,7 +1314,7 @@ int tl_exit(void)
 
     signal(SIGINT, SIG_DFL);
 
-    itl_trace("exit, alloc count: %zu", itl_global_alloc_count);
+    itl_trace("Exited, alloc count: %zu", itl_global_alloc_count);
 
     int code = itl_exit_raw_mode();
 
