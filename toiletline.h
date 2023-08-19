@@ -27,23 +27,23 @@
  *  SOFTWARE.
  */
 
-#ifdef __cplusplus
+#if defined(__cplusplus)
 extern "C" {
 #endif
 
-#ifndef TOILETLINE_H_
+#if !defined(TOILETLINE_H_)
 #define TOILETLINE_H_
 
 #include <stddef.h>
 
 /* To disable asserts, define TL_ASSERT before including. */
-#ifndef TL_ASSERT
+#if !defined(TL_ASSERT)
     #include <assert.h>
     #define TL_ASSERT(boolval) assert(boolval)
 #endif /* TL_ASSERT */
 
 /* To use different allocation functions, define these before including. */
-#ifndef TL_MALLOC
+#if !defined(TL_MALLOC)
     #define TL_MALLOC(size) malloc(size)
     #define TL_CALLOC(count, size) calloc(count, size)
     #define TL_REALLOC(block, size) realloc(block, size)
@@ -125,9 +125,17 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
 #endif /* TOILETLINE_H_ */
 
-#ifdef TOILETLINE_IMPLEMENTATION
+#if defined(TOILETLINE_IMPLEMENTATION)
 
 #if defined(_WIN32)
+    #define ITL_WIN32
+#elif defined(__linux__) || defined(BSD) || defined(__APPLE__)
+    #define ITL_POSIX
+#else /* __linux__ || BSD || __APPLE__ */
+    #error "Your system is not supported"
+#endif
+
+#if defined(ITL_WIN32)
     #define WIN32_LEAN_AND_MEAN
     #include <Windows.h>
     #include <conio.h>
@@ -135,13 +143,10 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #include <io.h>
     #define STDIN_FILENO  _fileno(stdin)
     #define STDOUT_FILENO _fileno(stdout)
-#elif defined(__linux__) || defined(BSD) || defined(__APPLE__)
-    #define ITL_POSIX
+#elif defined(ITL_POSIX)
     #include <termios.h>
     #include <unistd.h>
     #include <sys/ioctl.h>
-#else /* __linux__ || BSD || __APPLE__ */
-    #error "Your system is not supported"
 #endif
 
 #include <ctype.h>
@@ -151,16 +156,16 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef ITL_DEBUG
+#if defined(ITL_DEBUG)
     #define itl_trace(...) \
         fprintf(stderr, __VA_ARGS__)
-#else
+#else /* ITL_DEBUG */
     #define itl_trace(...)
-#endif /* ITL_DEBUG */
+#endif
 
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 
-#if defined(_WIN32)
+#if defined(ITL_WIN32)
     #define itl_read_byte() _getch()
 #elif defined(ITL_POSIX)
     #define itl_read_byte() fgetc(stdin)
@@ -168,7 +173,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
 inline static int itl_enter_raw_mode(void)
 {
-#if defined(_WIN32)
+#if defined(ITL_WIN32)
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
     if (hInput == INVALID_HANDLE_VALUE)
         return TL_ERROR;
@@ -202,7 +207,7 @@ inline static int itl_enter_raw_mode(void)
 
 inline static int itl_exit_raw_mode(void)
 {
-#if defined(_WIN32)
+#if defined(ITL_WIN32)
     HANDLE h_input = GetStdHandle(STD_INPUT_HANDLE);
 
     if (h_input == INVALID_HANDLE_VALUE)
@@ -320,7 +325,7 @@ static itl_utf8_t itl_utf8_parse(int byte)
     for (uint8_t i = 1; i < len; ++i) // consequent bytes
         bytes[i] = itl_read_byte();
 
-#ifdef ITL_DEBUG
+#if defined(ITL_DEBUG)
     printf("\nutf8 char bytes: '");
 
     for (uint8_t i = 0; i < len - 1; ++i)
@@ -801,7 +806,7 @@ static int itl_tty_size(size_t *rows, size_t *cols) {
 }
 #else /* TL_SIZE_ESCAPES */
 static int itl_tty_size(size_t *rows, size_t *cols) {
-#if defined (_WIN32)
+#if defined(ITL_WIN32)
     CONSOLE_SCREEN_BUFFER_INFO buffer_info;
 
     int success = GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &buffer_info);
@@ -981,7 +986,7 @@ static int itl_esc_parse(int byte)
             return TL_KEY_BACKSPACE;
     }
 
-#if defined(_WIN32)
+#if defined(ITL_WIN32)
     if (byte == 224) { // escape
         switch (itl_read_byte()) {
             case 72: {
@@ -1379,7 +1384,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
     while (1) {
         in = itl_read_byte();
 
-#ifdef TL_SEE_BYTES
+#if defined(TL_SEE_BYTES)
         printf("%d\n", in);
         continue;
 #endif /* TL_SEE_BYTES */
@@ -1404,7 +1409,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 #endif /* TOILETLINE_IMPLEMENTATION */
 
-#ifdef __cplusplus
+#if defined(__cplusplus)
 }
 #endif
 
