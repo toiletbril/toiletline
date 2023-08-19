@@ -714,20 +714,25 @@ static size_t itl_le_goto_token(itl_le_t *le, int behind, int token)
         else
             ch = ch->next;
     else
-        if (le->cur_pos == le->line->size && behind)
+        if (le->cur_pos == le->line->length && behind)
             ch = le->line->end;
         else
             return 0;
 
     while (ch) {
-        if (token == ITL_TOKEN_WHITESPACE) {
-            if (itl_is_delim(ch->c.bytes[0]))
-                break;
+        int should_break = 0;
+
+        switch (token) {
+        case ITL_TOKEN_WHITESPACE:
+            should_break = itl_is_delim(ch->c.bytes[0]);
+            break;
+        case ITL_TOKEN_WORD:
+            should_break = !itl_is_delim(ch->c.bytes[0]);
+            break;
         }
-        else {
-            if (!itl_is_delim(ch->c.bytes[0]))
-                break;
-        }
+
+        if (should_break)
+            break;
 
         steps += 1;
 
@@ -804,7 +809,7 @@ static int itl_tty_size(size_t *rows, size_t *cols) {
 
     return TL_SUCCESS;
 }
-#else /* TL_SIZE_ESCAPES */
+#else /* TL_SIZE_USE_ESCAPES */
 static int itl_tty_size(size_t *rows, size_t *cols) {
 #if defined(ITL_WIN32)
     CONSOLE_SCREEN_BUFFER_INFO buffer_info;
