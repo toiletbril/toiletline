@@ -36,21 +36,25 @@ extern "C" {
 
 #include <stddef.h>
 
-/* To disable asserts, define TL_ASSERT before including. */
+/* Define TL_ASSERT before including to use custom assertions,
+ * or to disable them. */
 #if !defined(TL_ASSERT)
     #include <assert.h>
     #define TL_ASSERT(boolval) assert(boolval)
 #endif /* TL_ASSERT */
 
-/* To use different allocation functions, define these before including. */
 #if !defined(TL_MALLOC)
-    #define TL_MALLOC(size) malloc(size)
-    #define TL_CALLOC(count, size) calloc(count, size)
+    #define TL_MALLOC(size)         malloc(size)
+    #define TL_CALLOC(count, size)  calloc(count, size)
     #define TL_REALLOC(block, size) realloc(block, size)
+    #define TL_FREE(ptr)            free(ptr)
+    /* Called on failed allocation.
+     * Define TL_NO_ABORT to disable failure checking. */
+    #define TL_ABORT() abort()
 #endif /* TL_MALLOC */
 
 /**
- *  Zero is reserved as a successful result.
+ *  Zero is a success.
  */
 #define TL_SUCCESS 0
 /**
@@ -157,8 +161,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #include <string.h>
 
 #if defined(ITL_DEBUG)
-    #define itl_trace(...) \
-        fprintf(stderr, __VA_ARGS__)
+    #define itl_trace(...) fprintf(stderr, __VA_ARGS__)
 #else /* ITL_DEBUG */
     #define itl_trace(...)
 #endif
@@ -237,7 +240,7 @@ inline static int itl_exit_raw_mode(void)
     return TL_SUCCESS;
 }
 
-inline static void itl_handle_interrupt(int sign)
+inline static void itl_signal_interrupt(int sign)
 {
     signal(sign, SIG_IGN);
 
@@ -257,12 +260,26 @@ inline static void *itl_malloc(size_t size)
 {
     itl_global_alloc_count += 1;
 
-    return TL_MALLOC(size);
+    void *allocated = TL_MALLOC(size);
+
+#if !defined(TL_NO_ABORT)
+    if (allocated == NULL)
+        TL_ABORT();
+#endif
+
+    return allocated;
 }
 
 inline static void *itl_calloc(size_t count, size_t size)
 {
     itl_global_alloc_count += 1;
+
+    void *allocated = TL_CALLOC(count, size);
+
+#if !defined(TL_NO_ABORT)
+    if (allocated == NULL)
+        TL_ABORT();
+#endif
 
     return TL_CALLOC(count, size);
 }
@@ -272,14 +289,21 @@ inline static void *itl_realloc(void *block, size_t size)
     if (block == NULL)
         itl_global_alloc_count += 1;
 
-    return TL_REALLOC(block, size);
+    void *allocated = TL_REALLOC(block, size);
+
+#if !defined(TL_NO_ABORT)
+    if (allocated == NULL)
+        TL_ABORT();
+#endif
+
+    return allocated;
 }
 
 #define itl_free(ptr)                     \
     do {                                  \
         if (ptr != NULL) {                \
             itl_global_alloc_count -= 1;  \
-            free(ptr);                    \
+            TL_FREE(ptr);                 \
         }                                 \
     } while (0)
 
@@ -344,7 +368,7 @@ struct itl_char
 {
     itl_char_t *next;
     itl_char_t *prev;
-    itl_utf8_t c;
+    itl_utf8_t rune;
 };
 
 static itl_char_t *itl_char_alloc(void)
@@ -396,10 +420,10 @@ static int itl_string_cmp(itl_string_t *str1, itl_string_t *str2)
     itl_char_t *str2_c = str2->begin;
 
     while (str1_c != NULL) {
-        if (sizeof(str1_c->c) != sizeof(str1_c->c))
+        if (sizeof(str1_c->rune) != sizeof(str1_c->rune))
             return TL_ERROR;
 
-        int cmp_result = memcmp(str1_c->c.bytes, str2_c->c.bytes, 4);
+        int cmp_result = memcmp(str1_c->rune.bytes, str2_c->rune.bytes, 4);
 
         if (cmp_result != 0)
             return TL_ERROR;
@@ -472,9 +496,9 @@ static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
     size_t i = 0;
 
     // NOTE: (size - i - 1) can wrap around?
-    while (c && size - i > c->c.size) {
-        for (size_t j = 0; j != c->c.size; ++j)
-            c_str[i++] = c->c.bytes[j];
+    while (c && size - i > c->rune.size) {
+        for (size_t j = 0; j != c->rune.size; ++j)
+            c_str[i++] = c->rune.bytes[j];
 
         if (c != c->next)
             c = c->next;
@@ -548,10 +572,9 @@ typedef struct itl_le itl_le_t;
 struct itl_le
 {
     itl_string_t *line;
-    itl_char_t *cur_char;
-    size_t cur_pos;
-    size_t cur_col;
-    int h_item_sel;
+    itl_char_t *current_character;
+    size_t cursor_position;
+    int history_selected_item;
     char *out_buf;
     size_t out_size;
     const char *prompt;
@@ -561,10 +584,9 @@ static itl_le_t itl_le_new(itl_string_t *line_buf, char *out_buf, size_t out_siz
 {
     itl_le_t le = {
         .line = line_buf,
-        .cur_char = NULL,
-        .cur_pos = 0,
-        .cur_col = 0,
-        .h_item_sel = -1,
+        .current_character = NULL,
+        .cursor_position = 0,
+        .history_selected_item = -1,
         .out_buf = out_buf,
         .out_size = out_size,
         .prompt = prompt,
@@ -581,30 +603,30 @@ static int itl_le_erase(itl_le_t *le, size_t count, int behind)
 
     while (i++ < count) {
         if (behind) {
-            if (le->cur_pos == 0)
+            if (le->cursor_position == 0)
                 return TL_ERROR;
-            else if (le->cur_char) {
-                to_free = le->cur_char->prev;
-                le->cur_pos -= 1;
+            else if (le->current_character) {
+                to_free = le->current_character->prev;
+                le->cursor_position -= 1;
             }
-            else if (le->cur_pos == le->line->length) {
+            else if (le->cursor_position == le->line->length) {
                 to_free = le->line->end;
                 le->line->end = le->line->end->prev;
-                le->cur_pos -= 1;
+                le->cursor_position -= 1;
             }
         }
         else {
-            if (le->cur_pos == le->line->length)
+            if (le->cursor_position == le->line->length)
                 return TL_ERROR;
-            else if (le->cur_char) {
-                to_free = le->cur_char;
-                le->cur_char = le->cur_char->next;
-                if (le->cur_pos == le->line->length - 1)
+            else if (le->current_character) {
+                to_free = le->current_character;
+                le->current_character = le->current_character->next;
+                if (le->cursor_position == le->line->length - 1)
                     le->line->end = le->line->end->prev;
             }
         }
 
-        if (le->cur_pos == 0)
+        if (le->cursor_position == 0)
             le->line->begin = le->line->begin->next;
 
         if (to_free->prev)
@@ -612,7 +634,7 @@ static int itl_le_erase(itl_le_t *le, size_t count, int behind)
         if (to_free->next)
             to_free->next->prev = to_free->prev;
 
-        le->line->size -= to_free->c.size;
+        le->line->size -= to_free->rune.size;
         le->line->length -= 1;
 
         itl_char_free(to_free);
@@ -634,9 +656,9 @@ static int itl_le_putc(itl_le_t *le, const itl_utf8_t ch)
         return TL_ERROR;
 
     itl_char_t *new_c = itl_char_alloc();
-    new_c->c = ch;
+    new_c->rune = ch;
 
-    if (le->cur_pos == 0) {
+    if (le->cursor_position == 0) {
         new_c->next = le->line->begin;
         if (le->line->begin)
             le->line->begin->prev = new_c;
@@ -644,24 +666,24 @@ static int itl_le_putc(itl_le_t *le, const itl_utf8_t ch)
         if (le->line->end == NULL)
             le->line->end = new_c;
     }
-    else if (le->cur_pos == le->line->length) {
+    else if (le->cursor_position == le->line->length) {
         if (le->line->end)
             le->line->end->next = new_c;
         new_c->prev = le->line->end;
         le->line->end = new_c;
     }
-    else if (le->cur_char) {
-        new_c->next = le->cur_char;
-        if (le->cur_char->prev) {
-            le->cur_char->prev->next = new_c;
-            new_c->prev = le->cur_char->prev;
+    else if (le->current_character) {
+        new_c->next = le->current_character;
+        if (le->current_character->prev) {
+            le->current_character->prev->next = new_c;
+            new_c->prev = le->current_character->prev;
         }
-        le->cur_char->prev = new_c;
+        le->current_character->prev = new_c;
     }
 
     le->line->length += 1;
     le->line->size += ch.size;
-    le->cur_pos += 1;
+    le->cursor_position += 1;
 
     return TL_SUCCESS;
 }
@@ -670,9 +692,9 @@ static void itl_le_move_right(itl_le_t *le, size_t steps)
 {
     size_t i = 0;
     while (i++ < steps) {
-        if (le->cur_char) {
-            le->cur_char = le->cur_char->next;
-            le->cur_pos += 1;
+        if (le->current_character) {
+            le->current_character = le->current_character->next;
+            le->cursor_position += 1;
         }
         else
             return;
@@ -683,15 +705,15 @@ static void itl_le_move_left(itl_le_t *le, size_t steps)
 {
     size_t i = 0;
     while (i++ < steps) {
-        if (le->cur_pos == 0)
+        if (le->cursor_position == 0)
             return;
-        else if (le->cur_char) {
-            le->cur_char = le->cur_char->prev;
-            le->cur_pos -= 1;
+        else if (le->current_character) {
+            le->current_character = le->current_character->prev;
+            le->cursor_position -= 1;
         }
-        else if (le->cur_pos == le->line->length) {
-            le->cur_char = le->line->end;
-            le->cur_pos -= 1;
+        else if (le->cursor_position == le->line->length) {
+            le->current_character = le->line->end;
+            le->cursor_position -= 1;
         }
         else
             return;
@@ -706,7 +728,7 @@ static void itl_le_move_left(itl_le_t *le, size_t steps)
 // Returns amount of steps required to reach specified token
 static size_t itl_le_goto_token(itl_le_t *le, int behind, int token)
 {
-    itl_char_t *ch = le->cur_char;
+    itl_char_t *ch = le->current_character;
     size_t steps = 1;
 
     if (ch)
@@ -715,7 +737,7 @@ static size_t itl_le_goto_token(itl_le_t *le, int behind, int token)
         else
             ch = ch->next;
     else
-        if (le->cur_pos == le->line->length && behind)
+        if (le->cursor_position == le->line->length && behind)
             ch = le->line->end;
         else
             return 0;
@@ -725,10 +747,10 @@ static size_t itl_le_goto_token(itl_le_t *le, int behind, int token)
 
         switch (token) {
         case ITL_TOKEN_WHITESPACE:
-            should_break = itl_is_delim(ch->c.bytes[0]);
+            should_break = itl_is_delim(ch->rune.bytes[0]);
             break;
         case ITL_TOKEN_WORD:
-            should_break = !itl_is_delim(ch->c.bytes[0]);
+            should_break = !itl_is_delim(ch->rune.bytes[0]);
             break;
         }
 
@@ -757,7 +779,7 @@ inline static void itl_le_clear(itl_le_t *le)
     itl_string_clear(le->line);
 
     le->line->length = 0;
-    le->cur_pos = 0;
+    le->cursor_position = 0;
 }
 
 typedef struct itl_char_buf itl_char_buf_t;
@@ -860,7 +882,7 @@ static int itl_le_update_tty(itl_le_t *le)
     itl_tty_size(&rows, &cols);
 
     size_t wrap_value = wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
-    size_t wrap_cursor_pos = le->cur_pos + prompt_len - wrap_value * cols + 1;
+    size_t wrap_cursor_pos = le->cursor_position + prompt_len - wrap_value * cols + 1;
 
     itl_trace("Line length: %zu\n", le->line->length);
     itl_trace("Dimensions: %zu, %zu\n", rows, cols);
@@ -962,14 +984,14 @@ static int itl_global_history_append(itl_string_t *str)
 // Copies string from history to line editor. Does not free anything
 static void itl_global_history_get(itl_le_t *le)
 {
-    if (le->h_item_sel >= itl_global_history_index)
+    if (le->history_selected_item >= itl_global_history_index)
         return;
 
-    itl_string_t *h_entry = itl_global_history[le->h_item_sel];
+    itl_string_t *h_entry = itl_global_history[le->history_selected_item];
 
     itl_string_copy(itl_global_line_buffer, h_entry);
 
-    le->cur_pos = itl_global_line_buffer->length;
+    le->cursor_position = itl_global_line_buffer->length;
 }
 
 static int itl_esc_parse(int byte)
@@ -1140,21 +1162,21 @@ static int itl_esc_parse(int byte)
     return event;
 }
 
-static int itl_handle_esc(itl_le_t *le, int esc)
+static int itl_esc_handle(itl_le_t *le, int esc)
 {
     tl_last_control = esc;
 
     switch (esc & TL_MASK_KEY) {
         case TL_KEY_UP: {
-            if (le->h_item_sel == -1) {
-                le->h_item_sel = itl_global_history_index;
+            if (le->history_selected_item == -1) {
+                le->history_selected_item = itl_global_history_index;
                 if (le->line->length > 0 && itl_global_history_index > 0) {
                     itl_global_history_append(le->line);
                 }
             }
 
-           if (le->h_item_sel > 0) {
-                le->h_item_sel -= 1;
+           if (le->history_selected_item > 0) {
+                le->history_selected_item -= 1;
 
                 itl_le_clear(le);
 
@@ -1163,20 +1185,20 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_DOWN: {
-            if (le->h_item_sel < itl_global_history_index - 1 && le->h_item_sel >= 0) {
-                le->h_item_sel += 1;
+            if (le->history_selected_item < itl_global_history_index - 1 && le->history_selected_item >= 0) {
+                le->history_selected_item += 1;
 
                 itl_le_clear(le);
                 itl_global_history_get(le);
             }
             else if (itl_global_history_index > 0) {
                 itl_le_clear(le);
-                le->h_item_sel = -1;
+                le->history_selected_item = -1;
             }
         } break;
 
         case TL_KEY_RIGHT: {
-            if (le->cur_pos < le->line->length) {
+            if (le->cursor_position < le->line->length) {
                 size_t count = 1;
 
                 if (esc & TL_MOD_CTRL) {
@@ -1194,7 +1216,7 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_LEFT: {
-            if (le->cur_pos > 0 && le->cur_pos <= le->line->length) {
+            if (le->cursor_position > 0 && le->cursor_position <= le->line->length) {
                 size_t count = 1;
 
                 if (esc & TL_MOD_CTRL) {
@@ -1216,11 +1238,11 @@ static int itl_handle_esc(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_END: {
-            itl_le_move_right(le, le->line->length - le->cur_pos);
+            itl_le_move_right(le, le->line->length - le->cursor_position);
         } break;
 
         case TL_KEY_HOME: {
-            itl_le_move_left(le, le->cur_pos);
+            itl_le_move_left(le, le->cursor_position);
         } break;
 
         case TL_KEY_ENTER: {
@@ -1257,7 +1279,7 @@ static int itl_handle_esc(itl_le_t *le, int esc)
                     count = next_ws - 1;
             }
 
-            itl_le_erase(le, count, 1);
+            itl_le_erase_backward(le, count);
         } break;
 
         case TL_KEY_DELETE: {
@@ -1277,7 +1299,7 @@ static int itl_handle_esc(itl_le_t *le, int esc)
                     count = next_ws;
             }
 
-            itl_le_erase(le, count, 0);
+            itl_le_erase_forward(le, count);
         } break;
 
         case TL_KEY_INTERRUPT: {
@@ -1302,7 +1324,7 @@ int tl_init(void)
 
     itl_global_line_buffer = itl_string_alloc();
 
-    signal(SIGINT, itl_handle_interrupt);
+    signal(SIGINT, itl_signal_interrupt);
 
     return itl_enter_raw_mode();
 }
@@ -1341,7 +1363,8 @@ size_t tl_utf8_strlen(const char *utf8_str)
 // Gets one character, does not wait for Enter
 int tl_getc(char *char_buffer, size_t size, const char *prompt)
 {
-    TL_ASSERT(size > 1 && "Size should be enough at least for one byte and a null terminator");
+    TL_ASSERT(size > 1 &&
+        "Size should be enough at least for one byte and a null terminator");
     TL_ASSERT(char_buffer != NULL);
 
     itl_le_t le = itl_le_new(itl_global_line_buffer, char_buffer, size, prompt);
@@ -1352,7 +1375,7 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
     int esc = itl_esc_parse(in);
 
     if (esc != TL_KEY_CHAR) {
-        int code = itl_handle_esc(&le, esc);
+        int code = itl_esc_handle(&le, esc);
         if (code != TL_SUCCESS)
             return code;
         else
@@ -1377,7 +1400,8 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
 
 int tl_readline(char *line_buffer, size_t size, const char *prompt)
 {
-    TL_ASSERT(size > 1 && "Size should be enough at least for one byte and a null terminator");
+    TL_ASSERT(size > 1 &&
+        "Size should be enough at least for one byte and a null terminator");
     TL_ASSERT(line_buffer != NULL);
 
     itl_le_t le = itl_le_new(itl_global_line_buffer, line_buffer, size, prompt);
@@ -1394,10 +1418,11 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
         printf("%d\n", in);
         continue;
 #endif /* TL_SEE_BYTES */
+
         esc = itl_esc_parse(in);
 
         if (esc != TL_KEY_CHAR) {
-            int code = itl_handle_esc(&le, esc);
+            int code = itl_esc_handle(&le, esc);
 
             if (code != TL_SUCCESS)
                 return code;
