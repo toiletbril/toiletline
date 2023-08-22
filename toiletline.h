@@ -517,50 +517,11 @@ static int
 itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
                        size_t cols, size_t pr_len, size_t *cur_offset)
 {
-    itl_char_t *c = str->begin;
+    (void)cols;
+    (void)pr_len;
+    (void)cur_offset;
 
-    size_t inserted = 0;
-
-    int first_line = 1;
-    size_t i = 0;
-
-    while (c && size - i > c->c.size) {
-        size_t c_len = c->c.size;
-        // cols: 24
-        // c_size: 2
-        // i: 32
-        // i % 24 =
-
-        for (size_t j = 0; j != c_len; ++j)
-            c_str[i++] = c->c.bytes[j];
-
-        if (c != c->next)
-            c = c->next;
-
-        inserted++;
-       
-        if (first_line && inserted + pr_len >= cols - 2) {
-            c_str[i++] = '\r';
-            c_str[i++] = '\n';
-            first_line = 0;
-            inserted += 2;
-            continue;
-        }
-        else if (inserted > 0 && inserted + c_len % (cols - 2) == 0) {
-            c_str[i++] = '\r';
-            c_str[i++] = '\n';
-            inserted += 2;
-            continue;
-        }
-    }
-
-    c_str[i] = '\0';
-
-    // If *c exists, then size was exceeded
-    if (c)
-        return TL_ERROR_SIZE;
-
-    return TL_SUCCESS;
+    return itl_string_to_cstr(str, c_str, size);
 }
 
 
@@ -787,23 +748,21 @@ typedef struct itl_char_buf itl_char_buf_t;
 // Buffer for output before writing it to stdout
 struct itl_char_buf
 {
-  char *string;
+  char *data;
   int size;
 };
 
 static void itl_char_buf_append(itl_char_buf_t *buf, const char *s, size_t size)
 {
-    char *n_s = itl_realloc(buf->string, buf->size + size);
-    if (n_s == NULL)
-        return;
+    char *new_s = itl_realloc(buf->data, buf->size + size);
 
-    memcpy(&n_s[buf->size], s, size);
+    memcpy(&new_s[buf->size], s, size);
 
-    buf->string = n_s;
+    buf->data = new_s;
     buf->size += size;
 }
 
-#define itl_char_buf_free(char_buf) itl_free((char_buf)->string)
+#define itl_char_buf_free(char_buf) itl_free((char_buf)->data)
 
 #if defined(TL_SIZE_USE_ESCAPES)
 static int itl_tty_size(size_t *rows, size_t *cols) {
@@ -863,7 +822,7 @@ static int itl_le_update_tty(itl_le_t *le)
 {
     fputs("\x1b[?25l", stdout);
 
-    itl_char_buf_t to_be_printed = { .string = NULL, .size = 0 };
+    itl_char_buf_t to_be_printed = { .data = NULL, .size = 0 };
 
     size_t prompt_len;
 
@@ -911,7 +870,7 @@ static int itl_le_update_tty(itl_le_t *le)
     snprintf(temp_buf, buf_size, "\x1b[%zuG", wrap_cursor_pos + cur_offset);
     itl_char_buf_append(&to_be_printed, temp_buf, strlen(temp_buf));
 
-    write(STDOUT_FILENO, to_be_printed.string, to_be_printed.size);
+    write(STDOUT_FILENO, to_be_printed.data, to_be_printed.size);
 
     itl_char_buf_free(&to_be_printed);
     itl_free(temp_buf);

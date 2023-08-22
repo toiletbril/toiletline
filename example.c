@@ -1,5 +1,4 @@
 #define TOILETLINE_IMPLEMENTATION
-#define ITL_DEBUG
 #include "toiletline.h"
 
 #define LINE_BUF_SIZE 128
