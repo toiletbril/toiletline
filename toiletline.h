@@ -505,7 +505,7 @@ static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
     }
 
     c_str[i] = '\0';
-
+ 
     // If *c exists, then size was exceeded
     if (c)
         return TL_ERROR_SIZE;
