@@ -1,5 +1,5 @@
 /**
- *  toiletline 0.2.3
+ *  toiletline 0.2.4
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -94,7 +94,7 @@ typedef enum
 /**
  * Last pressed control sequence.
 */
-int tl_last_control = TL_KEY_UNKN;
+#define tl_last_control (*tl_get_last_control())
 
 #define TL_MOD_CTRL  32
 #define TL_MOD_SHIFT 64
@@ -1122,9 +1122,15 @@ static int itl_esc_parse(int byte)
     return event;
 }
 
+__thread int itl_global_last_control = TL_KEY_UNKN;
+
+int *tl_get_last_control() {
+    return &itl_global_last_control;
+}
+
 static int itl_esc_handle(itl_le_t *le, int esc)
 {
-    tl_last_control = esc;
+    itl_global_last_control = esc;
 
     switch (esc & TL_MASK_KEY) {
         case TL_KEY_UP: {
