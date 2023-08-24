@@ -837,7 +837,8 @@ static int itl_le_update_tty(itl_le_t *le)
     size_t buf_size =
         ITL_MAX(size_t, cstr_size, 8) * sizeof(char) + 2;
 
-    size_t rows, cols;
+    size_t rows = 0;
+    size_t cols = 0;
     itl_tty_size(&rows, &cols);
 
     size_t wrap_value = wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
