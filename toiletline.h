@@ -94,7 +94,7 @@ typedef enum
 /**
  * Last pressed control sequence.
 */
-#define tl_last_control (*tl_get_last_control())
+#define tl_last_control (*itl__get_last_control())
 
 #define TL_MOD_CTRL  32
 #define TL_MOD_SHIFT 64
@@ -1124,7 +1124,7 @@ static int itl_esc_parse(int byte)
 
 __thread int itl_global_last_control = TL_KEY_UNKN;
 
-int *tl_get_last_control() {
+int *itl__get_last_control(void) {
     return &itl_global_last_control;
 }
 
