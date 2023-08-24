@@ -1122,15 +1122,16 @@ static int itl_esc_parse(int byte)
     return event;
 }
 
-__thread int itl_global_last_control = TL_KEY_UNKN;
+__thread int itl__global_last_control = TL_KEY_UNKN;
 
+// Not meant to be used directly. Use tl_last_control instead
 int *itl__get_last_control(void) {
-    return &itl_global_last_control;
+    return &itl__global_last_control;
 }
 
 static int itl_esc_handle(itl_le_t *le, int esc)
 {
-    itl_global_last_control = esc;
+    itl__global_last_control = esc;
 
     switch (esc & TL_MASK_KEY) {
         case TL_KEY_UP: {
