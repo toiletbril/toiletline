@@ -1,4 +1,4 @@
-/**
+/*
  *  toiletline 0.2.4
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
@@ -52,6 +52,11 @@ extern "C" {
      * Define TL_NO_ABORT to disable failure checking. */
     #define TL_ABORT() abort()
 #endif /* TL_MALLOC */
+
+/* Max size of in-memory history. */
+#if !defined(TL_HISTORY_MAX_SIZE)
+    #define TL_HISTORY_MAX_SIZE 128
+#endif
 
 /**
  *  Zero is a success.
@@ -139,6 +144,14 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #error "Your system is not supported"
 #endif
 
+#if defined(_MSC_VER)
+    #define ITL_THREAD_LOCAL __declspec(thread)
+#elif defined(__GNUC__) || defined(__clang__)
+    #define ITL_THREAD_LOCAL __thread
+#else
+    #define ITL_THREAD_LOCAL /* nothing */
+#endif /* __GNUC__ || __clang__ */
+
 #if defined(ITL_WIN32)
     #define WIN32_LEAN_AND_MEAN
     #include <Windows.h>
@@ -148,9 +161,9 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #define STDIN_FILENO  _fileno(stdin)
     #define STDOUT_FILENO _fileno(stdout)
 #elif defined(ITL_POSIX)
+    #include <sys/ioctl.h>
     #include <termios.h>
     #include <unistd.h>
-    #include <sys/ioctl.h>
 #endif
 
 #include <ctype.h>
@@ -163,14 +176,16 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #if defined(ITL_DEBUG)
     #define itl_trace(...) fprintf(stderr, __VA_ARGS__)
 #else /* ITL_DEBUG */
-    #define itl_trace(...)
+    #define itl_trace(...) /* nothing */
 #endif
 
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 
 #if defined(ITL_WIN32)
+    #define ITL_MAX_CHARS 8191
     #define itl_read_byte() _getch()
 #elif defined(ITL_POSIX)
+    #define ITL_MAX_CHARS 4095
     #define itl_read_byte() fgetc(stdin)
 #endif /* ITL_POSIX */
 
@@ -329,7 +344,7 @@ static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
 // TODO: Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid
 static itl_utf8_t itl_utf8_parse(int byte)
 {
-    uint8_t bytes[4] = {byte, 0, 0, 0};
+    uint8_t bytes[4] = { byte, 0, 0, 0 };
     uint8_t len = 0;
 
     if ((byte & 0x80) == 0) // 1 byte
@@ -341,8 +356,7 @@ static itl_utf8_t itl_utf8_parse(int byte)
     else if ((byte & 0xF8) == 0xF0) // 4 byte
         len = 4;
     else { // invalid character
-        itl_trace("*** Invalid UTF-8 sequence unhandled. First byte: '%d'\n",
-                (uint8_t)byte);
+        itl_trace("*** Invalid UTF-8 sequence '%d'\n", (uint8_t)byte);
         uint8_t replacement_character[3] = { 0xEF, 0xBF, 0xBD };
         return itl_utf8_new(replacement_character, 3);
     }
@@ -419,8 +433,8 @@ static int itl_string_cmp(itl_string_t *str1, itl_string_t *str2)
     itl_char_t *str1_c = str1->begin;
     itl_char_t *str2_c = str2->begin;
 
-    while (str1_c != NULL) {
-        if (sizeof(str1_c->rune) != sizeof(str1_c->rune))
+    while (str1_c) {
+        if (str1_c->rune.size != str2_c->rune.size)
             return TL_ERROR;
 
         int cmp_result = memcmp(str1_c->rune.bytes, str2_c->rune.bytes, 4);
@@ -472,9 +486,7 @@ static void itl_string_clear(itl_string_t *str)
 
     while (c) {
         next = c->next;
-
         itl_char_free(c);
-
         c = next;
     }
 
@@ -488,7 +500,7 @@ static void itl_string_clear(itl_string_t *str)
     do {                       \
         itl_string_clear(str); \
         itl_free(str);         \
-    } while (0)                \
+    } while (0)
 
 static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
 {
@@ -505,13 +517,21 @@ static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
     }
 
     c_str[i] = '\0';
- 
+
     // If *c exists, then size was exceeded
     if (c)
         return TL_ERROR_SIZE;
 
     return TL_SUCCESS;
 }
+
+#if defined(ITL_WIN32)
+    #define ITL_LF "\r\n"
+    #define ITL_LF_LEN 2
+#else /* ITL_WIN32 */
+    #define ITL_LF "\n"
+    #define ITL_LF_LEN 1
+#endif
 
 static int
 itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
@@ -524,8 +544,7 @@ itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
     return itl_string_to_cstr(str, c_str, size);
 }
 
-
-static itl_string_t *itl_global_line_buffer = NULL;
+static ITL_THREAD_LOCAL itl_string_t *itl_global_line_buffer = NULL;
 
 typedef struct itl_le itl_le_t;
 
@@ -883,17 +902,16 @@ static int itl_le_update_tty(itl_le_t *le)
     return TL_SUCCESS;
 }
 
-#define TL_HISTORY_INIT_SIZE 16
-#define TL_HISTORY_MAX_SIZE 128
+#define ITL_HISTORY_INIT_SIZE 16
 
-static itl_string_t **itl_global_history = NULL;
-static int itl_global_history_size = TL_HISTORY_INIT_SIZE;
-static int itl_global_history_index = 0;
+static ITL_THREAD_LOCAL itl_string_t **itl_global_history = NULL;
+static ITL_THREAD_LOCAL int itl_global_history_size = ITL_HISTORY_INIT_SIZE;
+static ITL_THREAD_LOCAL int itl_global_history_index = 0;
 
 inline static void itl_global_history_alloc(void)
 {
     itl_global_history = (itl_string_t **)
-        itl_calloc(TL_HISTORY_INIT_SIZE, sizeof(itl_string_t *));
+        itl_calloc(ITL_HISTORY_INIT_SIZE, sizeof(itl_string_t *));
 }
 
 inline static void itl_global_history_free(void)
@@ -1122,16 +1140,16 @@ static int itl_esc_parse(int byte)
     return event;
 }
 
-__thread int itl__global_last_control = TL_KEY_UNKN;
+static ITL_THREAD_LOCAL int itl_global_last_control = TL_KEY_UNKN;
 
 // Not meant to be used directly. Use tl_last_control instead
 int *itl__get_last_control(void) {
-    return &itl__global_last_control;
+    return &itl_global_last_control;
 }
 
 static int itl_esc_handle(itl_le_t *le, int esc)
 {
-    itl__global_last_control = esc;
+    itl_global_last_control = esc;
 
     switch (esc & TL_MASK_KEY) {
         case TL_KEY_UP: {
@@ -1287,6 +1305,8 @@ static int itl_esc_handle(itl_le_t *le, int esc)
 
 int tl_init(void)
 {
+    TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 && "Size must be divisible by 2");
+
     itl_global_history_alloc();
 
     itl_global_line_buffer = itl_string_alloc();
