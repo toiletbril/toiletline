@@ -118,4 +118,4 @@ will not work, and will only return the number of bytes before \0.
 
 Examples
 ----------------
-For an example programs, take a look at example.c and example_getc.c
+For example usage, take a look at example.c and example_getc.c
