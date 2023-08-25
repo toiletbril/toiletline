@@ -182,10 +182,12 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 
 #if defined(ITL_WIN32)
-    #define ITL_MAX_CHARS 8191
+    /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation> */
+    #define ITL_MAX_STRING_LEN 8191
     #define itl_read_byte() _getch()
 #elif defined(ITL_POSIX)
-    #define ITL_MAX_CHARS 4095
+    /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
+    #define ITL_MAX_STRING_LEN 4095
     #define itl_read_byte() fgetc(stdin)
 #endif /* ITL_POSIX */
 
@@ -1305,7 +1307,7 @@ static int itl_esc_handle(itl_le_t *le, int esc)
 
 int tl_init(void)
 {
-    TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 && "Size must be divisible by 2");
+    TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 && "History size must be divisible by 2");
 
     itl_global_history_alloc();
 
@@ -1352,6 +1354,8 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
 {
     TL_ASSERT(size > 1 &&
         "Size should be enough at least for one byte and a null terminator");
+    TL_ASSERT(size <= sizeof(char)*5 &&
+        "Size should be less or equal to size of 4 characters with a null terminator.");
     TL_ASSERT(char_buffer != NULL);
 
     itl_le_t le = itl_le_new(itl_global_line_buffer, char_buffer, size, prompt);
@@ -1389,6 +1393,8 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 {
     TL_ASSERT(size > 1 &&
         "Size should be enough at least for one byte and a null terminator");
+    TL_ASSERT(size <= ITL_MAX_STRING_LEN &&
+        "Size should be less than platform's allowed maximum string length");
     TL_ASSERT(line_buffer != NULL);
 
     itl_le_t le = itl_le_new(itl_global_line_buffer, line_buffer, size, prompt);
@@ -1434,9 +1440,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 /*
  * TODO:
  *  - Holding CTRL creates weird inputs on Windows.
- *  - Allow to paste.
  *  - itl_string_to_tty_cstr().
  *  - Replace history on limit.
- *  - Autocompletion.
- *  - Test this on old Windows.
+ *  - Tab completion.
  */
