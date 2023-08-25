@@ -53,7 +53,7 @@ extern "C" {
     #define TL_ABORT() abort()
 #endif /* TL_MALLOC */
 
-/* Max size of in-memory history. */
+/* Max size of in-memory history, must be a power of 2. */
 #if !defined(TL_HISTORY_MAX_SIZE)
     #define TL_HISTORY_MAX_SIZE 128
 #endif
@@ -1307,7 +1307,7 @@ static int itl_esc_handle(itl_le_t *le, int esc)
 
 int tl_init(void)
 {
-    TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 && "History size must be divisible by 2");
+    TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 && "History size must be a power of 2");
 
     itl_global_history_alloc();
 
