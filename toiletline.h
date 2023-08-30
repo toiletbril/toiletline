@@ -65,7 +65,6 @@ extern "C" {
     #define TL_HISTORY_MAX_SIZE 128
 #endif
 
-
 #define TL_SUCCESS 0
 /**
  * Codes which may be returned from reading functions.
