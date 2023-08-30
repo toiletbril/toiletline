@@ -3,11 +3,10 @@ toiletline
 Single-header library for immediate shell, meant to replace a small subset of
 GNU Readline, and work on both Linux and Windows.
 
-All features like echoing characters and hadling keys are implemented from
-scratch in raw mode.
+All features like character echo and key handling are implemented from
+scratch.
 
 Any help finding bugs is appreciated.
-
 
 Current features
 ----------------
@@ -15,6 +14,9 @@ Current features
 * In-memory history;
 * CTRL to move/erase a word;
 * End/Home to jump to end/beginning.
+
+The only feature remaining for full shell experience is the multiline support,
+so lines longer than terminal width might look oddly, but will still work.
 
 
 Documentation
@@ -35,7 +37,7 @@ Int functions can return error codes. They are always above 0, and defined as:
 * TL_ERROR_ALLOC.
 
 Last pressed control sequence will be stored in 'tl_last_control' as int. Note
-that last control sequence for tl_readline() can only be Enter or Interrupt. 
+that last control sequence for tl_readline() can only be Enter or Interrupt.
 
 Related values:
 
@@ -68,17 +70,17 @@ They can be tested with bitwise AND (&).
 
 int tl_init(void);
 --------
-Initialize toiletline and put terminal into raw mode.
+Initialize toiletline and put terminal in semi-raw mode.
 Returns TL_SUCCESS.
 
 
 int tl_readline(char *line_buffer, size_t size, const char *prompt);
 --------
-Read a line while in raw mode.
+Read a line.
 
 To support multi-byte characters and null at the end, size needs to be at least
 2 or more. Submitted input will be written to *line_buffer as a null-terminated
-string.
+string. After the size is exhausted, character inputs will be ignored.
 
 Beware of characters like '\t' (Tab) and such, as they may break cursor
 position. Althrough they are considered as a single character, they occupy more
@@ -93,7 +95,7 @@ Returns:
 
 int tl_getc(char *char_buffer, size_t size, const char *prompt);
 --------
-Read a character without waiting for Enter.
+Read a character (without waiting for Enter).
 
 Returns:
 * TL_SUCCESS on a character;
