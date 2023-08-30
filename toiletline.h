@@ -100,17 +100,17 @@ typedef enum
     TL_KEY_INTERRUPT,
 } TL_KEY_KIND;
 
-/**
- * Last pressed control sequence.
-*/
-#define tl_last_control (*itl__get_last_control())
-
 #define TL_MOD_CTRL  32
 #define TL_MOD_SHIFT 64
 #define TL_MOD_ALT   128
 
 #define TL_MASK_KEY  15
 #define TL_MASK_MOD  224
+
+/**
+ * Last pressed control sequence.
+*/
+#define tl_last_control (*itl__get_last_control())
 
 /**
  * Initialize toiletline, enter raw mode.
@@ -216,8 +216,7 @@ inline static int itl_enter_raw_mode(void)
         return TL_ERROR;
 
     itl_global_original_tty_mode = mode;
-
-    mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);;
+    mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
 
     if (!SetConsoleMode(hInput, mode))
         return TL_ERROR;
@@ -235,8 +234,7 @@ inline static int itl_enter_raw_mode(void)
     itl_global_original_tty_mode = term;
 
     cfmakeraw(&term);
-    // Map \r to each \n so cursor gets back to the beginning of the line to
-    // match Windows
+    // Map \r to each \n so cursor gets back to the beginning
     term.c_oflag = OPOST | ONLCR;
 
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &term) != 0)
@@ -268,7 +266,6 @@ inline static void itl_signal_interrupt(int sign)
     signal(sign, SIG_IGN);
 
     printf("\nInterrupted.\n");
-
     fflush(stdout);
 
     tl_exit();
@@ -337,12 +334,12 @@ struct itl_utf8
     uint8_t bytes[4];
 };
 
-static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t length)
+static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t size)
 {
     itl_utf8_t utf8_char;
-    utf8_char.size = length;
+    utf8_char.size = size;
 
-    for (uint8_t i = 0; i < length; i++)
+    for (uint8_t i = 0; i < size; i++)
         utf8_char.bytes[i] = bytes[i];
 
     return utf8_char;
@@ -733,12 +730,12 @@ static size_t itl_le_goto_token(itl_le_t *le, int behind, int token)
         int should_break = 0;
 
         switch (token) {
-        case ITL_TOKEN_WHITESPACE:
-            should_break = itl_is_delim(ch->rune.bytes[0]);
-            break;
-        case ITL_TOKEN_WORD:
-            should_break = !itl_is_delim(ch->rune.bytes[0]);
-            break;
+            case ITL_TOKEN_WHITESPACE:
+                should_break = itl_is_delim(ch->rune.bytes[0]);
+                break;
+            case ITL_TOKEN_WORD:
+                should_break = !itl_is_delim(ch->rune.bytes[0]);
+                break;
         }
 
         if (should_break)
@@ -774,10 +771,10 @@ typedef struct itl_char_buf itl_char_buf_t;
 struct itl_char_buf
 {
   char *data;
-  int size;
+  size_t size;
 };
 
-static void itl_char_buf_append(itl_char_buf_t *buf, const char *s, size_t size)
+inline static void itl_char_buf_append(itl_char_buf_t *buf, const char *s, size_t size)
 {
     char *new_s = itl_realloc(buf->data, buf->size + size);
 
@@ -789,7 +786,7 @@ static void itl_char_buf_append(itl_char_buf_t *buf, const char *s, size_t size)
 
 #define itl_char_buf_free(char_buf) itl_free((char_buf)->data)
 
-static int itl_tty_size(size_t *rows, size_t *cols) {
+inline static int itl_tty_size(size_t *rows, size_t *cols) {
 #if defined(TL_SIZE_USE_ESCAPES)
     char buf[32];
     size_t i = 0;
@@ -895,7 +892,7 @@ static int itl_le_update_tty(itl_le_t *le)
     snprintf(temp_buf, buf_size, "\x1b[%zuG", wrap_cursor_pos + cur_offset);
     itl_char_buf_append(&to_be_printed, temp_buf, strlen(temp_buf));
 
-    write(STDOUT_FILENO, to_be_printed.data, to_be_printed.size);
+    write(STDOUT_FILENO, to_be_printed.data, (unsigned)to_be_printed.size);
 
     itl_char_buf_free(&to_be_printed);
     itl_free(temp_buf);
@@ -1441,6 +1438,8 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /*
  * TODO:
+ *  - call fflush() on Enter?
+ *  - Remove ability to use history on tl_getc().
  *  - Holding CTRL creates weird inputs on Windows.
  *  - itl_string_to_tty_cstr().
  *  - Replace history on limit.
