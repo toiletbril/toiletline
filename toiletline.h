@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.2.5
+ *  toiletline 0.2.6
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -36,48 +36,53 @@ extern "C" {
 
 #include <stddef.h>
 
-/* Define TL_ASSERT before including to use custom assertions,
- * or to disable them. */
+/**
+ * To use custom assertions or to disable them, you can define TL_ASSERT before
+ * including.
+ */
 #if !defined(TL_ASSERT)
     #include <assert.h>
     #define TL_ASSERT(boolval) assert(boolval)
 #endif /* TL_ASSERT */
 
+/**
+ * Allocation functions can also be replaced before including.
+ */
 #if !defined(TL_MALLOC)
     #define TL_MALLOC(size)         malloc(size)
     #define TL_CALLOC(count, size)  calloc(count, size)
     #define TL_REALLOC(block, size) realloc(block, size)
     #define TL_FREE(ptr)            free(ptr)
-    /* Called on failed allocation.
-     * Define TL_NO_ABORT to disable failure checking. */
+    /* Will be called on failed allocation.
+     * TL_NO_ABORT can be defined to disable failure checking. */
     #define TL_ABORT() abort()
 #endif /* TL_MALLOC */
 
-/* Max size of in-memory history, must be a power of 2. */
+/**
+ * Max size of in-memory history, must be a power of 2.
+ */
 #if !defined(TL_HISTORY_MAX_SIZE)
     #define TL_HISTORY_MAX_SIZE 128
 #endif
 
-/**
- *  Zero is a success.
- */
+
 #define TL_SUCCESS 0
 /**
- *  Codes which are returned from read functions.
+ * Codes which may be returned from reading functions.
  */
 #define TL_PRESSED_ENTER -1
 #define TL_PRESSED_CTRLC -2
 #define TL_PRESSED_CONTROL_SEQUENCE -3
 /**
- *  Codes above 0 are errors.
+ * Codes above 0 are errors.
  */
 #define TL_ERROR 1
 #define TL_ERROR_SIZE 2
 #define TL_ERROR_ALLOC 3
 
 /**
- *  Control sequences.
- *  Last control sequence used will be stored in 'tl_last_control'.
+ * Control sequences.
+ * Last control sequence used will be stored in 'tl_last_control'.
  */
 typedef enum
 {
@@ -109,26 +114,26 @@ typedef enum
 #define TL_MASK_MOD  224
 
 /**
- *  Initialize toiletline, enter raw mode.
+ * Initialize toiletline, enter raw mode.
  */
 int tl_init(void);
 /**
- *  Exit toiletline and free history.
+ * Exit toiletline and free resources.
  */
 int tl_exit(void);
 /**
- *  Read one character without waiting for Enter. Does not append to history.
+ * Read one character without waiting for Enter.
  */
 int tl_getc(char *char_buffer, size_t size, const char *prompt);
 /**
- *  Read one line.
+ * Read one line.
  */
 int tl_readline(char *line_buffer, size_t size, const char *prompt);
 /**
- *  Returns the number of UTF-8 characters.
+ * Returns the number of UTF-8 characters.
  *
- *  Since number of bytes can be bigger than amount of characters,
- *  regular strlen will not work, and will only return the number of bytes before \0.
+ * Since number of bytes can be bigger than amount of characters,
+ * regular strlen will not work, and will only return the number of bytes before \0.
  */
 size_t tl_utf8_strlen(const char *utf8_str);
 
@@ -158,12 +163,25 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #include <conio.h>
     #include <fcntl.h>
     #include <io.h>
+
     #define STDIN_FILENO  _fileno(stdin)
     #define STDOUT_FILENO _fileno(stdout)
+
+    #define write(file, buf, count) _write(file, buf, count)
+
+    /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation> */
+    #define ITL_MAX_STRING_LEN 8191
+
+    #define itl_read_byte() _getch()
 #elif defined(ITL_POSIX)
     #include <sys/ioctl.h>
     #include <termios.h>
     #include <unistd.h>
+
+    /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
+    #define ITL_MAX_STRING_LEN 4095
+
+    #define itl_read_byte() fgetc(stdin)
 #endif
 
 #include <ctype.h>
@@ -182,14 +200,10 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 
 #if defined(ITL_WIN32)
-    /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation> */
-    #define ITL_MAX_STRING_LEN 8191
-    #define itl_read_byte() _getch()
+static ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
 #elif defined(ITL_POSIX)
-    /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
-    #define ITL_MAX_STRING_LEN 4095
-    #define itl_read_byte() fgetc(stdin)
-#endif /* ITL_POSIX */
+static ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode = {0};
+#endif
 
 inline static int itl_enter_raw_mode(void)
 {
@@ -198,8 +212,13 @@ inline static int itl_enter_raw_mode(void)
     if (hInput == INVALID_HANDLE_VALUE)
         return TL_ERROR;
 
-    // NOTE: ENABLE_VIRTUAL_TERMINAL_INPUT seems to not work on older versions of Windows
-    DWORD mode = ENABLE_EXTENDED_FLAGS | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_QUICK_EDIT_MODE;
+    DWORD mode;
+    if (!GetConsoleMode(hInput, &mode))
+        return TL_ERROR;
+
+    itl_global_original_tty_mode = mode;
+
+    mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);;
 
     if (!SetConsoleMode(hInput, mode))
         return TL_ERROR;
@@ -214,13 +233,16 @@ inline static int itl_enter_raw_mode(void)
     if (tcgetattr(STDIN_FILENO, &term) != 0)
         return TL_ERROR;
 
-    struct termios raw = term;
-    raw.c_lflag &= ~(ICANON | ECHO);
-    raw.c_cc[VMIN] = 1;
-    raw.c_cc[VTIME] = 0;
+    itl_global_original_tty_mode = term;
 
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0)
+    cfmakeraw(&term);
+    // Map \r to each \n so cursor gets back to the beginning of the line to
+    // match Windows
+    term.c_oflag = OPOST | ONLCR;
+
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &term) != 0)
         return TL_ERROR;
+
 #endif /* ITL_POSIX */
     return TL_SUCCESS;
 }
@@ -233,25 +255,10 @@ inline static int itl_exit_raw_mode(void)
     if (h_input == INVALID_HANDLE_VALUE)
         return TL_ERROR;
 
-    DWORD mode;
-
-    if (!GetConsoleMode(h_input, &mode))
-        return TL_ERROR;
-
-    mode |= ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT;
-
-    if (!SetConsoleMode(h_input, mode))
+    if (!SetConsoleMode(h_input, itl_global_original_tty_mode))
         return TL_ERROR;
 #elif defined(ITL_POSIX)
-    struct termios term;
-
-    if (tcgetattr(STDIN_FILENO, &term) != 0)
-        return TL_ERROR;
-
-    term.c_lflag |= ICANON | ECHO;
-    term.c_oflag |= OPOST;
-
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &term) != 0)
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &itl_global_original_tty_mode) != 0)
         return TL_ERROR;
 #endif /* ITL_POSIX */
     return TL_SUCCESS;
@@ -261,8 +268,7 @@ inline static void itl_signal_interrupt(int sign)
 {
     signal(sign, SIG_IGN);
 
-    fputc('\n', stdout);
-    printf("Interrupted.\n");
+    printf("\nInterrupted.\n");
 
     fflush(stdout);
 
@@ -271,7 +277,7 @@ inline static void itl_signal_interrupt(int sign)
     exit(0);
 }
 
-static size_t itl_global_alloc_count = 0;
+static ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
 
 inline static void *itl_malloc(size_t size)
 {
@@ -546,7 +552,7 @@ itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
     return itl_string_to_cstr(str, c_str, size);
 }
 
-static ITL_THREAD_LOCAL itl_string_t *itl_global_line_buffer = NULL;
+static ITL_THREAD_LOCAL itl_string_t itl_global_line_buffer = {0};
 
 typedef struct itl_le itl_le_t;
 
@@ -760,7 +766,6 @@ inline static void itl_le_clear(itl_le_t *le)
 {
     itl_string_clear(le->line);
 
-    le->line->length = 0;
     le->cursor_position = 0;
 }
 
@@ -785,8 +790,8 @@ static void itl_char_buf_append(itl_char_buf_t *buf, const char *s, size_t size)
 
 #define itl_char_buf_free(char_buf) itl_free((char_buf)->data)
 
-#if defined(TL_SIZE_USE_ESCAPES)
 static int itl_tty_size(size_t *rows, size_t *cols) {
+#if defined(TL_SIZE_USE_ESCAPES)
     char buf[32];
     size_t i = 0;
 
@@ -810,11 +815,7 @@ static int itl_tty_size(size_t *rows, size_t *cols) {
     if (sscanf(&buf[2], "%zu;%zu", rows, cols) != 2)
         return TL_ERROR;
 
-    return TL_SUCCESS;
-}
-#else /* TL_SIZE_USE_ESCAPES */
-static int itl_tty_size(size_t *rows, size_t *cols) {
-#if defined(ITL_WIN32)
+#elif defined(ITL_WIN32)
     CONSOLE_SCREEN_BUFFER_INFO buffer_info;
 
     int success = GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &buffer_info);
@@ -824,6 +825,7 @@ static int itl_tty_size(size_t *rows, size_t *cols) {
 
     (*cols) = buffer_info.srWindow.Right - buffer_info.srWindow.Left + 1;
     (*rows) = buffer_info.srWindow.Bottom - buffer_info.srWindow.Top + 1;
+
 #elif defined(ITL_POSIX)
     struct winsize window;
 
@@ -834,10 +836,11 @@ static int itl_tty_size(size_t *rows, size_t *cols) {
 
     (*rows) = (size_t)window.ws_row;
     (*cols) = (size_t)window.ws_col;
-#endif /* ITL_POSIX */
+#else /* ITL_POSIX */
+    return TL_ERROR;
+#endif
     return TL_SUCCESS;
 }
-#endif /* native size */
 
 static int itl_le_update_tty(itl_le_t *le)
 {
@@ -860,6 +863,7 @@ static int itl_le_update_tty(itl_le_t *le)
 
     size_t rows = 0;
     size_t cols = 0;
+
     itl_tty_size(&rows, &cols);
 
     size_t wrap_value = wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
@@ -969,9 +973,9 @@ static void itl_global_history_get(itl_le_t *le)
 
     itl_string_t *h_entry = itl_global_history[le->history_selected_item];
 
-    itl_string_copy(itl_global_line_buffer, h_entry);
+    itl_string_copy(le->line, h_entry);
 
-    le->cursor_position = itl_global_line_buffer->length;
+    le->cursor_position = le->line->length;
 }
 
 static int itl_esc_parse(int byte)
@@ -1311,8 +1315,6 @@ int tl_init(void)
 
     itl_global_history_alloc();
 
-    itl_global_line_buffer = itl_string_alloc();
-
     signal(SIGINT, itl_signal_interrupt);
 
     return itl_enter_raw_mode();
@@ -1321,7 +1323,8 @@ int tl_init(void)
 int tl_exit(void)
 {
     itl_global_history_free();
-    itl_string_free(itl_global_line_buffer);
+    // Do not free since line_buffer is on stack
+    itl_string_clear(&itl_global_line_buffer);
 
     signal(SIGINT, SIG_DFL);
 
@@ -1358,7 +1361,7 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
         "Size should be less or equal to size of 4 characters with a null terminator.");
     TL_ASSERT(char_buffer != NULL);
 
-    itl_le_t le = itl_le_new(itl_global_line_buffer, char_buffer, size, prompt);
+    itl_le_t le = itl_le_new(&itl_global_line_buffer, char_buffer, size, prompt);
 
     itl_le_update_tty(&le);
 
@@ -1397,7 +1400,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
         "Size should be less than platform's allowed maximum string length");
     TL_ASSERT(line_buffer != NULL);
 
-    itl_le_t le = itl_le_new(itl_global_line_buffer, line_buffer, size, prompt);
+    itl_le_t le = itl_le_new(&itl_global_line_buffer, line_buffer, size, prompt);
 
     itl_le_update_tty(&le);
 
