@@ -33,8 +33,7 @@ int main(void)
             } break;
 
             case TL_PRESSED_CONTROL_SEQUENCE: {
-                fputc('\n', stdout);
-                printf("Received control sequence %d\n", tl_last_control);
+                printf("\nReceived control sequence %d\n", tl_last_control);
             } break;
 
             default: {
