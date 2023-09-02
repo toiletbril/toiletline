@@ -93,7 +93,7 @@ All control sequences except Enter and Interrupt will be handled internally.
 
 Returns:
 * TL_PRESSED_ENTER on Enter;
-* TL_PRESSED_CTRLC on Ctrl-C;
+* TL_PRESSED_INTERRUPT on Ctrl-C;
 
 
 int tl_getc(char *char_buffer, size_t size, const char *prompt);

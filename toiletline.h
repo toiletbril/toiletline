@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.2.7
+ *  toiletline 0.3.0
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -70,7 +70,7 @@ extern "C" {
  * Codes which may be returned from reading functions.
  */
 #define TL_PRESSED_ENTER -1
-#define TL_PRESSED_CTRLC -2
+#define TL_PRESSED_INTERRUPT -2
 #define TL_PRESSED_CONTROL_SEQUENCE -3
 /**
  * Codes above 0 are errors.
@@ -1312,7 +1312,7 @@ static int itl_esc_handle(itl_le_t *le, int esc)
         case TL_KEY_INTERRUPT: {
             itl_string_to_cstr(le->line, le->out_buf, le->out_size);
 
-            return TL_PRESSED_CTRLC;
+            return TL_PRESSED_INTERRUPT;
         } break;
 
         default: {

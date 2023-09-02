@@ -19,7 +19,7 @@ int main(void)
     while (code < 0) {
         code = tl_readline(line_buffer, LINE_BUF_SIZE, "$ ");
 
-        if (code == TL_PRESSED_CTRLC) {
+        if (code == TL_PRESSED_INTERRUPT) {
             printf("\nInterrupted.\n");
             break;
         }
