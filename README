@@ -99,9 +99,7 @@ Read a character (without waiting for Enter).
 
 Returns:
 * TL_SUCCESS on a character;
-* TL_PRESSED_ENTER on Enter;
-* TL_PRESSED_CTRLC on Ctrl-C;
-* TL_PRESSED_CONTROL_SEQUENCE on other control sequences.
+* TL_PRESSED_CONTROL_SEQUENCE on a control sequence.
 
 
 int tl_exit(void);

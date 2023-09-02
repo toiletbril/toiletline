@@ -20,7 +20,7 @@ int main(void)
     while (code <= 0) {
         code = tl_getc(char_buffer, CHAR_BUF_SIZE, "> ");
 
-        if (code == TL_PRESSED_CTRLC) {
+        if (tl_last_control == TL_KEY_INTERRUPT) {
             printf("\nInterrupted.\n");
             break;
         }
@@ -28,10 +28,6 @@ int main(void)
         // Note that if a control character other than Enter was pressed,
         // LF will not be displayed
         switch (code) {
-            case TL_PRESSED_ENTER: {
-                printf("Received Enter, control sequence %d\n", tl_last_control);
-            } break;
-
             case TL_PRESSED_CONTROL_SEQUENCE: {
                 printf("\nReceived control sequence %d\n", tl_last_control);
             } break;

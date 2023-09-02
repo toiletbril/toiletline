@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.2.6
+ *  toiletline 0.2.7
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -200,6 +200,8 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
 #if defined(ITL_WIN32)
 static ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
+static ITL_THREAD_LOCAL UINT itl_global_original_tty_cp    = 0;
+static ITL_THREAD_LOCAL int itl_global_original_mode       = 0;
 #elif defined(ITL_POSIX)
 static ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode = {0};
 #endif
@@ -211,21 +213,31 @@ inline static int itl_enter_raw_mode(void)
     if (hInput == INVALID_HANDLE_VALUE)
         return TL_ERROR;
 
-    DWORD mode;
-    if (!GetConsoleMode(hInput, &mode))
+    DWORD tty_mode;
+    if (!GetConsoleMode(hInput, &tty_mode))
         return TL_ERROR;
 
-    itl_global_original_tty_mode = mode;
-    mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
+    itl_global_original_tty_mode = tty_mode;
+    tty_mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
 
-    if (!SetConsoleMode(hInput, mode))
+    if (!SetConsoleMode(hInput, tty_mode))
         return TL_ERROR;
 
-    if (_setmode(STDIN_FILENO, _O_BINARY) == -1)
+    UINT codepage = GetConsoleCP();
+    if (codepage == 0)
         return TL_ERROR;
 
-    if (SetConsoleCP(CP_UTF8) == 0)
+    itl_global_original_tty_cp = codepage;
+
+    if (!SetConsoleCP(CP_UTF8))
         return TL_ERROR;
+
+    int mode = _setmode(STDIN_FILENO, _O_BINARY) == -1;
+    if (mode == -1)
+        return TL_ERROR;
+
+    itl_global_original_mode = mode;
+
 #elif defined(ITL_POSIX)
     struct termios term;
     if (tcgetattr(STDIN_FILENO, &term) != 0)
@@ -248,12 +260,20 @@ inline static int itl_exit_raw_mode(void)
 {
 #if defined(ITL_WIN32)
     HANDLE h_input = GetStdHandle(STD_INPUT_HANDLE);
-
     if (h_input == INVALID_HANDLE_VALUE)
         return TL_ERROR;
 
     if (!SetConsoleMode(h_input, itl_global_original_tty_mode))
         return TL_ERROR;
+
+    if (!SetConsoleCP(itl_global_original_tty_cp))
+        return TL_ERROR;
+
+    if (itl_global_original_mode != 0) {
+        if (_setmode(STDIN_FILENO, itl_global_original_mode) == -1)
+            return TL_ERROR;
+    }
+
 #elif defined(ITL_POSIX)
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &itl_global_original_tty_mode) != 0)
         return TL_ERROR;
@@ -1365,25 +1385,21 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
     int esc = itl_esc_parse(in);
 
     if (esc != TL_KEY_CHAR) {
-        int code = itl_esc_handle(&le, esc);
-        if (code != TL_SUCCESS)
-            return code;
-        else
-            return TL_PRESSED_CONTROL_SEQUENCE;
+        itl_global_last_control = esc;
+        return TL_PRESSED_CONTROL_SEQUENCE;
     }
-    else {
-        itl_utf8_t ch = itl_utf8_parse(in);
-        itl_le_putc(&le, ch);
 
-        itl_le_update_tty(&le);
-        itl_string_to_cstr(le.line, char_buffer, size);
+    itl_utf8_t ch = itl_utf8_parse(in);
+    itl_le_putc(&le, ch);
 
-        itl_le_clear(&le);
+    itl_le_update_tty(&le);
+    itl_string_to_cstr(le.line, char_buffer, size);
 
-        fputc('\n', stdout);
+    itl_le_clear(&le);
 
-        fflush(stdout);
-    }
+    fputc('\n', stdout);
+
+    fflush(stdout);
 
     return TL_SUCCESS;
 }
@@ -1438,8 +1454,6 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /*
  * TODO:
- *  - call fflush() on Enter?
- *  - Remove ability to use history on tl_getc().
  *  - Holding CTRL creates weird inputs on Windows.
  *  - itl_string_to_tty_cstr().
  *  - Replace history on limit.
