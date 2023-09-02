@@ -36,8 +36,11 @@ Int functions can return error codes. They are always above 0, and defined as:
 * TL_ERROR_SIZE;
 * TL_ERROR_ALLOC.
 
-Last pressed control sequence will be stored in 'tl_last_control' as int. Note
-that last control sequence for tl_readline() can only be Enter or Interrupt.
+
+int tl_last_control;
+--------
+Last pressed control sequence. Note that last control sequence for
+tl_readline() can only be Enter or Interrupt.
 
 Related values:
 
@@ -99,7 +102,8 @@ Read a character (without waiting for Enter).
 
 Returns:
 * TL_SUCCESS on a character;
-* TL_PRESSED_CONTROL_SEQUENCE on a control sequence.
+* TL_PRESSED_CONTROL_SEQUENCE on a control sequence (tl_last_control to check
+  which one).
 
 
 int tl_exit(void);
