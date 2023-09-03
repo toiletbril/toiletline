@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.3.0
+ *  toiletline 0.3.1
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -50,7 +50,6 @@ extern "C" {
  */
 #if !defined(TL_MALLOC)
     #define TL_MALLOC(size)         malloc(size)
-    #define TL_CALLOC(count, size)  calloc(count, size)
     #define TL_REALLOC(block, size) realloc(block, size)
     #define TL_FREE(ptr)            free(ptr)
     /* Will be called on failed allocation.
@@ -232,7 +231,7 @@ inline static int itl_enter_raw_mode(void)
     if (!SetConsoleCP(CP_UTF8))
         return TL_ERROR;
 
-    int mode = _setmode(STDIN_FILENO, _O_BINARY) == -1;
+    int mode = _setmode(STDIN_FILENO, _O_BINARY);
     if (mode == -1)
         return TL_ERROR;
 
@@ -269,10 +268,8 @@ inline static int itl_exit_raw_mode(void)
     if (!SetConsoleCP(itl_global_original_tty_cp))
         return TL_ERROR;
 
-    if (itl_global_original_mode != 0) {
-        if (_setmode(STDIN_FILENO, itl_global_original_mode) == -1)
-            return TL_ERROR;
-    }
+    if (_setmode(STDIN_FILENO, itl_global_original_mode) == -1)
+        return TL_ERROR;
 
 #elif defined(ITL_POSIX)
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &itl_global_original_tty_mode) != 0)
@@ -313,14 +310,18 @@ inline static void *itl_calloc(size_t count, size_t size)
 {
     itl_global_alloc_count += 1;
 
-    void *allocated = TL_CALLOC(count, size);
+    // TODO: This should be a loop to avoid wrapping with very high values, but
+    // I don't think there will be such problem
+    void *allocated = TL_MALLOC(count * size);
 
 #if !defined(TL_NO_ABORT)
     if (allocated == NULL)
         TL_ABORT();
 #endif
 
-    return TL_CALLOC(count, size);
+    memset(allocated, 0, count * size);
+
+    return allocated;
 }
 
 inline static void *itl_realloc(void *block, size_t size)
@@ -1454,6 +1455,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /*
  * TODO:
+ *  - Use winapi allocation functions on Windows.
  *  - Holding CTRL creates weird inputs on Windows.
  *  - itl_string_to_tty_cstr().
  *  - Replace history on limit.
