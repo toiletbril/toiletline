@@ -172,6 +172,10 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
     #define itl_read_byte() _getch()
 #elif defined(ITL_POSIX)
+    #if !defined(_DEFAULT_SOURCE)
+        #define _DEFAULT_SOURCE
+    #endif
+
     #include <sys/ioctl.h>
     #include <termios.h>
     #include <unistd.h>
@@ -1263,9 +1267,7 @@ static int itl_esc_handle(itl_le_t *le, int esc)
             if (err)
                 return err;
             else {
-                fputc('\n', stdout);
                 fflush(stdout);
-
                 return TL_PRESSED_ENTER;
             }
         } break;
@@ -1340,7 +1342,7 @@ int tl_init(void)
 int tl_exit(void)
 {
     itl_global_history_free();
-    // Do not free since line_buffer is on stack
+    // NOTE: no free since line_buffer is not malloced
     itl_string_clear(&itl_global_line_buffer);
 
     signal(SIGINT, SIG_DFL);
@@ -1392,14 +1394,11 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
 
     itl_utf8_t ch = itl_utf8_parse(in);
     itl_le_putc(&le, ch);
-
     itl_le_update_tty(&le);
+
     itl_string_to_cstr(le.line, char_buffer, size);
 
     itl_le_clear(&le);
-
-    fputc('\n', stdout);
-
     fflush(stdout);
 
     return TL_SUCCESS;
@@ -1455,6 +1454,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 /*
  * TODO:
+ *  - Use arena allocator
  *  - Use winapi allocation functions on Windows.
  *  - Holding CTRL creates weird inputs on Windows.
  *  - itl_string_to_tty_cstr().

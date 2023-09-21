@@ -24,7 +24,7 @@ int main(void)
             break;
         }
 
-        printf("Received string: '%s' of length %zu, of size %zu\n",
+        printf("\nReceived string: '%s' of length %zu, of size %zu\n",
                 line_buffer, tl_utf8_strlen(line_buffer), strlen(line_buffer));
 
         fflush(stdout);

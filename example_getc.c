@@ -11,7 +11,9 @@ int main(void)
         return 1;
     }
 
-    printf("Welcome to tl_getc example!\nTry to press keys while holding Control or Alt.\nYou can also use non-latin keyboard layout.\n");
+    printf("Welcome to tl_getc example!\n"
+           "Try to press keys while holding Control or Alt.\n"
+           "You can also use non-latin keyboard layout.\n");
 
     char char_buffer[CHAR_BUF_SIZE] = {0};
     int code = -1;
@@ -25,8 +27,6 @@ int main(void)
             break;
         }
 
-        // Note that if a control character other than Enter was pressed,
-        // LF will not be displayed
         switch (code) {
             case TL_PRESSED_CONTROL_SEQUENCE: {
                 printf("\nReceived control sequence %d\n", tl_last_control);
@@ -35,7 +35,7 @@ int main(void)
             default: {
                 size_t size = strlen(char_buffer);
 
-                printf("Received character: '%s' of of size %zu. Bytes:",
+                printf("\nReceived character: '%s' of of size %zu. Bytes:",
                         char_buffer, size);
 
                 for (size_t i = 0; i < size; ++i)
