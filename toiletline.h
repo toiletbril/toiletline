@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.3.1
+ *  toiletline 0.3.2
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -27,28 +27,26 @@
  *  SOFTWARE.
  */
 
-#if defined(__cplusplus)
+
+#if defined __cplusplus
 extern "C" {
 #endif
 
-#if !defined(TOILETLINE_H_)
+#if !defined TOILETLINE_H_
 #define TOILETLINE_H_
 
 #include <stddef.h>
 
-/**
- * To use custom assertions or to disable them, you can define TL_ASSERT before
- * including.
- */
-#if !defined(TL_ASSERT)
-    #include <assert.h>
-    #define TL_ASSERT(boolval) assert(boolval)
+/* To use custom assertions or to disable them, you can define TL_ASSERT before
+ * including. */
+#if !defined TL_ASSERT
+    #define ITL_DEFAULT_ASSERT
 #endif /* TL_ASSERT */
 
 /**
  * Allocation functions can also be replaced before including.
  */
-#if !defined(TL_MALLOC)
+#if !defined TL_MALLOC
     #define TL_MALLOC(size)         malloc(size)
     #define TL_REALLOC(block, size) realloc(block, size)
     #define TL_FREE(ptr)            free(ptr)
@@ -60,7 +58,7 @@ extern "C" {
 /**
  * Max size of in-memory history, must be a power of 2.
  */
-#if !defined(TL_HISTORY_MAX_SIZE)
+#if !defined TL_HISTORY_MAX_SIZE
     #define TL_HISTORY_MAX_SIZE 128
 #endif
 
@@ -110,7 +108,6 @@ typedef enum
  * Last pressed control sequence.
 */
 #define tl_last_control (*itl__get_last_control())
-
 /**
  * Initialize toiletline, enter raw mode.
  */
@@ -137,19 +134,19 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
 #endif /* TOILETLINE_H_ */
 
-#if defined(TOILETLINE_IMPLEMENTATION)
+#if defined TOILETLINE_IMPLEMENTATION
 
 #if defined(_WIN32)
     #define ITL_WIN32
-#elif defined(__linux__) || defined(BSD) || defined(__APPLE__)
+#elif defined __linux__ || defined BSD || defined __APPLE__
     #define ITL_POSIX
 #else /* __linux__ || BSD || __APPLE__ */
     #error "Your system is not supported"
 #endif
 
-#if defined(_MSC_VER)
+#if defined _MSC_VER
     #define ITL_THREAD_LOCAL __declspec(thread)
-#elif defined(__GNUC__) || defined(__clang__)
+#elif defined __GNUC__ || defined __clang__
     #define ITL_THREAD_LOCAL __thread
 #else
     #define ITL_THREAD_LOCAL /* nothing */
@@ -157,6 +154,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
 #if defined(ITL_WIN32)
     #define WIN32_LEAN_AND_MEAN
+
     #include <windows.h>
     #include <conio.h>
     #include <fcntl.h>
@@ -171,8 +169,8 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #define ITL_MAX_STRING_LEN 8191
 
     #define itl_read_byte() _getch()
-#elif defined(ITL_POSIX)
-    #if !defined(_DEFAULT_SOURCE)
+#elif defined ITL_POSIX
+    #if !defined _DEFAULT_SOURCE
         #define _DEFAULT_SOURCE
     #endif
 
@@ -184,7 +182,12 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #define ITL_MAX_STRING_LEN 4095
 
     #define itl_read_byte() fgetc(stdin)
-#endif
+#endif /* ITL_POSIX */
+
+#if defined ITL_DEFAULT_ASSERT
+    #include <assert.h>
+    #define TL_ASSERT(boolval) assert(boolval)
+#endif /* ITL_DEFAULT_ASSERT */
 
 #include <ctype.h>
 #include <signal.h>
@@ -193,7 +196,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(ITL_DEBUG)
+#if defined ITL_DEBUG
     #define itl_trace(...) fprintf(stderr, __VA_ARGS__)
 #else /* ITL_DEBUG */
     #define itl_trace(...) /* nothing */
@@ -205,8 +208,8 @@ size_t tl_utf8_strlen(const char *utf8_str);
 static ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
 static ITL_THREAD_LOCAL UINT itl_global_original_tty_cp    = 0;
 static ITL_THREAD_LOCAL int itl_global_original_mode       = 0;
-#elif defined(ITL_POSIX)
-static ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode = {0};
+#elif defined ITL_POSIX
+static ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode = { 0 };
 #endif
 
 inline static int itl_enter_raw_mode(void)
@@ -241,7 +244,7 @@ inline static int itl_enter_raw_mode(void)
 
     itl_global_original_mode = mode;
 
-#elif defined(ITL_POSIX)
+#elif defined ITL_POSIX
     struct termios term;
     if (tcgetattr(STDIN_FILENO, &term) != 0)
         return TL_ERROR;
@@ -275,7 +278,7 @@ inline static int itl_exit_raw_mode(void)
     if (_setmode(STDIN_FILENO, itl_global_original_mode) == -1)
         return TL_ERROR;
 
-#elif defined(ITL_POSIX)
+#elif defined ITL_POSIX
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &itl_global_original_tty_mode) != 0)
         return TL_ERROR;
 #endif /* ITL_POSIX */
@@ -302,7 +305,7 @@ inline static void *itl_malloc(size_t size)
 
     void *allocated = TL_MALLOC(size);
 
-#if !defined(TL_NO_ABORT)
+#if !defined TL_NO_ABORT
     if (allocated == NULL)
         TL_ABORT();
 #endif
@@ -318,7 +321,7 @@ inline static void *itl_calloc(size_t count, size_t size)
     // I don't think there will be such problem
     void *allocated = TL_MALLOC(count * size);
 
-#if !defined(TL_NO_ABORT)
+#if !defined TL_NO_ABORT
     if (allocated == NULL)
         TL_ABORT();
 #endif
@@ -335,7 +338,7 @@ inline static void *itl_realloc(void *block, size_t size)
 
     void *allocated = TL_REALLOC(block, size);
 
-#if !defined(TL_NO_ABORT)
+#if !defined TL_NO_ABORT
     if (allocated == NULL)
         TL_ABORT();
 #endif
@@ -373,7 +376,7 @@ static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t size)
 // TODO: Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid
 static itl_utf8_t itl_utf8_parse(int byte)
 {
-    uint8_t bytes[4] = { byte, 0, 0, 0 };
+    uint8_t bytes[4] = { (uint8_t)byte, 0, 0, 0 };
     uint8_t len = 0;
 
     if ((byte & 0x80) == 0) // 1 byte
@@ -393,7 +396,7 @@ static itl_utf8_t itl_utf8_parse(int byte)
     for (uint8_t i = 1; i < len; ++i) // consequent bytes
         bytes[i] = itl_read_byte();
 
-#if defined(ITL_DEBUG)
+#if defined ITL_DEBUG
     printf("\nutf8 char bytes: '");
 
     for (uint8_t i = 0; i < len - 1; ++i)
@@ -573,7 +576,7 @@ itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
     return itl_string_to_cstr(str, c_str, size);
 }
 
-static ITL_THREAD_LOCAL itl_string_t itl_global_line_buffer = {0};
+static ITL_THREAD_LOCAL itl_string_t itl_global_line_buffer = { 0 };
 
 typedef struct itl_le itl_le_t;
 
@@ -592,13 +595,13 @@ struct itl_le
 static itl_le_t itl_le_new(itl_string_t *line_buf, char *out_buf, size_t out_size, const char *prompt)
 {
     itl_le_t le = {
-        .line = line_buf,
-        .current_character = NULL,
-        .cursor_position = 0,
-        .history_selected_item = -1,
-        .out_buf = out_buf,
-        .out_size = out_size,
-        .prompt = prompt,
+        /* .line                   = */ line_buf,
+        /* .current_character      = */ NULL,
+        /* .cursor_position        = */ 0,
+        /* .history_selected_item  = */ -1,
+        /* .out_buf                = */ out_buf,
+        /* .out_size               = */ out_size,
+        /* .prompt                 = */ prompt,
     };
 
     return le;
@@ -801,7 +804,7 @@ struct itl_char_buf
 
 inline static void itl_char_buf_append(itl_char_buf_t *buf, const char *s, size_t size)
 {
-    char *new_s = itl_realloc(buf->data, buf->size + size);
+    char *new_s = (char *)itl_realloc(buf->data, buf->size + size);
 
     memcpy(&new_s[buf->size], s, size);
 
@@ -812,7 +815,7 @@ inline static void itl_char_buf_append(itl_char_buf_t *buf, const char *s, size_
 #define itl_char_buf_free(char_buf) itl_free((char_buf)->data)
 
 inline static int itl_tty_size(size_t *rows, size_t *cols) {
-#if defined(TL_SIZE_USE_ESCAPES)
+#if defined TL_SIZE_USE_ESCAPES
     char buf[32];
     size_t i = 0;
 
@@ -847,7 +850,7 @@ inline static int itl_tty_size(size_t *rows, size_t *cols) {
     (*cols) = buffer_info.srWindow.Right - buffer_info.srWindow.Left + 1;
     (*rows) = buffer_info.srWindow.Bottom - buffer_info.srWindow.Top + 1;
 
-#elif defined(ITL_POSIX)
+#elif defined ITL_POSIX
     struct winsize window;
 
     int err = ioctl(STDOUT_FILENO, TIOCGWINSZ, &window);
@@ -867,7 +870,7 @@ static int itl_le_update_tty(itl_le_t *le)
 {
     fputs("\x1b[?25l", stdout);
 
-    itl_char_buf_t to_be_printed = { .data = NULL, .size = 0 };
+    itl_char_buf_t to_be_printed = { /* .data = */ NULL, /* .size = */ 0 };
 
     size_t prompt_len;
 
@@ -887,7 +890,7 @@ static int itl_le_update_tty(itl_le_t *le)
 
     itl_tty_size(&rows, &cols);
 
-    size_t wrap_value = wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
+    size_t wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
     size_t wrap_cursor_pos = le->cursor_position + prompt_len - wrap_value * cols + 1;
 
     itl_trace("Line length: %zu\n", le->line->length);
@@ -1001,7 +1004,7 @@ static void itl_global_history_get(itl_le_t *le)
 
 static int itl_esc_parse(int byte)
 {
-    TL_KEY_KIND event = 0;
+    int event = 0;
 
     switch (byte) { // plain bytes
         case 3:
@@ -1067,7 +1070,7 @@ static int itl_esc_parse(int byte)
     } else {
         return TL_KEY_CHAR;
     }
-#elif defined(ITL_POSIX)
+#elif defined ITL_POSIX
     int read_mod = 0;
 
     if (byte == 27) { // \x1b
@@ -1422,7 +1425,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
     while (1) {
         in = itl_read_byte();
 
-#if defined(TL_SEE_BYTES)
+#if defined TL_SEE_BYTES
         printf("%d\n", in);
         continue;
 #endif /* TL_SEE_BYTES */
@@ -1448,16 +1451,15 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 #endif /* TOILETLINE_IMPLEMENTATION */
 
-#if defined(__cplusplus)
+#if defined __cplusplus
 }
 #endif
 
 /*
  * TODO:
- *  - Use arena allocator
- *  - Use winapi allocation functions on Windows.
+ *  - Better memory management.
  *  - Holding CTRL creates weird inputs on Windows.
- *  - itl_string_to_tty_cstr().
- *  - Replace history on limit.
+ *  - itl_string_to_tty_cstr() to support multiple lines.
+ *  - Properly replace history when reached limit.
  *  - Tab completion.
  */
