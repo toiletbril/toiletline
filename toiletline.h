@@ -94,8 +94,8 @@ typedef enum
 
     TL_KEY_BACKSPACE,
     TL_KEY_DELETE,
+    TL_KEY_KILL_LINE,
 
-    TL_KEY_CTRLK,
     TL_KEY_TAB,
 
     TL_KEY_SUSPEND,
@@ -1038,7 +1038,7 @@ static int itl_esc_parse(int byte)
         case 13: // cr
         case 10: return TL_KEY_ENTER;
 
-        case 11: return TL_KEY_CTRLK;
+        case 11: return TL_KEY_KILL_LINE;
         case 23: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
 
         case 8: // old backspace
@@ -1266,7 +1266,7 @@ static int itl_esc_handle(itl_le_t *le, int esc)
             itl_le_erase_forward(le, count);
         } break;
 
-        case TL_KEY_CTRLK: {
+        case TL_KEY_KILL_LINE: {
             itl_le_erase_forward(le, le->line->length - le->cursor_position);
         } break;
 
