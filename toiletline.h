@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.3.2
+ *  toiletline 0.3.3
  *  Raw CLI shell implementation
  *  Meant to be a tiny replacement of GNU Readline :3
  *
@@ -389,7 +389,7 @@ static itl_utf8_t itl_utf8_parse(int byte)
         len = 1;
     else if ((byte & 0xE0) == 0xC0) // 2 byte
         len = 2;
-    else if ((byte & 0xF8) == 0xF0) // 3 byte
+    else if ((byte & 0xF0) == 0xE0) // 3 byte
         len = 3;
     else if ((byte & 0xF8) == 0xF0) // 4 byte
         len = 4;
