@@ -197,9 +197,15 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #include <string.h>
 
 #if defined ITL_DEBUG
-    #define itl_trace(...) fprintf(stderr, __VA_ARGS__)
+    #define itl_trace(...)    fprintf(stderr, "[TRACE] " __VA_ARGS__)
+    // Print to stderr on the same line
+    #define itl_trace_sl(...) fprintf(stderr, __VA_ARGS__)
+    // Print LF to stderr
+    #define itl_trace_lf()    fprintf(stderr, "\n")
 #else /* ITL_DEBUG */
-    #define itl_trace(...) /* nothing */
+    #define itl_trace(...)    /* nothing */
+    #define itl_trace_sl(...) /* nothing */
+    #define itl_trace_lf()    /* nothing */
 #endif
 
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
@@ -388,7 +394,8 @@ static itl_utf8_t itl_utf8_parse(int byte)
     else if ((byte & 0xF8) == 0xF0) // 4 byte
         len = 4;
     else { // invalid character
-        itl_trace("*** Invalid UTF-8 sequence '%d'\n", (uint8_t)byte);
+        itl_trace_lf();
+        itl_trace("Invalid UTF-8 sequence '%d'\n", (uint8_t)byte);
         uint8_t replacement_character[3] = { 0xEF, 0xBF, 0xBD };
         return itl_utf8_new(replacement_character, 3);
     }
@@ -397,13 +404,15 @@ static itl_utf8_t itl_utf8_parse(int byte)
         bytes[i] = itl_read_byte();
 
 #if defined ITL_DEBUG
-    printf("\nutf8 char bytes: '");
+    itl_trace_lf();
+    itl_trace("utf8 char bytes: '");
 
     for (uint8_t i = 0; i < len - 1; ++i)
-        printf("%02X ", bytes[i]);
+        itl_trace_sl("%02X ", bytes[i]);
 
-    printf("%02X'\n", bytes[len - 1]);
+    itl_trace_sl("%02X'\n", bytes[len - 1]);
 #endif /* ITL_DEBUG */
+
     return itl_utf8_new(bytes, len);
 }
 
@@ -893,6 +902,7 @@ static int itl_le_update_tty(itl_le_t *le)
     size_t wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
     size_t wrap_cursor_pos = le->cursor_position + prompt_len - wrap_value * cols + 1;
 
+    itl_trace_lf();
     itl_trace("Line length: %zu\n", le->line->length);
     itl_trace("Dimensions: %zu, %zu\n", rows, cols);
     itl_trace("wrap_value: %zu\n", wrap_value);
@@ -1322,9 +1332,9 @@ static int itl_esc_handle(itl_le_t *le, int esc)
         } break;
 
         default: {
-            itl_trace("*** Key '%d' with modifier '%d' wasn't handled\n",
-                    esc & TL_MASK_KEY, esc & TL_MASK_MOD);
-
+            itl_trace_lf();
+            itl_trace("Key '%d' with modifier '%d' wasn't handled\n",
+                      esc & TL_MASK_KEY, esc & TL_MASK_MOD);
         }
     }
 
@@ -1350,7 +1360,7 @@ int tl_exit(void)
 
     signal(SIGINT, SIG_DFL);
 
-    itl_trace("Exited, alloc count: %zu", itl_global_alloc_count);
+    itl_trace("Exited, alloc count: %zu\n", itl_global_alloc_count);
 
     int code = itl_exit_raw_mode();
 

@@ -25,7 +25,7 @@ int main(void)
         }
 
         printf("\nReceived string: '%s' of length %zu, of size %zu\n",
-                line_buffer, tl_utf8_strlen(line_buffer), strlen(line_buffer));
+               line_buffer, tl_utf8_strlen(line_buffer), strlen(line_buffer));
 
         fflush(stdout);
 

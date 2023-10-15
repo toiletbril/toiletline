@@ -36,7 +36,7 @@ int main(void)
                 size_t size = strlen(char_buffer);
 
                 printf("\nReceived character: '%s' of of size %zu. Bytes:",
-                        char_buffer, size);
+                       char_buffer, size);
 
                 for (size_t i = 0; i < size; ++i)
                     printf(" %d", (uint8_t)char_buffer[i]);
