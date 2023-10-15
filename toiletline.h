@@ -1016,18 +1016,23 @@ static int itl_esc_parse(int byte)
     int event = 0;
 
     switch (byte) { // plain bytes
-        case 3:
-            return TL_KEY_INTERRUPT;
-        case 9:
-            return TL_KEY_TAB;
-        case 10: // newline
-        case 13: // cr
-            return TL_KEY_ENTER;
+        // ctrl a
+        case 1:  return TL_KEY_HOME;
+        // ctrl e
+        case 5:   return TL_KEY_END;
+
+        case 3:  return TL_KEY_INTERRUPT;
+
+        case 9:   return TL_KEY_TAB;
+        case 11:  return TL_KEY_CTRLK;
+
+        // cr
+        case 13:
+        case 10:  return TL_KEY_ENTER;
+        case 23:  return TL_KEY_BACKSPACE | TL_MOD_CTRL;
+
         case 8:
-        case 23:
-            return TL_KEY_BACKSPACE | TL_MOD_CTRL;
-        case 127:
-            return TL_KEY_BACKSPACE;
+        case 127: return TL_KEY_BACKSPACE;
     }
 
 #if defined(ITL_WIN32)
@@ -1148,26 +1153,10 @@ static int itl_esc_parse(int byte)
             default:
                 event |= TL_KEY_UNKN;
         }
+    } else if (iscntrl(byte)) {
+        return TL_KEY_UNKN;
     } else {
-        if (iscntrl(byte)) {
-            // Keys while holding modifier
-            switch (byte) {
-                case 1: { // ctrl a
-                    return TL_KEY_HOME;
-                } break;
-                case 5: { // ctrl e
-                    return TL_KEY_END;
-                } break;
-                case 11: {
-                    return TL_KEY_CTRLK;
-                } break;
-                default: {
-                    return TL_KEY_UNKN;
-                }
-            }
-        } else {
-            return TL_KEY_CHAR;
-        }
+        return TL_KEY_CHAR;
     }
 
     if (!read_mod) {
