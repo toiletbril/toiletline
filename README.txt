@@ -19,7 +19,6 @@ Current features
 The only feature remaining for full shell experience is the multiline support,
 so lines longer than terminal width might look oddly, but will still work.
 
-
 Documentation
 ----------------
 Before you include this file in C or C++ file, define
@@ -66,7 +65,10 @@ Possible key values:
 * TL_KEY_ENTER;
 * TL_KEY_BACKSPACE;
 * TL_KEY_DELETE;
+* TL_KEY_CTRLK;
 * TL_KEY_TAB;
+* TL_KEY_SUSPEND;
+* TL_KEY_EOF;
 * TL_KEY_INTERRUPT.
 
 They can be tested with bitwise AND (&).
