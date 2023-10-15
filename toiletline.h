@@ -305,9 +305,11 @@ static void itl_handle_cont(int signal_number)
 
 static void itl_handle_sigcont(int signal_number)
 {
+#if defined ITL_POSIX
     (void)signal_number;
     signal(SIGTSTP, SIG_DFL);
     itl_enter_raw_mode();
+#endif
 }
 
 static ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
@@ -1269,9 +1271,14 @@ static int itl_esc_handle(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_SUSPEND: {
+#if defined ITL_POSIX
             signal(SIGCONT, itl_handle_sigcont);
             itl_exit_raw_mode();
             raise(SIGTSTP);
+#elif defined ITL_WIN32
+            itl_string_to_cstr(le->line, le->out_buf, le->out_size);
+            return TL_PRESSED_INTERRUPT;
+#endif
         } break;
 
         case TL_KEY_EOF:

@@ -4,6 +4,8 @@ Single-header library for immediate shell, meant to replace a small subset of
 GNU Readline, and work on both Linux and Windows.
 
 All features like character echo and key handling are implemented from scratch.
+NOTE: On Windows, beta UTF-8 feature is required for proper multibyte character
+support.
 
 Any help finding bugs is appreciated.
 

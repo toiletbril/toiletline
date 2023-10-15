@@ -12,7 +12,7 @@ int main(void)
 
     printf("Welcome to tl_readline example!\nUse up and down arrows to view history.\n");
 #if defined _WIN32
-    printf("On Windows, beta UTF-8 feature is required for proper multibyte character support.\n");
+    printf("NOTE: On Windows, UTF-8 feature is required for multibyte character support.\n");
 #endif
 
     char line_buffer[LINE_BUF_SIZE] = {0};
