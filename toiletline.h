@@ -1021,7 +1021,7 @@ static int itl_esc_parse(int byte)
         // ctrl e
         case 5:   return TL_KEY_END;
 
-        case 3:  return TL_KEY_INTERRUPT;
+        case 3:   return TL_KEY_INTERRUPT;
 
         case 9:   return TL_KEY_TAB;
         case 11:  return TL_KEY_CTRLK;
@@ -1081,9 +1081,12 @@ static int itl_esc_parse(int byte)
             default:
                 event = TL_KEY_UNKN;
         }
+    } else if (iscntrl(byte)) {
+        return TL_KEY_UNKN;
     } else {
         return TL_KEY_CHAR;
     }
+
 #elif defined ITL_POSIX
     int read_mod = 0;
 
