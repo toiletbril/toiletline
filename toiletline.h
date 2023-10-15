@@ -1,7 +1,6 @@
 /*
  *  toiletline 0.3.3
- *  Raw CLI shell implementation
- *  Meant to be a tiny replacement of GNU Readline :3
+ *  Raw shell implementation, a tiny replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
  *  Before you include this file in C or C++ file to create the implementation.
@@ -26,7 +25,6 @@
  *  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  *  SOFTWARE.
  */
-
 
 #if defined __cplusplus
 extern "C" {
@@ -93,6 +91,7 @@ typedef enum
     TL_KEY_ENTER,
     TL_KEY_BACKSPACE,
     TL_KEY_DELETE,
+    TL_KEY_CTRLK,
     TL_KEY_TAB,
     TL_KEY_INTERRUPT,
 } TL_KEY_KIND;
@@ -1024,9 +1023,9 @@ static int itl_esc_parse(int byte)
         case 10: // newline
         case 13: // cr
             return TL_KEY_ENTER;
+        case 8:
         case 23:
             return TL_KEY_BACKSPACE | TL_MOD_CTRL;
-        case 8:
         case 127:
             return TL_KEY_BACKSPACE;
     }
@@ -1150,10 +1149,25 @@ static int itl_esc_parse(int byte)
                 event |= TL_KEY_UNKN;
         }
     } else {
-        if (!iscntrl(byte))
+        if (iscntrl(byte)) {
+            // Keys while holding modifier
+            switch (byte) {
+                case 1: { // ctrl a
+                    return TL_KEY_HOME;
+                } break;
+                case 5: { // ctrl e
+                    return TL_KEY_END;
+                } break;
+                case 11: {
+                    return TL_KEY_CTRLK;
+                } break;
+                default: {
+                    return TL_KEY_UNKN;
+                }
+            }
+        } else {
             return TL_KEY_CHAR;
-        else
-            return TL_KEY_UNKN;
+        }
     }
 
     if (!read_mod) {
@@ -1325,17 +1339,15 @@ static int itl_esc_handle(itl_le_t *le, int esc)
             itl_le_erase_forward(le, count);
         } break;
 
+        case TL_KEY_CTRLK: {
+            itl_le_erase_forward(le, le->line->length - le->cursor_position);
+        } break;
+
         case TL_KEY_INTERRUPT: {
             itl_string_to_cstr(le->line, le->out_buf, le->out_size);
 
             return TL_PRESSED_INTERRUPT;
         } break;
-
-        default: {
-            itl_trace_lf();
-            itl_trace("Key '%d' with modifier '%d' wasn't handled\n",
-                      esc & TL_MASK_KEY, esc & TL_MASK_MOD);
-        }
     }
 
     return TL_SUCCESS;
@@ -1435,7 +1447,8 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
     while (1) {
         in = itl_read_byte();
 
-#if defined TL_SEE_BYTES
+#if defined ITL_SEE_BYTES
+        if (in == 3) exit(0);
         printf("%d\n", in);
         continue;
 #endif /* TL_SEE_BYTES */

@@ -12,8 +12,7 @@ Current features
 ----------------
 * UTF-8 support;
 * In-memory history;
-* CTRL to move/erase a word;
-* End/Home to jump to end/beginning.
+* Familiar Emacs controls.
 
 The only feature remaining for full shell experience is the multiline support,
 so lines longer than terminal width might look oddly, but will still work.
