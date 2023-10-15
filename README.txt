@@ -19,6 +19,7 @@ Current features
 The only feature remaining for full shell experience is the multiline support,
 so lines longer than terminal width might look oddly, but will still work.
 
+
 Documentation
 ----------------
 Before you include this file in C or C++ file, define

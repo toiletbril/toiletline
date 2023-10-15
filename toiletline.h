@@ -297,13 +297,13 @@ inline static int itl_exit_raw_mode(void)
     return TL_SUCCESS;
 }
 
-static void itl_handle_cont(int signal_number)
+inline static void itl_handle_cont(int signal_number)
 {
     (void)signal_number;
     itl_enter_raw_mode();
 }
 
-static void itl_handle_sigcont(int signal_number)
+inline static void itl_handle_sigcont(int signal_number)
 {
 #if defined ITL_POSIX
     (void)signal_number;
@@ -314,7 +314,7 @@ static void itl_handle_sigcont(int signal_number)
 
 static ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
 
-inline static void *itl_malloc(size_t size)
+static void *itl_malloc(size_t size)
 {
     itl_global_alloc_count += 1;
 
@@ -328,12 +328,10 @@ inline static void *itl_malloc(size_t size)
     return allocated;
 }
 
-inline static void *itl_calloc(size_t count, size_t size)
+static void *itl_calloc(size_t count, size_t size)
 {
     itl_global_alloc_count += 1;
 
-    // TODO: This should be a loop to avoid wrapping with very high values, but
-    // I don't think there will be such problem
     void *allocated = TL_MALLOC(count * size);
 
 #if !defined TL_NO_ABORT
@@ -346,7 +344,7 @@ inline static void *itl_calloc(size_t count, size_t size)
     return allocated;
 }
 
-inline static void *itl_realloc(void *block, size_t size)
+static void *itl_realloc(void *block, size_t size)
 {
     if (block == NULL)
         itl_global_alloc_count += 1;
@@ -515,8 +513,7 @@ static void itl_string_copy(itl_string_t *dst, itl_string_t *src)
         if (prev_new_c) {
             prev_new_c->next = new_c;
             new_c->prev = prev_new_c;
-        }
-        else
+        } else
             dst->begin = new_c;
 
         prev_new_c = new_c;
@@ -644,8 +641,7 @@ static int itl_le_erase(itl_le_t *le, size_t count, int behind)
                 le->line->end = le->line->end->prev;
                 le->cursor_position -= 1;
             }
-        }
-        else {
+        } else {
             if (le->cursor_position == le->line->length)
                 return TL_ERROR;
             else if (le->current_character) {
@@ -725,8 +721,7 @@ static void itl_le_move_right(itl_le_t *le, size_t steps)
         if (le->current_character) {
             le->current_character = le->current_character->next;
             le->cursor_position += 1;
-        }
-        else
+        } else
             return;
     }
 }
@@ -1296,18 +1291,15 @@ int tl_init(void)
     TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 && "History size must be a power of 2");
 
     itl_global_history_alloc();
-
     return itl_enter_raw_mode();
 }
 
 int tl_exit(void)
 {
     itl_global_history_free();
-    // NOTE: no free since line_buffer is not malloced
     itl_string_clear(&itl_global_line_buffer);
 
     itl_trace("Exited, alloc count: %zu\n", itl_global_alloc_count);
-
     int code = itl_exit_raw_mode();
 
     TL_ASSERT(itl_global_alloc_count == 0);
@@ -1394,8 +1386,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
             if (code != TL_SUCCESS)
                 return code;
-        }
-        else {
+        } else {
             itl_utf8_t ch = itl_utf8_parse(in);
             itl_le_putc(&le, ch);
         }
