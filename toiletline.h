@@ -1016,70 +1016,38 @@ static int itl_esc_parse(int byte)
     int event = 0;
 
     switch (byte) { // plain bytes
-        // ctrl a
-        case 1:  return TL_KEY_HOME;
-        // ctrl e
-        case 5:   return TL_KEY_END;
+        case 1: return TL_KEY_HOME; // ctrl a
+        case 5: return TL_KEY_END;  // ctrl e
 
-        case 3:   return TL_KEY_INTERRUPT;
+        case 9:  return TL_KEY_TAB;
+        case 3:  return TL_KEY_INTERRUPT;
+        case 11: return TL_KEY_CTRLK;
 
-        case 9:   return TL_KEY_TAB;
-        case 11:  return TL_KEY_CTRLK;
+        case 13: // cr
+        case 10: return TL_KEY_ENTER;
+        case 23: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
 
-        // cr
-        case 13:
-        case 10:  return TL_KEY_ENTER;
-        case 23:  return TL_KEY_BACKSPACE | TL_MOD_CTRL;
-
-        case 8:
+        case 8: // old backspace
         case 127: return TL_KEY_BACKSPACE;
     }
 
 #if defined(ITL_WIN32)
     if (byte == 224) { // escape
         switch (itl_read_byte()) {
-            case 72: {
-                event = TL_KEY_UP;
-            } break;
+            case 72: event = TL_KEY_UP;     break;
+            case 80: event = TL_KEY_DOWN;   break;
+            case 75: event = TL_KEY_LEFT;   break;
+            case 77: event = TL_KEY_RIGHT;  break;
 
-            case 75: {
-                event = TL_KEY_LEFT;
-            } break;
+            case 71: event = TL_KEY_HOME;   break;
+            case 79: event = TL_KEY_END;    break;
+            case 83: event = TL_KEY_DELETE; break;
 
-            case 77: {
-                event = TL_KEY_RIGHT;
-            } break;
+            case 115: event = TL_KEY_LEFT   | TL_MOD_CTRL; break;
+            case 116: event = TL_KEY_RIGHT  | TL_MOD_CTRL; break;
+            case 147: event = TL_KEY_DELETE | TL_MOD_CTRL; break; // ctrl del
 
-            case 71: {
-                event = TL_KEY_HOME;
-            } break;
-
-            case 79: {
-                event = TL_KEY_END;
-            } break;
-
-            case 80: {
-                event = TL_KEY_DOWN;
-            } break;
-
-            case 83: {
-                event = TL_KEY_DELETE;
-            } break;
-
-            case 115: {
-                event = TL_KEY_LEFT | TL_MOD_CTRL;
-            } break;
-
-            case 116: {
-                event = TL_KEY_RIGHT | TL_MOD_CTRL;
-            } break;
-
-            case 147: { // ctrl del
-                event = TL_KEY_DELETE | TL_MOD_CTRL;
-            } break;
-
-            default:
-                event = TL_KEY_UNKN;
+            default: event = TL_KEY_UNKN;
         }
     } else if (iscntrl(byte)) {
         return TL_KEY_UNKN;
@@ -1104,13 +1072,8 @@ static int itl_esc_parse(int byte)
                 return TL_KEY_UNKN;
 
             switch (itl_read_byte()) {
-                case 50: {
-                    event |= TL_MOD_SHIFT;
-                } break;
-
-                case 53: {
-                    event |= TL_MOD_CTRL;
-                } break;
+                case 50: event |= TL_MOD_SHIFT; break;
+                case 53: event |= TL_MOD_CTRL;  break;
             }
 
             read_mod = 1;
@@ -1119,42 +1082,14 @@ static int itl_esc_parse(int byte)
         }
 
         switch (byte) { // escape codes based on xterm
-            case 51: {
-                event |= TL_KEY_DELETE;
-            } break;
-
-            case 65: {
-                event |= TL_KEY_UP;
-                return event;
-            } break;
-
-            case 66: {
-                event |= TL_KEY_DOWN;
-                return event;
-            } break;
-
-            case 67: {
-                event |= TL_KEY_RIGHT;
-                return event;
-            } break;
-
-            case 68: {
-                event |= TL_KEY_LEFT;
-                return event;
-            } break;
-
-            case 70: {
-                event |= TL_KEY_END;
-                return event;
-            } break;
-
-            case 72: {
-                event |= TL_KEY_HOME;
-                return event;
-            } break;
-
-            default:
-                event |= TL_KEY_UNKN;
+            case 51: event |= TL_KEY_DELETE; break;
+            case 65: return event | TL_KEY_UP;
+            case 66: return event | TL_KEY_DOWN;
+            case 67: return event | TL_KEY_RIGHT;
+            case 68: return event | TL_KEY_LEFT;
+            case 70: return event | TL_KEY_END;
+            case 72: return event | TL_KEY_HOME;
+            default: event |= TL_KEY_UNKN;
         }
     } else if (iscntrl(byte)) {
         return TL_KEY_UNKN;
@@ -1167,13 +1102,8 @@ static int itl_esc_parse(int byte)
 
         if (byte == 59) { // ;
             switch (itl_read_byte()) {
-                case 53: {
-                    event |= TL_MOD_CTRL;
-                } break;
-
-                case 51: {
-                    event |= TL_MOD_SHIFT;
-                } break;
+                case 53: event |= TL_MOD_CTRL;  break;
+                case 51: event |= TL_MOD_SHIFT; break;
             }
 
             byte = itl_read_byte();
