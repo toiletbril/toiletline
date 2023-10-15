@@ -1,5 +1,6 @@
+
 /*
- *  toiletline 0.3.3
+ *  toiletline 0.3.4
  *  Raw shell implementation, a tiny replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -80,17 +81,25 @@ typedef enum
 {
     TL_KEY_CHAR = 0,
     TL_KEY_UNKN,
+
     TL_KEY_UP,
     TL_KEY_DOWN,
     TL_KEY_RIGHT,
     TL_KEY_LEFT,
+
     TL_KEY_END,
     TL_KEY_HOME,
+
     TL_KEY_ENTER,
+
     TL_KEY_BACKSPACE,
     TL_KEY_DELETE,
+
     TL_KEY_CTRLK,
     TL_KEY_TAB,
+
+    TL_KEY_SUSPEND,
+    TL_KEY_EOF,
     TL_KEY_INTERRUPT,
 } TL_KEY_KIND;
 
@@ -288,16 +297,17 @@ inline static int itl_exit_raw_mode(void)
     return TL_SUCCESS;
 }
 
-inline static void itl_signal_interrupt(int sign)
+static void itl_handle_cont(int signal_number)
 {
-    signal(sign, SIG_IGN);
+    (void)signal_number;
+    itl_enter_raw_mode();
+}
 
-    printf("\nInterrupted.\n");
-    fflush(stdout);
-
-    tl_exit();
-
-    exit(0);
+static void itl_handle_sigcont(int signal_number)
+{
+    (void)signal_number;
+    signal(SIGTSTP, SIG_DFL);
+    itl_enter_raw_mode();
 }
 
 static ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
@@ -1017,12 +1027,16 @@ static int itl_esc_parse(int byte)
         case 1: return TL_KEY_HOME; // ctrl a
         case 5: return TL_KEY_END;  // ctrl e
 
-        case 9:  return TL_KEY_TAB;
         case 3:  return TL_KEY_INTERRUPT;
-        case 11: return TL_KEY_CTRLK;
+        case 4:  return TL_KEY_EOF; // ctrl d
+        case 26: return TL_KEY_SUSPEND; // ctrl z
+
+        case 9: return TL_KEY_TAB;
 
         case 13: // cr
         case 10: return TL_KEY_ENTER;
+
+        case 11: return TL_KEY_CTRLK;
         case 23: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
 
         case 8: // old backspace
@@ -1037,13 +1051,14 @@ static int itl_esc_parse(int byte)
             case 75: event = TL_KEY_LEFT;   break;
             case 77: event = TL_KEY_RIGHT;  break;
 
-            case 71: event = TL_KEY_HOME;   break;
-            case 79: event = TL_KEY_END;    break;
-            case 83: event = TL_KEY_DELETE; break;
+            case 115: event = TL_KEY_LEFT  | TL_MOD_CTRL; break;
+            case 116: event = TL_KEY_RIGHT | TL_MOD_CTRL; break;
 
-            case 115: event = TL_KEY_LEFT   | TL_MOD_CTRL; break;
-            case 116: event = TL_KEY_RIGHT  | TL_MOD_CTRL; break;
+            case 71: event = TL_KEY_HOME; break;
+            case 79: event = TL_KEY_END;  break;
+
             case 147: event = TL_KEY_DELETE | TL_MOD_CTRL; break; // ctrl del
+            case 83:  event = TL_KEY_DELETE; break;
 
             default: event = TL_KEY_UNKN;
         }
@@ -1080,13 +1095,16 @@ static int itl_esc_parse(int byte)
         }
 
         switch (byte) { // escape codes based on xterm
-            case 51: event |= TL_KEY_DELETE; break;
             case 65: return event | TL_KEY_UP;
             case 66: return event | TL_KEY_DOWN;
             case 67: return event | TL_KEY_RIGHT;
             case 68: return event | TL_KEY_LEFT;
+
             case 70: return event | TL_KEY_END;
             case 72: return event | TL_KEY_HOME;
+
+            case 51: event |= TL_KEY_DELETE; break;
+
             default: event |= TL_KEY_UNKN;
         }
     } else if (iscntrl(byte)) {
@@ -1137,9 +1155,7 @@ static int itl_esc_handle(itl_le_t *le, int esc)
 
            if (le->history_selected_item > 0) {
                 le->history_selected_item -= 1;
-
                 itl_le_clear(le);
-
                 itl_global_history_get(le);
             }
         } break;
@@ -1166,8 +1182,7 @@ static int itl_esc_handle(itl_le_t *le, int esc)
 
                     if (next_ws <= 1) {
                         count = itl_le_next_word(le);
-                    }
-                    else
+                    } else
                         count = next_ws;
                 }
 
@@ -1184,12 +1199,9 @@ static int itl_esc_handle(itl_le_t *le, int esc)
 
                     if (next_ws <= 1) {
                         count = itl_le_prev_word(le);
-
                         itl_le_move_left(le, count);
-
                         count = itl_le_prev_whitespace(le) - 1;
-                    }
-                    else
+                    } else
                         count = next_ws - 1;
                 }
 
@@ -1207,9 +1219,7 @@ static int itl_esc_handle(itl_le_t *le, int esc)
 
         case TL_KEY_ENTER: {
             int err = itl_string_to_cstr(le->line, le->out_buf, le->out_size);
-
             itl_global_history_append(le->line);
-
             itl_le_clear(le);
 
             if (err)
@@ -1228,12 +1238,9 @@ static int itl_esc_handle(itl_le_t *le, int esc)
 
                 if (next_ws <= 1) {
                     count = itl_le_prev_word(le);
-
                     itl_le_erase_backward(le, count);
-
                     count = itl_le_prev_whitespace(le) - 1;
-                }
-                else
+                } else
                     count = next_ws - 1;
             }
 
@@ -1248,12 +1255,9 @@ static int itl_esc_handle(itl_le_t *le, int esc)
 
                 if (next_ws <= 1) {
                     count = itl_le_next_word(le);
-
                     itl_le_erase_forward(le, count);
-
                     count = itl_le_next_whitespace(le);
-                }
-                else
+                } else
                     count = next_ws;
             }
 
@@ -1264,9 +1268,15 @@ static int itl_esc_handle(itl_le_t *le, int esc)
             itl_le_erase_forward(le, le->line->length - le->cursor_position);
         } break;
 
+        case TL_KEY_SUSPEND: {
+            signal(SIGCONT, itl_handle_sigcont);
+            itl_exit_raw_mode();
+            raise(SIGTSTP);
+        } break;
+
+        case TL_KEY_EOF:
         case TL_KEY_INTERRUPT: {
             itl_string_to_cstr(le->line, le->out_buf, le->out_size);
-
             return TL_PRESSED_INTERRUPT;
         } break;
     }
@@ -1280,8 +1290,6 @@ int tl_init(void)
 
     itl_global_history_alloc();
 
-    signal(SIGINT, itl_signal_interrupt);
-
     return itl_enter_raw_mode();
 }
 
@@ -1290,8 +1298,6 @@ int tl_exit(void)
     itl_global_history_free();
     // NOTE: no free since line_buffer is not malloced
     itl_string_clear(&itl_global_line_buffer);
-
-    signal(SIGINT, SIG_DFL);
 
     itl_trace("Exited, alloc count: %zu\n", itl_global_alloc_count);
 
