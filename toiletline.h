@@ -1183,6 +1183,7 @@ static int itl_esc_parse(int byte)
             event = TL_KEY_UNKN;
     }
 #endif /* ITL_POSIX */
+
     return event;
 }
 
@@ -1473,7 +1474,6 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 /*
  * TODO:
  *  - Better memory management.
- *  - Holding CTRL creates weird inputs on Windows.
  *  - itl_string_to_tty_cstr() to support multiple lines.
  *  - Properly replace history when reached limit.
  *  - Tab completion.
