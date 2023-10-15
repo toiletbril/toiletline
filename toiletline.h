@@ -41,9 +41,7 @@ extern "C" {
     #define ITL_DEFAULT_ASSERT
 #endif /* TL_ASSERT */
 
-/**
- * Allocation functions can also be replaced before including.
- */
+/* Allocation functions can also be replaced before including. */
 #if !defined TL_MALLOC
     #define TL_MALLOC(size)         malloc(size)
     #define TL_REALLOC(block, size) realloc(block, size)
