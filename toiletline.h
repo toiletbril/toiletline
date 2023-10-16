@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.3.4
+ *  toiletline 0.3.5
  *  Raw shell implementation, a tiny replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
