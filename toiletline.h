@@ -584,8 +584,6 @@ itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
     return itl_string_to_cstr(str, c_str, size);
 }
 
-#define ITL_HISTORY_INIT_SIZE 16
-
 typedef struct itl_history_item itl_history_item_t;
 
 struct itl_history_item
@@ -596,8 +594,8 @@ struct itl_history_item
 };
 
 static ITL_THREAD_LOCAL itl_history_item_t *itl_global_history = NULL;
-static ITL_THREAD_LOCAL int itl_global_history_size = ITL_HISTORY_INIT_SIZE;
-static ITL_THREAD_LOCAL int itl_global_history_index = 0;
+static ITL_THREAD_LOCAL itl_history_item_t *itl_global_history_first = NULL;
+static ITL_THREAD_LOCAL int itl_global_history_length = 0;
 
 static ITL_THREAD_LOCAL itl_string_t itl_global_line_buffer = {0};
 
@@ -631,9 +629,18 @@ itl_history_item_t *itl_history_item_alloc(const itl_string_t *str)
     return item;
 }
 
+static void itl_history_item_free(itl_history_item_t *item)
+{
+    itl_string_free(item->str);
+    itl_free(item);
+}
+
 inline static void itl_global_history_free(void)
 {
     itl_history_item_t *item = itl_global_history;
+
+    if (item == NULL)
+        return;
 
     while (item->next)
         item = item->next;
@@ -642,8 +649,7 @@ inline static void itl_global_history_free(void)
 
     while (item) {
         prev_item = item->prev;
-        itl_string_free(item->str);
-        itl_free(item);
+        itl_history_item_free(item);
         item = prev_item;
     }
 
@@ -655,11 +661,23 @@ static int itl_global_history_append(itl_string_t *str)
     if (str->length <= 0)
         return TL_ERROR;
 
-    if (itl_global_history_size >= TL_HISTORY_MAX_SIZE)
-        return TL_ERROR;
+    if (itl_global_history_length >= TL_HISTORY_MAX_SIZE) {
+        if (itl_global_history_first) {
+            itl_history_item_t *next_item = itl_global_history_first->next;
+            itl_history_item_free(itl_global_history_first);
+
+            itl_global_history_first = next_item;
+
+            if (itl_global_history_first)
+                itl_global_history_first->prev = NULL;
+
+            --itl_global_history_length;
+        }
+    }
 
     if (itl_global_history == NULL) {
         itl_global_history = itl_history_item_alloc(str);
+        itl_global_history_first = itl_global_history;
     }
     else {
         int cmp_result = itl_string_cmp(itl_global_history->str, str);
@@ -672,7 +690,7 @@ static int itl_global_history_append(itl_string_t *str)
         itl_global_history = item;
     }
 
-    ++itl_global_history_size;
+    ++itl_global_history_length;
 
     return TL_SUCCESS;
 }
@@ -1419,6 +1437,5 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
  * TODO:
  *  - Better memory management.
  *  - itl_string_to_tty_cstr() to support multiple lines.
- *  - Use a linked list for history.
  *  - Tab completion.
  */
