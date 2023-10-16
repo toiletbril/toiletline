@@ -1,4 +1,3 @@
-
 /*
  *  toiletline 0.3.4
  *  Raw shell implementation, a tiny replacement of GNU Readline :3
@@ -297,20 +296,13 @@ inline static int itl_exit_raw_mode(void)
     return TL_SUCCESS;
 }
 
-inline static void itl_handle_cont(int signal_number)
-{
-    (void)signal_number;
-    itl_enter_raw_mode();
-}
-
+#if defined ITL_POSIX
 inline static void itl_handle_sigcont(int signal_number)
 {
-#if defined ITL_POSIX
     (void)signal_number;
-    signal(SIGTSTP, SIG_DFL);
     itl_enter_raw_mode();
-#endif
 }
+#endif
 
 static ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
 
@@ -1137,7 +1129,7 @@ int *itl__get_last_control(void) {
     return &itl_global_last_control;
 }
 
-static int itl_esc_handle(itl_le_t *le, int esc)
+static int itl_le_esc_handle(itl_le_t *le, int esc)
 {
     itl_global_last_control = esc;
 
@@ -1267,7 +1259,6 @@ static int itl_esc_handle(itl_le_t *le, int esc)
 
         case TL_KEY_SUSPEND: {
 #if defined ITL_POSIX
-            signal(SIGCONT, itl_handle_sigcont);
             itl_exit_raw_mode();
             raise(SIGTSTP);
 #elif defined ITL_WIN32
@@ -1289,6 +1280,10 @@ static int itl_esc_handle(itl_le_t *le, int esc)
 int tl_init(void)
 {
     TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 && "History size must be a power of 2");
+
+#if defined ITL_POSIX
+    signal(SIGCONT, itl_handle_sigcont);
+#endif
 
     itl_global_history_alloc();
     return itl_enter_raw_mode();
@@ -1382,7 +1377,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
         esc = itl_esc_parse(in);
 
         if (esc != TL_KEY_CHAR) {
-            int code = itl_esc_handle(&le, esc);
+            int code = itl_le_esc_handle(&le, esc);
 
             if (code != TL_SUCCESS)
                 return code;
@@ -1407,6 +1402,6 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
  * TODO:
  *  - Better memory management.
  *  - itl_string_to_tty_cstr() to support multiple lines.
- *  - Properly replace history when reached limit.
+ *  - Use a linked list for history.
  *  - Tab completion.
  */
