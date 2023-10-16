@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.3.5
+ *  toiletline 0.3.6
  *  Raw shell implementation, a tiny replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -542,6 +542,14 @@ static void itl_string_clear(itl_string_t *str)
         itl_free(str);         \
     } while (0)
 
+#if defined(ITL_WIN32)
+    #define ITL_LF "\r\n"
+    #define ITL_LF_LEN 2
+#else /* ITL_WIN32 */
+    #define ITL_LF "\n"
+    #define ITL_LF_LEN 1
+#endif
+
 static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
 {
     itl_char_t *c = str->begin;
@@ -563,25 +571,6 @@ static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t size)
         return TL_ERROR_SIZE;
 
     return TL_SUCCESS;
-}
-
-#if defined(ITL_WIN32)
-    #define ITL_LF "\r\n"
-    #define ITL_LF_LEN 2
-#else /* ITL_WIN32 */
-    #define ITL_LF "\n"
-    #define ITL_LF_LEN 1
-#endif
-
-static int
-itl_string_to_tty_cstr(itl_string_t *str, char *c_str, size_t size,
-                       size_t cols, size_t pr_len, size_t *cur_offset)
-{
-    (void)cols;
-    (void)pr_len;
-    (void)cur_offset;
-
-    return itl_string_to_cstr(str, c_str, size);
 }
 
 typedef struct itl_history_item itl_history_item_t;
@@ -609,7 +598,6 @@ struct itl_le
     size_t cursor_position;
 
     itl_history_item_t *history_selected_item;
-    int history_selecting;
 
     char *out_buf;
     size_t out_size;
@@ -702,7 +690,6 @@ static itl_le_t itl_le_new(itl_string_t *line_buf, char *out_buf, size_t out_siz
         /* .current_character     = */ NULL,
         /* .cursor_position       = */ 0,
         /* .history_selected_item = */ NULL,
-        /* .history_selecting     = */ 0,
         /* .out_buf               = */ out_buf,
         /* .out_size              = */ out_size,
         /* .prompt                = */ prompt,
@@ -924,27 +911,6 @@ static void itl_global_history_get_next(itl_le_t *le)
     }
 }
 
-typedef struct itl_char_buf itl_char_buf_t;
-
-// Buffer for output before writing it to stdout
-struct itl_char_buf
-{
-  char *data;
-  size_t size;
-};
-
-inline static void itl_char_buf_append(itl_char_buf_t *buf, const char *s, size_t size)
-{
-    char *new_s = (char *)itl_realloc(buf->data, buf->size + size);
-
-    memcpy(&new_s[buf->size], s, size);
-
-    buf->data = new_s;
-    buf->size += size;
-}
-
-#define itl_char_buf_free(char_buf) itl_free((char_buf)->data)
-
 inline static int itl_tty_size(size_t *rows, size_t *cols) {
 #if defined TL_SIZE_USE_ESCAPES
     char buf[32];
@@ -997,68 +963,47 @@ inline static int itl_tty_size(size_t *rows, size_t *cols) {
     return TL_SUCCESS;
 }
 
+static ITL_THREAD_LOCAL size_t itl_tty_prev_line_count = 0;
+
+#define itl_tty_hide_cursor() fputs("\x1b[?25l", stdout)
+#define itl_tty_show_cursor() fputs("\x1b[?25h", stdout)
+#define itl_tty_move_to_column(col) printf("\x1b[%zuG", col)
+
 static int itl_le_update_tty(itl_le_t *le)
 {
-    fputs("\x1b[?25l", stdout);
+    TL_ASSERT(le->line);
 
-    itl_char_buf_t to_be_printed = { /* .data = */ NULL, /* .size = */ 0 };
+    itl_tty_hide_cursor();
 
-    size_t prompt_len;
-
-    // prompt = NULL is valid
-    if (le->prompt != NULL)
-        prompt_len = strlen(le->prompt);
-    else
-        prompt_len = 0;
-
-    size_t cstr_size = le->line->size + 1;
-
-    size_t buf_size =
-        ITL_MAX(size_t, cstr_size, 8) * sizeof(char) + 2;
-
-    size_t rows = 0;
-    size_t cols = 0;
-
+    size_t prompt_len = (le->prompt) ? strlen(le->prompt) : 0;
+    size_t rows, cols;
     itl_tty_size(&rows, &cols);
+
+    size_t current_lines = (le->line->length + prompt_len) / cols + 1;
+
+    for (size_t i = 0; i < itl_tty_prev_line_count; ++i) {
+        fputs("\r\x1b[0K", stdout); // clear whole line
+        if (i < itl_tty_prev_line_count - 1) {
+            fputs("\x1b[1A", stdout); // move 1 line up
+        }
+    }
+
+    if (le->prompt) fputs(le->prompt, stdout);
+
+    itl_char_t *c = le->line->begin;
+    while (c) {
+        for (size_t j = 0; j < c->rune.size; ++j)
+            fputc(c->rune.bytes[j], stdout);
+        c = c->next;
+    }
+
+    itl_tty_prev_line_count = current_lines;
 
     size_t wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
     size_t wrap_cursor_pos = le->cursor_position + prompt_len - wrap_value * cols + 1;
+    itl_tty_move_to_column(wrap_cursor_pos);
 
-    itl_trace_lf();
-    itl_trace("Line length: %zu\n", le->line->length);
-    itl_trace("Dimensions: %zu, %zu\n", rows, cols);
-    itl_trace("wrap_value: %zu\n", wrap_value);
-    itl_trace("wrap_cursor_pos: %zu\n", wrap_cursor_pos);
-
-    char *temp_buf = (char *)itl_malloc(buf_size);
-    if (!temp_buf)
-        return TL_ERROR_ALLOC;
-
-    if (wrap_value > 0 && wrap_cursor_pos > 1) {
-        snprintf(temp_buf, buf_size, "\x1b[%zuF", wrap_value);
-        itl_char_buf_append(&to_be_printed, temp_buf, strlen(temp_buf));
-    }
-
-    itl_char_buf_append(&to_be_printed, "\r", 1);
-    itl_char_buf_append(&to_be_printed, "\x1b[0K", 4);
-
-    itl_char_buf_append(&to_be_printed, le->prompt, prompt_len);
-
-    size_t cur_offset = 0;
-    itl_string_to_tty_cstr(le->line, temp_buf, buf_size, cols, prompt_len, &cur_offset);
-
-    itl_char_buf_append(&to_be_printed, temp_buf, cstr_size + cur_offset);
-
-    snprintf(temp_buf, buf_size, "\x1b[%zuG", wrap_cursor_pos + cur_offset);
-    itl_char_buf_append(&to_be_printed, temp_buf, strlen(temp_buf));
-
-    write(STDOUT_FILENO, to_be_printed.data, (unsigned)to_be_printed.size);
-
-    itl_char_buf_free(&to_be_printed);
-    itl_free(temp_buf);
-
-    fputs("\x1b[?25h", stdout);
-
+    itl_tty_show_cursor();
     fflush(stdout);
 
     return TL_SUCCESS;
@@ -1436,6 +1381,6 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 /*
  * TODO:
  *  - Better memory management.
- *  - itl_string_to_tty_cstr() to support multiple lines.
+ *  - Multiline support.
  *  - Tab completion.
  */
