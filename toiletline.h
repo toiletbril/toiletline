@@ -1084,7 +1084,7 @@ static int itl_esc_parse(int byte)
         case 23: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
 
         case 8: // old backspace
-        case 'W': return TL_KEY_BACKSPACE;
+        case 127: return TL_KEY_BACKSPACE;
     }
 
 #if defined(ITL_WIN32)
