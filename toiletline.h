@@ -320,6 +320,7 @@ static void *itl_malloc(size_t size)
     return allocated;
 }
 
+#if 0 // @@@
 static void *itl_calloc(size_t count, size_t size)
 {
     itl_global_alloc_count += 1;
@@ -350,6 +351,7 @@ static void *itl_realloc(void *block, size_t size)
 
     return allocated;
 }
+#endif /* if 0 */
 
 #define itl_free(ptr)                     \
     do {                                  \
@@ -373,7 +375,7 @@ static itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t size)
     itl_utf8_t utf8_char;
     utf8_char.size = size;
 
-    for (uint8_t i = 0; i < size; i++)
+    for (uint8_t i = 0; i < size; ++i)
         utf8_char.bytes[i] = bytes[i];
 
     return utf8_char;
@@ -975,6 +977,7 @@ static ITL_THREAD_LOCAL size_t itl_tty_prev_line_count = 0;
 
 #define itl_tty_clear_line() fputs("\r\x1b[0K", stdout)
 
+static int itl_le_tty_refresh(itl_le_t *le)
 {
     TL_ASSERT(le->line);
 
@@ -1141,6 +1144,7 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
 
     switch (esc & TL_MASK_KEY) {
         case TL_KEY_UP: {
+            // @@@: When there is any text in the current line, append it to history
             itl_global_history_get_prev(le);
         } break;
 
@@ -1313,7 +1317,7 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
 
     itl_le_t le = itl_le_new(&itl_global_line_buffer, char_buffer, size, prompt);
 
-    itl_le_update_tty(&le);
+    itl_le_tty_refresh(&le);
 
     int in = itl_read_byte();
     int esc = itl_esc_parse(in);
@@ -1325,7 +1329,7 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
 
     itl_utf8_t ch = itl_utf8_parse(in);
     itl_le_putc(&le, ch);
-    itl_le_update_tty(&le);
+    itl_le_tty_refresh(&le);
 
     itl_string_to_cstr(le.line, char_buffer, size);
 
@@ -1345,7 +1349,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
     itl_le_t le = itl_le_new(&itl_global_line_buffer, line_buffer, size, prompt);
 
-    itl_le_update_tty(&le);
+    itl_le_tty_refresh(&le);
 
     int esc;
     int in;
@@ -1371,7 +1375,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
             itl_le_putc(&le, ch);
         }
 
-        itl_le_update_tty(&le);
+        itl_le_tty_refresh(&le);
     }
 
     return TL_ERROR;
