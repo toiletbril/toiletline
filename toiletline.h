@@ -214,6 +214,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #endif
 
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
+#define ITL_MIN(type, i, j) ((((type)i) < ((type)j)) ? ((type)i) : ((type)j))
 
 #if defined(ITL_WIN32)
 static ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
@@ -967,8 +968,8 @@ inline static int itl_tty_size(size_t *rows, size_t *cols) {
     return TL_SUCCESS;
 }
 
-static ITL_THREAD_LOCAL size_t itl_global_tty_prev_line_count = 0;
-static ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 0;
+static ITL_THREAD_LOCAL size_t itl_global_tty_prev_line_count = 1;
+static ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
 
 #define itl_tty_hide_cursor() fputs("\x1b[?25l", stdout)
 #define itl_tty_show_cursor() fputs("\x1b[?25h", stdout)
@@ -986,7 +987,9 @@ static int itl_le_tty_refresh(itl_le_t *le)
     itl_tty_hide_cursor();
 
     size_t prompt_len = (le->prompt) ? strlen(le->prompt) : 0;
-    size_t rows, cols;
+
+    size_t rows = 0;
+    size_t cols = 0;
     itl_tty_size(&rows, &cols);
 
     size_t current_lines = (le->line->length + prompt_len) / cols + 1;
@@ -1013,9 +1016,8 @@ static int itl_le_tty_refresh(itl_le_t *le)
             fputc(c->rune.bytes[j], stdout);
         }
 
-        // Print newline only when cursor column is equal to last terminal column
         size_t current_col = (character_index++ + prompt_len) % cols;
-        if (current_col == cols - 1 && current_lines == wrap_cursor_row)
+        if (current_col == cols - 1)
             fputc('\n', stdout);
 
         c = c->next;
