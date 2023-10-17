@@ -1000,15 +1000,17 @@ static int itl_le_tty_refresh(itl_le_t *le)
     itl_trace("[INFO] wrow: %zu, prev: %zu, col: %zu\n",
               wrap_cursor_row, itl_global_tty_prev_wrap_row, wrap_cursor_col);
 
+    // Move appropriate amount of lines back, while clearing previous output
     for (size_t i = 0; i < itl_global_tty_prev_lines; ++i) {
+        itl_tty_clear_whole_line();
         if (i < itl_global_tty_prev_wrap_row - 1) {
             itl_tty_move_up(1);
         }
-        itl_tty_clear_whole_line();
     }
 
     if (le->prompt) fputs(le->prompt, stdout);
 
+    // Print current contents of the line editor
     size_t character_index = 0;
     itl_char_t *c = le->line->begin;
     while (c) {
@@ -1016,12 +1018,17 @@ static int itl_le_tty_refresh(itl_le_t *le)
             fputc(c->rune.bytes[j], stdout);
         }
 
+        // If line is full, wrap
         size_t current_col = (character_index++ + prompt_len) % cols;
         if (current_col == cols - 1)
             fputc('\n', stdout);
 
         c = c->next;
     }
+
+    // If current amount of lines is less than previous amount of lines, then
+    // input was cleared by kill line or such. Clear each dirty line, then go
+    // back up
     if (current_lines < itl_global_tty_prev_lines) {
         size_t dirty_lines = itl_global_tty_prev_lines - current_lines;
         for (size_t i = 0; i < dirty_lines; ++i) {
@@ -1029,18 +1036,21 @@ static int itl_le_tty_refresh(itl_le_t *le)
             itl_tty_clear_whole_line();
         }
         itl_tty_move_up(dirty_lines);
-    } else {
+    }
+    // Otherwise clear to the end of line
+    else {
         itl_tty_clear_to_end();
     }
 
+    // Move cursor to appropriate row and column. If row didn't change, stay on
+    // the same line
     if (wrap_cursor_row < current_lines) {
         itl_tty_move_up(current_lines - wrap_cursor_row);
     }
+    itl_tty_move_to_column(wrap_cursor_col);
 
     itl_global_tty_prev_lines = current_lines;
     itl_global_tty_prev_wrap_row = wrap_cursor_row;
-
-    itl_tty_move_to_column(wrap_cursor_col);
 
     itl_tty_show_cursor();
     fflush(stdout);
