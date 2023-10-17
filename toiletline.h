@@ -94,6 +94,7 @@ typedef enum
     TL_KEY_BACKSPACE,
     TL_KEY_DELETE,
     TL_KEY_KILL_LINE,
+    TL_KEY_KILL_LINE_BEFORE,
 
     TL_KEY_TAB,
 
@@ -102,12 +103,12 @@ typedef enum
     TL_KEY_INTERRUPT,
 } TL_KEY_KIND;
 
-#define TL_MOD_CTRL  32
-#define TL_MOD_SHIFT 64
-#define TL_MOD_ALT   128
+#define TL_MOD_CTRL  (1 << 24)
+#define TL_MOD_SHIFT (1 << 25)
+#define TL_MOD_ALT   (1 << 26)
 
-#define TL_MASK_KEY  15
-#define TL_MASK_MOD  224
+#define TL_MASK_KEY 0x00FFFFFF
+#define TL_MASK_MOD 0xFF000000
 
 /**
  * Last pressed control sequence.
@@ -1066,38 +1067,42 @@ static int itl_esc_parse(int byte)
         case 1: return TL_KEY_HOME; // ctrl a
         case 5: return TL_KEY_END;  // ctrl e
 
-        case 3:  return TL_KEY_INTERRUPT;
-        case 4:  return TL_KEY_EOF; // ctrl d
-        case 26: return TL_KEY_SUSPEND; // ctrl z
+        case 2: return TL_KEY_LEFT;  // ctrl f
+        case 6: return TL_KEY_RIGHT; // ctrl b
+
+        case 3:  return TL_KEY_INTERRUPT; // ctrl c
+        case 4:  return TL_KEY_EOF;       // ctrl d
+        case 26: return TL_KEY_SUSPEND;   // ctrl z
 
         case 9: return TL_KEY_TAB;
 
         case 13: // cr
         case 10: return TL_KEY_ENTER;
 
-        case 11: return TL_KEY_KILL_LINE;
+        case 11: return TL_KEY_KILL_LINE;        // ctrl k
+        case 21: return TL_KEY_KILL_LINE_BEFORE; // ctrl u
         case 23: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
 
         case 8: // old backspace
-        case 127: return TL_KEY_BACKSPACE;
+        case 'W': return TL_KEY_BACKSPACE;
     }
 
 #if defined(ITL_WIN32)
-    if (byte == 224) { // escape
+    if (byte == 224) { // esc
         switch (itl_read_byte()) {
-            case 72: event = TL_KEY_UP;     break;
-            case 80: event = TL_KEY_DOWN;   break;
-            case 75: event = TL_KEY_LEFT;   break;
-            case 77: event = TL_KEY_RIGHT;  break;
+            case 'H': event = TL_KEY_UP;    break;
+            case 'P': event = TL_KEY_DOWN;  break;
+            case 'K': event = TL_KEY_LEFT;  break;
+            case 'M': event = TL_KEY_RIGHT; break;
 
-            case 115: event = TL_KEY_LEFT  | TL_MOD_CTRL; break;
-            case 116: event = TL_KEY_RIGHT | TL_MOD_CTRL; break;
+            case 's': event = TL_KEY_LEFT  | TL_MOD_CTRL; break;
+            case 't': event = TL_KEY_RIGHT | TL_MOD_CTRL; break;
 
-            case 71: event = TL_KEY_HOME; break;
-            case 79: event = TL_KEY_END;  break;
+            case 'G': event = TL_KEY_HOME; break;
+            case 'O': event = TL_KEY_END;  break;
 
             case 147: event = TL_KEY_DELETE | TL_MOD_CTRL; break; // ctrl del
-            case 83:  event = TL_KEY_DELETE; break;
+            case 'S': event = TL_KEY_DELETE; break;
 
             default: event = TL_KEY_UNKN;
         }
@@ -1110,22 +1115,29 @@ static int itl_esc_parse(int byte)
 #elif defined ITL_POSIX
     int read_mod = 0;
 
-    if (byte == 27) { // \x1b
+    if (byte == 27) { // esc
         byte = itl_read_byte();
 
-        if (byte != 91 && byte != 79) { // [
-            return TL_KEY_CHAR | TL_MOD_ALT;
+        if (byte != '[' && byte != 'O') {
+            switch (byte) {
+                case 'b': return TL_KEY_LEFT  | TL_MOD_CTRL;
+                case 'f': return TL_KEY_RIGHT | TL_MOD_CTRL;
+
+                case 'd': return TL_KEY_DELETE | TL_MOD_CTRL;
+
+                default: return TL_KEY_CHAR | TL_MOD_ALT;
+            }
         }
 
         byte = itl_read_byte();
 
-        if (byte == 49) {
-            if (itl_read_byte() != 59) // ;
+        if (byte == '1') {
+            if (itl_read_byte() != ';')
                 return TL_KEY_UNKN;
 
             switch (itl_read_byte()) {
-                case 50: event |= TL_MOD_SHIFT; break;
-                case 53: event |= TL_MOD_CTRL;  break;
+                case '2': event |= TL_MOD_SHIFT; break;
+                case '5': event |= TL_MOD_CTRL;  break;
             }
 
             read_mod = 1;
@@ -1134,15 +1146,15 @@ static int itl_esc_parse(int byte)
         }
 
         switch (byte) { // escape codes based on xterm
-            case 65: return event | TL_KEY_UP;
-            case 66: return event | TL_KEY_DOWN;
-            case 67: return event | TL_KEY_RIGHT;
-            case 68: return event | TL_KEY_LEFT;
+            case 'A': return event | TL_KEY_UP;
+            case 'B': return event | TL_KEY_DOWN;
+            case 'C': return event | TL_KEY_RIGHT;
+            case 'D': return event | TL_KEY_LEFT;
 
-            case 70: return event | TL_KEY_END;
-            case 72: return event | TL_KEY_HOME;
+            case 'F': return event | TL_KEY_END;
+            case 'H': return event | TL_KEY_HOME;
 
-            case 51: event |= TL_KEY_DELETE; break;
+            case '3': event |= TL_KEY_DELETE; break;
 
             default: event |= TL_KEY_UNKN;
         }
@@ -1155,16 +1167,16 @@ static int itl_esc_parse(int byte)
     if (!read_mod) {
         byte = itl_read_byte();
 
-        if (byte == 59) { // ;
+        if (byte == ';') {
             switch (itl_read_byte()) {
-                case 53: event |= TL_MOD_CTRL;  break;
-                case 51: event |= TL_MOD_SHIFT; break;
+                case '3': event |= TL_MOD_SHIFT; break;
+                case '5': event |= TL_MOD_CTRL;  break;
             }
 
             byte = itl_read_byte();
         }
 
-        if (byte != 126) // ~
+        if (byte != '~')
             event = TL_KEY_UNKN;
     }
 #endif /* ITL_POSIX */
@@ -1288,6 +1300,10 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
             itl_le_erase_forward(le, le->line->length - le->cursor_position);
         } break;
 
+        case TL_KEY_KILL_LINE_BEFORE: {
+            itl_le_erase_backward(le, le->cursor_position);
+        } break;
+
         case TL_KEY_SUSPEND: {
 #if defined ITL_POSIX
             itl_exit_raw_mode();
@@ -1298,7 +1314,15 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
 #endif
         } break;
 
-        case TL_KEY_EOF:
+        case TL_KEY_EOF: {
+            if (le->line->length > 0) {
+                itl_le_erase_forward(le, 1);
+            } else {
+                itl_string_to_cstr(le->line, le->out_buf, le->out_size);
+                return TL_PRESSED_INTERRUPT;
+            }
+        } break;
+
         case TL_KEY_INTERRUPT: {
             itl_string_to_cstr(le->line, le->out_buf, le->out_size);
             return TL_PRESSED_INTERRUPT;
@@ -1400,7 +1424,6 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 #if defined ITL_SEE_BYTES
         if (in == 3) exit(0);
-        printf("%d\n", in);
         continue;
 #endif /* TL_SEE_BYTES */
 
