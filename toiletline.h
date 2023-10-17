@@ -967,9 +967,12 @@ static ITL_THREAD_LOCAL size_t itl_tty_prev_line_count = 0;
 
 #define itl_tty_hide_cursor() fputs("\x1b[?25l", stdout)
 #define itl_tty_show_cursor() fputs("\x1b[?25h", stdout)
-#define itl_tty_move_to_column(col) printf("\x1b[%zuG", col)
 
-static int itl_le_update_tty(itl_le_t *le)
+#define itl_tty_move_to_column(col) printf("\x1b[%zuG", (size_t)col)
+#define itl_tty_move_up(rows) printf("\x1b[%zuA", (size_t)rows)
+
+#define itl_tty_clear_line() fputs("\r\x1b[0K", stdout)
+
 {
     TL_ASSERT(le->line);
 
@@ -982,9 +985,9 @@ static int itl_le_update_tty(itl_le_t *le)
     size_t current_lines = (le->line->length + prompt_len) / cols + 1;
 
     for (size_t i = 0; i < itl_tty_prev_line_count; ++i) {
-        fputs("\r\x1b[0K", stdout); // clear whole line
+        itl_tty_clear_line();
         if (i < itl_tty_prev_line_count - 1) {
-            fputs("\x1b[1A", stdout); // move 1 line up
+            itl_tty_move_up(1);
         }
     }
 
@@ -1001,8 +1004,8 @@ static int itl_le_update_tty(itl_le_t *le)
 
     size_t wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
     size_t wrap_cursor_pos = le->cursor_position + prompt_len - wrap_value * cols + 1;
-    itl_tty_move_to_column(wrap_cursor_pos);
 
+    itl_tty_move_to_column(wrap_cursor_pos);
     itl_tty_show_cursor();
     fflush(stdout);
 
