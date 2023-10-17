@@ -1022,7 +1022,7 @@ static int itl_le_tty_refresh(itl_le_t *le)
         // If line is full, wrap
         size_t current_col = (character_index++ + prompt_len) % cols;
         if (current_col == cols - 1)
-            fputc('\n', stdout);
+            fputs(ITL_LF, stdout);
 
         c = c->next;
     }
