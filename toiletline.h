@@ -977,7 +977,8 @@ static ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 0;
 #define itl_tty_move_up(rows) printf("\x1b[%zuA", (size_t)rows)
 #define itl_tty_move_down(rows) printf("\x1b[%zuB", (size_t)rows)
 
-#define itl_tty_clear_line() fputs("\r\x1b[0K", stdout)
+#define itl_tty_clear_whole_line() fputs("\r\x1b[0K", stdout)
+#define itl_tty_clear_to_end() fputs("\x1b[K", stdout)
 
 static int itl_le_tty_refresh(itl_le_t *le)
 {
@@ -997,7 +998,7 @@ static int itl_le_tty_refresh(itl_le_t *le)
               wrap_cursor_row, itl_global_tty_prev_wrap_row, wrap_cursor_col);
 
     for (size_t i = 0; i < itl_global_tty_prev_line_count; ++i) {
-        itl_tty_clear_line();
+        itl_tty_clear_whole_line();
         if (i < itl_global_tty_prev_wrap_row - 1) {
             itl_tty_move_up(1);
         }
@@ -1019,9 +1020,9 @@ static int itl_le_tty_refresh(itl_le_t *le)
 
         c = c->next;
     }
+    itl_tty_clear_to_end();
 
     if (wrap_cursor_row < current_lines) {
-        //printf("should move up %zu lines\n", current_lines - wrap_cursor_row);
         itl_tty_move_up(current_lines - wrap_cursor_row);
     }
 
