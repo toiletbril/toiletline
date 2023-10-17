@@ -890,9 +890,11 @@ static void itl_global_history_get_prev(itl_le_t *le)
         le->history_selected_item = itl_global_history;
     }
 
-    itl_le_clear(le);
-    itl_string_copy(le->line, le->history_selected_item->str);
-    le->cursor_position = le->line->length;
+    if (le->history_selected_item) {
+        itl_le_clear(le);
+        itl_string_copy(le->line, le->history_selected_item->str);
+        le->cursor_position = le->line->length;
+    }
 }
 
 static void itl_global_history_get_next(itl_le_t *le)
