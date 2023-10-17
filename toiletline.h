@@ -967,20 +967,21 @@ inline static int itl_tty_size(size_t *rows, size_t *cols) {
     return TL_SUCCESS;
 }
 
-static ITL_THREAD_LOCAL size_t itl_tty_prev_line_count = 0;
+static ITL_THREAD_LOCAL size_t itl_global_tty_prev_line_count = 0;
+static ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 0;
 
 #define itl_tty_hide_cursor() fputs("\x1b[?25l", stdout)
 #define itl_tty_show_cursor() fputs("\x1b[?25h", stdout)
 
 #define itl_tty_move_to_column(col) printf("\x1b[%zuG", (size_t)col)
 #define itl_tty_move_up(rows) printf("\x1b[%zuA", (size_t)rows)
+#define itl_tty_move_down(rows) printf("\x1b[%zuB", (size_t)rows)
 
 #define itl_tty_clear_line() fputs("\r\x1b[0K", stdout)
 
 static int itl_le_tty_refresh(itl_le_t *le)
 {
     TL_ASSERT(le->line);
-
     itl_tty_hide_cursor();
 
     size_t prompt_len = (le->prompt) ? strlen(le->prompt) : 0;
@@ -989,28 +990,46 @@ static int itl_le_tty_refresh(itl_le_t *le)
 
     size_t current_lines = (le->line->length + prompt_len) / cols + 1;
 
-    for (size_t i = 0; i < itl_tty_prev_line_count; ++i) {
+    size_t wrap_cursor_col = (le->cursor_position + prompt_len) % cols + 1;
+    size_t wrap_cursor_row = (le->cursor_position + prompt_len) / cols + 1;
+
+    itl_trace("[INFO] wrow: %zu, prev: %zu, col: %zu\n",
+              wrap_cursor_row, itl_global_tty_prev_wrap_row, wrap_cursor_col);
+
+    for (size_t i = 0; i < itl_global_tty_prev_line_count; ++i) {
         itl_tty_clear_line();
-        if (i < itl_tty_prev_line_count - 1) {
+        if (i < itl_global_tty_prev_wrap_row - 1) {
             itl_tty_move_up(1);
         }
     }
 
     if (le->prompt) fputs(le->prompt, stdout);
 
+    size_t character_index = 0;
     itl_char_t *c = le->line->begin;
     while (c) {
-        for (size_t j = 0; j < c->rune.size; ++j)
+        for (size_t j = 0; j < c->rune.size; ++j) {
             fputc(c->rune.bytes[j], stdout);
+        }
+
+        // Print newline only when cursor column is equal to last terminal column
+        size_t current_col = (character_index++ + prompt_len) % cols;
+        if (current_col == cols - 1 && current_lines == wrap_cursor_row)
+            fputc('\n', stdout);
+
         c = c->next;
     }
 
-    itl_tty_prev_line_count = current_lines;
+    if (wrap_cursor_row < current_lines) {
+        //printf("should move up %zu lines\n", current_lines - wrap_cursor_row);
+        itl_tty_move_up(current_lines - wrap_cursor_row);
+    }
 
-    size_t wrap_value = (le->line->length + prompt_len) / ITL_MAX(size_t, 1, cols);
-    size_t wrap_cursor_pos = le->cursor_position + prompt_len - wrap_value * cols + 1;
+    itl_global_tty_prev_line_count = current_lines;
+    itl_global_tty_prev_wrap_row = wrap_cursor_row;
 
-    itl_tty_move_to_column(wrap_cursor_pos);
+    itl_tty_move_to_column(wrap_cursor_col);
+
     itl_tty_show_cursor();
     fflush(stdout);
 
