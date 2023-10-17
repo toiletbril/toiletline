@@ -13,11 +13,9 @@ Any help finding bugs is appreciated.
 Current features
 ----------------
 * UTF-8 support;
+* Multi-line input;
 * In-memory history;
 * Familiar Emacs controls.
-
-The only feature remaining for full shell experience is the multiline support,
-so lines longer than terminal width might look oddly, but will still work.
 
 
 Documentation

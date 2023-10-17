@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.3.6
+ *  toiletline 0.4.0
  *  Raw shell implementation, a tiny replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -1410,6 +1410,6 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 /*
  * TODO:
  *  - Better memory management.
- *  - Multiline support.
+ *  - Clear multi-line artifacts better.
  *  - Tab completion.
  */
