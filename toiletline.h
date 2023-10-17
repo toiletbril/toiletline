@@ -998,7 +998,7 @@ static int itl_le_tty_refresh(itl_le_t *le)
     size_t wrap_cursor_col = (le->cursor_position + prompt_len) % cols + 1;
     size_t wrap_cursor_row = (le->cursor_position + prompt_len) / cols + 1;
 
-    itl_trace("[INFO] wrow: %zu, prev: %zu, col: %zu\n",
+    itl_trace("wrow: %zu, prev: %zu, col: %zu\n",
               wrap_cursor_row, itl_global_tty_prev_wrap_row, wrap_cursor_col);
 
     // Move appropriate amount of lines back, while clearing previous output
