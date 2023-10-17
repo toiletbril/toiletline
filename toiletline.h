@@ -968,7 +968,7 @@ inline static int itl_tty_size(size_t *rows, size_t *cols) {
     return TL_SUCCESS;
 }
 
-static ITL_THREAD_LOCAL size_t itl_global_tty_prev_line_count = 1;
+static ITL_THREAD_LOCAL size_t itl_global_tty_prev_lines = 1;
 static ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
 
 #define itl_tty_hide_cursor() fputs("\x1b[?25l", stdout)
@@ -1000,11 +1000,11 @@ static int itl_le_tty_refresh(itl_le_t *le)
     itl_trace("[INFO] wrow: %zu, prev: %zu, col: %zu\n",
               wrap_cursor_row, itl_global_tty_prev_wrap_row, wrap_cursor_col);
 
-    for (size_t i = 0; i < itl_global_tty_prev_line_count; ++i) {
-        itl_tty_clear_whole_line();
+    for (size_t i = 0; i < itl_global_tty_prev_lines; ++i) {
         if (i < itl_global_tty_prev_wrap_row - 1) {
             itl_tty_move_up(1);
         }
+        itl_tty_clear_whole_line();
     }
 
     if (le->prompt) fputs(le->prompt, stdout);
@@ -1022,13 +1022,22 @@ static int itl_le_tty_refresh(itl_le_t *le)
 
         c = c->next;
     }
-    itl_tty_clear_to_end();
+    if (current_lines < itl_global_tty_prev_lines) {
+        size_t dirty_lines = itl_global_tty_prev_lines - current_lines;
+        for (size_t i = 0; i < dirty_lines; ++i) {
+            itl_tty_move_down(1);
+            itl_tty_clear_whole_line();
+        }
+        itl_tty_move_up(dirty_lines);
+    } else {
+        itl_tty_clear_to_end();
+    }
 
     if (wrap_cursor_row < current_lines) {
         itl_tty_move_up(current_lines - wrap_cursor_row);
     }
 
-    itl_global_tty_prev_line_count = current_lines;
+    itl_global_tty_prev_lines = current_lines;
     itl_global_tty_prev_wrap_row = wrap_cursor_row;
 
     itl_tty_move_to_column(wrap_cursor_col);
@@ -1412,6 +1421,5 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 /*
  * TODO:
  *  - Better memory management.
- *  - Clear multi-line artifacts better.
  *  - Tab completion.
  */
