@@ -64,7 +64,9 @@ extern "C" {
  */
 #define TL_PRESSED_ENTER -1
 #define TL_PRESSED_INTERRUPT -2
-#define TL_PRESSED_CONTROL_SEQUENCE -3
+#define TL_PRESSED_EOF -3
+#define TL_PRESSED_SUSPEND -4
+#define TL_PRESSED_CONTROL_SEQUENCE -5
 /**
  * Codes above 0 are errors.
  */
@@ -297,14 +299,6 @@ inline static int itl_exit_raw_mode(void)
 #endif /* ITL_POSIX */
     return TL_SUCCESS;
 }
-
-#if defined ITL_POSIX
-inline static void itl_handle_sigcont(int signal_number)
-{
-    (void)signal_number;
-    itl_enter_raw_mode();
-}
-#endif
 
 static ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
 
@@ -1305,13 +1299,8 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_SUSPEND: {
-#if defined ITL_POSIX
-            itl_exit_raw_mode();
-            raise(SIGTSTP);
-#elif defined ITL_WIN32
             itl_string_to_cstr(le->line, le->out_buf, le->out_size);
-            return TL_PRESSED_INTERRUPT;
-#endif
+            return TL_PRESSED_SUSPEND;
         } break;
 
         case TL_KEY_EOF: {
@@ -1319,7 +1308,7 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
                 itl_le_erase_forward(le, 1);
             } else {
                 itl_string_to_cstr(le->line, le->out_buf, le->out_size);
-                return TL_PRESSED_INTERRUPT;
+                return TL_PRESSED_EOF;
             }
         } break;
 
@@ -1335,11 +1324,6 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
 int tl_init(void)
 {
     TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 && "History size must be a power of 2");
-
-#if defined ITL_POSIX
-    signal(SIGCONT, itl_handle_sigcont);
-#endif
-
     return itl_enter_raw_mode();
 }
 
