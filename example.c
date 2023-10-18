@@ -22,7 +22,7 @@ int main(void)
     while (code < 0) {
         code = tl_readline(line_buffer, LINE_BUF_SIZE, "$ ");
 
-        if (code == TL_PRESSED_INTERRUPT) {
+        if (code == TL_PRESSED_INTERRUPT || code == TL_PRESSED_EOF) {
             printf("\nInterrupted.\n");
             break;
         }
