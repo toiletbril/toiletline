@@ -29,6 +29,20 @@ a .c file which creates implementation and includes the library. Compile it to
 object file ('-c' flag in gcc/clang) and link your code against it.
 
 
+Configuration macros
+--------
+These should be defined before including, in the same file with implementation
+macro.
+
+* TL_HISTORY_MAX_SIZE configures maximum history size;
+* TL_NO_SUSPEND prevents Ctrl-Z from sending SIGTSTP to the terminal;
+* TL_ASSERT configures function used for assertions;
+* TL_MALLOC, TL_REALLOC, TL_FREE configure functions used for memory
+  allocation;
+* TL_ABORT sets function that will be called on a failed allocation;
+* TL_NO_ABORT disables checks for failed memory allocations.
+
+
 Definitions
 --------
 Int functions can return error codes. They are always above 0, and defined as:
@@ -98,6 +112,8 @@ All control sequences except Enter and Interrupt will be handled internally.
 Returns:
 * TL_PRESSED_ENTER on Enter;
 * TL_PRESSED_INTERRUPT on Ctrl-C;
+* TL_PRESSED_EOF on Ctrl-D when there is no characters on the line;
+* TL_PRESSED_SUSPEND on Ctrl-Z.
 
 
 int tl_getc(char *char_buffer, size_t size, const char *prompt);
