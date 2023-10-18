@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.4.0
+ *  toiletline 0.4.1
  *  Raw shell implementation, a tiny replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -34,6 +34,13 @@ extern "C" {
 #define TOILETLINE_H_
 
 #include <stddef.h>
+
+/* If not defined, Ctrl-Z will raise SIGTSTP internally and toiletline will
+ * resume normally on SIGCONT. This is the preferred way of doing SIGTSTP without
+ * breaking terminal's state if you haven't called tl_exit yet. */
+#if !defined TL_NO_SUSPEND
+    #define ITL_SUSPEND
+#endif /* TL_NO_SUSPEND */
 
 /* To use custom assertions or to disable them, you can define TL_ASSERT before
  * including. */
@@ -299,6 +306,28 @@ inline static int itl_exit_raw_mode(void)
 #endif /* ITL_POSIX */
     return TL_SUCCESS;
 }
+
+#if defined ITL_SUSPEND
+#if defined ITL_POSIX
+static void itl_handle_sigcont(int signal_number)
+{
+    (void)signal_number;
+    itl_enter_raw_mode();
+}
+#endif
+
+// Internally raise SIGTSTP and resume normally on SIGCONT, exit(1) on Windows
+static void itl_raise_suspend()
+{
+#if defined ITL_POSIX
+    signal(SIGCONT, itl_handle_sigcont);
+    itl_exit_raw_mode();
+    raise(SIGTSTP);
+#else /* ITL_POSIX */
+    exit(1);
+#endif
+}
+#endif /* ITL_SUSPEND */
 
 static ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
 
@@ -1246,14 +1275,8 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
         case TL_KEY_ENTER: {
             int err = itl_string_to_cstr(le->line, le->out_buf, le->out_size);
             itl_global_history_append(le->line);
-            itl_le_clear(le);
-
-            if (err)
-                return err;
-            else {
-                fflush(stdout);
-                return TL_PRESSED_ENTER;
-            }
+            if (err) return err;
+            else return TL_PRESSED_ENTER;
         } break;
 
         case TL_KEY_BACKSPACE: {
@@ -1299,8 +1322,9 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_SUSPEND: {
-            itl_string_to_cstr(le->line, le->out_buf, le->out_size);
-            return TL_PRESSED_SUSPEND;
+#if defined ITL_SUSPEND
+            itl_raise_suspend();
+#endif
         } break;
 
         case TL_KEY_EOF: {
@@ -1373,6 +1397,8 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
 
     if (esc != TL_KEY_CHAR) {
         itl_global_last_control = esc;
+        itl_le_clear(&le);
+        fflush(stdout);
         return TL_PRESSED_CONTROL_SEQUENCE;
     }
 
@@ -1416,8 +1442,11 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
         if (esc != TL_KEY_CHAR) {
             int code = itl_le_esc_handle(&le, esc);
 
-            if (code != TL_SUCCESS)
+            if (code != TL_SUCCESS) {
+                fflush(stdout);
+                itl_le_clear(&le);
                 return code;
+            }
         } else {
             itl_utf8_t ch = itl_utf8_parse(in);
             itl_le_putc(&le, ch);
