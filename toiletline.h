@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.4.1
+ *  toiletline 0.4.2
  *  Raw shell implementation, a tiny replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -1016,10 +1016,10 @@ static int itl_le_tty_refresh(itl_le_t *le)
     size_t cols = 0;
     itl_tty_size(&rows, &cols);
 
-    size_t current_lines = (le->line->length + prompt_len) / cols + 1;
+    size_t current_lines = (le->line->length + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
 
-    size_t wrap_cursor_col = (le->cursor_position + prompt_len) % cols + 1;
-    size_t wrap_cursor_row = (le->cursor_position + prompt_len) / cols + 1;
+    size_t wrap_cursor_col = (le->cursor_position + prompt_len) % ITL_MAX(size_t, cols, 1) + 1;
+    size_t wrap_cursor_row = (le->cursor_position + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
 
     itl_trace("wrow: %zu, prev: %zu, col: %zu\n",
               wrap_cursor_row, itl_global_tty_prev_wrap_row, wrap_cursor_col);
@@ -1043,7 +1043,7 @@ static int itl_le_tty_refresh(itl_le_t *le)
         }
 
         // If line is full, wrap
-        size_t current_col = (character_index++ + prompt_len) % cols;
+        size_t current_col = (character_index++ + prompt_len) % ITL_MAX(size_t, cols, 1);
         if (current_col == cols - 1)
             fputs(ITL_LF, stdout);
 
