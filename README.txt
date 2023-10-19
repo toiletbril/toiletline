@@ -36,6 +36,8 @@ macro.
 
 * TL_HISTORY_MAX_SIZE configures maximum history size;
 * TL_NO_SUSPEND prevents Ctrl-Z from sending SIGTSTP to the terminal;
+* TL_SIZE_USE_ESCAPES forces to use escape codes instead of syscalls for
+  retrieving terminal size (flaky as of now);
 * TL_ASSERT configures function used for assertions;
 * TL_MALLOC, TL_REALLOC, TL_FREE configure functions used for memory
   allocation;
