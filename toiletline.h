@@ -314,7 +314,7 @@ static void itl_handle_sigcont(int signal_number)
     (void)signal_number;
     itl_enter_raw_mode();
 }
-#endif
+#endif /* ITL_POSIX */
 
 // Internally raise SIGTSTP and resume normally on SIGCONT, exit(1) on Windows
 static void itl_raise_suspend()
