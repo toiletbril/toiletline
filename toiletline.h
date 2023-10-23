@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.4.2
+ *  toiletline 0.4.3
  *  Raw shell implementation, a tiny replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -118,6 +118,10 @@ typedef enum
 
 #define TL_MASK_KEY 0x00FFFFFF
 #define TL_MASK_MOD 0xFF000000
+
+/* This is a helper and is not meant to be used directly. Use tl_last_control
+ * instead. */
+int *itl__get_last_control(void);
 
 /**
  * Last pressed control sequence.
@@ -940,7 +944,7 @@ static void itl_global_history_get_next(itl_le_t *le)
     }
 }
 
-inline static int itl_tty_size(size_t *rows, size_t *cols) {
+inline static int itl_tty_get_size(size_t *rows, size_t *cols) {
 #if defined TL_SIZE_USE_ESCAPES
     char buf[32];
     size_t i = 0;
@@ -1014,7 +1018,7 @@ static int itl_le_tty_refresh(itl_le_t *le)
 
     size_t rows = 0;
     size_t cols = 0;
-    itl_tty_size(&rows, &cols);
+    itl_tty_get_size(&rows, &cols);
 
     size_t current_lines = (le->line->length + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
 
@@ -1209,7 +1213,6 @@ static int itl_esc_parse(int byte)
 
 static ITL_THREAD_LOCAL int itl_global_last_control = TL_KEY_UNKN;
 
-// Not meant to be used directly. Use tl_last_control instead
 int *itl__get_last_control(void) {
     return &itl_global_last_control;
 }
