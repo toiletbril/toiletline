@@ -1439,6 +1439,7 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt)
 
 #if defined ITL_SEE_BYTES
         if (in == 3) exit(0);
+        printf("%d\n", in);
         continue;
 #endif /* TL_SEE_BYTES */
 
