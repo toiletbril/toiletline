@@ -128,21 +128,21 @@ int *itl__get_last_control(void);
 */
 #define tl_last_control (*itl__get_last_control())
 /**
- * Initialize toiletline, enter raw mode.
+ * Initialize toiletline and put terminal in semi-raw mode.
  */
 int tl_init(void);
 /**
- * Exit toiletline and free resources.
+ * Exit toiletline and restore terminal state.
  */
 int tl_exit(void);
 /**
- * Read one character without waiting for Enter.
+ * Read a character without waiting and modify `tl_last_control`.
  */
-int tl_getc(char *char_buffer, size_t size, const char *prompt);
+int tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt);
 /**
- * Read one line.
+ * Read input into the buffer.
  */
-int tl_readline(char *line_buffer, size_t size, const char *prompt);
+int tl_readline(char *buffer, size_t buffer_size, const char *prompt);
 /**
  * Returns the number of UTF-8 characters.
  *
@@ -1385,15 +1385,15 @@ size_t tl_utf8_strlen(const char *utf8_str)
 }
 
 // Gets one character, does not wait for Enter
-int tl_getc(char *char_buffer, size_t size, const char *prompt)
+int tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
 {
-    TL_ASSERT(size > 1 &&
+    TL_ASSERT(char_buffer_size > 1 &&
         "Size should be enough at least for one byte and a null terminator");
-    TL_ASSERT(size <= sizeof(char)*5 &&
+    TL_ASSERT(char_buffer_size <= sizeof(char)*5 &&
         "Size should be less or equal to size of 4 characters with a null terminator.");
     TL_ASSERT(char_buffer != NULL);
 
-    itl_le_t le = itl_le_new(&itl_global_line_buffer, char_buffer, size, prompt);
+    itl_le_t le = itl_le_new(&itl_global_line_buffer, char_buffer, char_buffer_size, prompt);
 
     itl_le_tty_refresh(&le);
 
@@ -1411,7 +1411,7 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
     itl_le_putc(&le, ch);
     itl_le_tty_refresh(&le);
 
-    itl_string_to_cstr(le.line, char_buffer, size);
+    itl_string_to_cstr(le.line, char_buffer, char_buffer_size);
 
     itl_le_clear(&le);
     fflush(stdout);
@@ -1419,15 +1419,15 @@ int tl_getc(char *char_buffer, size_t size, const char *prompt)
     return TL_SUCCESS;
 }
 
-int tl_readline(char *line_buffer, size_t size, const char *prompt)
+int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 {
-    TL_ASSERT(size > 1 &&
+    TL_ASSERT(buffer_size > 1 &&
         "Size should be enough at least for one byte and a null terminator");
-    TL_ASSERT(size <= ITL_MAX_STRING_LEN &&
+    TL_ASSERT(buffer_size <= ITL_MAX_STRING_LEN &&
         "Size should be less than platform's allowed maximum string length");
-    TL_ASSERT(line_buffer != NULL);
+    TL_ASSERT(buffer != NULL);
 
-    itl_le_t le = itl_le_new(&itl_global_line_buffer, line_buffer, size, prompt);
+    itl_le_t le = itl_le_new(&itl_global_line_buffer, buffer, buffer_size, prompt);
 
     itl_le_tty_refresh(&le);
 

@@ -26,7 +26,7 @@ Before you include this file in C or C++ file, define
 
 If you want to use this library in C++ or other languages, you will need to make
 a .c file which creates implementation and includes the library. Compile it to
-object file ('-c' flag in gcc/clang) and link your code against it.
+object file (`-c` flag in gcc/clang) and link your code against it.
 
 
 Configuration macros
@@ -96,6 +96,12 @@ Initialize toiletline and put terminal in semi-raw mode.
 Returns TL_SUCCESS.
 
 
+int tl_exit(void);
+--------
+Exit toiletline and restore terminal state.
+Returns TL_SUCCESS.
+
+
 int tl_readline(char *line_buffer, size_t size, const char *prompt);
 --------
 Read a line.
@@ -104,7 +110,7 @@ To support multi-byte characters and null at the end, size needs to be at least
 2 or more. Submitted input will be written to *line_buffer as a null-terminated
 string. After the size is exhausted, character inputs will be ignored.
 
-Beware of characters like '\t' (Tab) and such, as they may break cursor
+Beware of characters like `\t` (Tab) and such, as they may break cursor
 position. Althrough they are considered as a single character, they occupy more
 than one space.
 
@@ -119,18 +125,12 @@ Returns:
 
 int tl_getc(char *char_buffer, size_t size, const char *prompt);
 --------
-Read a character (without waiting for Enter).
+Read a character without waiting and modify `tl_last_control`.
 
 Returns:
 * TL_SUCCESS on a character;
 * TL_PRESSED_CONTROL_SEQUENCE on a control sequence (tl_last_control to check
   which one).
-
-
-int tl_exit(void);
---------
-Exit and deallocate memory.
-Returns TL_SUCCESS.
 
 
 size_t tl_utf8_strlen(const char *utf8_str);
