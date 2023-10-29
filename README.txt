@@ -55,8 +55,7 @@ Int functions can return error codes. They are always above 0, and defined as:
 
 int tl_last_control;
 --------
-Last pressed control sequence. Note that last control sequence for
-tl_readline() can only be Enter or Interrupt.
+Last pressed control sequence.
 
 Related values:
 
