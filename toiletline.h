@@ -155,7 +155,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
 #if defined TOILETLINE_IMPLEMENTATION
 
-#if defined(_WIN32)
+#if defined _WIN32
     #define ITL_WIN32
 #elif defined __linux__ || defined BSD || defined __APPLE__
     #define ITL_POSIX
@@ -167,11 +167,13 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #define ITL_THREAD_LOCAL __declspec(thread)
 #elif defined __GNUC__ || defined __clang__
     #define ITL_THREAD_LOCAL __thread
-#else
+#elif defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
+    #define ITL_THREAD_LOCAL _Thread_local
+#else /* __STDC_VERSION__ && __STDC_VERSION__ >= 201112L */
     #define ITL_THREAD_LOCAL /* nothing */
-#endif /* __GNUC__ || __clang__ */
+#endif
 
-#if defined(ITL_WIN32)
+#if defined ITL_WIN32
     #define WIN32_LEAN_AND_MEAN
 
     #include <windows.h>
@@ -230,7 +232,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 #define ITL_MIN(type, i, j) ((((type)i) < ((type)j)) ? ((type)i) : ((type)j))
 
-#if defined(ITL_WIN32)
+#if defined ITL_WIN32
 static ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
 static ITL_THREAD_LOCAL UINT itl_global_original_tty_cp    = 0;
 static ITL_THREAD_LOCAL int itl_global_original_mode       = 0;
@@ -240,7 +242,7 @@ static ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode = { 0 };
 
 inline static int itl_enter_raw_mode(void)
 {
-#if defined(ITL_WIN32)
+#if defined ITL_WIN32
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
     if (hInput == INVALID_HANDLE_VALUE)
         return TL_ERROR;
@@ -290,7 +292,7 @@ inline static int itl_enter_raw_mode(void)
 
 inline static int itl_exit_raw_mode(void)
 {
-#if defined(ITL_WIN32)
+#if defined ITL_WIN32
     HANDLE h_input = GetStdHandle(STD_INPUT_HANDLE);
     if (h_input == INVALID_HANDLE_VALUE)
         return TL_ERROR;
@@ -573,7 +575,7 @@ static void itl_string_clear(itl_string_t *str)
         itl_free(str);         \
     } while (0)
 
-#if defined(ITL_WIN32)
+#if defined ITL_WIN32
     #define ITL_LF "\r\n"
     #define ITL_LF_LEN 2
 #else /* ITL_WIN32 */
@@ -969,7 +971,7 @@ inline static int itl_tty_get_size(size_t *rows, size_t *cols) {
     if (sscanf(&buf[2], "%zu;%zu", rows, cols) != 2)
         return TL_ERROR;
 
-#elif defined(ITL_WIN32)
+#elif defined ITL_WIN32
     CONSOLE_SCREEN_BUFFER_INFO buffer_info;
 
     int success = GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &buffer_info);
@@ -1114,7 +1116,7 @@ static int itl_esc_parse(int byte)
         case 127: return TL_KEY_BACKSPACE;
     }
 
-#if defined(ITL_WIN32)
+#if defined ITL_WIN32
     if (byte == 224) { // esc
         switch (itl_read_byte()) {
             case 'H': event = TL_KEY_UP;    break;
