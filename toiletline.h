@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.4.3
+ *  toiletline 0.4.4
  *  Raw shell implementation, a tiny replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -175,6 +175,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
 #if defined ITL_WIN32
     #define WIN32_LEAN_AND_MEAN
+    #define _CRT_SECURE_NO_WARNINGS
 
     #include <windows.h>
     #include <conio.h>
@@ -326,10 +327,11 @@ static void itl_handle_sigcont(int signal_number)
 static void itl_raise_suspend()
 {
 #if defined ITL_POSIX
-    signal(SIGCONT, itl_handle_sigcont);
     itl_exit_raw_mode();
+    signal(SIGCONT, itl_handle_sigcont);
     raise(SIGTSTP);
 #else /* ITL_POSIX */
+    tl_exit();
     exit(1);
 #endif
 }
@@ -354,15 +356,7 @@ static void *itl_malloc(size_t size)
 #if 0 // @@@
 static void *itl_calloc(size_t count, size_t size)
 {
-    itl_global_alloc_count += 1;
-
-    void *allocated = TL_MALLOC(count * size);
-
-#if !defined TL_NO_ABORT
-    if (allocated == NULL)
-        TL_ABORT();
-#endif
-
+    void *allocated = itl_malloc(count * size);
     memset(allocated, 0, count * size);
 
     return allocated;
@@ -946,13 +940,16 @@ static void itl_global_history_get_next(itl_le_t *le)
     }
 }
 
+#define itl_tty_move_forward(count) printf("\x1b[%zuC", (size_t)count)
+#define itl_tty_status_report() fputs("\x1b[6n", stdout)
+
 inline static int itl_tty_get_size(size_t *rows, size_t *cols) {
 #if defined TL_SIZE_USE_ESCAPES
     char buf[32];
     size_t i = 0;
 
-    fputs("\x1b[999C", stdout);
-    fputs("\x1b[6n", stdout);
+    itl_tty_move_forward(999);
+    itl_tty_status_report();
 
     // This does not work without flushing if setvbuf was called previously
     fflush(stdout);
@@ -1130,7 +1127,7 @@ static int itl_esc_parse(int byte)
             case 'G': event = TL_KEY_HOME; break;
             case 'O': event = TL_KEY_END;  break;
 
-            case 147: event = TL_KEY_DELETE | TL_MOD_CTRL; break; // ctrl del
+            case 147: event = TL_KEY_DELETE | TL_MOD_CTRL; break;
             case 'S': event = TL_KEY_DELETE; break;
 
             default: event = TL_KEY_UNKN;
@@ -1174,7 +1171,7 @@ static int itl_esc_parse(int byte)
             byte = itl_read_byte();
         }
 
-        switch (byte) { // escape codes based on xterm
+        switch (byte) {
             case 'A': return event | TL_KEY_UP;
             case 'B': return event | TL_KEY_DOWN;
             case 'C': return event | TL_KEY_RIGHT;
@@ -1235,7 +1232,7 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
 
         case TL_KEY_RIGHT: {
             if (le->cursor_position < le->line->length) {
-                size_t count = 1;
+                size_t count = 0;
 
                 if (esc & TL_MOD_CTRL) {
                     size_t next_ws = itl_le_next_whitespace(le);
@@ -1244,6 +1241,8 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
                         count = itl_le_next_word(le);
                     } else
                         count = next_ws;
+                } else {
+                    count = 1;
                 }
 
                 itl_le_move_right(le, count);
@@ -1252,7 +1251,7 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
 
         case TL_KEY_LEFT: {
             if (le->cursor_position > 0 && le->cursor_position <= le->line->length) {
-                size_t count = 1;
+                size_t count = 0;
 
                 if (esc & TL_MOD_CTRL) {
                     size_t next_ws = itl_le_prev_whitespace(le);
@@ -1261,8 +1260,11 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
                         count = itl_le_prev_word(le);
                         itl_le_move_left(le, count);
                         count = itl_le_prev_whitespace(le) - 1;
-                    } else
+                    } else {
                         count = next_ws - 1;
+                    }
+                } else {
+                    count = 1;
                 }
 
                 itl_le_move_left(le, count);
@@ -1279,30 +1281,34 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
 
         case TL_KEY_ENTER: {
             int err = itl_string_to_cstr(le->line, le->out_buf, le->out_size);
-            itl_global_history_append(le->line);
             if (err) return err;
-            else return TL_PRESSED_ENTER;
+
+            itl_global_history_append(le->line);
+            return TL_PRESSED_ENTER;
         } break;
 
         case TL_KEY_BACKSPACE: {
-            size_t count = 1;
+            size_t count = 0;
 
             if (esc & TL_MOD_CTRL) {
-                size_t next_ws = itl_le_prev_whitespace(le);
+                size_t prev_ws = itl_le_prev_whitespace(le);
 
-                if (next_ws <= 1) {
+                if (prev_ws <= 1) {
                     count = itl_le_prev_word(le);
                     itl_le_erase_backward(le, count);
                     count = itl_le_prev_whitespace(le) - 1;
-                } else
-                    count = next_ws - 1;
+                } else {
+                    count = prev_ws - 1;
+                }
+            } else {
+                count = 1;
             }
 
             itl_le_erase_backward(le, count);
         } break;
 
         case TL_KEY_DELETE: {
-            size_t count = 1;
+            size_t count = 0;
 
             if (esc & TL_MOD_CTRL) {
                 size_t next_ws = itl_le_next_whitespace(le);
@@ -1311,8 +1317,11 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
                     count = itl_le_next_word(le);
                     itl_le_erase_forward(le, count);
                     count = itl_le_next_whitespace(le);
-                } else
+                } else {
                     count = next_ws;
+                }
+            } else {
+                count = 1;
             }
 
             itl_le_erase_forward(le, count);
@@ -1362,29 +1371,11 @@ int tl_exit(void)
     itl_string_clear(&itl_global_line_buffer);
 
     itl_trace("Exited, alloc count: %zu\n", itl_global_alloc_count);
-    int code = itl_exit_raw_mode();
-
     TL_ASSERT(itl_global_alloc_count == 0);
 
-    return code;
+    return itl_exit_raw_mode();
 }
 
-// Returns the number of UTF-8 characters in a null terminated string
-size_t tl_utf8_strlen(const char *utf8_str)
-{
-    int len = 0;
-
-    while (*utf8_str) {
-        if ((*utf8_str & 0xC0) != 0x80)
-            ++len;
-
-        ++utf8_str;
-    }
-
-    return len;
-}
-
-// Gets one character, does not wait for Enter
 int tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
 {
     TL_ASSERT(char_buffer_size > 1 &&
@@ -1402,19 +1393,14 @@ int tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
 
     if (esc != TL_KEY_CHAR) {
         itl_global_last_control = esc;
-        itl_le_clear(&le);
-        fflush(stdout);
         return TL_PRESSED_CONTROL_SEQUENCE;
     }
 
     itl_utf8_t ch = itl_utf8_parse(in);
     itl_le_putc(&le, ch);
     itl_le_tty_refresh(&le);
-
     itl_string_to_cstr(le.line, char_buffer, char_buffer_size);
-
     itl_le_clear(&le);
-    fflush(stdout);
 
     return TL_SUCCESS;
 }
@@ -1438,7 +1424,7 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
         in = itl_read_byte();
 
 #if defined ITL_SEE_BYTES
-        if (in == 3) exit(0);
+        if (in == 3) exit(0); // ctrl c
         printf("%d\n", in);
         continue;
 #endif /* TL_SEE_BYTES */
@@ -1447,9 +1433,7 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 
         if (esc != TL_KEY_CHAR) {
             int code = itl_le_esc_handle(&le, esc);
-
             if (code != TL_SUCCESS) {
-                fflush(stdout);
                 itl_le_clear(&le);
                 return code;
             }
@@ -1462,6 +1446,20 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
     }
 
     return TL_ERROR;
+}
+
+size_t tl_utf8_strlen(const char *utf8_str)
+{
+    int len = 0;
+
+    while (*utf8_str) {
+        if ((*utf8_str & 0xC0) != 0x80)
+            ++len;
+
+        ++utf8_str;
+    }
+
+    return len;
 }
 
 #endif /* TOILETLINE_IMPLEMENTATION */
