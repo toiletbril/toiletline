@@ -72,6 +72,8 @@ Possible key values:
 * TL_KEY_DOWN;
 * TL_KEY_RIGHT;
 * TL_KEY_LEFT;
+* TL_KEY_HISTORY_END (Alt->);
+* TL_KEY_HISTORY_BEGINNING (Alt-<);
 * TL_KEY_END;
 * TL_KEY_HOME;
 * TL_KEY_ENTER;
