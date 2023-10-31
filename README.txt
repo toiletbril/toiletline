@@ -77,14 +77,13 @@ Possible key values:
 * TL_KEY_ENTER;
 * TL_KEY_BACKSPACE;
 * TL_KEY_DELETE;
-* TL_KEY_KILL_LINE;
-* TL_KEY_KILL_LINE_BEFORE;
+* TL_KEY_KILL_LINE (Ctrl-K);
+* TL_KEY_KILL_LINE_BEFORE (Ctrl-U);
 * TL_KEY_TAB;
-* TL_KEY_SUSPEND;
-* TL_KEY_EOF;
-* TL_KEY_INTERRUPT.
-
-They can be tested with bitwise AND (&).
+* TL_KEY_CLEAR (Ctrl-L);
+* TL_KEY_SUSPEND (Ctrl-Z);
+* TL_KEY_EOF (Ctrl-D);
+* TL_KEY_INTERRUPT (Ctrl-C).
 
 
 int tl_init(void);
