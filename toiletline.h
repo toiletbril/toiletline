@@ -241,7 +241,7 @@ static ITL_THREAD_LOCAL int itl_global_original_mode       = 0;
 static ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode = { 0 };
 #endif
 
-inline static int itl_enter_raw_mode(void)
+static int itl_enter_raw_mode(void)
 {
 #if defined ITL_WIN32
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
@@ -291,7 +291,7 @@ inline static int itl_enter_raw_mode(void)
     return TL_SUCCESS;
 }
 
-inline static int itl_exit_raw_mode(void)
+static int itl_exit_raw_mode(void)
 {
 #if defined ITL_WIN32
     HANDLE h_input = GetStdHandle(STD_INPUT_HANDLE);
@@ -324,7 +324,7 @@ static void itl_handle_sigcont(int signal_number)
 #endif /* ITL_POSIX */
 
 // Internally raise SIGTSTP and resume normally on SIGCONT, exit(1) on Windows
-static void itl_raise_suspend()
+static void itl_raise_suspend(void)
 {
 #if defined ITL_POSIX
     itl_exit_raw_mode();
@@ -463,7 +463,7 @@ static itl_char_t *itl_char_alloc(void)
     return ptr;
 }
 
-inline static void itl_char_copy(itl_char_t *dst, itl_char_t *src)
+static void itl_char_copy(itl_char_t *dst, itl_char_t *src)
 {
     memcpy(dst, src, sizeof(itl_char_t));
 }
@@ -650,7 +650,7 @@ static void itl_history_item_free(itl_history_item_t *item)
     itl_free(item);
 }
 
-inline static void itl_global_history_free(void)
+static void itl_global_history_free(void)
 {
     itl_history_item_t *item = itl_global_history;
 
@@ -901,7 +901,7 @@ static size_t itl_le_goto_token(itl_le_t *le, int behind, int token)
 #define itl_le_next_whitespace(le) itl_le_goto_token(le, 0, ITL_TOKEN_WHITESPACE)
 #define itl_le_prev_whitespace(le) itl_le_goto_token(le, 1, ITL_TOKEN_WHITESPACE)
 
-inline static void itl_le_clear(itl_le_t *le)
+static void itl_le_clear(itl_le_t *le)
 {
     itl_string_clear(le->line);
     le->cursor_position = 0;
@@ -943,7 +943,7 @@ static void itl_global_history_get_next(itl_le_t *le)
 #define itl_tty_move_forward(count) printf("\x1b[%zuC", (size_t)count)
 #define itl_tty_status_report() fputs("\x1b[6n", stdout)
 
-inline static int itl_tty_get_size(size_t *rows, size_t *cols) {
+static int itl_tty_get_size(size_t *rows, size_t *cols) {
 #if defined TL_SIZE_USE_ESCAPES
     char buf[32];
     size_t i = 0;
