@@ -1,13 +1,10 @@
 toiletline
 ----------------
-Tiny single-header library for immediate shell, meant to replace a small subset
-of GNU Readline, and work on both Linux and Windows.
+Tiny, crossplatform, single-header shell library, meant to replace a small
+subset of GNU Readline, and work on both Linux and Windows.
 
-All features like character echo and key handling are implemented from scratch.
-NOTE: On Windows, UTF-8 locale feature is required for proper multibyte character
-support.
-
-Any help finding bugs is appreciated.
+NOTE: On Windows, UTF-8 locale feature is required for proper multibyte
+character support.
 
 
 Current features
@@ -24,9 +21,9 @@ Documentation
 Before you include this file in C or C++ file, define
 "TOILETLINE_IMPLEMENTATION" to create the implementation.
 
-If you want to use this library in C++ or other languages, you will need to make
-a .c file which creates implementation and includes the library. Compile it to
-object file (`-c` flag in gcc/clang) and link your code against it.
+If you want to use this library in other languages, you will need to make a .c
+file which creates implementation and includes the library. Compile it to object
+file (`-c` flag in gcc/clang) and link your program against it.
 
 
 Configuration macros

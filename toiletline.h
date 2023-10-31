@@ -1,6 +1,6 @@
 /*
  *  toiletline 0.4.4
- *  Raw shell implementation, a tiny replacement of GNU Readline :3
+ *  Tiny single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
  *  Before you include this file in C or C++ file to create the implementation.
