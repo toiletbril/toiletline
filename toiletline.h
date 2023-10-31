@@ -106,6 +106,7 @@ typedef enum
     TL_KEY_KILL_LINE_BEFORE,
 
     TL_KEY_TAB,
+    TL_KEY_CLEAR,
 
     TL_KEY_SUSPEND,
     TL_KEY_EOF,
@@ -940,7 +941,21 @@ static void itl_global_history_get_next(itl_le_t *le)
     }
 }
 
+#define itl_tty_hide_cursor() fputs("\x1b[?25l", stdout)
+#define itl_tty_show_cursor() fputs("\x1b[?25h", stdout)
+
+#define itl_tty_move_to_column(col) printf("\x1b[%zuG", (size_t)col)
 #define itl_tty_move_forward(count) printf("\x1b[%zuC", (size_t)count)
+
+#define itl_tty_move_up(rows) printf("\x1b[%zuA", (size_t)rows)
+#define itl_tty_move_down(rows) printf("\x1b[%zuB", (size_t)rows)
+
+#define itl_tty_clear_whole_line() fputs("\r\x1b[0K", stdout)
+#define itl_tty_clear_to_end() fputs("\x1b[K", stdout)
+
+#define itl_tty_goto_home() fputs("\x1b[H", stdout)
+#define itl_tty_erase_screen() fputs("\033[2J", stdout)
+
 #define itl_tty_status_report() fputs("\x1b[6n", stdout)
 
 static int itl_tty_get_size(size_t *rows, size_t *cols) {
@@ -997,16 +1012,6 @@ static int itl_tty_get_size(size_t *rows, size_t *cols) {
 
 static ITL_THREAD_LOCAL size_t itl_global_tty_prev_lines = 1;
 static ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
-
-#define itl_tty_hide_cursor() fputs("\x1b[?25l", stdout)
-#define itl_tty_show_cursor() fputs("\x1b[?25h", stdout)
-
-#define itl_tty_move_to_column(col) printf("\x1b[%zuG", (size_t)col)
-#define itl_tty_move_up(rows) printf("\x1b[%zuA", (size_t)rows)
-#define itl_tty_move_down(rows) printf("\x1b[%zuB", (size_t)rows)
-
-#define itl_tty_clear_whole_line() fputs("\r\x1b[0K", stdout)
-#define itl_tty_clear_to_end() fputs("\x1b[K", stdout)
 
 static int itl_le_tty_refresh(itl_le_t *le)
 {
@@ -1101,6 +1106,7 @@ static int itl_esc_parse(int byte)
         case 26: return TL_KEY_SUSPEND;   // ctrl z
 
         case 9: return TL_KEY_TAB;
+        case 12: return TL_KEY_CLEAR; // ctrl l
 
         case 13: // cr
         case 10: return TL_KEY_ENTER;
@@ -1353,6 +1359,12 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
         case TL_KEY_INTERRUPT: {
             itl_string_to_cstr(le->line, le->out_buf, le->out_size);
             return TL_PRESSED_INTERRUPT;
+        } break;
+
+        case TL_KEY_CLEAR: {
+            itl_tty_goto_home();
+            itl_tty_erase_screen();
+            itl_le_tty_refresh(le);
         } break;
     }
 
