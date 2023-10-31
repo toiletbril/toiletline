@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.4.4
+ *  toiletline 0.4.5
  *  Tiny single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -94,6 +94,9 @@ typedef enum
     TL_KEY_DOWN,
     TL_KEY_RIGHT,
     TL_KEY_LEFT,
+
+    TL_KEY_HISTORY_END,
+    TL_KEY_HISTORY_BEGINNING,
 
     TL_KEY_END,
     TL_KEY_HOME,
@@ -612,7 +615,7 @@ struct itl_history_item
 
 static ITL_THREAD_LOCAL itl_history_item_t *itl_global_history = NULL;
 static ITL_THREAD_LOCAL itl_history_item_t *itl_global_history_first = NULL;
-static ITL_THREAD_LOCAL int itl_global_history_length = 0;
+static ITL_THREAD_LOCAL size_t itl_global_history_length = 0;
 
 static ITL_THREAD_LOCAL itl_string_t itl_global_line_buffer = {0};
 
@@ -1105,8 +1108,11 @@ static int itl_esc_parse(int byte)
         case 4:  return TL_KEY_EOF;       // ctrl d
         case 26: return TL_KEY_SUSPEND;   // ctrl z
 
-        case 9: return TL_KEY_TAB;
+        case 9: return  TL_KEY_TAB;
         case 12: return TL_KEY_CLEAR; // ctrl l
+
+        case 14: return TL_KEY_DOWN; // ctrl n
+        case 16: return TL_KEY_UP; // ctrl p
 
         case 13: // cr
         case 10: return TL_KEY_ENTER;
@@ -1156,6 +1162,12 @@ static int itl_esc_parse(int byte)
                 case 'f': return TL_KEY_RIGHT | TL_MOD_CTRL;
 
                 case 'd': return TL_KEY_DELETE | TL_MOD_CTRL;
+                case 'h': return TL_KEY_BACKSPACE | TL_MOD_CTRL;
+
+                case '.':
+                case '>': return TL_KEY_HISTORY_END;
+                case ',':
+                case '<': return TL_KEY_HISTORY_BEGINNING;
 
                 default: return TL_KEY_CHAR | TL_MOD_ALT;
             }
@@ -1365,6 +1377,19 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
             itl_tty_goto_home();
             itl_tty_erase_screen();
             itl_le_tty_refresh(le);
+        } break;
+
+        case TL_KEY_HISTORY_END: {
+            for (size_t i = 0; i < itl_global_history_length; ++i) {
+                itl_global_history_get_next(le);
+            }
+            itl_global_history_get_prev(le);
+        } break;
+
+        case TL_KEY_HISTORY_BEGINNING: {
+            for (size_t i = 0; i < itl_global_history_length; ++i) {
+                itl_global_history_get_prev(le);
+            }
         } break;
     }
 
