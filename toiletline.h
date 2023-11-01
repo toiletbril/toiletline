@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.4.5
+ *  toiletline 0.4.6
  *  Tiny single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -909,6 +909,7 @@ static void itl_le_clear(itl_le_t *le)
 {
     itl_string_clear(le->line);
     le->cursor_position = 0;
+    le->current_character = NULL;
 }
 
 static void itl_global_history_get_prev(itl_le_t *le)
@@ -925,6 +926,7 @@ static void itl_global_history_get_prev(itl_le_t *le)
         itl_le_clear(le);
         itl_string_copy(le->line, le->history_selected_item->str);
         le->cursor_position = le->line->length;
+        le->current_character = NULL;
     }
 }
 
@@ -937,6 +939,7 @@ static void itl_global_history_get_next(itl_le_t *le)
             itl_le_clear(le);
             itl_string_copy(le->line, le->history_selected_item->str);
             le->cursor_position = le->line->length;
+            le->current_character = NULL;
         } else {
             le->history_selected_item = NULL;
             itl_le_clear(le);
@@ -1479,6 +1482,9 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
             itl_le_putc(&le, ch);
         }
 
+        itl_trace_lf();
+        itl_trace("strlen: %zu, hist: %zu\n", le.line->length, le.history_selected_item);
+
         itl_le_tty_refresh(&le);
     }
 
@@ -1507,6 +1513,6 @@ size_t tl_utf8_strlen(const char *utf8_str)
 
 /*
  * TODO:
- *  - Better memory management.
+ *  - Better memory management (switch to array for itl_string_t).
  *  - Tab completion.
  */
