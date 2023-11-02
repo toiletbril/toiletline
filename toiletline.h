@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.4.6
+ *  toiletline 0.4.7
  *  Tiny single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -162,6 +162,8 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #if defined _WIN32
     #define ITL_WIN32
 #elif defined __linux__ || defined BSD || defined __APPLE__
+    #define ITL_POSIX
+#elif defined __COSMOCC__
     #define ITL_POSIX
 #else /* __linux__ || BSD || __APPLE__ */
     #error "Your system is not supported"
