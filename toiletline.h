@@ -165,7 +165,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #define ITL_POSIX
 #elif defined __COSMOCC__
     #define ITL_POSIX
-#else /* __linux__ || BSD || __APPLE__ */
+#else /* __COSMOCC__ */
     #error "Your system is not supported"
 #endif
 
