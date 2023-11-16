@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.4.7
+ *  toiletline 0.5.0
  *  Tiny single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -36,8 +36,8 @@ extern "C" {
 #include <stddef.h>
 
 /* If not defined, Ctrl-Z will raise SIGTSTP internally and toiletline will
- * resume normally on SIGCONT. This is the preferred way of doing SIGTSTP without
- * breaking terminal's state if you haven't called tl_exit yet. */
+ * resume normally on SIGCONT. This is the preferred way of doing SIGTSTP
+ * without breaking terminal's state if you haven't called tl_exit yet. */
 #if !defined TL_NO_SUSPEND
     #define ITL_SUSPEND
 #endif /* TL_NO_SUSPEND */
@@ -150,8 +150,8 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt);
 /**
  * Returns the number of UTF-8 characters.
  *
- * Since number of bytes can be bigger than amount of characters,
- * regular strlen will not work, and will only return the number of bytes before \0.
+ * Since number of bytes can be bigger than amount of characters, regular strlen
+ * will not work, and will only return the number of bytes before \0.
  */
 size_t tl_utf8_strlen(const char *utf8_str);
 
@@ -218,7 +218,6 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #endif /* ITL_DEFAULT_ASSERT */
 
 #include <ctype.h>
-#include <limits.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -260,7 +259,8 @@ static int itl_enter_raw_mode(void)
         return TL_ERROR;
 
     itl_global_original_tty_mode = tty_mode;
-    tty_mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
+    tty_mode &=
+        ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
 
     if (!SetConsoleMode(hInput, tty_mode))
         return TL_ERROR;
@@ -330,7 +330,8 @@ static void itl_handle_sigcont(int signal_number)
 }
 #endif /* ITL_POSIX */
 
-/* Internally raise SIGTSTP and resume normally on SIGCONT, exit(1) on Windows */
+/* Internally raise SIGTSTP and resume normally on SIGCONT, exit(1) on
+   Windows */
 static void itl_raise_suspend(void)
 {
 #if defined ITL_POSIX
@@ -418,7 +419,6 @@ static void itl_utf8_copy(itl_utf8_t *dst, const itl_utf8_t *src)
     dst->size = src->size;
 }
 
-/* TODO: Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid */
 static itl_utf8_t itl_utf8_parse(int first_byte)
 {
     uint8_t bytes[4] = { (uint8_t)first_byte, 0, 0, 0 };
@@ -477,7 +477,8 @@ static void itl_string_init(itl_string_t *str)
     str->size = 0;
 
     str->capacity = ITL_STRING_INIT_SIZE;
-    str->chars = (itl_utf8_t *)itl_malloc(ITL_STRING_INIT_SIZE * sizeof(itl_utf8_t));
+    str->chars = (itl_utf8_t *)
+        itl_malloc(ITL_STRING_INIT_SIZE * sizeof(itl_utf8_t));
 }
 
 static itl_string_t *itl_string_alloc(void)
@@ -490,7 +491,8 @@ static itl_string_t *itl_string_alloc(void)
 static void itl_string_extend(itl_string_t *str)
 {
     str->capacity = ITL_STRING_REALLOC_SIZE(str->capacity);
-    str->chars = (itl_utf8_t *)itl_realloc(str->chars, str->capacity * sizeof(itl_utf8_t));
+    str->chars = (itl_utf8_t *)itl_realloc(str->chars,
+                                           str->capacity * sizeof(itl_utf8_t));
 }
 
 static int itl_string_eq(itl_string_t *str1, itl_string_t *str2)
@@ -502,7 +504,8 @@ static int itl_string_eq(itl_string_t *str1, itl_string_t *str2)
         if (str1->chars[i].size != str2->chars[i].size)
             return TL_ERROR;
 
-        int cmp_result = memcmp(str2->chars[i].bytes, str2->chars[i].bytes, 4 * sizeof(uint8_t));
+        int cmp_result = memcmp(str2->chars[i].bytes, str2->chars[i].bytes,
+                                4 * sizeof(uint8_t));
         if (cmp_result != 0)
             return TL_ERROR;
     }
@@ -532,7 +535,8 @@ static void itl_string_recalc_size(itl_string_t *str)
 /* Shrinks string to capacity of ITL_STRING_INIT_SIZE */
 static void itl_string_shrink(itl_string_t *str)
 {
-    str->chars = (itl_utf8_t *)itl_realloc(str->chars, ITL_STRING_INIT_SIZE * sizeof(itl_utf8_t));
+    str->chars = (itl_utf8_t *)
+        itl_realloc(str->chars, ITL_STRING_INIT_SIZE * sizeof(itl_utf8_t));
     str->capacity = ITL_STRING_INIT_SIZE;
 
     if (str->length > ITL_STRING_INIT_SIZE)
@@ -550,7 +554,8 @@ static void itl_string_clear(itl_string_t *str)
     str->length = 0;
 }
 
-static void itl_string_shift(itl_string_t *str, size_t position, size_t shift_by, int backwards)
+static void itl_string_shift(itl_string_t *str, size_t position,
+                             size_t shift_by, int backwards)
 {
     if (position >= str->length) return;
 
@@ -573,25 +578,20 @@ static void itl_string_shift(itl_string_t *str, size_t position, size_t shift_by
     }
 }
 
-static void itl_string_erase(itl_string_t *str, size_t position, size_t count, int backwards)
+static void itl_string_erase(itl_string_t *str, size_t position,
+                             size_t count, int backwards)
 {
     itl_trace_lf();
-    itl_trace("string_erase) pos: %zu, count: %zu, behind: %d\n", position, count, backwards);
+    itl_trace("string_erase) pos: %zu, count: %zu, behind: %d\n",
+              position, count, backwards);
 
     TL_ASSERT(count <= ITL_MAX_STRING_LEN);
 
-    /* handle edge cases */
-    if (backwards) {
-        /* fast path */
-        if (position < count) {
-            str->length = 0;
-            return;
-        }
-    } else {
+    /* Handle edge cases */
+    if (!backwards) {
         if (position >= str->length)
             return;
 
-        /* fast path */
         if (position + count >= str->length) {
             str->length -= count;
             return;
@@ -643,7 +643,6 @@ static void itl_string_insert(itl_string_t *str, size_t position, itl_utf8_t ch)
 
 static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t c_str_size)
 {
-
     size_t i, j;
     size_t k = 0;
 
@@ -666,9 +665,9 @@ typedef struct itl_history_item itl_history_item_t;
 
 struct itl_history_item
 {
+    itl_string_t *str;
     itl_history_item_t *next;
     itl_history_item_t *prev;
-    itl_string_t *str;
 };
 
 static ITL_THREAD_LOCAL itl_history_item_t *itl_global_history = NULL;
@@ -771,7 +770,8 @@ static int itl_global_history_append(itl_string_t *str)
     return TL_SUCCESS;
 }
 
-static itl_le_t itl_le_new(itl_string_t *line_buf, char *out_buf, size_t out_size, const char *prompt)
+static itl_le_t itl_le_new(itl_string_t *line_buf, char *out_buf,
+                           size_t out_size, const char *prompt)
 {
     itl_le_t le = {
         /* .line                  = */ line_buf,
@@ -805,15 +805,11 @@ static void itl_le_erase(itl_le_t *le, size_t count, int backwards)
 {
     if (count == 0) return;
 
-    itl_trace_lf();
-    itl_trace("le_erase) pos: %zu, count: %zu", le->cursor_position, count);
-
     if (backwards && le->cursor_position) {
         itl_string_erase(le->line, le->cursor_position - 1, count, backwards);
         itl_le_move_left(le, count);
-    } else {
+    } else if (!backwards)
         itl_string_erase(le->line, le->cursor_position, count, backwards);
-    }
 }
 
 #define itl_le_erase_forward(le, count) itl_le_erase(le, count, 0)
@@ -896,9 +892,8 @@ static void itl_global_history_get_prev(itl_le_t *le)
         if (le->history_selected_item->prev) {
               le->history_selected_item = le->history_selected_item->prev;
         }
-    } else {
+    } else
         le->history_selected_item = itl_global_history;
-    }
 
     if (le->history_selected_item) {
         itl_le_clear(le);
@@ -967,7 +962,8 @@ static int itl_tty_get_size(size_t *rows, size_t *cols) {
 #elif defined ITL_WIN32
     CONSOLE_SCREEN_BUFFER_INFO buffer_info;
 
-    int success = GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &buffer_info);
+    int success = GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE),
+                                             &buffer_info);
 
     if (!success)
         return TL_ERROR;
@@ -1010,10 +1006,13 @@ static int itl_le_tty_refresh(itl_le_t *le)
     size_t cols = 0;
     itl_tty_get_size(&rows, &cols);
 
-    size_t current_lines = (le->line->length + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
+    size_t current_lines =
+        (le->line->length + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
 
-    size_t wrap_cursor_col = (le->cursor_position + prompt_len) % ITL_MAX(size_t, cols, 1) + 1;
-    size_t wrap_cursor_row = (le->cursor_position + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
+    size_t wrap_cursor_col =
+        (le->cursor_position + prompt_len) % ITL_MAX(size_t, cols, 1) + 1;
+    size_t wrap_cursor_row =
+        (le->cursor_position + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
 
     itl_trace("wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
               wrap_cursor_row, itl_global_tty_prev_wrap_row,
@@ -1041,9 +1040,9 @@ static int itl_le_tty_refresh(itl_le_t *le)
             fputs(ITL_LF, stdout);
     }
 
-    /* If current amount of lines is less than previous amount of lines, then */
-    /* input was cleared by kill line or such. Clear each dirty line, then go */
-    /* back up */
+    /* If current amount of lines is less than previous amount of lines, then
+       input was cleared by kill line or such. Clear each dirty line, then go
+       back up */
     if (current_lines < itl_global_tty_prev_lines) {
         size_t dirty_lines = itl_global_tty_prev_lines - current_lines;
         for (size_t i = 0; i < dirty_lines; ++i) {
@@ -1057,8 +1056,8 @@ static int itl_le_tty_refresh(itl_le_t *le)
         itl_tty_clear_to_end();
     }
 
-    /* Move cursor to appropriate row and column. If row didn't change, stay on */
-    /* the same line */
+    /* Move cursor to appropriate row and column. If row didn't change, stay on
+       the same line */
     if (wrap_cursor_row < current_lines) {
         itl_tty_move_up(current_lines - wrap_cursor_row);
     }
@@ -1077,7 +1076,8 @@ static int itl_esc_parse(int byte)
 {
     int event = 0;
 
-    switch (byte) { /* plain bytes */
+    /* plain bytes */
+    switch (byte) {
         case 1: return TL_KEY_HOME; /* ctrl a */
         case 5: return TL_KEY_END;  /* ctrl e */
 
@@ -1092,7 +1092,7 @@ static int itl_esc_parse(int byte)
         case 12: return TL_KEY_CLEAR; /* ctrl l */
 
         case 14: return TL_KEY_DOWN; /* ctrl n */
-        case 16: return TL_KEY_UP; /* ctrl p */
+        case 16: return TL_KEY_UP;   /* ctrl p */
 
         case 13: /* cr */
         case 10: return TL_KEY_ENTER;
@@ -1124,11 +1124,11 @@ static int itl_esc_parse(int byte)
 
             default: event = TL_KEY_UNKN;
         }
-    } else if (iscntrl(byte)) {
-        return TL_KEY_UNKN;
-    } else {
-        return TL_KEY_CHAR;
     }
+    else if (iscntrl(byte))
+        return TL_KEY_UNKN;
+    else
+        return TL_KEY_CHAR;
 
 #elif defined ITL_POSIX
     int read_mod = 0;
@@ -1182,11 +1182,11 @@ static int itl_esc_parse(int byte)
 
             default: event |= TL_KEY_UNKN;
         }
-    } else if (iscntrl(byte)) {
-        return TL_KEY_UNKN;
-    } else {
-        return TL_KEY_CHAR;
     }
+    else if (iscntrl(byte))
+        return TL_KEY_UNKN;
+    else
+        return TL_KEY_CHAR;
 
     if (!read_mod) {
         byte = itl_read_byte();
@@ -1220,7 +1220,6 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
 
     switch (esc & TL_MASK_KEY) {
         case TL_KEY_UP: {
-            /* @@@: When there is any text in the current line, append it to history */
             itl_global_history_get_prev(le);
         } break;
 
@@ -1246,7 +1245,8 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_LEFT: {
-            if (le->cursor_position > 0 && le->cursor_position <= le->line->length) {
+            if (le->cursor_position > 0 &&
+                le->cursor_position <= le->line->length) {
                 if (esc & TL_MOD_CTRL) {
                     size_t steps = itl_le_steps_to_prev_ws(le);
                     if (steps > 1)
@@ -1387,10 +1387,12 @@ int tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
     TL_ASSERT(char_buffer_size > 1 &&
         "Size should be enough at least for one byte and a null terminator");
     TL_ASSERT(char_buffer_size <= sizeof(char)*5 &&
-        "Size should be less or equal to size of 4 characters with a null terminator.");
+        "Size should be less or equal to size of 4 characters with a null "
+        "terminator.");
     TL_ASSERT(char_buffer != NULL);
 
-    itl_le_t le = itl_le_new(&itl_global_line_buffer, char_buffer, char_buffer_size, prompt);
+    itl_le_t le = itl_le_new(&itl_global_line_buffer, char_buffer,
+                             char_buffer_size, prompt);
     itl_le_tty_refresh(&le);
 
     int input_byte = itl_read_byte();
@@ -1418,7 +1420,8 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
         "Size should be less than platform's allowed maximum string length");
     TL_ASSERT(buffer != NULL);
 
-    itl_le_t le = itl_le_new(&itl_global_line_buffer, buffer, buffer_size, prompt);
+    itl_le_t le =
+        itl_le_new(&itl_global_line_buffer, buffer, buffer_size, prompt);
     itl_le_tty_refresh(&le);
 
     int input_type;
@@ -1447,7 +1450,8 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
         }
 
         itl_trace_lf();
-        itl_trace("strlen: %zu, hist: %zu\n", le.line->length, (size_t)le.history_selected_item);
+        itl_trace("strlen: %zu, hist: %zu\n",
+                  le.line->length, (size_t)le.history_selected_item);
 
         itl_le_tty_refresh(&le);
     }
@@ -1477,5 +1481,9 @@ size_t tl_utf8_strlen(const char *utf8_str)
 
 /*
  * TODO:
+ *  - itl_global_history_get_prev(): If there is any text in the current line,
+ *    append it to global history.
+ *  - itl_utf8_parse(): Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates)
+ *    are invalid.
  *  - Tab completion.
  */
