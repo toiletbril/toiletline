@@ -419,25 +419,33 @@ static void itl_utf8_copy(itl_utf8_t *dst, const itl_utf8_t *src)
     dst->size = src->size;
 }
 
+static size_t itl_utf8_width(int byte)
+{
+    if ((byte & 0x80) == 0) /* 1 bytes */
+        return 1;
+    else if ((byte & 0xE0) == 0xC0) /* 2 bytes */
+        return 2;
+    else if ((byte & 0xF0) == 0xE0) /* 3 bytes */
+        return 3;
+    else if ((byte & 0xF8) == 0xF0) /* 4 bytes */
+        return 4;
+    else { /* invalid character */
+        return 0;
+    }
+}
+
 static itl_utf8_t itl_utf8_parse(int first_byte)
 {
-    uint8_t bytes[4] = { (uint8_t)first_byte, 0, 0, 0 };
-    size_t size = 0;
+    size_t size = itl_utf8_width(first_byte);
 
-    if ((first_byte & 0x80) == 0) /* 1 byte */
-        size = 1;
-    else if ((first_byte & 0xE0) == 0xC0) /* 2 byte */
-        size = 2;
-    else if ((first_byte & 0xF0) == 0xE0) /* 3 byte */
-        size = 3;
-    else if ((first_byte & 0xF8) == 0xF0) /* 4 byte */
-        size = 4;
-    else { /* invalid character */
+    if (size == 0) { /* invalid character */
         itl_trace_lf();
         itl_trace("Invalid UTF-8 sequence '%d'\n", (uint8_t)first_byte);
         uint8_t replacement_character[3] = { 0xEF, 0xBF, 0xBD };
         return itl_utf8_new(replacement_character, 3);
     }
+
+    uint8_t bytes[4] = { (uint8_t)first_byte, 0, 0, 0 };
 
     for (uint8_t i = 1; i < size; ++i) /* consequent bytes */
         bytes[i] = itl_read_byte();
@@ -562,16 +570,23 @@ static void itl_string_shift(itl_string_t *str, size_t position,
     /* When shifting backward, loop from the specified position towards end
        If forward, loop from the end back to the position */
     if (backwards) {
-        for (size_t i = position + shift_by; i < str->length; ++i)
+        size_t start;
+        if (position + shift_by > str->length) {
+            start = str->length - 1;
+        }
+        else
+            start = position + shift_by;
+
+        for (size_t i = start; i <= str->length; ++i)
             str->chars[i - shift_by] = str->chars[i];
 
         str->length -= shift_by;
     } else {
         str->length += shift_by;
-        if (str->capacity < str->length)
+        while (str->capacity < str->length)
             itl_string_extend(str);
 
-        for (size_t i = str->length - shift_by - 1; i >= position; --i) {
+        for (size_t i = str->length - shift_by - 1; i > position; --i) {
             str->chars[i + shift_by] = str->chars[i];
             if (!i) break; /* break when position is 0 to avoid wrapping */
         }
@@ -600,11 +615,11 @@ static void itl_string_erase(itl_string_t *str, size_t position,
 
     /* Erase the characters */
     if (backwards) {
-        if (position == str->length) /* end of the string */
+        if (position + 1 == str->length) /* end of the string */
             str->length -= count;
         else if (str->length > 1)
             itl_string_shift(str, position, count, 1);
-        else if (!position && str->length > 0) /* start of the string */
+        else if (!position && str->length == 1) /* start of the string */
             str->length -= 1;
     } else
         itl_string_shift(str, position, count, 1);
@@ -654,11 +669,28 @@ static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t c_str_size)
     }
     c_str[k] = '\0';
 
-    itl_string_recalc_size(str);
     if (k != str->size)
         return TL_ERROR_SIZE;
 
     return TL_SUCCESS;
+}
+
+static void itl_string_from_cstr(itl_string_t *str, char *c_str)
+{
+    size_t i;
+    size_t k = 0;
+
+    for (i = 0; c_str[k]; ++i) {
+        while (str->capacity < i) itl_string_extend(str);
+        size_t rune_width = itl_utf8_width(c_str[k]);
+
+        str->chars[i].size = rune_width;
+        for (size_t j = 0; j < rune_width && c_str[k]; ++j, ++k)
+            str->chars[i].bytes[j] = c_str[k];
+    }
+
+    str->length = i;
+    itl_string_recalc_size(str);
 }
 
 typedef struct itl_history_item itl_history_item_t;
@@ -806,10 +838,10 @@ static void itl_le_erase(itl_le_t *le, size_t count, int backwards)
     if (count == 0) return;
 
     if (backwards && le->cursor_position) {
-        itl_string_erase(le->line, le->cursor_position - 1, count, backwards);
+        itl_string_erase(le->line, le->cursor_position - 1, count, 1);
         itl_le_move_left(le, count);
     } else if (!backwards)
-        itl_string_erase(le->line, le->cursor_position, count, backwards);
+        itl_string_erase(le->line, le->cursor_position, count, 0);
 }
 
 #define itl_le_erase_forward(le, count) itl_le_erase(le, count, 0)
@@ -839,7 +871,7 @@ static size_t itl_le_steps_to_token(itl_le_t *le, int token, int backwards)
     size_t i = le->cursor_position;
 
     /* Prevent usage of uninitialized characters */
-    if (i != 0 && i == le->line->length) {
+    if (backwards && i != 0 && i == le->line->length) {
         ++steps;
         --i;
     }
@@ -1043,7 +1075,7 @@ static int itl_le_tty_refresh(itl_le_t *le)
     /* If current amount of lines is less than previous amount of lines, then
        input was cleared by kill line or such. Clear each dirty line, then go
        back up */
-    if (current_lines < itl_global_tty_prev_lines) {
+        if (current_lines < itl_global_tty_prev_lines) {
         size_t dirty_lines = itl_global_tty_prev_lines - current_lines;
         for (size_t i = 0; i < dirty_lines; ++i) {
             itl_tty_move_down(1);
@@ -1287,7 +1319,6 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
                     if (steps) --steps;
                     itl_le_erase_backward(le, steps);
                 } else {
-                    itl_le_erase_backward(le, steps);
                     steps = itl_le_steps_to_prev_word(le);
                     itl_le_erase_backward(le, steps);
                     steps = itl_le_steps_to_prev_ws(le);
@@ -1302,7 +1333,7 @@ static int itl_le_esc_handle(itl_le_t *le, int esc)
             if (esc & TL_MOD_CTRL) {
                 size_t steps = itl_le_steps_to_next_ws(le);
                 if (steps != 0) {
-                    itl_le_erase_forward(le, steps + 1);
+                    itl_le_erase_forward(le, steps);
                 }
                 else {
                     itl_le_erase_forward(le, steps);
@@ -1473,6 +1504,12 @@ size_t tl_utf8_strlen(const char *utf8_str)
     return len;
 }
 
+void tl_setline(char *str)
+{
+    itl_string_shrink(&itl_global_line_buffer);
+    itl_string_from_cstr(&itl_global_line_buffer, str);
+}
+
 #endif /* TOILETLINE_IMPLEMENTATION */
 
 #if defined __cplusplus
@@ -1485,5 +1522,9 @@ size_t tl_utf8_strlen(const char *utf8_str)
  *    append it to global history.
  *  - itl_utf8_parse(): Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates)
  *    are invalid.
+ *  - itl_string_shift(): Fix behavior when deleting backwards.
+ *  - Write and document tests.
+ *  - Document tl_setline.
  *  - Tab completion.
+ *  - Introduce TL_DEF and ITL_DEF macros.
  */
