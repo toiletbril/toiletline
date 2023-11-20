@@ -10,9 +10,11 @@ int main(void)
         return 1;
     }
 
-    printf("Welcome to tl_readline example!\nUse up and down arrows to view history.\n");
+    printf("Welcome to tl_readline example!\nUse up and down arrows to view "
+           "history.\n");
 #if defined _WIN32
-    printf("NOTE: On Windows, UTF-8 feature is required for multibyte character support.\n");
+    printf("NOTE: On Windows, UTF-8 feature is required for multibyte "
+           "character support.\n");
 #endif
 
     char line_buffer[LINE_BUF_SIZE] = {0};
