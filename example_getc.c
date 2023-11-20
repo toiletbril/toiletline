@@ -29,7 +29,8 @@ int main(void)
 
         switch (code) {
             case TL_PRESSED_CONTROL_SEQUENCE: {
-                printf("\nReceived control sequence. tl_last_control: %X\n", tl_last_control);
+                printf("\nReceived control sequence. tl_last_control: %X\n",
+                       tl_last_control);
             } break;
 
             default: {
