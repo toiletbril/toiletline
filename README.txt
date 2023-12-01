@@ -121,6 +121,10 @@ Returns:
 * TL_PRESSED_EOF on Ctrl-D when there is no characters on the line;
 * TL_PRESSED_SUSPEND on Ctrl-Z.
 
+void tl_setline(const char *str);
+--------
+Predefine input for `tl_readline()`. Does not work for `tl_getc()`.
+
 
 int tl_getc(char *char_buffer, size_t size, const char *prompt);
 --------
@@ -136,8 +140,8 @@ size_t tl_utf8_strlen(const char *utf8_str);
 --------
 Get the amount of characters in a UTF-8 string.
 
-Since number of bytes can be bigger than amount of characters, regular strlen
-will not work, and will only return the number of bytes before \0.
+Since number of bytes can be bigger than amount of characters, regular
+`strlen()` will not work, and will only return the number of bytes before \0.
 
 
 Examples
