@@ -1,8 +1,6 @@
-*
-!LICENSE
-!README
-!*/
-!*.*
 .vscode/
 temp/
+example_getc
+example
+tests
 *.exe
