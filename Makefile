@@ -6,7 +6,7 @@ default:
 	@echo "Available targets: test, examples, clean"
 
 %: %.c
-	@echo "\t" CC $(CFLAGS) $< -o $@
+	@echo -e "\t CC $(CFLAGS) $< -o $@"
 ifeq ($(OS),Windows_NT)
 	@$(CC) $(CFLAGS) $< -o $@.exe
 else
@@ -20,7 +20,7 @@ test: tests
 examples: example example_getc
 
 clean:
-	@echo "\t" RM ./example_getc ./example ./tests
+	@echo -e "\t RM ./example_getc ./example ./tests"
 	@rm -f ./example_getc ./example ./tests
 
 .PHONY: default

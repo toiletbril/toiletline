@@ -24,7 +24,7 @@ int main(void)
     while (code >= 0) {
         switch (i) {
             case 0: tl_setline("erase me :3c"); break;
-            case 1: tl_setline("я снова здесь :3c"); break;
+            case 1: tl_setline("я снова тут!"); break;
             case 2: tl_setline("leaving soon..."); break;
         }
 
