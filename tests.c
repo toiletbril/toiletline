@@ -15,13 +15,13 @@ static bool test_string_from_cstr()
     itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
 
     result = strcmp(out_buffer, original_cstr);
-    if (result == 0)
-        return true;
-    else {
+    if (result != 0) {
         printf("*** Result: '%s', should be: '%s'\n",
                out_buffer, original_cstr);
         return false;
     }
+
+    return true;
 }
 
 static bool test_string_shift_backward()
@@ -29,13 +29,14 @@ static bool test_string_shift_backward()
     char original_cstr[] = "hello world sailor";
     char should_be[] = "hello sailor";
     char out_buffer[OUT_BUFFER_SIZE];
+    int result;
 
     itl_string_t *str = itl_string_alloc();
     itl_string_from_cstr(str, original_cstr);
     itl_string_shift(str, 11, 7, 1);
     itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
 
-    int result = strcmp(out_buffer, should_be);
+    result = strcmp(out_buffer, should_be);
     if (result != 0) {
         printf("*** Result: '%s', should be: '%s'\n",
                out_buffer, should_be);
@@ -50,6 +51,7 @@ static bool test_string_shift_forward()
     char original_cstr[] = "hello world 69ilor";
     char should_be[] = "hello world 6969ilor";
     char out_buffer[OUT_BUFFER_SIZE];
+    int result;
 
     itl_string_t *str = itl_string_alloc();
 
@@ -57,7 +59,7 @@ static bool test_string_shift_forward()
     itl_string_shift(str, 11, 2, 0);
     itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
 
-    int result = strcmp(out_buffer, should_be);
+    result = strcmp(out_buffer, should_be);
     if (result != 0) {
         printf("*** Result: '%s', should be: '%s'\n",
                out_buffer, should_be);
@@ -98,7 +100,6 @@ int main(void) {
 
     for (i = 0; i < TEST_CASES_COUNT; ++i) {
         result = test_cases[i].func();
-
         printf("> Test #%zu '%s'", i, test_cases[i].name);
         if (!result)
             printf("failed.\n");
