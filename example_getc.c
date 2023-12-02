@@ -16,10 +16,10 @@ int main(void)
            "You can also use non-latin keyboard layout.\n");
 
     char char_buffer[CHAR_BUF_SIZE] = {0};
-    int code = -1;
+    int code = 0;
 
     int i = 0;
-    while (code <= 0) {
+    while (code >= 0) {
         code = tl_getc(char_buffer, CHAR_BUF_SIZE, "> ");
 
         if (tl_last_control == TL_KEY_INTERRUPT) {
@@ -54,8 +54,8 @@ int main(void)
         }
     }
 
-    if (code > 0)
-        printf("An error occured.\n");
+    if (code < 0)
+        printf("An error occured (%d)\n", code);
 
     fflush(stdout);
 
