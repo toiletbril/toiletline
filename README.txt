@@ -45,7 +45,7 @@ macro.
 
 Definitions
 --------
-Int functions can return error codes. They are always above 0, and defined as:
+Int functions can return error codes. They are always below 0, and defined as:
 * TL_ERROR;
 * TL_ERROR_SIZE;
 * TL_ERROR_ALLOC.
