@@ -113,7 +113,7 @@ typedef enum
 
     TL_KEY_SUSPEND,
     TL_KEY_EOF,
-    TL_KEY_INTERRUPT,
+    TL_KEY_INTERRUPT
 } TL_KEY_KIND;
 
 #define TL_MOD_CTRL  (1 << 24)
@@ -175,10 +175,14 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
 #if defined _MSC_VER
     #define ITL_THREAD_LOCAL __declspec(thread)
+    #define ITL_UNREACHABLE __assume(false)
 #elif defined __GNUC__ || defined __clang__
     #define ITL_THREAD_LOCAL __thread
+    #define ITL_UNREACHABLE __builtin_unreachable();
 #elif defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
     #define ITL_THREAD_LOCAL _Thread_local
+    _Noreturn static void itl_unreachable() {}
+    #define ITL_UNREACHABLE itl_unreachable()
 #else /* __STDC_VERSION__ && __STDC_VERSION__ >= 201112L */
     #define ITL_THREAD_LOCAL /* nothing */
 #endif
@@ -223,6 +227,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
 
 #include <ctype.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -353,7 +358,6 @@ static ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
 
 static void *itl_malloc(size_t size)
 {
-    itl_global_alloc_count += 1;
     void *allocated = TL_MALLOC(size);
 
 #if !defined TL_NO_ABORT
@@ -361,6 +365,7 @@ static void *itl_malloc(size_t size)
         TL_ABORT();
 #endif
 
+    itl_global_alloc_count += 1;
     return allocated;
 }
 
@@ -368,6 +373,12 @@ static void *itl_malloc(size_t size)
 static void *itl_calloc(size_t count, size_t size)
 {
     void *allocated = itl_malloc(count * size);
+
+#if !defined TL_NO_ABORT
+    if (allocated == NULL)
+        TL_ABORT();
+#endif
+
     memset(allocated, 0, count * size);
 
     return allocated;
@@ -410,9 +421,10 @@ struct itl_utf8
 static itl_utf8_t itl_utf8_new(const uint8_t *bytes, size_t size)
 {
     itl_utf8_t ch;
+    size_t i;
 
     ch.size = size;
-    for (size_t i = 0; i < size; ++i)
+    for (i = 0; i < size; ++i)
         ch.bytes[i] = bytes[i];
 
     return ch;
@@ -506,26 +518,27 @@ static itl_string_t *itl_string_alloc(void)
 static void itl_string_extend(itl_string_t *str)
 {
     str->capacity = ITL_STRING_REALLOC_SIZE(str->capacity);
-    str->chars = (itl_utf8_t *)itl_realloc(str->chars,
-                                           str->capacity * sizeof(itl_utf8_t));
+    str->chars = (itl_utf8_t *)
+        itl_realloc(str->chars, str->capacity * sizeof(itl_utf8_t));
 }
 
-static int itl_string_eq(itl_string_t *str1, itl_string_t *str2)
+static bool itl_string_eq(itl_string_t *str1, itl_string_t *str2)
 {
     if (str1->size != str2->size)
-        return TL_ERROR;
+        return false;
 
-    for (size_t i = 0; i < str1->size; ++i) {
+    size_t i;
+    for (i = 0; i < str1->size; ++i) {
         if (str1->chars[i].size != str2->chars[i].size)
-            return TL_ERROR;
+            return false;
 
         int cmp_result = memcmp(str2->chars[i].bytes, str2->chars[i].bytes,
                                 4 * sizeof(uint8_t));
         if (cmp_result != 0)
-            return TL_ERROR;
+            return false;
     }
 
-    return TL_SUCCESS;
+    return true;
 }
 
 static void itl_string_copy(itl_string_t *dst, const itl_string_t *src)
@@ -689,7 +702,7 @@ static int itl_string_to_cstr(itl_string_t *str, char *c_str, size_t c_str_size)
 
 static void itl_string_from_cstr(itl_string_t *str, const char *c_str)
 {
-    size_t i;
+    size_t i, j;
     size_t k = 0;
 
     for (i = 0; c_str[k]; ++i) {
@@ -697,7 +710,7 @@ static void itl_string_from_cstr(itl_string_t *str, const char *c_str)
         size_t rune_width = itl_utf8_width(c_str[k]);
 
         str->chars[i].size = rune_width;
-        for (size_t j = 0; j < rune_width && c_str[k]; ++j, ++k)
+        for (j = 0; j < rune_width && c_str[k]; ++j, ++k)
             str->chars[i].bytes[j] = c_str[k];
     }
 
@@ -799,8 +812,8 @@ static int itl_global_history_append(itl_string_t *str)
         itl_global_history_first = itl_global_history;
     }
     else {
-        int cmp_result = itl_string_eq(itl_global_history->str, str);
-        if (cmp_result == TL_SUCCESS)
+        bool equal = itl_string_eq(itl_global_history->str, str);
+        if (!equal)
             return TL_ERROR;
 
         itl_history_item_t *item = itl_history_item_alloc(str);
@@ -879,8 +892,11 @@ static int itl_le_insert(itl_le_t *le, const itl_utf8_t ch)
 /* Returns amount of steps required to reach a token */
 static size_t itl_le_steps_to_token(itl_le_t *le, int token, int backwards)
 {
-    size_t steps = 0;
     size_t i = le->cursor_position;
+    size_t steps = 0;
+
+    bool should_break;
+    char cur;
 
     /* Prevent usage of uninitialized characters */
     if (backwards && i != 0 && i == le->line->length) {
@@ -889,12 +905,12 @@ static size_t itl_le_steps_to_token(itl_le_t *le, int token, int backwards)
     }
 
     while (1) {
-        int should_break = 0;
-        char cur = le->line->chars[i].bytes[0];
+        cur = le->line->chars[i].bytes[0];
 
         switch (token) {
             case ITL_TOKEN_DELIM: should_break = itl_is_delim(cur); break;
             case ITL_TOKEN_WORD: should_break = !itl_is_delim(cur); break;
+            default: ITL_UNREACHABLE;
         }
 
         if (should_break) break;
@@ -1056,7 +1072,7 @@ static int itl_le_tty_refresh(itl_le_t *le)
     size_t wrap_cursor_row =
         (le->cursor_position + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
 
-    size_t i;
+    size_t i, j;
     size_t current_col, dirty_lines;
 
     itl_trace("wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
@@ -1074,7 +1090,7 @@ static int itl_le_tty_refresh(itl_le_t *le)
 
     /* Print current contents of the line editor */
     for (i = 0; i < le->line->length; ++i) {
-        for (size_t j = 0; j < le->line->chars[i].size; ++j)
+        for (j = 0; j < le->line->chars[i].size; ++j)
             fputc(le->line->chars[i].bytes[j], stdout);
 
         /* If line is full, wrap */
@@ -1088,7 +1104,7 @@ static int itl_le_tty_refresh(itl_le_t *le)
        back up */
     if (current_lines < itl_global_tty_prev_lines) {
         dirty_lines = itl_global_tty_prev_lines - current_lines;
-        for (size_t i = 0; i < dirty_lines; ++i) {
+        for (i = 0; i < dirty_lines; ++i) {
             itl_tty_move_down(1);
             itl_tty_clear_whole_line();
         }
@@ -1274,8 +1290,8 @@ int *itl__last_control_location(void) {
 
 static int itl_le_esc_handle(itl_le_t *le, int esc)
 {
-    itl_global_last_control = esc;
     size_t i;
+    itl_global_last_control = esc;
 
     switch (esc & TL_MASK_KEY) {
         case TL_KEY_UP: {
@@ -1482,8 +1498,8 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
         "Size should be less than platform's allowed maximum string length");
     TL_ASSERT(buffer != NULL);
 
-    itl_le_t le =
-        itl_le_new(&itl_global_line_buffer, buffer, buffer_size, prompt);
+    itl_le_t le = itl_le_new(&itl_global_line_buffer, buffer,
+                             buffer_size, prompt);
     itl_le_tty_refresh(&le);
 
     int input_type;
