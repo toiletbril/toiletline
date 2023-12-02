@@ -106,8 +106,9 @@ int tl_readline(char *line_buffer, size_t size, const char *prompt);
 Read a line.
 
 To support multi-byte characters and null at the end, size needs to be at least
-2 or more. Submitted input will be written to *line_buffer as a null-terminated
-string. After the size is exhausted, character inputs will be ignored.
+2 or more. Submitted input will be written to `*line_buffer` as a
+null-terminated string. After the size is exhausted, character inputs will be
+ignored.
 
 Beware of characters like `\t` (Tab) and such, as they may break cursor
 position. Althrough they are considered as a single character, they occupy more
@@ -121,6 +122,7 @@ Returns:
 * TL_PRESSED_EOF on Ctrl-D when there is no characters on the line;
 * TL_PRESSED_SUSPEND on Ctrl-Z.
 
+
 void tl_setline(const char *str);
 --------
 Predefine input for `tl_readline()`. Does not work for `tl_getc()`.
@@ -132,7 +134,7 @@ Read a character without waiting and modify `tl_last_control`.
 
 Returns:
 * TL_SUCCESS on a character;
-* TL_PRESSED_CONTROL_SEQUENCE on a control sequence (tl_last_control to check
+* TL_PRESSED_CONTROL_SEQUENCE on a control sequence (`tl_last_control` to check
   which one).
 
 
@@ -146,4 +148,4 @@ Since number of bytes can be bigger than amount of characters, regular
 
 Examples
 ----------------
-For example usage, take a look at example.c and example_getc.c
+For example usage, take a look at `example.c` and `example_getc.c`
