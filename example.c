@@ -18,10 +18,16 @@ int main(void)
 #endif
 
     char line_buffer[LINE_BUF_SIZE] = {0};
-    int code = -1;
+    int code = 0;
 
     int i = 0;
-    while (code < 0) {
+    while (code >= 0) {
+        switch (i) {
+            case 0: tl_setline("erase me :3c"); break;
+            case 1: tl_setline("я снова здесь :3c"); break;
+            case 2: tl_setline("leaving soon..."); break;
+        }
+
         code = tl_readline(line_buffer, LINE_BUF_SIZE, "$ ");
 
         if (code == TL_PRESSED_INTERRUPT || code == TL_PRESSED_EOF) {
@@ -40,8 +46,8 @@ int main(void)
         }
     }
 
-    if (code > 0)
-        printf("An error occured.\n");
+    if (code < 0)
+        printf("An error occured (%d)\n", code);
 
     fflush(stdout);
 
