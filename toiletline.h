@@ -249,8 +249,9 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #define ITL_MIN(type, i, j) ((((type)i) < ((type)j)) ? ((type)i) : ((type)j))
 
 #define ITL_TRY(boolval, return_error) \
-    if (!(boolval))                    \
-        return (return_error);
+    if (!(boolval)) {                  \
+        return (return_error);         \
+    }
 
 #if defined ITL_WIN32
 static ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
@@ -362,7 +363,9 @@ static void *itl_malloc(size_t size)
     void *allocated = TL_MALLOC(size);
 
 #if !defined TL_NO_ABORT
-    if (allocated == NULL) TL_ABORT();
+    if (allocated == NULL) {
+        TL_ABORT();
+    }
 #endif
 
     itl_global_alloc_count += 1;
@@ -375,7 +378,9 @@ static void *itl_calloc(size_t count, size_t size)
     void *allocated = itl_malloc(count * size);
 
 #if !defined TL_NO_ABORT
-    if (allocated == NULL) TL_ABORT();
+    if (allocated == NULL) {
+        TL_ABORT();
+    }
 #endif
 
     memset(allocated, 0, count * size);
@@ -387,12 +392,15 @@ static void *itl_realloc(void *block, size_t size)
 {
     void *allocated;
 
-    if (block == NULL)
+    if (block == NULL) {
         itl_global_alloc_count += 1;
+    }
     allocated = TL_REALLOC(block, size);
 
 #if !defined TL_NO_ABORT
-    if (allocated == NULL) TL_ABORT();
+    if (allocated == NULL) {
+        TL_ABORT();
+    }
 #endif
 
     return allocated;
@@ -417,12 +425,13 @@ struct itl_utf8
 
 static itl_utf8_t itl_utf8_new(const uint8_t *bytes, size_t size)
 {
-    itl_utf8_t ch;
     size_t i;
+    itl_utf8_t ch;
 
-    ch.size = size;
-    for (i = 0; i < size; ++i)
+    for (i = 0; i < size; ++i) {
         ch.bytes[i] = bytes[i];
+    }
+    ch.size = size;
 
     return ch;
 }
@@ -430,24 +439,19 @@ static itl_utf8_t itl_utf8_new(const uint8_t *bytes, size_t size)
 static void itl_utf8_copy(itl_utf8_t *dst, const itl_utf8_t *src)
 {
     size_t i;
-    for (i = 0; i < src->size; ++i)
+    for (i = 0; i < src->size; ++i) {
         dst->bytes[i] = src->bytes[i];
+    }
     dst->size = src->size;
 }
 
 static size_t itl_utf8_width(int byte)
 {
-    if ((byte & 0x80) == 0) /* 1 bytes */
-        return 1;
-    else if ((byte & 0xE0) == 0xC0) /* 2 bytes */
-        return 2;
-    else if ((byte & 0xF0) == 0xE0) /* 3 bytes */
-        return 3;
-    else if ((byte & 0xF8) == 0xF0) /* 4 bytes */
-        return 4;
-    else { /* invalid character */
-        return 0;
-    }
+    if ((byte & 0x80) == 0) return 1;         /* 1 byte */
+    else if ((byte & 0xE0) == 0xC0) return 2; /* 2 bytes */
+    else if ((byte & 0xF0) == 0xE0) return 3; /* 3 bytes */
+    else if ((byte & 0xF8) == 0xF0) return 4; /* 4 bytes */
+    else return 0; /* invalid character */
 }
 
 #define itl_replacement_character \
@@ -455,27 +459,30 @@ static size_t itl_utf8_width(int byte)
 
 static itl_utf8_t itl_utf8_parse(int first_byte)
 {
-    size_t size = itl_utf8_width(first_byte);
-    uint8_t bytes[4] = { (uint8_t)first_byte, 0, 0, 0 };
     int i;
+    size_t size;
+    uint8_t bytes[4];
 
+    size = itl_utf8_width(first_byte);
     if (size == 0) { /* invalid character */
         itl_trace_lf();
         itl_trace("Invalid UTF-8 sequence '%d'\n", (uint8_t)first_byte);
         return itl_replacement_character;
     }
 
-    for (i = 1; i < (int)size; ++i) /* consequent bytes */
+    bytes[0] = first_byte;
+    for (i = 1; i < (int)size; ++i) { /* consequent bytes */
         ITL_TRY_READ_BYTE(&bytes[i], itl_replacement_character);
+    }
 
 #if defined ITL_DEBUG
     itl_trace_lf();
     itl_trace("utf8 char size: %zu\n'", size);
     itl_trace("utf8 char bytes: '");
 
-    for (i = 0; i < (int)size - 1; ++i)
+    for (i = 0; i < (int)size - 1; ++i) {
         itl_trace_sl("%02X ", bytes[i]);
-
+    }
     itl_trace_sl("%02X'\n", bytes[size - 1]);
 #endif /* ITL_DEBUG */
 
@@ -493,9 +500,9 @@ typedef struct itl_string itl_string_t;
 struct itl_string
 {
     itl_utf8_t *chars;
-    size_t length;   /* N of utf8_t in the string */
-    size_t size;     /* N of bytes in all characters, size >= length */
-    size_t capacity; /* N of utf_t this string can store */
+    size_t length;   /* N of chars in the string */
+    size_t size;     /* N of bytes in all chars, size >= length */
+    size_t capacity; /* N of chars this string can store */
 };
 
 static void itl_string_init(itl_string_t *str)
@@ -524,20 +531,15 @@ static void itl_string_extend(itl_string_t *str)
 
 static bool itl_string_eq(itl_string_t *str1, itl_string_t *str2)
 {
-    if (str1->size != str2->size)
-        return false;
-
     size_t i;
+
+    ITL_TRY(str1->size == str2->size, false);
     for (i = 0; i < str1->size; ++i) {
-        if (str1->chars[i].size != str2->chars[i].size)
-            return false;
-
-        int cmp_result = memcmp(str2->chars[i].bytes, str2->chars[i].bytes,
-                                4 * sizeof(uint8_t));
-        if (cmp_result != 0)
-            return false;
+        ITL_TRY(str1->chars[i].size == str2->chars[i].size, false);
+        ITL_TRY(memcmp(str2->chars[i].bytes, str2->chars[i].bytes,
+                       4 * sizeof(uint8_t)) == 0,
+                false);
     }
-
     return true;
 }
 
@@ -546,21 +548,23 @@ static void itl_string_copy(itl_string_t *dst, const itl_string_t *src)
     size_t i;
 
     while (dst->capacity < src->capacity) itl_string_extend(dst);
-    for (i = 0; i < src->length; ++i)
+    for (i = 0; i < src->length; ++i) {
         itl_utf8_copy(&dst->chars[i], &src->chars[i]);
-
+    }
     dst->length = src->length;
     dst->size = src->size;
 }
 
 static void itl_string_recalc_size(itl_string_t *str)
 {
-    TL_ASSERT(str->length <= ITL_MAX_STRING_LEN);
     size_t i;
 
+    TL_ASSERT(str->length <= ITL_MAX_STRING_LEN);
+
     str->size = 0;
-    for (i = 0; i < str->length; ++i)
+    for (i = 0; i < str->length; ++i) {
         str->size += str->chars[i].size;
+    }
 }
 
 /* Shrinks string to capacity of ITL_STRING_INIT_SIZE */
@@ -570,12 +574,12 @@ static void itl_string_shrink(itl_string_t *str)
         itl_realloc(str->chars, ITL_STRING_INIT_SIZE * sizeof(itl_utf8_t));
     str->capacity = ITL_STRING_INIT_SIZE;
 
-    if (str->length > ITL_STRING_INIT_SIZE)
+    if (str->length > ITL_STRING_INIT_SIZE) {
         str->length = ITL_STRING_INIT_SIZE;
-
-    if (str->capacity < str->length)
+    }
+    if (str->capacity < str->length) {
         str->length = str->capacity;
-
+    }
     itl_string_recalc_size(str);
 }
 
@@ -589,28 +593,30 @@ static void itl_string_clear(itl_string_t *str)
 static void itl_string_shift(itl_string_t *str, size_t position,
                              size_t shift_by, bool backwards)
 {
-    if (position >= str->length) return;
+    size_t i, start;
 
-    size_t i;
+    if (position >= str->length) return;
 
     /* When shifting backward, loop from the specified position towards end
        If forward, loop from the end back to the position */
     if (backwards) {
-        size_t start;
         if (position + shift_by > str->length) {
             start = str->length - 1;
         }
-        else
+        else {
             start = position + shift_by;
+        }
 
-        for (i = start; i <= str->length; ++i)
+        for (i = start; i <= str->length; ++i) {
             str->chars[i - shift_by] = str->chars[i];
+        }
 
         str->length -= shift_by;
     } else {
         str->length += shift_by;
-        while (str->capacity < str->length)
+        while (str->capacity < str->length) {
             itl_string_extend(str);
+        }
 
         for (i = str->length - shift_by - 1; i > position; --i) {
             str->chars[i + shift_by] = str->chars[i];
@@ -630,9 +636,7 @@ static void itl_string_erase(itl_string_t *str, size_t position,
 
     /* Handle edge cases */
     if (!backwards) {
-        if (position >= str->length)
-            return;
-
+        if (position >= str->length) return;
         if (position + count >= str->length) {
             str->length -= count;
             return;
@@ -641,27 +645,31 @@ static void itl_string_erase(itl_string_t *str, size_t position,
 
     /* Erase the characters */
     if (backwards) {
-        if (position + 1 == str->length) /* end of the string */
+        if (position + 1 == str->length) { /* end of the string */
             str->length -= count;
-        else if (str->length > 1)
+        } else if (str->length > 1) {
             itl_string_shift(str, position, count, true);
-        else if (!position && str->length == 1) /* start of the string */
+        } else if (!position && str->length == 1) { /* start of the string */
             str->length -= 1;
-    } else
+        }
+    } else {
         itl_string_shift(str, position, count, true);
+    }
 
     itl_string_recalc_size(str);
 }
 
 static void itl_string_insert(itl_string_t *str, size_t position, itl_utf8_t ch)
 {
-    if (str->capacity < str->length + 1)
+    if (str->capacity < str->length + 1) {
         itl_string_extend(str);
+    }
 
-    if (position == str->length)
+    if (position == str->length) {
         str->length += 1;
-    else
+    } else {
         itl_string_shift(str, position, 1, false);
+    }
 
     str->chars[position] = ch;
 
@@ -684,9 +692,9 @@ static void itl_string_insert(itl_string_t *str, size_t position, itl_utf8_t ch)
 
 static bool itl_string_to_cstr(itl_string_t *str, char *c_str, size_t c_str_size)
 {
-    size_t i, j;
-    size_t k = 0;
+    size_t i, j, k;
 
+    k = 0;
     for (i = 0; i < str->length; ++i) {
         if (c_str_size - k - 1 < str->chars[i].size) break;
         for (j = 0; j != str->chars[i].size; ++j) {
@@ -695,24 +703,26 @@ static bool itl_string_to_cstr(itl_string_t *str, char *c_str, size_t c_str_size
     }
     c_str[k] = '\0';
 
-    if (k != str->size)
+    if (k != str->size) {
         return false;
+    }
 
     return true;
 }
 
 static void itl_string_from_cstr(itl_string_t *str, const char *c_str)
 {
-    size_t i, j;
-    size_t k = 0;
+    size_t i, j, k, rune_width;
 
+    k = 0;
     for (i = 0; c_str[k]; ++i) {
         while (str->capacity < i) itl_string_extend(str);
-        size_t rune_width = itl_utf8_width(c_str[k]);
+        rune_width = itl_utf8_width(c_str[k]);
 
         str->chars[i].size = rune_width;
-        for (j = 0; j < rune_width && c_str[k]; ++j, ++k)
+        for (j = 0; j < rune_width && c_str[k]; ++j, ++k) {
             str->chars[i].bytes[j] = c_str[k];
+        }
     }
 
     str->length = i;
@@ -771,15 +781,15 @@ static void itl_history_item_free(itl_history_item_t *item)
 
 static void itl_global_history_free(void)
 {
-    itl_history_item_t *item = itl_global_history;
-
-    if (item == NULL) return;
-
-    while (item->next)
-        item = item->next;
-
+    itl_history_item_t *item;
     itl_history_item_t *prev_item;
 
+    item = itl_global_history;
+    if (item == NULL) return;
+
+    while (item->next) {
+        item = item->next;
+    }
     while (item) {
         prev_item = item->prev;
         itl_history_item_free(item);
@@ -800,8 +810,9 @@ static bool itl_global_history_append(itl_string_t *str)
 
             itl_global_history_first = next_item;
 
-            if (itl_global_history_first)
+            if (itl_global_history_first) {
                 itl_global_history_first->prev = NULL;
+            }
 
             --itl_global_history_length;
         }
@@ -842,18 +853,20 @@ static itl_le_t itl_le_new(itl_string_t *line_buf, char *out_buf,
 
 static void itl_le_move_right(itl_le_t *le, size_t steps)
 {
-    if (le->cursor_position + steps >= le->line->length)
+    if (le->cursor_position + steps >= le->line->length) {
         le->cursor_position = le->line->length;
-    else
+    } else {
         le->cursor_position += steps;
+    }
 }
 
 static void itl_le_move_left(itl_le_t *le, size_t steps)
 {
-    if (steps <= le->cursor_position)
+    if (steps <= le->cursor_position) {
         le->cursor_position -= steps;
-    else
+    } else {
         le->cursor_position = 0;
+    }
 }
 
 static void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
@@ -863,8 +876,9 @@ static void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
     if (backwards && le->cursor_position) {
         itl_string_erase(le->line, le->cursor_position - 1, count, true);
         itl_le_move_left(le, count);
-    } else if (!backwards)
+    } else if (!backwards) {
         itl_string_erase(le->line, le->cursor_position, count, false);
+    }
 }
 
 #define itl_le_erase_forward(le, count) itl_le_erase(le, count, false)
@@ -873,8 +887,7 @@ static void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
 /* Inserts character at cursor position */
 static bool itl_le_insert(itl_le_t *le, const itl_utf8_t ch)
 {
-    if (le->line->size + ch.size >= le->out_size)
-        return false;
+    ITL_TRY(le->line->size + ch.size < le->out_size, false);
 
     itl_string_insert(le->line, le->cursor_position, ch);
     itl_le_move_right(le, 1);
@@ -890,11 +903,12 @@ static bool itl_le_insert(itl_le_t *le, const itl_utf8_t ch)
 /* Returns amount of steps required to reach a token */
 static size_t itl_le_steps_to_token(itl_le_t *le, int token, bool backwards)
 {
-    size_t i = le->cursor_position;
-    size_t steps = 0;
-
-    bool should_break;
     char cur;
+    size_t i, steps;
+    bool should_break;
+
+    i = le->cursor_position;
+    steps = 0;
 
     /* Prevent usage of uninitialized characters */
     if (backwards && i != 0 && i == le->line->length) {
@@ -915,12 +929,13 @@ static size_t itl_le_steps_to_token(itl_le_t *le, int token, bool backwards)
 
         steps += 1;
 
-        if (backwards && i > 0)
+        if (backwards && i > 0) {
             --i;
-        else if (!backwards && i < le->line->length - 1)
+        } else if (!backwards && i < le->line->length - 1) {
             ++i;
-        else
+        } else {
             break;
+        }
     }
 
     return steps;
@@ -947,10 +962,12 @@ static void itl_le_clear(itl_le_t *le)
 static void itl_global_history_get_prev(itl_le_t *le)
 {
     if (le->history_selected_item) {
-        if (le->history_selected_item->prev)
+        if (le->history_selected_item->prev) {
               le->history_selected_item = le->history_selected_item->prev;
-    } else
+        }
+    } else {
         le->history_selected_item = itl_global_history;
+    }
 
     if (le->history_selected_item) {
         itl_le_clear(le);
@@ -994,7 +1011,7 @@ static void itl_global_history_get_next(itl_le_t *le)
 static bool itl_tty_get_size(size_t *rows, size_t *cols) {
 #if defined TL_SIZE_USE_ESCAPES
     char buf[32];
-    size_t i = 0;
+    size_t i;
 
     itl_tty_move_forward(999);
     itl_tty_status_report();
@@ -1002,11 +1019,11 @@ static bool itl_tty_get_size(size_t *rows, size_t *cols) {
     /* This does not work without flushing if setvbuf was called previously */
     fflush(stdout);
 
+    i = 0;
     while (i < sizeof(buf) - 1) {
         ITL_TRY_READ_BYTE(&buf[i], false);
-        if (buf[i] == 'R')
-            break;
-        i++;
+        if (buf[i] == 'R') break;
+        ++i;
     }
     buf[i] = '\0';
 
@@ -1040,6 +1057,11 @@ static ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
 
 static bool itl_le_tty_refresh(itl_le_t *le)
 {
+    size_t i, j;
+    size_t rows, cols;
+    size_t current_col, current_lines, dirty_lines;
+    size_t prompt_len, wrap_cursor_col, wrap_cursor_row;
+
     TL_ASSERT(le->line);
     TL_ASSERT(le->line->chars);
     TL_ASSERT(le->line->size >= le->line->length);
@@ -1047,22 +1069,19 @@ static bool itl_le_tty_refresh(itl_le_t *le)
 
     itl_tty_hide_cursor();
 
-    size_t rows = 0;
-    size_t cols = 0;
+    rows = 0;
+    cols = 0;
     ITL_TRY(itl_tty_get_size(&rows, &cols), false);
 
-    size_t prompt_len = (le->prompt) ? strlen(le->prompt) : 0;
+    prompt_len = (le->prompt) ? strlen(le->prompt) : 0;
 
-    size_t current_lines =
+    current_lines =
         (le->line->length + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
 
-    size_t wrap_cursor_col =
+    wrap_cursor_col =
         (le->cursor_position + prompt_len) % ITL_MAX(size_t, cols, 1) + 1;
-    size_t wrap_cursor_row =
+    wrap_cursor_row =
         (le->cursor_position + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
-
-    size_t i, j;
-    size_t current_col, dirty_lines;
 
     itl_trace("wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
               wrap_cursor_row, itl_global_tty_prev_wrap_row,
@@ -1071,21 +1090,26 @@ static bool itl_le_tty_refresh(itl_le_t *le)
     /* Move appropriate amount of lines back, while clearing previous output */
     for (i = 0; i < itl_global_tty_prev_lines; ++i) {
         itl_tty_clear_whole_line();
-        if (i < itl_global_tty_prev_wrap_row - 1)
+        if (i < itl_global_tty_prev_wrap_row - 1) {
             itl_tty_move_up(1);
+        }
     }
 
-    if (le->prompt) fputs(le->prompt, stdout);
+    if (le->prompt) {
+        fputs(le->prompt, stdout);
+    }
 
     /* Print current contents of the line editor */
     for (i = 0; i < le->line->length; ++i) {
-        for (j = 0; j < le->line->chars[i].size; ++j)
+        for (j = 0; j < le->line->chars[i].size; ++j) {
             fputc(le->line->chars[i].bytes[j], stdout);
+        }
 
         /* If line is full, wrap */
         current_col = (prompt_len + i) % ITL_MAX(size_t, cols, 1);
-        if (current_col == cols - 1)
+        if (current_col == cols - 1) {
             fputs(ITL_LF, stdout);
+        }
     }
 
     /* If current amount of lines is less than previous amount of lines, then
@@ -1100,8 +1124,9 @@ static bool itl_le_tty_refresh(itl_le_t *le)
         itl_tty_move_up(dirty_lines);
     }
     /* Otherwise clear to the end of line */
-    else
+    else {
         itl_tty_clear_to_end();
+    }
 
     /* Move cursor to appropriate row and column. If row didn't change, stay on
        the same line */
@@ -1122,7 +1147,7 @@ static bool itl_le_tty_refresh(itl_le_t *le)
 #ifdef ITL_POSIX
 static int itl_esc_parse_posix(uint8_t byte)
 {
-    int read_mod = 0;
+    bool read_mod = false;
     int event = 0;
 
     if (byte == 27) { /* esc */
@@ -1149,9 +1174,7 @@ static int itl_esc_parse_posix(uint8_t byte)
 
         if (byte == '1') {
             ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
-            if (byte != ';')
-                return TL_KEY_UNKN;
-
+            ITL_TRY(byte == ';', TL_KEY_UNKN);
             ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
             switch (byte) {
                 case '2': event |= TL_MOD_SHIFT; break;
@@ -1175,11 +1198,10 @@ static int itl_esc_parse_posix(uint8_t byte)
 
             default: event |= TL_KEY_UNKN;
         }
-    }
-    else if (iscntrl(byte))
-        return TL_KEY_UNKN;
-    else
+    } else {
+        ITL_TRY(!iscntrl(byte), TL_KEY_UNKN);
         return TL_KEY_CHAR;
+    }
 
     if (!read_mod) {
         ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
@@ -1193,8 +1215,7 @@ static int itl_esc_parse_posix(uint8_t byte)
             ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
         }
 
-        if (byte != '~')
-            event = TL_KEY_UNKN;
+        ITL_TRY(byte == '~', TL_KEY_UNKN);
     }
 
     return event;
@@ -1225,11 +1246,10 @@ static int itl_esc_parse_win32(uint8_t byte)
 
             default: event = TL_KEY_UNKN;
         }
-    }
-    else if (iscntrl(byte))
-        return TL_KEY_UNKN;
-    else
+    } else {
+        ITL_TRY(!iscntrl(byte), TL_KEY_UNKN);
         return TL_KEY_CHAR;
+    }
 
     return event;
 }
@@ -1281,7 +1301,7 @@ int *itl__last_control_location(void) {
 
 static int itl_le_key_handle(itl_le_t *le, int esc)
 {
-    size_t i;
+    size_t i, steps;
 
     tl_last_control = esc;
     switch (esc & TL_MASK_KEY) {
@@ -1294,32 +1314,31 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_RIGHT: {
-            size_t steps;
             if (le->cursor_position < le->line->length) {
                 if (esc & TL_MOD_CTRL) {
                     steps = itl_le_steps_to_next_ws(le);
-                    if (steps != 0)
+                    if (steps != 0) {
                         itl_le_move_right(le, steps);
-                    else {
+                    } else {
                         steps = itl_le_steps_to_next_word(le);
                         itl_le_move_right(le, steps);
                         steps = itl_le_steps_to_next_ws(le);
                         itl_le_move_right(le, steps);
                     }
-                } else
+                } else {
                     itl_le_move_right(le, 1);
+                }
             }
         } break;
 
         case TL_KEY_LEFT: {
-            size_t steps;
             if (le->cursor_position > 0 &&
                 le->cursor_position <= le->line->length) {
                 if (esc & TL_MOD_CTRL) {
                     steps = itl_le_steps_to_prev_ws(le);
-                    if (steps > 1)
+                    if (steps > 1) {
                         itl_le_move_left(le, steps - 1);
-                    else {
+                    } else {
                         itl_le_move_left(le, steps);
                         steps = itl_le_steps_to_prev_word(le);
                         itl_le_move_left(le, steps);
@@ -1327,8 +1346,9 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
                         if (steps) --steps;
                         itl_le_move_left(le, steps);
                     }
-                } else
+                } else {
                     itl_le_move_left(le, 1);
+                }
             }
         } break;
 
@@ -1341,16 +1361,13 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_ENTER: {
-            int err = itl_string_to_cstr(le->line, le->out_buf, le->out_size);
-            if (err)
-                return err;
-
+            ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
+                    TL_ERROR_SIZE)
             itl_global_history_append(le->line);
             return TL_PRESSED_ENTER;
         } break;
 
         case TL_KEY_BACKSPACE: {
-            size_t steps;
             if (esc & TL_MOD_CTRL) {
                 steps = itl_le_steps_to_prev_ws(le);
                 if (steps > 1) {
@@ -1363,12 +1380,12 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
                     if (steps) --steps;
                     itl_le_erase_backward(le, steps);
                 }
-            } else
+            } else {
                 itl_le_erase_backward(le, 1);
+            }
         } break;
 
         case TL_KEY_DELETE: {
-            size_t steps;
             if (esc & TL_MOD_CTRL) {
                 steps = itl_le_steps_to_next_ws(le);
                 if (steps != 0) {
@@ -1381,8 +1398,9 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
                     steps = itl_le_steps_to_next_ws(le);
                     itl_le_erase_forward(le, steps);
                 }
-            } else
+            } else {
                 itl_le_erase_forward(le, 1);
+            }
         } break;
 
         case TL_KEY_KILL_LINE: {
@@ -1400,9 +1418,9 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_EOF: {
-            if (le->line->length > 0)
+            if (le->line->length > 0) {
                 itl_le_erase_forward(le, 1);
-            else {
+            } else {
                 itl_string_to_cstr(le->line, le->out_buf, le->out_size);
                 return TL_PRESSED_EOF;
             }
@@ -1420,14 +1438,16 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_HISTORY_END: {
-            for (i = 0; i < itl_global_history_length; ++i)
+            for (i = 0; i < itl_global_history_length; ++i) {
                 itl_global_history_get_next(le);
+            }
             itl_global_history_get_prev(le);
         } break;
 
         case TL_KEY_HISTORY_BEGINNING: {
-            for (i = 0; i < itl_global_history_length; ++i)
+            for (i = 0; i < itl_global_history_length; ++i) {
                 itl_global_history_get_prev(le);
+            }
         } break;
     }
 
@@ -1463,6 +1483,11 @@ int tl_exit(void)
 
 int tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
 {
+    itl_le_t le;
+    itl_utf8_t ch;
+    int input_type;
+    uint8_t input_byte;
+
     TL_ASSERT(itl_is_active && "tl_init() should be called");
     TL_ASSERT(char_buffer_size > 1 &&
         "Size should be enough at least for one byte and a null terminator");
@@ -1471,16 +1496,12 @@ int tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
         "terminator.");
     TL_ASSERT(char_buffer != NULL);
 
-    uint8_t input_byte;
-    int input_type;
+    le = itl_le_new(&itl_global_line_buffer, char_buffer,
+                             char_buffer_size, prompt);
 
     /* Avoid overriding buffer if tl_setline was used */
     if (itl_global_line_buffer.length != 0)
         itl_string_clear(&itl_global_line_buffer);
-
-    itl_le_t le = itl_le_new(&itl_global_line_buffer, char_buffer,
-                             char_buffer_size, prompt);
-    itl_utf8_t ch;
 
     itl_le_tty_refresh(&le);
     ITL_TRY_READ_BYTE(&input_byte, TL_ERROR);
@@ -1502,6 +1523,11 @@ int tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
 
 int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 {
+    itl_le_t le;
+    itl_utf8_t ch;
+    uint8_t input_byte;
+    int input_type, code;
+
     TL_ASSERT(itl_is_active && "tl_init() should be called");
     TL_ASSERT(buffer_size > 1 &&
         "Size should be enough at least for one byte and a null terminator");
@@ -1509,15 +1535,11 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
         "Size should be less than platform's allowed maximum string length");
     TL_ASSERT(buffer != NULL);
 
-    uint8_t input_byte;
-    int input_type, code;
-    itl_le_t le = itl_le_new(&itl_global_line_buffer, buffer,
+    le = itl_le_new(&itl_global_line_buffer, buffer,
                              buffer_size, prompt);
-    itl_utf8_t ch;
-
     itl_le_tty_refresh(&le);
 
-    while (1) {
+    while (true) {
         ITL_TRY_READ_BYTE(&input_byte, TL_ERROR);
 
 #if defined ITL_SEE_BYTES
@@ -1551,14 +1573,12 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 size_t tl_utf8_strlen(const char *utf8_str)
 {
     int len = 0;
-
     while (*utf8_str) {
         if ((*utf8_str & 0xC0) != 0x80)
             ++len;
 
         ++utf8_str;
     }
-
     return len;
 }
 
