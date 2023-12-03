@@ -5,10 +5,10 @@
 
 static bool test_string_from_cstr()
 {
-    char original_cstr[] = "привет, мир";
-    char out_buffer[OUT_BUFFER_SIZE];
     int result;
+    char out_buffer[OUT_BUFFER_SIZE];
 
+    char original_cstr[] = "привет, мир";
     itl_string_t *str = itl_string_alloc();
 
     itl_string_from_cstr(str, original_cstr);
@@ -26,10 +26,11 @@ static bool test_string_from_cstr()
 
 static bool test_string_shift_backward()
 {
+    int result;
+    char out_buffer[OUT_BUFFER_SIZE];
+
     char original_cstr[] = "hello world sailor";
     char should_be[] = "hello sailor";
-    char out_buffer[OUT_BUFFER_SIZE];
-    int result;
 
     itl_string_t *str = itl_string_alloc();
     itl_string_from_cstr(str, original_cstr);
@@ -48,11 +49,11 @@ static bool test_string_shift_backward()
 
 static bool test_string_shift_forward()
 {
+    int result;
+    char out_buffer[OUT_BUFFER_SIZE];
+
     char original_cstr[] = "hello world 69ilor";
     char should_be[] = "hello world 6969ilor";
-    char out_buffer[OUT_BUFFER_SIZE];
-    int result;
-
     itl_string_t *str = itl_string_alloc();
 
     itl_string_from_cstr(str, original_cstr);
@@ -95,8 +96,8 @@ test_case_t test_cases[] = {
     (sizeof(test_cases)/sizeof(test_cases[0]))
 
 int main(void) {
-    bool result;
     size_t i;
+    bool result;
 
     for (i = 0; i < TEST_CASES_COUNT; ++i) {
         result = test_cases[i].func();

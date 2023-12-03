@@ -505,7 +505,7 @@ static void itl_string_init(itl_string_t *str)
 
     str->capacity = ITL_STRING_INIT_SIZE;
     str->chars = (itl_utf8_t *)
-        itl_malloc(ITL_STRING_INIT_SIZE * sizeof(itl_utf8_t));
+        itl_malloc(str->capacity * sizeof(itl_utf8_t));
 }
 
 static itl_string_t *itl_string_alloc(void)

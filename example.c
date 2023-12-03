@@ -1,7 +1,7 @@
 #define TOILETLINE_IMPLEMENTATION
 #include "toiletline.h"
 
-#define LINE_BUF_SIZE 128
+#define LINE_BUF_SIZE 1024
 
 int main(void)
 {
