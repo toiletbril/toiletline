@@ -202,7 +202,6 @@ size_t tl_utf8_strlen(const char *utf8_str);
     /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation> */
     #define ITL_MAX_STRING_LEN 8191
 
-    #define write(file, buf, count) _write(file, buf, count)
     #define isatty(fd) _isatty(fd)
     #define itl_read_byte_raw() _getch()
 #elif defined ITL_POSIX
@@ -585,32 +584,25 @@ static void itl_string_shrink(itl_string_t *str)
 
 static void itl_string_clear(itl_string_t *str)
 {
-    itl_string_shrink(str);
-    str->length = 0;
     str->size = 0;
+    str->length = 0;
+    itl_string_shrink(str);
 }
 
 static void itl_string_shift(itl_string_t *str, size_t position,
                              size_t shift_by, bool backwards)
 {
-    size_t i, start;
+    size_t i;
 
-    if (position >= str->length) return;
+    TL_ASSERT(position <= str->length);
 
-    /* When shifting backward, loop from the specified position towards end
-       If forward, loop from the end back to the position */
+    /* When shifting back, loop from the specified position towards end and move
+       characters back by shift_by. If shifting forward, loop from the end back
+       to the position. */
     if (backwards) {
-        if (position + shift_by > str->length) {
-            start = str->length - 1;
-        }
-        else {
-            start = position + shift_by;
-        }
-
-        for (i = start; i <= str->length; ++i) {
+        for (i = position; i < str->length; ++i) {
             str->chars[i - shift_by] = str->chars[i];
         }
-
         str->length -= shift_by;
     } else {
         str->length += shift_by;
@@ -618,9 +610,11 @@ static void itl_string_shift(itl_string_t *str, size_t position,
             itl_string_extend(str);
         }
 
-        for (i = str->length - shift_by - 1; i > position; --i) {
+        TL_ASSERT(str->length >= shift_by + 1);
+
+        for (i = str->length - shift_by - 1; i > position - 1; --i) {
             str->chars[i + shift_by] = str->chars[i];
-            if (!i) break; /* break when position is 0 to avoid wrapping */
+            if (i == 0) break; /* avoid wrapping */
         }
     }
 }
@@ -634,28 +628,26 @@ static void itl_string_erase(itl_string_t *str, size_t position,
 
     TL_ASSERT(count <= ITL_MAX_STRING_LEN);
 
-    /* Handle edge cases */
-    if (!backwards) {
-        if (position >= str->length) return;
-        if (position + count >= str->length) {
+    if (backwards) {
+        if (position == str->length) {
+            /* Deleting at the start or at the end */
             str->length -= count;
             return;
         }
-    }
-
-    /* Erase the characters */
-    if (backwards) {
-        if (position + 1 == str->length) { /* end of the string */
-            str->length -= count;
-        } else if (str->length > 1) {
-            itl_string_shift(str, position, count, true);
-        } else if (!position && str->length == 1) { /* start of the string */
-            str->length -= 1;
-        }
     } else {
-        itl_string_shift(str, position, count, true);
+        if (position - count >= str->length) {
+            str->length = count;
+            return;
+        }
+        /* Do nothing on edge case */
+        if (position >= str->length) {
+            return;
+        }
+        position += count;
     }
 
+    /* Erase the characters by shifting */
+    itl_string_shift(str, position, count, true);
     itl_string_recalc_size(str);
 }
 
@@ -672,7 +664,6 @@ static void itl_string_insert(itl_string_t *str, size_t position, itl_utf8_t ch)
     }
 
     str->chars[position] = ch;
-
     itl_string_recalc_size(str);
 }
 
@@ -874,7 +865,7 @@ static void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
     if (count == 0) return;
 
     if (backwards && le->cursor_position) {
-        itl_string_erase(le->line, le->cursor_position - 1, count, true);
+        itl_string_erase(le->line, le->cursor_position, count, true);
         itl_le_move_left(le, count);
     } else if (!backwards) {
         itl_string_erase(le->line, le->cursor_position, count, false);
@@ -1601,7 +1592,7 @@ void tl_setline(const char *str)
  *    append it to global history.
  *  - itl_utf8_parse(): Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates)
  *    are invalid.
- *  - itl_string_shift(): Fix behavior when deleting backwards.
+ *  - Fix killing words.
  *  - Write and document tests.
  *  - Tab completion.
  *  - Introduce TL_DEF and ITL_DEF macros.

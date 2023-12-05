@@ -1,9 +1,9 @@
 CC ?= clang
 CFLAGS := -Wall -Wextra -Werror -pedantic -std=c99
-DBGFLAGS := -ggdb -O0 -fsanitize=address
+DBGFLAGS := -ggdb -O0 -DITL_DEBUG
 
 default:
-	@echo "Available targets: test, examples, clean"
+	@echo "Available targets: test, examples, examples_debug, see_bytes, clean"
 
 %: %.c
 	@echo "CC $(CFLAGS) $< -o $@"
@@ -19,9 +19,15 @@ test: tests
 
 examples: example example_getc
 
+examples_debug: CFLAGS += $(DBGFLAGS)
+examples_debug: examples
+
+see_bytes: CFLAGS += "-DITL_SEE_BYTES"
+see_bytes: example
+
 clean:
 	@echo "RM ./example_getc ./example ./tests"
 	@rm -f ./example_getc ./example ./tests
 
 .PHONY: default
-.PHONY: test examples clean
+.PHONY: test examples examples_debug see_bytes clean
