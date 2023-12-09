@@ -1,12 +1,12 @@
 CC ?= clang
-CFLAGS := -Wall -Wextra -Werror -pedantic -std=c99
+CFLAGS := -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic -std=c99 -fsanitize=undefined
 DBGFLAGS := -ggdb -O0 -DITL_DEBUG
 
 default:
 	@echo "Available targets: test, examples, examples_debug, see_bytes, clean"
 
 %: %.c
-	@echo "CC $(CFLAGS) $< -o $@"
+	@echo "CC $< -o $@"
 ifeq ($(OS),Windows_NT)
 	@$(CC) $(CFLAGS) $< -o $@.exe
 else
