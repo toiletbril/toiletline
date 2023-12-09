@@ -1590,6 +1590,7 @@ void tl_setline(const char *str)
  *    append it to global history.
  *  - itl_utf8_parse(): Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates)
  *    are invalid.
+ *  - Fix killing words.
  *  - Write and document tests.
  *  - Tab completion.
  *  - Introduce TL_DEF and ITL_DEF macros.
