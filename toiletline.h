@@ -603,6 +603,9 @@ static void itl_string_shift(itl_string_t *str, size_t position,
         for (i = position; i < str->length; ++i) {
             str->chars[i - shift_by] = str->chars[i];
         }
+
+        TL_ASSERT(str->length >= shift_by);
+
         str->length -= shift_by;
     } else {
         str->length += shift_by;
@@ -612,7 +615,7 @@ static void itl_string_shift(itl_string_t *str, size_t position,
 
         TL_ASSERT(str->length >= shift_by + 1);
 
-        for (i = str->length - shift_by - 1; i > position - 1; --i) {
+        for (i = str->length - shift_by - 1; i >= position; --i) {
             str->chars[i + shift_by] = str->chars[i];
             if (i == 0) break; /* avoid wrapping */
         }
@@ -623,10 +626,12 @@ static void itl_string_erase(itl_string_t *str, size_t position,
                              size_t count, bool backwards)
 {
     itl_trace_lf();
-    itl_trace("string_erase) pos: %zu, count: %zu, backwards: %d\n",
-              position, count, backwards);
+    itl_trace("string_erase) pos: %zu, count: %zu, backwards: %d, len %zu\n",
+              position, count, backwards, str->length);
 
-    TL_ASSERT(count <= ITL_MAX_STRING_LEN);
+    if (count > str->length) {
+        count = str->length;
+    }
 
     if (backwards) {
         if (position >= str->length) {
