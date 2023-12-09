@@ -178,11 +178,11 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #define ITL_UNREACHABLE __assume(false)
 #elif defined __GNUC__ || defined __clang__
     #define ITL_THREAD_LOCAL __thread
-    #define ITL_UNREACHABLE __builtin_unreachable();
+    #define ITL_UNREACHABLE __builtin_unreachable()
 #elif defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
     #define ITL_THREAD_LOCAL _Thread_local
-    _Noreturn static void itl_unreachable() {}
-    #define ITL_UNREACHABLE itl_unreachable()
+    _Noreturn static void itl__unreachable() { while (true) {} }
+    #define ITL_UNREACHABLE itl__unreachable()
 #else /* __STDC_VERSION__ && __STDC_VERSION__ >= 201112L */
     #define ITL_THREAD_LOCAL /* nothing */
 #endif
@@ -248,9 +248,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
 #define ITL_MIN(type, i, j) ((((type)i) < ((type)j)) ? ((type)i) : ((type)j))
 
 #define ITL_TRY(boolval, return_error) \
-    if (!(boolval)) {                  \
-        return (return_error);         \
-    }
+    if (!(boolval)) return (return_error)
 
 #if defined ITL_WIN32
 static ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
@@ -324,7 +322,7 @@ static bool itl_read_byte(uint8_t *buffer)
 {
     int byte = itl_read_byte_raw();
     ITL_TRY(byte != EOF, false);
-    (*buffer) = byte;
+    (*buffer) = (uint8_t)byte;
     return true;
 }
 
@@ -456,7 +454,7 @@ static size_t itl_utf8_width(int byte)
 #define itl_replacement_character \
     itl_utf8_new((uint8_t[]){ 0xEF, 0xBF, 0xBD }, 3)
 
-static itl_utf8_t itl_utf8_parse(int first_byte)
+static itl_utf8_t itl_utf8_parse(uint8_t first_byte)
 {
     int i;
     size_t size;
@@ -690,7 +688,7 @@ static bool itl_string_to_cstr(itl_string_t *str, char *c_str, size_t c_str_size
     for (i = 0; i < str->length; ++i) {
         if (c_str_size - k - 1 < str->chars[i].size) break;
         for (j = 0; j != str->chars[i].size; ++j) {
-            c_str[k++] = str->chars[i].bytes[j];
+            c_str[k++] = (char)str->chars[i].bytes[j];
         }
     }
     c_str[k] = '\0';
@@ -713,7 +711,7 @@ static void itl_string_from_cstr(itl_string_t *str, const char *c_str)
 
         str->chars[i].size = rune_width;
         for (j = 0; j < rune_width && c_str[k]; ++j, ++k) {
-            str->chars[i].bytes[j] = c_str[k];
+            str->chars[i].bytes[j] = (uint8_t)c_str[k];
         }
     }
 
@@ -794,7 +792,6 @@ static void itl_global_history_free(void)
 static bool itl_global_history_append(itl_string_t *str)
 {
     ITL_TRY(str->length <= 0, false);
-
     if (itl_global_history_length >= TL_HISTORY_MAX_SIZE) {
         if (itl_global_history_first) {
             itl_history_item_t *next_item = itl_global_history_first->next;
@@ -895,7 +892,7 @@ static bool itl_le_insert(itl_le_t *le, const itl_utf8_t ch)
 /* Returns amount of steps required to reach a token */
 static size_t itl_le_steps_to_token(itl_le_t *le, int token, bool backwards)
 {
-    char cur;
+    uint8_t byte;
     size_t i, steps;
     bool should_break;
 
@@ -909,11 +906,11 @@ static size_t itl_le_steps_to_token(itl_le_t *le, int token, bool backwards)
     }
 
     while (1) {
-        cur = le->line->chars[i].bytes[0];
+        byte = le->line->chars[i].bytes[0];
 
         switch (token) {
-            case ITL_TOKEN_DELIM: should_break = itl_is_delim(cur); break;
-            case ITL_TOKEN_WORD: should_break = !itl_is_delim(cur); break;
+            case ITL_TOKEN_DELIM: should_break = itl_is_delim(byte); break;
+            case ITL_TOKEN_WORD: should_break = !itl_is_delim(byte); break;
             default: ITL_UNREACHABLE;
         }
 
@@ -1354,7 +1351,7 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
 
         case TL_KEY_ENTER: {
             ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
-                    TL_ERROR_SIZE)
+                    TL_ERROR_SIZE);
             itl_global_history_append(le->line);
             return TL_PRESSED_ENTER;
         } break;
@@ -1564,7 +1561,7 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 
 size_t tl_utf8_strlen(const char *utf8_str)
 {
-    int len = 0;
+    size_t len = 0;
     while (*utf8_str) {
         if ((*utf8_str & 0xC0) != 0x80)
             ++len;
