@@ -11,77 +11,183 @@ static char current_function_name[128];
     printf(": "__VA_ARGS__);              \
   } while (0)
 
+#define countof(a) (sizeof(a)/sizeof((a)[0]))
+
+typedef struct string_result string_result_t;
+
+struct string_result
+{
+    const char *original;
+    const char *should_be;
+};
+
 static bool test_string_from_cstr()
 {
+    char *cstr;
     int result;
+    size_t i, len;
     itl_string_t *str;
     char out_buffer[OUT_BUFFER_SIZE];
 
-    char original_cstr[] = "привет, мир";
+    char *tests[] = {
+        "hello, world",
+        "привет, мир",
+        "你好世界"
+    };
 
-    str = itl_string_alloc();
-    itl_string_from_cstr(str, original_cstr);
-    itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
+    for (i = 0; i < countof(tests); ++i) {
+        cstr = tests[i];
+        str = itl_string_alloc();
 
-    result = strcmp(out_buffer, original_cstr);
-    if (result != 0) {
-        test_printf("Result: '%s', should be: '%s'\n",
-                    out_buffer, original_cstr);
-        return false;
+        itl_string_from_cstr(str, cstr);
+        itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
+
+        result = strcmp(out_buffer, cstr);
+        len = strlen(cstr);
+
+        if (result != 0 && len == str->size) {
+            test_printf("Result %zu: '%s', should be: '%s'\n",
+                        i, out_buffer, cstr);
+            return false;
+        }
     }
 
     return true;
 }
 
-static bool test_string_shift_backward()
+typedef struct shift_test_case shift_test_case_t;
+
+struct shift_test_case
 {
-    int result;
     size_t pos;
+    size_t count;
+    bool backwards;
+};
+
+static bool test_string_shift()
+{
+    size_t i;
+    int result;
     itl_string_t *str;
+    string_result_t test;
+    shift_test_case_t shift;
     char out_buffer[OUT_BUFFER_SIZE];
 
-    char original_cstr[] = "hello world sailor";
-    char should_be[] = "hello sailor";
+    struct string_result tests[] = {
+        /* original, should_be */
+        { "hello world sailor", "hello sailor" },
+        { "это строка", "то строка" },
+    };
+    struct shift_test_case settings[] = {
+        /* pos, count, backwards */
+        { 12, 6, true },
+        { 1, 1, true }
+    };
 
-    str = itl_string_alloc();
-    pos = strrchr(original_cstr, 's') - original_cstr;
+    for (i = 0; i < countof(tests); ++i) {
+        test = tests[i];
+        str = itl_string_alloc();
+        shift = settings[i];
 
-    itl_string_from_cstr(str, original_cstr);
-    itl_string_shift(str, pos, 6, true);
-    itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
+        itl_string_from_cstr(str, test.original);
+        itl_string_shift(str, shift.pos, shift.count, shift.backwards);
+        itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
 
-    result = strcmp(out_buffer, should_be);
-    if (result != 0) {
-        test_printf("Result: '%s', should be: '%s'\n",
-                    out_buffer, should_be);
-        return false;
+        result = strcmp(out_buffer, test.should_be);
+        if (result != 0) {
+            test_printf("Result %zu: '%s', should be: '%s'\n",
+                        i, out_buffer, test.should_be);
+            return false;
+        }
     }
 
     return true;
 }
 
-static bool test_string_shift_forward()
+static bool test_string_erase()
 {
+    size_t i;
     int result;
-    size_t pos;
     itl_string_t *str;
+    string_result_t test;
+    shift_test_case_t erase;
     char out_buffer[OUT_BUFFER_SIZE];
 
-    char original_cstr[] = "hello world 69ilor";
-    char should_be[] = "hello world 6969ilor";
+    struct string_result tests[] = {
+        /* original, should_be */
+        { "hello world sailor", "hello sailor" },
+        { "это строка", "то строка" },
+        { "это строка", "это стр" },
+        { "это строка", "это строка" },
+        { "это строка", "это строка" }
+    };
+    struct shift_test_case settings[] = {
+        /* pos, count, backwards */
+        { 12, 6, true },
+        { 0, 1, false },
+        { 10, 3, true },
+        { 10, 3, false },
+        { 0, 0, true }
+    };
 
-    str = itl_string_alloc();
-    pos = strrchr(original_cstr, '6') - original_cstr;
+    for (i = 0; i < countof(tests); ++i) {
+        test = tests[i];
+        str = itl_string_alloc();
+        erase = settings[i];
 
-    itl_string_from_cstr(str, original_cstr);
-    itl_string_shift(str, pos, 2, false);
-    itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
+        itl_string_from_cstr(str, test.original);
+        itl_string_erase(str, erase.pos, erase.count, erase.backwards);
+        itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
 
-    result = strcmp(out_buffer, should_be);
-    if (result != 0) {
-        test_printf("Result: '%s', should be: '%s'\n",
-                    out_buffer, should_be);
-        return false;
+        result = strcmp(out_buffer, test.should_be);
+        if (result != 0) {
+            test_printf("Result %zu: '%s', should be: '%s'\n",
+                        i, out_buffer, test.should_be);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool test_string_insert()
+{
+    int result;
+    size_t i, pos;
+    itl_string_t *str;
+    string_result_t test;
+    char out_buffer[OUT_BUFFER_SIZE];
+
+    itl_utf8_t A = itl_utf8_new((uint8_t[4]){ 0x41 }, 1); 
+
+    string_result_t tests[] = {
+        /* original, should_be */
+        { "hello, wrld", "hello, wArld" },
+        { "hello, wrld", "hello, wrldA" },
+        { "hello, world", "Ahello, world" }
+    };
+    size_t positions[] = {
+        /* pos */
+        8,
+        11,
+        0
+    };
+
+    for (i = 0; i < countof(tests); ++i) {
+        test = tests[i];
+        pos = positions[i];
+        str = itl_string_alloc();
+
+        itl_string_from_cstr(str, test.original);
+        itl_string_insert(str, pos, A);
+        itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
+
+        result = strcmp(out_buffer, test.should_be);
+        if (result != 0) {
+            test_printf("Result %zu: '%s', should be: '%s'\n",
+                        i, out_buffer, test.should_be);
+            return false;
+        }
     }
 
     return true;
@@ -105,22 +211,20 @@ struct test_case
 
 test_case_t test_cases[] = {
     DEFINE_TEST_CASE(test_string_from_cstr),
-    DEFINE_TEST_CASE(test_string_shift_backward),
-    DEFINE_TEST_CASE(test_string_shift_forward),
+    DEFINE_TEST_CASE(test_string_shift),
+    DEFINE_TEST_CASE(test_string_erase),
+    DEFINE_TEST_CASE(test_string_insert),
 };
-
-#define TEST_CASES_COUNT \
-    (sizeof(test_cases)/sizeof(test_cases[0]))
 
 int main(void) {
     size_t i;
     bool result;
 
-    for (i = 0; i < TEST_CASES_COUNT; ++i) {
+    for (i = 0; i < countof(test_cases); ++i) {
         strncpy(current_function_name, test_cases[i].name, 32);
         result = test_cases[i].func();
         if (!result) {
-            test_printf("FAIL.\n");
+            test_printf("*** FAIL.\n");
         } else {
             test_printf("ok.\n");
         }
