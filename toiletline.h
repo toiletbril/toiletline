@@ -624,7 +624,7 @@ static void itl_string_erase(itl_string_t *str, size_t position,
                              size_t count, bool backwards)
 {
     itl_trace_lf();
-    itl_trace("string_erase) pos: %zu, count: %zu, backwards: %d, len %zu\n",
+    itl_trace("string_erase: pos: %zu, count: %zu, backwards: %d, len %zu\n",
               position, count, backwards, str->length);
 
     if (count > str->length) {
@@ -890,23 +890,24 @@ static bool itl_le_insert(itl_le_t *le, const itl_utf8_t ch)
 #define ITL_TOKEN_WORD 1
 
 /* Returns amount of steps required to reach a token */
-static size_t itl_le_steps_to_token(itl_le_t *le, int token, bool backwards)
+static size_t itl_string_steps_to_token(itl_string_t *str, size_t position,
+                                        int token, bool backwards)
 {
     uint8_t byte;
     size_t i, steps;
     bool should_break;
 
-    i = le->cursor_position;
+    i = position;
     steps = 0;
 
     /* Prevent usage of uninitialized characters */
-    if (backwards && i != 0 && i == le->line->length) {
+    if (backwards && i != 0 && i == str->length) {
         ++steps;
         --i;
     }
 
-    while (1) {
-        byte = le->line->chars[i].bytes[0];
+    while (true) {
+        byte = str->chars[i].bytes[0];
 
         switch (token) {
             case ITL_TOKEN_DELIM: should_break = itl_is_delim(byte); break;
@@ -920,7 +921,7 @@ static size_t itl_le_steps_to_token(itl_le_t *le, int token, bool backwards)
 
         if (backwards && i > 0) {
             --i;
-        } else if (!backwards && i < le->line->length - 1) {
+        } else if (!backwards && i < str->length - 1) {
             ++i;
         } else {
             break;
@@ -930,17 +931,8 @@ static size_t itl_le_steps_to_token(itl_le_t *le, int token, bool backwards)
     return steps;
 }
 
-#define itl_le_steps_to_next_word(le) \
-    itl_le_steps_to_token(le, ITL_TOKEN_WORD, false)
-
-#define itl_le_steps_to_prev_word(le) \
-    itl_le_steps_to_token(le, ITL_TOKEN_WORD, true)
-
-#define itl_le_steps_to_next_ws(le) \
-    itl_le_steps_to_token(le, ITL_TOKEN_DELIM, false)
-
-#define itl_le_steps_to_prev_ws(le) \
-    itl_le_steps_to_token(le, ITL_TOKEN_DELIM, true)
+#define itl_le_steps_to_token(le, token, backwards) \
+    itl_string_steps_to_token(le->line, le->cursor_position, token, backwards)
 
 static void itl_le_clear(itl_le_t *le)
 {
@@ -984,7 +976,7 @@ static void itl_global_history_get_next(itl_le_t *le)
 #define itl_tty_show_cursor() fputs("\x1b[?25h", stdout)
 
 #define itl_tty_move_to_column(col) printf("\x1b[%zuG", (size_t)col)
-#define itl_tty_move_forward(count) printf("\x1b[%zuC", (size_t)count)
+#define itl_tty_move_forward(steps) printf("\x1b[%zuC", (size_t)steps)
 
 #define itl_tty_move_up(rows) printf("\x1b[%zuA", (size_t)rows)
 #define itl_tty_move_down(rows) printf("\x1b[%zuB", (size_t)rows)
@@ -1305,13 +1297,13 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
         case TL_KEY_RIGHT: {
             if (le->cursor_position < le->line->length) {
                 if (esc & TL_MOD_CTRL) {
-                    steps = itl_le_steps_to_next_ws(le);
+                    steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, false);
                     if (steps != 0) {
                         itl_le_move_right(le, steps);
                     } else {
-                        steps = itl_le_steps_to_next_word(le);
+                        steps = itl_le_steps_to_token(le, ITL_TOKEN_WORD, false);
                         itl_le_move_right(le, steps);
-                        steps = itl_le_steps_to_next_ws(le);
+                        steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, false);
                         itl_le_move_right(le, steps);
                     }
                 } else {
@@ -1324,16 +1316,17 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
             if (le->cursor_position > 0 &&
                 le->cursor_position <= le->line->length) {
                 if (esc & TL_MOD_CTRL) {
-                    steps = itl_le_steps_to_prev_ws(le);
+                    steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, true);
                     if (steps > 1) {
                         itl_le_move_left(le, steps - 1);
                     } else {
                         itl_le_move_left(le, steps);
-                        steps = itl_le_steps_to_prev_word(le);
+                        steps = itl_le_steps_to_token(le, ITL_TOKEN_WORD, true);
                         itl_le_move_left(le, steps);
-                        steps = itl_le_steps_to_prev_ws(le);
-                        if (steps) --steps;
-                        itl_le_move_left(le, steps);
+                        steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, true);
+                        if (steps > 0) {
+                            itl_le_move_left(le, steps - 1);
+                        }
                     }
                 } else {
                     itl_le_move_left(le, 1);
@@ -1358,16 +1351,19 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
 
         case TL_KEY_BACKSPACE: {
             if (esc & TL_MOD_CTRL) {
-                steps = itl_le_steps_to_prev_ws(le);
+                steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, true);
                 if (steps > 1) {
-                    if (steps) --steps;
-                    itl_le_erase_backward(le, steps);
+                    itl_le_erase_backward(le, steps - 1);
                 } else {
-                    steps = itl_le_steps_to_prev_word(le);
                     itl_le_erase_backward(le, steps);
-                    steps = itl_le_steps_to_prev_ws(le);
-                    if (steps) --steps;
-                    itl_le_erase_backward(le, steps);
+                    steps = itl_le_steps_to_token(le, ITL_TOKEN_WORD, true);
+                    steps += 
+                        itl_string_steps_to_token(le->line,
+                                                  le->cursor_position - steps, 
+                                                  ITL_TOKEN_DELIM, true);
+                    if (steps > 0) {
+                        itl_le_erase_backward(le, steps - 1);
+                    }
                 }
             } else {
                 itl_le_erase_backward(le, 1);
@@ -1376,15 +1372,16 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
 
         case TL_KEY_DELETE: {
             if (esc & TL_MOD_CTRL) {
-                steps = itl_le_steps_to_next_ws(le);
-                if (steps != 0) {
+                steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, false);
+                if (steps > 1) {
                     itl_le_erase_forward(le, steps);
-                }
-                else {
+                } else {
                     itl_le_erase_forward(le, steps);
-                    steps = itl_le_steps_to_next_word(le);
-                    itl_le_erase_forward(le, steps);
-                    steps = itl_le_steps_to_next_ws(le);
+                    steps = itl_le_steps_to_token(le, ITL_TOKEN_WORD, false);
+                    steps += 
+                        itl_string_steps_to_token(le->line,
+                                                  le->cursor_position + steps, 
+                                                  ITL_TOKEN_DELIM, false);
                     itl_le_erase_forward(le, steps);
                 }
             } else {
@@ -1448,6 +1445,7 @@ static ITL_THREAD_LOCAL bool itl_is_active = false;
 int tl_init(void)
 {
     TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 && "History size must be a power of 2");
+
     ITL_TRY(isatty(STDIN_FILENO), TL_ERROR);
     ITL_TRY(itl_enter_raw_mode(), TL_ERROR);
 
@@ -1464,6 +1462,7 @@ int tl_exit(void)
 
     itl_trace("Exited, alloc count: %zu\n", itl_global_alloc_count);
     TL_ASSERT(itl_global_alloc_count == 0);
+
     ITL_TRY(itl_exit_raw_mode(), TL_ERROR);
 
     itl_is_active = false;
@@ -1565,7 +1564,6 @@ size_t tl_utf8_strlen(const char *utf8_str)
     while (*utf8_str) {
         if ((*utf8_str & 0xC0) != 0x80)
             ++len;
-
         ++utf8_str;
     }
     return len;
@@ -1590,7 +1588,6 @@ void tl_setline(const char *str)
  *    append it to global history.
  *  - itl_utf8_parse(): Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates)
  *    are invalid.
- *  - Fix killing words.
  *  - Write and document tests.
  *  - Tab completion.
  *  - Introduce TL_DEF and ITL_DEF macros.
