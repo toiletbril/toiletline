@@ -13,7 +13,6 @@ else
 	@$(CC) $(CFLAGS) $< -o $@
 endif
 
-test: CFLAGS += $(DBGFLAGS)
 test: tests
 	./tests
 
