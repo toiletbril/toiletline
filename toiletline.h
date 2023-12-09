@@ -629,16 +629,12 @@ static void itl_string_erase(itl_string_t *str, size_t position,
     TL_ASSERT(count <= ITL_MAX_STRING_LEN);
 
     if (backwards) {
-        if (position == str->length) {
+        if (position >= str->length) {
             /* Deleting at the start or at the end */
             str->length -= count;
             return;
         }
     } else {
-        if (position - count >= str->length) {
-            str->length = count;
-            return;
-        }
         /* Do nothing on edge case */
         if (position >= str->length) {
             return;
@@ -1592,7 +1588,6 @@ void tl_setline(const char *str)
  *    append it to global history.
  *  - itl_utf8_parse(): Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates)
  *    are invalid.
- *  - Fix killing words.
  *  - Write and document tests.
  *  - Tab completion.
  *  - Introduce TL_DEF and ITL_DEF macros.
