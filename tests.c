@@ -21,34 +21,47 @@ struct string_result
     const char *should_be;
 };
 
+typedef struct from_cstr_test_case from_cstr_test_case_t;
+
+struct from_cstr_test_case
+{
+    const char *original;
+    size_t length;
+    size_t size;
+};
+
 static bool test_string_from_cstr()
 {
-    char *cstr;
+    size_t i;
     int result;
-    size_t i, len;
-    itl_string_t *str;
     char out_buffer[OUT_BUFFER_SIZE];
 
-    char *tests[] = {
-        "hello, world",
-        "привет, мир",
-        "你好世界"
+    itl_string_t *str;
+    from_cstr_test_case_t test;;
+
+    from_cstr_test_case_t tests[] = {
+        /* original, length, size */
+        { "hello, world", 12, 12 },
+        { "привет, мир", 11, 20 },
+        { "你好世界", 4, 12 }
     };
 
     for (i = 0; i < countof(tests); ++i) {
-        cstr = tests[i];
+        test = tests[i];
         str = itl_string_alloc();
 
-        itl_string_from_cstr(str, cstr);
+        itl_string_from_cstr(str, test.original);
         itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
 
-        result = strcmp(out_buffer, cstr);
-        len = strlen(cstr);
+        result = strcmp(out_buffer, test.original);
 
-        if (result != 0 && len == str->size) {
-            test_printf("Result %zu: '%s', should be: '%s'\n",
-                        i, out_buffer, cstr);
-            return false;
+        if (result != 0 || str->length != test.length
+                        || str->size != test.size) {
+          test_printf("Result %zu: '%s', should be: '%s'. Length: %zu/%zu, "
+                      "size: %zu/%zu\n",
+                      i, out_buffer, test.original, str->length, test.length,
+                      str->size, test.size);
+          return false;
         }
     }
 
@@ -68,17 +81,18 @@ static bool test_string_shift()
 {
     size_t i;
     int result;
+    char out_buffer[OUT_BUFFER_SIZE];
+
     itl_string_t *str;
     string_result_t test;
     shift_test_case_t shift;
-    char out_buffer[OUT_BUFFER_SIZE];
 
-    struct string_result tests[] = {
+    string_result_t tests[] = {
         /* original, should_be */
         { "hello world sailor", "hello sailor" },
         { "это строка", "то строка" },
     };
-    struct shift_test_case settings[] = {
+    shift_test_case_t settings[] = {
         /* pos, count, backwards */
         { 12, 6, true },
         { 1, 1, true }
@@ -108,12 +122,13 @@ static bool test_string_erase()
 {
     size_t i;
     int result;
+    char out_buffer[OUT_BUFFER_SIZE];
+
     itl_string_t *str;
     string_result_t test;
     shift_test_case_t erase;
-    char out_buffer[OUT_BUFFER_SIZE];
 
-    struct string_result tests[] = {
+    string_result_t tests[] = {
         /* original, should_be */
         { "hello world sailor", "hello sailor" },
         { "это строка", "то строка" },
@@ -121,7 +136,7 @@ static bool test_string_erase()
         { "это строка", "это строка" },
         { "это строка", "это строка" }
     };
-    struct shift_test_case settings[] = {
+    shift_test_case_t settings[] = {
         /* pos, count, backwards */
         { 12, 6, true },
         { 0, 1, false },
@@ -154,9 +169,10 @@ static bool test_string_insert()
 {
     int result;
     size_t i, pos;
+    char out_buffer[OUT_BUFFER_SIZE];
+
     itl_string_t *str;
     string_result_t test;
-    char out_buffer[OUT_BUFFER_SIZE];
 
     itl_utf8_t A = itl_utf8_new((uint8_t[4]){ 0x41 }, 1); 
 
@@ -213,7 +229,7 @@ test_case_t test_cases[] = {
     DEFINE_TEST_CASE(test_string_from_cstr),
     DEFINE_TEST_CASE(test_string_shift),
     DEFINE_TEST_CASE(test_string_erase),
-    DEFINE_TEST_CASE(test_string_insert),
+    DEFINE_TEST_CASE(test_string_insert)
 };
 
 int main(void) {
