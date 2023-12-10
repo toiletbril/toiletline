@@ -1302,7 +1302,7 @@ struct itl_completion
 
 static ITL_THREAD_LOCAL itl_completion_t *itl_global_completion_root = NULL;
 
-static itl_completion *itl_completion_alloc()
+static itl_completion_t *itl_completion_alloc()
 {
     itl_completion_t *completion = (itl_completion_t *)
         itl_malloc(sizeof(itl_completion_t));
@@ -1315,7 +1315,7 @@ static itl_completion *itl_completion_alloc()
 }
 
 /* Takes ownership of *str */
-static itl_completion *itl_completion_append(itl_completion_t *completion,
+static itl_completion_t *itl_completion_append(itl_completion_t *completion,
                                              itl_string_t *str)
 {
     size_t i = completion->children_count;
@@ -1340,6 +1340,7 @@ static itl_completion *itl_completion_append(itl_completion_t *completion,
    list of possible matches. */
 static bool itl_completion_try(itl_string_t *str)
 {
+    (void)str;
     return false;
 }
 
