@@ -74,7 +74,6 @@ extern "C" {
 #define TL_PRESSED_EOF 3
 #define TL_PRESSED_SUSPEND 4
 #define TL_PRESSED_CONTROL_SEQUENCE 5
-#define TL_PRESSED_TAB 6
 /**
  * Codes below 0 are errors.
  */
@@ -202,7 +201,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #define STDOUT_FILENO _fileno(stdout)
 
     /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation> */
-    #define ITL_MAX_STRING_LEN 8191
+    #define ITL_STRING_MAX_LEN 8191
 
     #define isatty(fd) _isatty(fd)
     #define itl_read_byte_raw() _getch()
@@ -216,7 +215,7 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #include <unistd.h>
 
     /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
-    #define ITL_MAX_STRING_LEN 4095
+    #define ITL_STRING_MAX_LEN 4095
 
     #define itl_read_byte_raw() fgetc(stdin)
 #endif /* ITL_POSIX */
@@ -563,7 +562,7 @@ static void itl_string_recalc_size(itl_string_t *str)
 {
     size_t i;
 
-    TL_ASSERT(str->length <= ITL_MAX_STRING_LEN);
+    TL_ASSERT(str->length <= ITL_STRING_MAX_LEN);
 
     str->size = 0;
     for (i = 0; i < str->length; ++i) {
@@ -1058,7 +1057,7 @@ static bool itl_le_tty_refresh(itl_le_t *le)
     TL_ASSERT(le->line);
     TL_ASSERT(le->line->chars);
     TL_ASSERT(le->line->size >= le->line->length);
-    TL_ASSERT(le->line->length <= ITL_MAX_STRING_LEN);
+    TL_ASSERT(le->line->length <= ITL_STRING_MAX_LEN);
 
     itl_tty_hide_cursor();
 
@@ -1292,6 +1291,58 @@ int *itl__last_control_location(void) {
     return &itl_global_last_control;
 }
 
+typedef struct itl_completion itl_completion_t;
+
+struct itl_completion
+{
+    itl_string_t *str;
+    itl_completion_t **children;
+    size_t children_count;
+};
+
+static ITL_THREAD_LOCAL itl_completion_t *itl_global_completion_root = NULL;
+
+static itl_completion *itl_completion_alloc()
+{
+    itl_completion_t *completion = (itl_completion_t *)
+        itl_malloc(sizeof(itl_completion_t));
+
+    completion->str = itl_string_alloc();
+    completion->children = NULL;
+    completion->children_count = 0;
+
+    return completion;
+}
+
+/* Takes ownership of *str */
+static itl_completion *itl_completion_append(itl_completion_t *completion,
+                                             itl_string_t *str)
+{
+    size_t i = completion->children_count;
+    itl_completion_t *entry;
+
+    completion->children_count++;
+    completion->children = (itl_completion_t **)
+        itl_realloc(completion->children,
+                    sizeof(itl_completion_t *) * completion->children_count);
+
+    entry = itl_completion_alloc();
+    entry->str = str;
+
+    completion->children[i] = entry;
+
+    return entry;
+}
+
+/* Split the string by spaces. If a split fully matches, look at it's children.
+   If none of the children fully match, rank them by longest common prefix, and
+   autocomplete. If more than one have the same longest common prefix, print a
+   list of possible matches. */
+static bool itl_completion_try(itl_string_t *str)
+{
+    return false;
+}
+
 static int itl_le_key_handle(itl_le_t *le, int esc)
 {
     size_t i, steps;
@@ -1299,9 +1350,8 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
     tl_last_control = esc;
     switch (esc & TL_MASK_KEY) {
         case TL_KEY_TAB: {
-            ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
-                    TL_ERROR_SIZE);
-            return TL_PRESSED_TAB;
+            /* If didn't autocomplete, print a list with possible completions */
+            if (!itl_completion_try(le->line)) {};
         } break;
         case TL_KEY_UP: {
             itl_string_t *prev_line;
@@ -1559,7 +1609,7 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
     TL_ASSERT(itl_is_active && "tl_init() should be called");
     TL_ASSERT(buffer_size > 1 &&
         "Size should be enough at least for one byte and a null terminator");
-    TL_ASSERT(buffer_size <= ITL_MAX_STRING_LEN &&
+    TL_ASSERT(buffer_size <= ITL_STRING_MAX_LEN &&
         "Size should be less than platform's allowed maximum string length");
     TL_ASSERT(buffer != NULL);
 
@@ -1616,6 +1666,26 @@ void tl_setline(const char *str)
     itl_string_from_cstr(&itl_global_line_buffer, str);
 }
 
+void *tl_add_completion(void *prefix, const char *value)
+{
+    itl_completion_t *completion;
+    itl_string_t *str;
+
+    if (prefix != NULL) {
+        str = itl_string_alloc();
+        itl_string_from_cstr(str, value);
+        completion = itl_completion_append((itl_completion_t *)prefix, str);
+    } else {
+        if (itl_global_completion_root == NULL) {
+            itl_global_completion_root = itl_completion_alloc();
+        }
+        itl_string_from_cstr(itl_global_completion_root->str, value);
+        completion = itl_global_completion_root;
+    }
+
+    return completion;
+}
+
 #endif /* TOILETLINE_IMPLEMENTATION */
 
 #if defined __cplusplus
@@ -1626,6 +1696,6 @@ void tl_setline(const char *str)
  * TODO:
  *  - itl_utf8_parse(): Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates)
  *    are invalid.
- *  - Advanced tab completion.
+ *  - Advanced tab completion and docs for it.
  *  - Introduce TL_DEF and ITL_DEF macros.
  */
