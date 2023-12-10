@@ -624,6 +624,8 @@ static void itl_string_shift(itl_string_t *str, size_t position,
             if (i == 0) break; /* avoid wrapping */
         }
     }
+
+    itl_string_recalc_size(str);
 }
 
 static void itl_string_erase(itl_string_t *str, size_t position,
@@ -653,7 +655,6 @@ static void itl_string_erase(itl_string_t *str, size_t position,
 
     /* Erase the characters by shifting */
     itl_string_shift(str, position, count, true);
-    itl_string_recalc_size(str);
 }
 
 static void itl_string_insert(itl_string_t *str, size_t position, itl_utf8_t ch)
