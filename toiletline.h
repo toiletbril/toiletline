@@ -181,10 +181,11 @@ size_t tl_utf8_strlen(const char *utf8_str);
     #define ITL_UNREACHABLE __builtin_unreachable()
 #elif defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
     #define ITL_THREAD_LOCAL _Thread_local
-    _Noreturn static void itl__unreachable() { while (true) {} }
+    _Noreturn static void itl__unreachable() { while (true); }
     #define ITL_UNREACHABLE itl__unreachable()
 #else /* __STDC_VERSION__ && __STDC_VERSION__ >= 201112L */
     #define ITL_THREAD_LOCAL /* nothing */
+    #define ITL_UNREACHABLE  /* nothing */
 #endif
 
 #if defined ITL_WIN32
@@ -1357,9 +1358,9 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
                 } else {
                     itl_le_erase_backward(le, steps);
                     steps = itl_le_steps_to_token(le, ITL_TOKEN_WORD, true);
-                    steps += 
+                    steps +=
                         itl_string_steps_to_token(le->line,
-                                                  le->cursor_position - steps, 
+                                                  le->cursor_position - steps,
                                                   ITL_TOKEN_DELIM, true);
                     if (steps > 0) {
                         itl_le_erase_backward(le, steps - 1);
@@ -1378,9 +1379,9 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
                 } else {
                     itl_le_erase_forward(le, steps);
                     steps = itl_le_steps_to_token(le, ITL_TOKEN_WORD, false);
-                    steps += 
+                    steps +=
                         itl_string_steps_to_token(le->line,
-                                                  le->cursor_position + steps, 
+                                                  le->cursor_position + steps,
                                                   ITL_TOKEN_DELIM, false);
                     itl_le_erase_forward(le, steps);
                 }

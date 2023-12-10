@@ -39,8 +39,8 @@ int main(void)
                 printf("\nReceived character: '%s' of of size %zu. Bytes:",
                        char_buffer, size);
 
-                for (size_t i = 0; i < size; ++i)
-                    printf(" %d", (uint8_t)char_buffer[i]);
+                for (size_t j = 0; j < size; ++j)
+                    printf(" %d", (uint8_t)char_buffer[j]);
 
                 fputc('\n', stdout);
             }
