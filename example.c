@@ -34,6 +34,11 @@ int main(void)
             printf("\nInterrupted.\n");
             break;
         }
+        if (code == TL_PRESSED_TAB) {
+            printf("\nPressed tab with contents '%s'.\n",
+                   line_buffer);
+            continue;
+        }
 
         printf("\nReceived string: '%s' of length %zu, of size %zu\n",
                line_buffer, tl_utf8_strlen(line_buffer), strlen(line_buffer));

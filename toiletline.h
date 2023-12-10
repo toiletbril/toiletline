@@ -74,6 +74,7 @@ extern "C" {
 #define TL_PRESSED_EOF 3
 #define TL_PRESSED_SUSPEND 4
 #define TL_PRESSED_CONTROL_SEQUENCE 5
+#define TL_PRESSED_TAB 6
 /**
  * Codes below 0 are errors.
  */
@@ -1297,6 +1298,11 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
 
     tl_last_control = esc;
     switch (esc & TL_MASK_KEY) {
+        case TL_KEY_TAB: {
+            ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
+                    TL_ERROR_SIZE);
+            return TL_PRESSED_TAB;
+        } break;
         case TL_KEY_UP: {
             itl_string_t *prev_line;
 
@@ -1376,7 +1382,6 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
             ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
                     TL_ERROR_SIZE);
             itl_global_history_append(le->line);
-            le->appended_to_history = false;
             return TL_PRESSED_ENTER;
         } break;
 
@@ -1621,6 +1626,6 @@ void tl_setline(const char *str)
  * TODO:
  *  - itl_utf8_parse(): Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates)
  *    are invalid.
- *  - Tab completion.
+ *  - Advanced tab completion.
  *  - Introduce TL_DEF and ITL_DEF macros.
  */
