@@ -114,10 +114,12 @@ Beware of characters like `\t` (Tab) and such, as they may break cursor
 position. Althrough they are considered as a single character, they occupy more
 than one space.
 
-All control sequences except Enter and Interrupt will be handled internally.
+All control sequences except Enter, EOF, and Interrupt will be handled
+internally.
 
 Returns:
 * TL_PRESSED_ENTER on Enter;
+* TL_PRESSED_TAB on Tab, and line will not be appended to history;
 * TL_PRESSED_INTERRUPT on Ctrl-C;
 * TL_PRESSED_EOF on Ctrl-D when there is no characters on the line;
 * TL_PRESSED_SUSPEND on Ctrl-Z.
