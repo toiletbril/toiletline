@@ -30,7 +30,7 @@ struct from_cstr_test_case
     size_t size;
 };
 
-static bool test_string_from_cstr()
+static bool test_string_from_cstr(void)
 {
     size_t i;
     int result;
@@ -39,7 +39,7 @@ static bool test_string_from_cstr()
     itl_string_t *str;
     from_cstr_test_case_t test;;
 
-    from_cstr_test_case_t tests[] = {
+    const from_cstr_test_case_t tests[] = {
         /* original, length, size */
         { "hello, world", 12, 12 },
         { "привет, мир", 11, 20 },
@@ -77,7 +77,7 @@ struct shift_test_case
     bool backwards;
 };
 
-static bool test_string_shift()
+static bool test_string_shift(void)
 {
     size_t i;
     int result;
@@ -87,12 +87,12 @@ static bool test_string_shift()
     string_result_t test;
     shift_test_case_t shift;
 
-    string_result_t tests[] = {
+    const string_result_t tests[] = {
         /* original, should_be */
         { "hello world sailor", "hello sailor" },
         { "это строка", "то строка" },
     };
-    shift_test_case_t settings[] = {
+    const shift_test_case_t settings[] = {
         /* pos, count, backwards */
         { 12, 6, true },
         { 1, 1, true }
@@ -118,7 +118,7 @@ static bool test_string_shift()
     return true;
 }
 
-static bool test_string_erase()
+static bool test_string_erase(void)
 {
     size_t i;
     int result;
@@ -128,7 +128,7 @@ static bool test_string_erase()
     string_result_t test;
     shift_test_case_t erase;
 
-    string_result_t tests[] = {
+    const string_result_t tests[] = {
         /* original, should_be */
         { "hello world sailor", "hello sailor" },
         { "это строка", "то строка" },
@@ -136,7 +136,7 @@ static bool test_string_erase()
         { "это строка", "это строка" },
         { "это строка", "это строка" }
     };
-    shift_test_case_t settings[] = {
+    const shift_test_case_t settings[] = {
         /* pos, count, backwards */
         { 12, 6, true },
         { 0, 1, false },
@@ -165,7 +165,7 @@ static bool test_string_erase()
     return true;
 }
 
-static bool test_string_insert()
+static bool test_string_insert(void)
 {
     int result;
     size_t i, pos;
@@ -176,13 +176,13 @@ static bool test_string_insert()
 
     itl_utf8_t A = itl_utf8_new((uint8_t[4]){ 0x41 }, 1); 
 
-    string_result_t tests[] = {
+    const string_result_t tests[] = {
         /* original, should_be */
         { "hello, wrld", "hello, wArld" },
         { "hello, wrld", "hello, wrldA" },
         { "hello, world", "Ahello, world" }
     };
-    size_t positions[] = {
+    const size_t positions[] = {
         /* pos */
         8,
         11,
