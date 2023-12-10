@@ -11,7 +11,7 @@ Current features
 ----------------
 * UTF-8 support;
 * Emacs controls;
-* Multi-line input;
+* Line wrapping;
 * In-memory history;
 * MIT License.
 
@@ -119,7 +119,6 @@ internally.
 
 Returns:
 * TL_PRESSED_ENTER on Enter;
-* TL_PRESSED_TAB on Tab, and line will not be appended to history;
 * TL_PRESSED_INTERRUPT on Ctrl-C;
 * TL_PRESSED_EOF on Ctrl-D when there is no characters on the line;
 * TL_PRESSED_SUSPEND on Ctrl-Z.
