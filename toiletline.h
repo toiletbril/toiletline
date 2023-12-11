@@ -152,6 +152,14 @@ int tl_readline(char *buffer, size_t buffer_size, const char *prompt);
  */
 void tl_setline(const char *str);
 /**
+ * Add a tab completion.
+ *
+ * Returns an opaque pointer that points to the added completion. Use it as
+ * `*prefix` parameter to add further completions. If `*prefix` is NULL, adds a
+ * root completion.
+ */
+void *tl_add_completion(void *prefix, const char *completion);
+/**
  * Returns the number of UTF-8 characters.
  *
  * Since number of bytes can be bigger than amount of characters, regular strlen
@@ -443,6 +451,19 @@ static void itl_utf8_copy(itl_utf8_t *dst, const itl_utf8_t *src)
     dst->size = src->size;
 }
 
+static bool itl_utf8_equal(itl_utf8_t ch1, itl_utf8_t ch2)
+{
+    if (ch1.size != ch2.size) {
+        return false;
+    }
+    if (memcmp(ch1.bytes,
+               ch2.bytes,
+               ch1.size * sizeof(uint8_t)) != 0) {
+        return false;
+    }
+    return true;
+}
+
 static size_t itl_utf8_width(int byte)
 {
     if ((byte & 0x80) == 0) return 1;         /* 1 byte */
@@ -527,18 +548,40 @@ static void itl_string_extend(itl_string_t *str)
         itl_realloc(str->chars, str->capacity * sizeof(itl_utf8_t));
 }
 
-static bool itl_string_eq(itl_string_t *str1, itl_string_t *str2)
+/* Return length of the matching prefix */
+static size_t itl_string_prefix_with_offset(itl_string_t *str1, size_t start,
+                                      size_t end, itl_string_t *str2)
 {
-    size_t i;
+    size_t i, k;
 
-    ITL_TRY(str1->size == str2->size, false);
-    for (i = 0; i < str1->size; ++i) {
-        ITL_TRY(str1->chars[i].size == str2->chars[i].size, false);
-        ITL_TRY(memcmp(str2->chars[i].bytes, str2->chars[i].bytes,
-                       4 * sizeof(uint8_t)) == 0,
-                false);
+    TL_ASSERT(end >= start);
+
+    if (end > str1->length) {
+        return 0;
     }
-    return true;
+    for (i = start, k = 0; i <= end; ++i) {
+        if (!itl_utf8_equal(str1->chars[i], str2->chars[k])) {
+            return k;
+        }
+        k += 1;
+    }
+    return k;
+}
+
+static bool itl_string_equal(itl_string_t *str1, itl_string_t *str2)
+{
+    if (str1->size != str2->size) {
+        return false;
+    }
+    if (str1->length == 0) {
+        if (str2->length == 0) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+    return itl_string_prefix_with_offset(str1, 0, str1->length - 1,
+                                   str2) == str1->length;
 }
 
 static void itl_string_copy(itl_string_t *dst, const itl_string_t *src)
@@ -643,6 +686,7 @@ static void itl_string_erase(itl_string_t *str, size_t position,
         if (position >= str->length) {
             /* Deleting at the start or at the end */
             str->length -= count;
+            itl_string_recalc_size(str);
             return;
         }
     } else {
@@ -673,10 +717,12 @@ static void itl_string_insert(itl_string_t *str, size_t position, itl_utf8_t ch)
     itl_string_recalc_size(str);
 }
 
-#define itl_string_free(str)   \
-    do {                       \
-        itl_free(str->chars);  \
-        itl_free(str);         \
+#define itl_string_free(str)      \
+    do {                          \
+        if (str != NULL) {        \
+            itl_free(str->chars); \
+            itl_free(str);        \
+        }                         \
     } while (0)
 
 #if defined ITL_WIN32
@@ -726,6 +772,34 @@ static void itl_string_from_cstr(itl_string_t *str, const char *c_str)
 
     str->length = i;
     itl_string_recalc_size(str);
+}
+
+#define ITL_SPACE \
+    itl_utf8_new((uint8_t[]){ 0x20 }, 1)
+
+static void itl_string_append_completion(itl_string_t *dst, itl_string_t *src,
+                                         size_t prefix_length)
+{
+    size_t i, j;
+    size_t new_len = dst->length + src->length - prefix_length;
+
+    while (dst->capacity < new_len) {
+        itl_string_extend(dst);
+    }
+
+    /* Insert a space before new word, if there is no matching prefix */
+    i = dst->length;
+    if (!itl_utf8_equal(dst->chars[i - 1], ITL_SPACE) && prefix_length == 0) {
+        dst->chars[i++] = ITL_SPACE;
+        dst->length += 1;
+    }
+    /* Append missing chars */
+    for (j = prefix_length; j <= new_len; ++i, ++j) {
+        dst->chars[i] = src->chars[j];
+    }
+    dst->length = new_len;
+
+    itl_string_recalc_size(dst);
 }
 
 typedef struct itl_history_item itl_history_item_t;
@@ -821,7 +895,7 @@ static bool itl_global_history_append(itl_string_t *str)
         itl_global_history_first = itl_global_history_last;
     }
     else {
-        ITL_TRY(!itl_string_eq(itl_global_history_last->str, str), false);
+        ITL_TRY(!itl_string_equal(itl_global_history_last->str, str), false);
 
         itl_history_item_t *item = itl_history_item_alloc(str);
         item->prev = itl_global_history_last;
@@ -1296,8 +1370,8 @@ typedef struct itl_completion itl_completion_t;
 struct itl_completion
 {
     itl_string_t *str;
-    itl_completion_t **children;
-    size_t children_count;
+    itl_completion_t *sibling;
+    itl_completion_t *child;
 };
 
 static ITL_THREAD_LOCAL itl_completion_t *itl_global_completion_root = NULL;
@@ -1307,40 +1381,226 @@ static itl_completion_t *itl_completion_alloc()
     itl_completion_t *completion = (itl_completion_t *)
         itl_malloc(sizeof(itl_completion_t));
 
-    completion->str = itl_string_alloc();
-    completion->children = NULL;
-    completion->children_count = 0;
+    completion->str = NULL;
+    completion->child = NULL;
+    completion->sibling = NULL;
 
     return completion;
 }
 
 /* Takes ownership of *str */
 static itl_completion_t *itl_completion_append(itl_completion_t *completion,
-                                             itl_string_t *str)
+                                               itl_string_t *str)
 {
-    size_t i = completion->children_count;
-    itl_completion_t *entry;
+    itl_completion_t *new_child;
 
-    completion->children_count++;
-    completion->children = (itl_completion_t **)
-        itl_realloc(completion->children,
-                    sizeof(itl_completion_t *) * completion->children_count);
+    new_child = itl_completion_alloc();
+    new_child->str = str;
 
-    entry = itl_completion_alloc();
-    entry->str = str;
+    new_child->sibling = completion->child;
+    completion->child = new_child;
 
-    completion->children[i] = entry;
+    return new_child;
+}
 
-    return entry;
+#define itl_completion_free(completion)   \
+    do {                                  \
+        itl_string_free(completion->str); \
+        itl_free(completion);             \
+    } while (0)
+
+/* Recursively free all completions connected to current one */
+static void itl_completion_free_all(itl_completion_t *completion)
+{
+    if (completion) {
+        itl_completion_free_all(completion->child);
+        itl_completion_free_all(completion->sibling);
+        itl_completion_free(completion);
+    }
+}
+
+#define itl_global_completion_free()                         \
+        itl_completion_free_all(itl_global_completion_root); \
+
+typedef struct itl_offset itl_offset_t;
+
+struct itl_offset
+{
+    size_t start;
+    size_t end;
+};
+
+static itl_offset_t *itl_offset_alloc()
+{
+    itl_offset_t *offset = (itl_offset_t *)
+        itl_malloc(sizeof(itl_offset_t));
+
+    offset->start = 0;
+    offset->end = 0;
+
+    return offset;
+}
+
+#define itl_offset_free(offset) itl_free(offset)
+
+typedef struct itl_split itl_split_t;
+
+#define ITL_STRING_SPLIT_INIT_CAPACITY 4
+#define ITL_STRING_SPLIT_REALLOC_CAPACITY(old_size) \
+    ((old_size) << 1)
+
+struct itl_split
+{
+    itl_offset_t **offsets;
+    size_t size;
+    size_t capacity;
+};
+
+static itl_split_t *itl_split_alloc()
+{
+    size_t i;
+
+    itl_split_t *split = (itl_split_t *)
+        itl_malloc(sizeof(itl_split_t));
+    split->offsets = (itl_offset_t **)
+        itl_malloc(sizeof(itl_offset_t) * ITL_STRING_SPLIT_INIT_CAPACITY);
+
+    split->capacity = ITL_STRING_SPLIT_INIT_CAPACITY;
+    split->size = 0;
+
+    for (i = 0; i < split->capacity; ++i) {
+        split->offsets[i] = itl_offset_alloc();
+    }
+
+    return split;
+}
+
+static void itl_split_free(itl_split_t *split)
+{
+    size_t i;
+    for (i = 0; i < split->capacity; ++i) {
+        itl_offset_free(split->offsets[i]);
+    }
+    itl_free(split->offsets);
+    itl_free(split);
+}
+
+static void itl_split_extend(itl_split_t *split)
+{
+    size_t i;
+    itl_offset_t **new_offsets;
+
+    size_t old_capacity = split->capacity;
+
+    split->capacity = ITL_STRING_SPLIT_REALLOC_CAPACITY(split->capacity);
+    new_offsets = (itl_offset_t **)
+        itl_malloc(sizeof(itl_split_t *) * split->capacity);
+
+    for (i = 0; i < split->capacity; ++i) {
+        new_offsets[i] = itl_offset_alloc();
+        if (i < old_capacity) {
+            memcpy(new_offsets[i], split->offsets[i], sizeof(itl_offset_t));
+            itl_offset_free(split->offsets[i]);
+        }
+    }
+    itl_free(split->offsets);
+    split->offsets = new_offsets;
+}
+
+static void itl_split_append(itl_split_t *split, size_t start,
+                                    size_t end)
+{
+    itl_offset_t *offset;
+
+    while (split->capacity < split->size + 1) {
+        itl_split_extend(split);
+    }
+    offset = split->offsets[split->size];
+
+    offset->start = start;
+    offset->end = end;
+
+    split->size += 1;
+}
+
+static itl_split_t *itl_string_split(itl_string_t *str)
+{
+    size_t i, j;
+    itl_utf8_t ch;
+    itl_split_t *split = itl_split_alloc();
+
+    for (i = 0, j = 0; i < str->length; ++i) {
+        ch = str->chars[i];
+        if (ch.bytes[0] == ' ') {
+            itl_split_append(split, j, i - 1);
+            j = i + 1;
+        }
+    }
+    i = ITL_MAX(size_t, i, 1);
+    if (j < i) {
+        itl_split_append(split, j, i - 1);
+    }
+
+    return split;
 }
 
 /* Split the string by spaces. If a split fully matches, look at it's children.
    If none of the children fully match, rank them by longest common prefix, and
    autocomplete. If more than one have the same longest common prefix, print a
    list of possible matches. */
-static bool itl_completion_try(itl_string_t *str)
+static bool itl_string_complete(itl_string_t *str)
 {
-    (void)str;
+    bool used_prefix;
+    itl_offset_t *offset;
+    itl_string_t *possible_completion;
+    size_t i, prefix_length, longest_prefix;
+
+    itl_split_t *split = itl_string_split(str);
+    itl_completion_t *completion = itl_global_completion_root->child;
+
+    for (i = 0; i < split->size; ++i) {
+        longest_prefix = 0;
+        used_prefix = false;
+        possible_completion = NULL;
+        offset = split->offsets[i];
+        while (completion) {
+            prefix_length = itl_string_prefix_with_offset(str,
+                                                          offset->start,
+                                                          offset->end,
+                                                          completion->str);
+            if (prefix_length == completion->str->length) {
+                completion = completion->child;
+                break;
+            } else if (prefix_length == offset->end - offset->start + 1) {
+                if (longest_prefix < prefix_length) {
+                    longest_prefix = prefix_length;
+                    possible_completion = completion->str;
+                    used_prefix = true;
+                } else {
+                    completion = completion->sibling;
+                }
+            } else {
+                completion = completion->sibling;
+            }
+        }
+        if (used_prefix) {
+            itl_string_append_completion(str, possible_completion,
+                                         longest_prefix);
+            itl_split_free(split);
+            return true;
+        }
+    }
+
+    itl_split_free(split);
+    return false;
+}
+
+static bool itl_le_complete(itl_le_t *le)
+{
+    if (itl_string_complete(le->line)) {
+        le->cursor_position = le->line->length;
+        return true;
+    }
     return false;
 }
 
@@ -1351,8 +1611,7 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
     tl_last_control = esc;
     switch (esc & TL_MASK_KEY) {
         case TL_KEY_TAB: {
-            /* If didn't autocomplete, print a list with possible completions */
-            if (!itl_completion_try(le->line)) {};
+            itl_le_complete(le);
         } break;
         case TL_KEY_UP: {
             itl_string_t *prev_line;
@@ -1361,8 +1620,9 @@ static int itl_le_key_handle(itl_le_t *le, int esc)
                 prev_line = itl_string_alloc();
                 itl_string_copy(prev_line, le->line);
                 itl_global_history_get_prev(le);
-                /* Avoid appending the same string */
-                if (!itl_string_eq(le->line, prev_line)) {
+                /* Avoid appending same strings or empty strings */
+                if (!itl_string_equal(le->line, prev_line) &&
+                    prev_line->length > 0) {
                     itl_global_history_append(prev_line);
                 }
                 itl_string_free(prev_line);
@@ -1549,6 +1809,7 @@ int tl_init(void)
 int tl_exit(void)
 {
     itl_global_history_free();
+    itl_global_completion_free();
     itl_free(itl_global_line_buffer.chars);
 
     itl_trace("Exited, alloc count: %zu\n", itl_global_alloc_count);
@@ -1667,24 +1928,25 @@ void tl_setline(const char *str)
     itl_string_from_cstr(&itl_global_line_buffer, str);
 }
 
-void *tl_add_completion(void *prefix, const char *value)
+void *tl_add_completion(void *prefix, const char *completion)
 {
-    itl_completion_t *completion;
+    itl_completion_t *completion_node;
     itl_string_t *str;
 
     if (prefix != NULL) {
         str = itl_string_alloc();
-        itl_string_from_cstr(str, value);
-        completion = itl_completion_append((itl_completion_t *)prefix, str);
+        itl_string_from_cstr(str, completion);
+        completion_node = itl_completion_append((itl_completion_t *)prefix, str);
     } else {
         if (itl_global_completion_root == NULL) {
             itl_global_completion_root = itl_completion_alloc();
         }
-        itl_string_from_cstr(itl_global_completion_root->str, value);
-        completion = itl_global_completion_root;
+        str = itl_string_alloc();
+        itl_string_from_cstr(str, completion);
+        completion_node = itl_completion_append(itl_global_completion_root, str);
     }
 
-    return completion;
+    return completion_node;
 }
 
 #endif /* TOILETLINE_IMPLEMENTATION */
