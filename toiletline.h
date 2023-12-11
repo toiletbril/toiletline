@@ -556,14 +556,13 @@ static size_t itl_string_prefix_with_offset(itl_string_t *str1, size_t start,
 
     TL_ASSERT(start <= end);
 
-    /* @@@: If this is an assert then split triggers it */
     if (end > str1->length) {
-        return 0;
+        end = str1->length;
     }
 
-    for (i = start, k = 0; i <= end; ++i) {
+    for (i = start, k = 0; i < end; ++i) {
         if (!itl_utf8_equal(str1->chars[i], str2->chars[k])) {
-            return k;
+            break;
         }
         k += 1;
     }
@@ -582,8 +581,8 @@ static bool itl_string_equal(itl_string_t *str1, itl_string_t *str2)
             return false;
         }
     }
-    return itl_string_prefix_with_offset(str1, 0, str1->length - 1,
-                                   str2) == str1->length;
+    return itl_string_prefix_with_offset(str1, 0, str1->length,
+                                         str2) == str1->length;
 }
 
 static void itl_string_copy(itl_string_t *dst, const itl_string_t *src)
@@ -1537,17 +1536,18 @@ static itl_split_t *itl_string_split(itl_string_t *str)
         ch = str->chars[i];
         if (ch.bytes[0] == ' ') {
             if (!prev_space) {
-                itl_split_append(split, j, i - 1);
+                itl_split_append(split, j, i);
                 prev_space = true;
                 j = i + 1;
+            } else {
+                j += 1;
             }
         } else {
             prev_space = false;
         }
     }
-    i = ITL_MAX(size_t, i, 1);
-    if (j < i) {
-        itl_split_append(split, j, i - 1);
+    if (j <= i) {
+        itl_split_append(split, j, i);
     }
 
     return split;
@@ -1629,6 +1629,7 @@ static void itl_completion_list_dump_and_free(itl_completion_list_t *list)
 static bool itl_string_complete(itl_string_t *str)
 {
     itl_offset_t *offset;
+    size_t offset_difference;
     itl_string_t *possible_completion;
     size_t i, prefix_length, longest_prefix;
 
@@ -1640,18 +1641,21 @@ static bool itl_string_complete(itl_string_t *str)
         longest_prefix = 0;
         possible_completion = NULL;
         offset = split->offsets[i];
+        offset_difference = offset->end - offset->start;
         while (completion) {
             prefix_length = itl_string_prefix_with_offset(str,
                                                           offset->start,
                                                           offset->end,
                                                           completion->str);
+
             /* If completion fully matches, it must be a prefix */
             if (prefix_length == completion->str->length) {
                 completion = completion->child;
                 break;
             /* If offset difference is the prefix, it must be a new longest
                prefix */
-            } else if (prefix_length == offset->end - offset->start + 1) {
+            } else if (prefix_length == offset_difference ||
+                       offset_difference == 0) {
                 if (longest_prefix < prefix_length) {
                     longest_prefix = prefix_length;
                     possible_completion = completion->str;
@@ -1659,7 +1663,7 @@ static bool itl_string_complete(itl_string_t *str)
                 /* If this prefix is the longest, add this match to completion
                    list. If there is more than one match of this kind, dump them
                    instead of appending to the string */
-                if (longest_prefix == prefix_length) {
+                if (longest_prefix == prefix_length || offset_difference == 0) {
                     if (completion_list == NULL) {
                         completion_list = itl_completion_list_alloc();
                     }
@@ -1675,7 +1679,7 @@ static bool itl_string_complete(itl_string_t *str)
             completion = completion->sibling;
         }
         if (completion_list) {
-            if (completion_list->count > 1) {
+            if (completion_list->count > 1 || offset_difference == 0) {
                 itl_completion_list_dump_and_free(completion_list);
                 itl_split_free(split);
                 return true;
