@@ -1544,23 +1544,91 @@ static itl_split_t *itl_string_split(itl_string_t *str)
     return split;
 }
 
+#define ITL_CHAR_BUFFER_INIT_SIZE 32
+
+typedef struct itl_completion_list itl_completion_list_t;
+
+struct itl_completion_list
+{
+    char *data;
+    size_t count;
+    size_t size;
+    size_t capacity;
+};
+
+static itl_completion_list_t* itl_completion_list_alloc()
+{
+    itl_completion_list_t *list = (itl_completion_list_t *)
+        itl_malloc(sizeof(itl_completion_list_t));
+
+    list->size = 0;
+    list->count = 0;
+    list->capacity = ITL_CHAR_BUFFER_INIT_SIZE;
+
+    list->data = (char *)
+        itl_malloc(sizeof(char) * list->capacity);
+
+    return list;
+}
+
+#define itl_completion_list_free(list) \
+    do {                               \
+        itl_free(list->data);          \
+        itl_free(list);                \
+    } while (0)
+
+static void itl_completion_list_extend(itl_completion_list_t *list)
+{
+    list->capacity *= 2;
+    list->data = (char *)
+        itl_realloc(list->data, list->capacity);
+}
+
+static void itl_completion_list_append(itl_completion_list_t *list,
+                                       char *data, size_t size)
+{
+    size_t i, j;
+    size_t new_size = list->size + size + 1;
+
+    while (list->capacity < new_size) {
+        itl_completion_list_extend(list);
+    }
+    for (i = list->size, j = 0; j < size; ++i, ++j) {
+        list->data[i] = data[j];
+    }
+    list->size = new_size;
+    list->count += 1;
+}
+
+static void itl_completion_list_dump_and_free(itl_completion_list_t *list)
+{
+    const char* s = list->data;
+    fputc('\n', stdout);
+    while (*s != '\0') {
+        fputs(s, stdout);
+        fputs("  ", stdout);
+        s += strlen(s) + 2;
+    }
+    fputc('\n', stdout);
+    itl_completion_list_free(list);
+}
+
 /* Split the string by spaces. If a split fully matches, look at it's children.
    If none of the children fully match, rank them by longest common prefix, and
    autocomplete. If more than one have the same longest common prefix, print a
    list of possible matches. */
 static bool itl_string_complete(itl_string_t *str)
 {
-    bool used_prefix;
     itl_offset_t *offset;
     itl_string_t *possible_completion;
     size_t i, prefix_length, longest_prefix;
 
     itl_split_t *split = itl_string_split(str);
+    itl_completion_list_t *completion_list = NULL;
     itl_completion_t *completion = itl_global_completion_root->child;
 
     for (i = 0; i < split->size; ++i) {
         longest_prefix = 0;
-        used_prefix = false;
         possible_completion = NULL;
         offset = split->offsets[i];
         while (completion) {
@@ -1568,6 +1636,7 @@ static bool itl_string_complete(itl_string_t *str)
                                                           offset->start,
                                                           offset->end,
                                                           completion->str);
+            /* If completion fully matches, it must be a prefix */
             if (prefix_length == completion->str->length) {
                 completion = completion->child;
                 break;
@@ -1575,15 +1644,28 @@ static bool itl_string_complete(itl_string_t *str)
                 if (longest_prefix < prefix_length) {
                     longest_prefix = prefix_length;
                     possible_completion = completion->str;
-                    used_prefix = true;
-                } else {
-                    completion = completion->sibling;
                 }
-            } else {
-                completion = completion->sibling;
+                if (longest_prefix == prefix_length) {
+                    if (completion_list == NULL) {
+                        completion_list = itl_completion_list_alloc();
+                    }
+                    size_t cstr_size = completion->str->size + 1;
+                    char *cstr = (char *)
+                        itl_malloc(cstr_size * sizeof(char));
+                    itl_string_to_cstr(completion->str, cstr, cstr_size);
+                    itl_completion_list_append(completion_list, cstr, cstr_size);
+                    itl_free(cstr);
+                }
             }
+            /* Advance to next completion */
+            completion = completion->sibling;
         }
-        if (used_prefix) {
+        if (completion_list && completion_list->count > 1) {
+            itl_completion_list_dump_and_free(completion_list);
+            itl_split_free(split);
+            return true;
+        }
+        if (longest_prefix != 0) {
             itl_string_append_completion(str, possible_completion,
                                          longest_prefix);
             itl_split_free(split);
