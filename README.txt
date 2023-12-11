@@ -129,6 +129,15 @@ void tl_setline(const char *str);
 Predefine input for `tl_readline()`. Does not work for `tl_getc()`.
 
 
+void *tl_add_completion(void *prefix, const char *completion);
+--------
+Add a tab completion.
+
+Returns an opaque pointer that points to the added completion. Use it as
+`*prefix` parameter to add further completions. If `*prefix` is NULL, adds a
+root completion.
+
+
 int tl_getc(char *char_buffer, size_t size, const char *prompt);
 --------
 Read a character without waiting and modify `tl_last_control`.
