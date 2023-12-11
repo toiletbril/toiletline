@@ -1529,6 +1529,7 @@ static itl_split_t *itl_string_split(itl_string_t *str)
     size_t i, j;
     itl_utf8_t ch;
     bool prev_space;
+
     itl_split_t *split = itl_split_alloc();
 
     prev_space = false;
@@ -1540,6 +1541,7 @@ static itl_split_t *itl_string_split(itl_string_t *str)
                 prev_space = true;
                 j = i + 1;
             } else {
+                /* Account for multiple spaces in a row */
                 j += 1;
             }
         } else {
@@ -1609,17 +1611,21 @@ static void itl_completion_list_append(itl_completion_list_t *list,
     list->count += 1;
 }
 
-static void itl_completion_list_dump_and_free(itl_completion_list_t *list)
+static void itl_completion_list_dump(itl_completion_list_t *list)
 {
+    size_t count = 0;
     const char* s = list->data;
     fputc('\n', stdout);
     while (*s != '\0') {
         fputs(s, stdout);
-        fputs("  ", stdout);
+        if (++count != list->count) {
+            fputs("  ", stdout);
+        } else {
+            fputc('\n', stdout);
+            break;
+        }
         s += strlen(s) + 1;
     }
-    fputc('\n', stdout);
-    itl_completion_list_free(list);
 }
 
 /* Split the string by spaces. If a split fully matches, look at it's children.
@@ -1680,11 +1686,13 @@ static bool itl_string_complete(itl_string_t *str)
         }
         if (completion_list) {
             if (completion_list->count > 1 || offset_difference == 0) {
-                itl_completion_list_dump_and_free(completion_list);
+                itl_completion_list_dump(completion_list);
+                itl_completion_list_free(completion_list);
                 itl_split_free(split);
                 return true;
+            } else {
+                itl_completion_list_free(completion_list);
             }
-            itl_completion_list_free(completion_list);
         }
         if (longest_prefix != 0) {
             itl_string_append_completion(str, possible_completion,
