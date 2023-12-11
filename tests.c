@@ -236,8 +236,8 @@ static bool test_string_split(void)
     };
     const split_test_case_t positions[][SPLIT_POSITION_COUNT] = {
         /* { { start, end }, ... } */
-        { { 0, 4 }, { 6, 10 }, { 12, 17 } },
-        { { 0, 5 }, { 7, 9 }, { 11, 14 } }
+        { { 0, 5 }, { 6, 11 }, { 12, 18 } },
+        { { 0, 6 }, { 7, 10 }, { 11, 15 } }
     };
 
     for (i = 0; i < countof(tests); ++i) {
