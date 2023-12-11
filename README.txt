@@ -11,6 +11,7 @@ Current features
 ----------------
 * UTF-8 support;
 * Emacs controls;
+* Autocompletion;
 * Line wrapping;
 * In-memory history;
 * MIT License.
