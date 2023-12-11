@@ -2070,6 +2070,7 @@ void *tl_add_completion(void *prefix, const char *completion)
  * TODO:
  *  - itl_utf8_parse(): Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates)
  *    are invalid.
- *  - Tab without anything typed in should show root completions.
+ *  - Save history in a file.
+ *  - Clear completion nodes.
  *  - Introduce TL_DEF and ITL_DEF macros.
  */

@@ -17,19 +17,21 @@ int main(void)
            "character support.\n");
 #endif
 
-    /* first         what           wow
-         |          /    \
-       second    other  something
-         |
-       third                            */
-
-    tl_add_completion(NULL, "wow");
+    /* Tab completions are a tree structure:
+         first          what         wow
+           |           /    \
+         second  something  other
+           |         /
+         third     else             привет   */
     void *first_completion = tl_add_completion(NULL, "first");
-    void *what_completion = tl_add_completion(NULL, "what");
-    tl_add_completion(what_completion, "other");
-    tl_add_completion(what_completion, "something");
     void *second_completion = tl_add_completion(first_completion, "second");
     tl_add_completion(second_completion, "third");
+    void *what_completion = tl_add_completion(NULL, "what");
+    tl_add_completion(what_completion, "other");
+    void *smth_completion = tl_add_completion(what_completion, "something");
+    tl_add_completion(smth_completion, "else");
+    tl_add_completion(NULL, "wow");
+    tl_add_completion(NULL, "привет");
 
     char line_buffer[LINE_BUF_SIZE] = {0};
     int code = 0;
