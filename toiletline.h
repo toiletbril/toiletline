@@ -1588,7 +1588,7 @@ static void itl_completion_list_append(itl_completion_list_t *list,
                                        char *data, size_t size)
 {
     size_t i, j;
-    size_t new_size = list->size + size + 1;
+    size_t new_size = list->size + size;
 
     while (list->capacity < new_size) {
         itl_completion_list_extend(list);
@@ -1607,7 +1607,7 @@ static void itl_completion_list_dump_and_free(itl_completion_list_t *list)
     while (*s != '\0') {
         fputs(s, stdout);
         fputs("  ", stdout);
-        s += strlen(s) + 2;
+        s += strlen(s) + 1;
     }
     fputc('\n', stdout);
     itl_completion_list_free(list);
