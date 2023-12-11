@@ -21,7 +21,7 @@ int main(void)
          |          /    \
        second    other  something
          |
-       third                      */
+       third                            */
 
     tl_add_completion(NULL, "wow");
     void *first_completion = tl_add_completion(NULL, "first");
