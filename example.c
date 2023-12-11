@@ -17,11 +17,13 @@ int main(void)
            "character support.\n");
 #endif
 
-    /* first         what
+    /* first         what           wow
          |          /    \
        second    other  something
          |
        third                      */
+
+    tl_add_completion(NULL, "wow");
     void *first_completion = tl_add_completion(NULL, "first");
     void *what_completion = tl_add_completion(NULL, "what");
     tl_add_completion(what_completion, "other");
