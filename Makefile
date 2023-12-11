@@ -1,6 +1,7 @@
 CC ?= clang
-CFLAGS := -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic -std=c99 -fsanitize=undefined
-DBGFLAGS := -ggdb -O0 -DITL_DEBUG
+CFLAGS := -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic
+-std=c99 -fsanitize=undefined -g3
+DBGFLAGS := -O0 -DITL_DEBUG -fsanitize=address
 
 default:
 	@echo "Available targets: test, examples, examples_debug, see_bytes, clean"
