@@ -550,15 +550,17 @@ static void itl_string_extend(itl_string_t *str)
 
 /* Return length of the matching prefix */
 static size_t itl_string_prefix_with_offset(itl_string_t *str1, size_t start,
-                                      size_t end, itl_string_t *str2)
+                                            size_t end, itl_string_t *str2)
 {
     size_t i, k;
 
-    TL_ASSERT(end >= start);
+    TL_ASSERT(start <= end);
 
+    /* @@@: If this is an assert then split triggers it */
     if (end > str1->length) {
         return 0;
     }
+
     for (i = start, k = 0; i <= end; ++i) {
         if (!itl_utf8_equal(str1->chars[i], str2->chars[k])) {
             return k;
@@ -1508,7 +1510,7 @@ static void itl_split_extend(itl_split_t *split)
 }
 
 static void itl_split_append(itl_split_t *split, size_t start,
-                                    size_t end)
+                             size_t end)
 {
     itl_offset_t *offset;
 
@@ -1527,13 +1529,20 @@ static itl_split_t *itl_string_split(itl_string_t *str)
 {
     size_t i, j;
     itl_utf8_t ch;
+    bool prev_space;
     itl_split_t *split = itl_split_alloc();
 
+    prev_space = false;
     for (i = 0, j = 0; i < str->length; ++i) {
         ch = str->chars[i];
         if (ch.bytes[0] == ' ') {
-            itl_split_append(split, j, i - 1);
-            j = i + 1;
+            if (!prev_space) {
+                itl_split_append(split, j, i - 1);
+                prev_space = true;
+                j = i + 1;
+            }
+        } else {
+            prev_space = false;
         }
     }
     i = ITL_MAX(size_t, i, 1);
@@ -1640,11 +1649,16 @@ static bool itl_string_complete(itl_string_t *str)
             if (prefix_length == completion->str->length) {
                 completion = completion->child;
                 break;
+            /* If offset difference is the prefix, it must be a new longest
+               prefix */
             } else if (prefix_length == offset->end - offset->start + 1) {
                 if (longest_prefix < prefix_length) {
                     longest_prefix = prefix_length;
                     possible_completion = completion->str;
                 }
+                /* If this prefix is the longest, add this match to completion
+                   list. If there is more than one match of this kind, dump them
+                   instead of appending to the string */
                 if (longest_prefix == prefix_length) {
                     if (completion_list == NULL) {
                         completion_list = itl_completion_list_alloc();
@@ -1660,10 +1674,13 @@ static bool itl_string_complete(itl_string_t *str)
             /* Advance to next completion */
             completion = completion->sibling;
         }
-        if (completion_list && completion_list->count > 1) {
-            itl_completion_list_dump_and_free(completion_list);
-            itl_split_free(split);
-            return true;
+        if (completion_list) {
+            if (completion_list->count > 1) {
+                itl_completion_list_dump_and_free(completion_list);
+                itl_split_free(split);
+                return true;
+            }
+            itl_completion_list_free(completion_list);
         }
         if (longest_prefix != 0) {
             itl_string_append_completion(str, possible_completion,
@@ -2041,6 +2058,6 @@ void *tl_add_completion(void *prefix, const char *completion)
  * TODO:
  *  - itl_utf8_parse(): Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates)
  *    are invalid.
- *  - Advanced tab completion and docs for it.
+ *  - Tab without anything typed in should show root completions.
  *  - Introduce TL_DEF and ITL_DEF macros.
  */
