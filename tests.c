@@ -13,9 +13,9 @@ static char current_function_name[128];
 
 #define countof(a) (sizeof(a)/sizeof((a)[0]))
 
-typedef struct string_result string_result_t;
+typedef struct string_test_case string_test_case_t;
 
-struct string_result
+struct string_test_case
 {
     const char *original;
     const char *should_be;
@@ -84,10 +84,10 @@ static bool test_string_shift(void)
     char out_buffer[OUT_BUFFER_SIZE];
 
     itl_string_t *str;
-    string_result_t test;
+    string_test_case_t test;
     shift_test_case_t shift;
 
-    const string_result_t tests[] = {
+    const string_test_case_t tests[] = {
         /* original, should_be */
         { "hello world sailor", "hello sailor" },
         { "это строка", "то строка" },
@@ -125,10 +125,10 @@ static bool test_string_erase(void)
     char out_buffer[OUT_BUFFER_SIZE];
 
     itl_string_t *str;
-    string_result_t test;
+    string_test_case_t test;
     shift_test_case_t erase;
 
-    const string_result_t tests[] = {
+    const string_test_case_t tests[] = {
         /* original, should_be */
         { "hello world sailor", "hello sailor" },
         { "это строка", "то строка" },
@@ -172,11 +172,11 @@ static bool test_string_insert(void)
     char out_buffer[OUT_BUFFER_SIZE];
 
     itl_string_t *str;
-    string_result_t test;
+    string_test_case_t test;
 
-    itl_utf8_t A = itl_utf8_new((uint8_t[4]){ 0x41 }, 1); 
+    itl_utf8_t A = itl_utf8_new((uint8_t[4]){ 0x41 }, 1);
 
-    const string_result_t tests[] = {
+    const string_test_case_t tests[] = {
         /* original, should_be */
         { "hello, wrld", "hello, wArld" },
         { "hello, wrld", "hello, wrldA" },
@@ -209,6 +209,60 @@ static bool test_string_insert(void)
     return true;
 }
 
+typedef struct split_test_case split_test_case_t;
+
+struct split_test_case
+{
+    size_t start;
+    size_t end;
+};
+
+#define SPLIT_POSITION_COUNT 3
+
+static bool test_string_split(void)
+{
+    size_t i, j;
+    const char *cstr;
+
+    itl_string_t *str;
+    itl_split_t *split;
+    split_test_case_t pos;
+    const itl_offset_t *offset;
+
+    const char *tests[] = {
+        /* original */
+        "hello world sailor",
+        "привет как дела",
+    };
+    const split_test_case_t positions[][SPLIT_POSITION_COUNT] = {
+        /* { { start, end }, ... } */
+        { { 0, 4 }, { 6, 10 }, { 12, 17 } },
+        { { 0, 5 }, { 7, 9 }, { 11, 14 } }
+    };
+
+    for (i = 0; i < countof(tests); ++i) {
+        cstr = tests[i];
+        str = itl_string_alloc();
+
+        itl_string_from_cstr(str, cstr);
+        split = itl_string_split(str);
+
+        for (j = 0; j < SPLIT_POSITION_COUNT; ++j) {
+            pos = positions[i][j];
+            offset = split->offsets[j];
+            if (offset->start != pos.start || offset->end != pos.end) {
+                test_printf("Result %zu: '%s', split %zu: start %zu/%zu, end "
+                            "%zu/%zu\n",
+                            i, cstr, j, offset->start, pos.start, offset->end,
+                            pos.end);
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -229,7 +283,8 @@ test_case_t test_cases[] = {
     DEFINE_TEST_CASE(test_string_from_cstr),
     DEFINE_TEST_CASE(test_string_shift),
     DEFINE_TEST_CASE(test_string_erase),
-    DEFINE_TEST_CASE(test_string_insert)
+    DEFINE_TEST_CASE(test_string_insert),
+    DEFINE_TEST_CASE(test_string_split)
 };
 
 int main(void) {
