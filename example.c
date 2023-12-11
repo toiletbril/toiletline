@@ -17,6 +17,18 @@ int main(void)
            "character support.\n");
 #endif
 
+    /* first         what
+         |          /    \
+       second    other  something
+         |
+       third                      */
+    void *first_completion = tl_add_completion(NULL, "first");
+    void *what_completion = tl_add_completion(NULL, "what");
+    tl_add_completion(what_completion, "other");
+    tl_add_completion(what_completion, "something");
+    void *second_completion = tl_add_completion(first_completion, "second");
+    tl_add_completion(second_completion, "third");
+
     char line_buffer[LINE_BUF_SIZE] = {0};
     int code = 0;
 
