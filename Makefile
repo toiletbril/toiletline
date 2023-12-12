@@ -25,9 +25,11 @@ examples_debug: examples
 see_bytes: CFLAGS += "-DITL_SEE_BYTES"
 see_bytes: example
 
+ITEMS_TO_REMOVE := ./example_getc ./example ./example_history.txt ./tests
+
 clean:
-	@echo "RM ./example_getc ./example ./tests"
-	@rm -f ./example_getc ./example ./tests
+	@echo "RM $(ITEMS_TO_REMOVE)"
+	@rm -f $(ITEMS_TO_REMOVE)
 
 .PHONY: default
 .PHONY: test examples examples_debug see_bytes clean
