@@ -2,6 +2,7 @@
 #include "toiletline.h"
 
 #define LINE_BUF_SIZE 1024
+#define HISTORY_FILE "example_history.txt"
 
 int main(void)
 {
@@ -23,6 +24,7 @@ int main(void)
          second  something  other
            |         /
          third     else             привет   */
+
     void *first_completion = tl_add_completion(NULL, "first");
     void *second_completion = tl_add_completion(first_completion, "second");
     tl_add_completion(second_completion, "third");
@@ -35,6 +37,8 @@ int main(void)
 
     char line_buffer[LINE_BUF_SIZE] = {0};
     int code = 0;
+
+    tl_load_history(HISTORY_FILE);
 
     int i = 0;
     while (code >= 0) {
@@ -66,6 +70,8 @@ int main(void)
         printf("An error occured (%d)\n", code);
 
     fflush(stdout);
+
+    tl_dump_history(HISTORY_FILE);
 
     tl_exit();
 
