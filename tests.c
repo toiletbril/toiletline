@@ -245,7 +245,7 @@ static bool test_string_split(void)
         str = itl_string_alloc();
 
         itl_string_from_cstr(str, cstr);
-        split = itl_string_split(str);
+        split = itl_string_split(str, ' ');
 
         for (j = 0; j < SPLIT_POSITION_COUNT; ++j) {
             pos = positions[i][j];

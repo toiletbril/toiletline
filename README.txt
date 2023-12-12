@@ -1,7 +1,7 @@
 toiletline
 ----------------
-Tiny, crossplatform, single-header shell library, meant to replace a small
-subset of GNU Readline, and work on both Linux and Windows.
+Tiny, crossplatform, single-header shell library, meant to replace a subset of
+GNU Readline, and work on both Linux and Windows out of the box.
 
 NOTE: On Windows, UTF-8 locale feature is required for proper multibyte
 character support.
@@ -13,7 +13,7 @@ Current features
 * Emacs controls;
 * Autocompletion;
 * Line wrapping;
-* In-memory history;
+* In-memory/persistent history;
 * MIT License.
 
 
@@ -130,6 +130,16 @@ void tl_setline(const char *str);
 Predefine input for `tl_readline()`. Does not work for `tl_getc()`.
 
 
+int tl_getc(char *char_buffer, size_t size, const char *prompt);
+--------
+Read a character without waiting and modify `tl_last_control`.
+
+Returns:
+* TL_SUCCESS on a character;
+* TL_PRESSED_CONTROL_SEQUENCE on a control sequence (`tl_last_control` to check
+  which one).
+
+
 void *tl_add_completion(void *prefix, const char *completion);
 --------
 Add a tab completion.
@@ -139,14 +149,23 @@ Returns an opaque pointer that points to the added completion. Use it as
 root completion.
 
 
-int tl_getc(char *char_buffer, size_t size, const char *prompt);
+void tl_delete_completion(void *completion);
 --------
-Read a character without waiting and modify `tl_last_control`.
+Delete a tab completion returned from `tl_add_completion()` and it's children.
 
-Returns:
-* TL_SUCCESS on a character;
-* TL_PRESSED_CONTROL_SEQUENCE on a control sequence (`tl_last_control` to check
-  which one).
+
+int tl_load_history(const char *file_path);
+--------
+Load history from a file.
+
+Returns TL_SUCCESS or `-errno` on failure.
+
+
+int tl_dump_history(const char *file_path);
+--------
+Dump history to a file.
+
+Returns TL_SUCCESS or `-errno` on failure.
 
 
 size_t tl_utf8_strlen(const char *utf8_str);
