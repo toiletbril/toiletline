@@ -259,7 +259,8 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
 #if defined ITL_DEFAULT_ASSERT
     #define TL_ASSERT(boolval)                                                \
         if (!(boolval)) {                                                     \
-            printf("%s:%d: assert fail: %s\n", __FILE__, __LINE__, #boolval); \
+            fprintf(stderr, "%s:%d: assert fail: %s\n",                       \
+                    __FILE__, __LINE__, #boolval);                            \
             fflush(stderr);                                                   \
             ITL_DEBUG_TRAP;                                                   \
         }
