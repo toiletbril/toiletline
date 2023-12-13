@@ -20,7 +20,7 @@ Current features
 Documentation
 ----------------
 Before you include this file in C or C++ file, define
-"TOILETLINE_IMPLEMENTATION" to create the implementation.
+`TOILETLINE_IMPLEMENTATION` to create the implementation.
 
 If you want to use this library in other languages, you will need to make a .c
 file which creates implementation and includes the library. Compile it to object
@@ -32,9 +32,11 @@ Configuration macros
 These should be defined before including, in the same file with implementation
 macro.
 
+* TL_DEF and ITL_DEF are put before every public and internal definitions
+  respectively.
 * TL_HISTORY_MAX_SIZE configures maximum history size;
-* TL_NO_SUSPEND prevents Ctrl-Z from sending SIGTSTP to the terminal. Since
-  Windows does not have this signal, exit(1) will be called instead;
+* TL_NO_SUSPEND prevents Ctrl-Z from sending `SIGTSTP` to the terminal. Since
+  Windows does not have this signal, `exit(1)` will be called instead;
 * TL_SIZE_USE_ESCAPES forces to use escape codes instead of syscalls for
   retrieving terminal size;
 * TL_ASSERT configures function used for assertions;
@@ -145,27 +147,29 @@ void *tl_add_completion(void *prefix, const char *completion);
 Add a tab completion.
 
 Returns an opaque pointer that points to the added completion. Use it as
-`*prefix` parameter to add further completions. If `*prefix` is NULL, adds a
+`*prefix` parameter to add further completions. If `*prefix` is `NULL`, adds a
 root completion.
 
 
 void tl_delete_completion(void *completion);
 --------
-Delete a tab completion returned from `tl_add_completion()` and it's children.
+Delete a tab completion and it's children using pointer returned from
+`tl_add_completion()`.
 
 
 int tl_load_history(const char *file_path);
 --------
 Load history from a file.
 
-Returns TL_SUCCESS or `-errno` on failure.
+Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
+failures.
 
 
 int tl_dump_history(const char *file_path);
 --------
-Dump history to a file.
+Dump history to a file, overwriting it.
 
-Returns TL_SUCCESS or `-errno` on failure.
+Returns `TL_SUCCESS` or `-errno` on failure.
 
 
 size_t tl_utf8_strlen(const char *utf8_str);
