@@ -25,7 +25,13 @@ examples_debug: examples
 see_bytes: CFLAGS += "-DITL_SEE_BYTES"
 see_bytes: example
 
-ITEMS_TO_REMOVE := ./example_getc ./example ./example_history.txt ./tests
+ITEMS_TO_REMOVE :=
+ifeq ($(OS),Windows_NT)
+	ITEMS_TO_REMOVE = ./example_getc.exe ./example.exe ./example_history.txt
+	./tests
+else
+	ITEMS_TO_REMOVE = ./example_getc ./example ./example_history.txt ./tests
+endif
 
 clean:
 	@echo "RM $(ITEMS_TO_REMOVE)"
