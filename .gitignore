@@ -3,4 +3,5 @@ temp/
 example_getc
 example
 tests
+example_history.txt
 *.exe
