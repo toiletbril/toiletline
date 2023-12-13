@@ -70,9 +70,7 @@ int main(void)
         printf("An error occured (%d)\n", code);
 
     fflush(stdout);
-
     tl_dump_history(HISTORY_FILE);
-
     tl_exit();
 
     return 0;
