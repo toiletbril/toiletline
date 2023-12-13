@@ -35,15 +35,15 @@ extern "C" {
 
 #include <stddef.h>
 
-/* If not defined, Ctrl-Z will raise SIGTSTP internally and toiletline will
- * resume normally on SIGCONT. This is the preferred way of doing SIGTSTP
+/* If not defined, Ctrl-Z will raise `SIGTSTP` internally and toiletline will
+ * resume normally on SIGCONT. This is the preferred way of doing `SIGTSTP`
  * without breaking terminal's state if you haven't called tl_exit yet. */
 #if !defined TL_NO_SUSPEND
     #define ITL_SUSPEND
 #endif /* TL_NO_SUSPEND */
 
-/* To use custom assertions or to disable them, you can define TL_ASSERT to some
- * other function or nothing before including. */
+/* To use custom assertions or to disable them, you can define `TL_ASSERT` to
+ * some other function or nothing before including. */
 #if !defined TL_ASSERT
     #define ITL_DEFAULT_ASSERT
 #endif /* TL_ASSERT */
@@ -53,8 +53,8 @@ extern "C" {
     #define TL_MALLOC(size)         malloc(size)
     #define TL_REALLOC(block, size) realloc(block, size)
     #define TL_FREE(ptr)            free(ptr)
-    /* Will be called on failed allocation.
-     * TL_NO_ABORT can be defined to disable failure checking. */
+    /* Will be called on failed allocation. `TL_NO_ABORT` can be defined to
+     * disable failure checking. */
     #define TL_ABORT() abort()
 #endif /* TL_MALLOC */
 
@@ -89,7 +89,7 @@ extern "C" {
 
 /**
  * Control sequences.
- * Last control sequence used will be stored in 'tl_last_control'.
+ * Last control sequence used will be stored in `tl_last_control`.
  */
 typedef enum
 {
@@ -129,7 +129,7 @@ typedef enum
 #define TL_MASK_KEY 0x00FFFFFF
 #define TL_MASK_MOD 0xFF000000
 
-/* This is a helper and is not meant to be used directly. Use tl_last_control
+/* This is a helper and is not meant to be used directly. Use `tl_last_control`
  * instead. */
 TL_DEF int *itl__last_control_location(void);
 
@@ -167,27 +167,28 @@ TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
  */
 TL_DEF void *tl_add_completion(void *prefix, const char *completion);
 /**
- * Delete a tab completion returned from `tl_add_completion()` and it's
- * children.
+ * Delete a tab completion and it's children using pointer returned from
+ * `tl_add_completion()`.
  */
 TL_DEF void tl_delete_completion(void *completion);
 /**
  * Load history from a file.
  *
- * Returns TL_SUCCESS or `-errno` on failure.
+ * Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
+ * failures.
  */
 TL_DEF int tl_load_history(const char *file_path);
 /**
- * Dump history to a file.
+ * Dump history to a file, overwriting it.
  *
- * Returns TL_SUCCESS or `-errno` on failure.
+ * Returns `TL_SUCCESS` or `-errno` on failure.
  */
 TL_DEF int tl_dump_history(const char *file_path);
 /**
  * Returns the number of UTF-8 characters.
  *
- * Since number of bytes can be bigger than amount of characters, regular strlen
- * will not work, and will only return the number of bytes before \0.
+ * Since number of bytes can be bigger than amount of characters, regular
+ * `strlen()` will not work, and will only return the number of bytes before \0.
  */
 TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
 
@@ -276,22 +277,23 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
 #include <string.h>
 
 #if defined ITL_DEBUG
-    #define itl_trace(...)    fprintf(stderr, "[TRACE] " __VA_ARGS__)
+    #define itl_traceln(...)  fprintf(stderr, "\n[TRACE] " __VA_ARGS__)
     /* Print to stderr on the same line */
-    #define itl_trace_sl(...) fprintf(stderr, __VA_ARGS__)
-    /* Print LF to stderr */
-    #define itl_trace_lf()    fprintf(stderr, "\n")
+    #define itl_trace(...) fprintf(stderr, __VA_ARGS__)
 #else /* ITL_DEBUG */
-    #define itl_trace(...)    /* nothing */
-    #define itl_trace_sl(...) /* nothing */
-    #define itl_trace_lf()    /* nothing */
+    #define itl_traceln(...)    /* nothing */
+    #define itl_trace(...) /* nothing */
 #endif
 
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 #define ITL_MIN(type, i, j) ((((type)i) < ((type)j)) ? ((type)i) : ((type)j))
 
-#define ITL_TRY(boolval, return_error) \
-    if (!(boolval)) return (return_error)
+#define ITL_TRY(boolval, return_error)           \
+    if (!(boolval)) {                            \
+        itl_traceln("\n%s:%d: try fail: %s\n",       \
+                  __FILE__, __LINE__, #boolval); \
+        return (return_error);                   \
+    }
 
 #if defined ITL_WIN32
 ITL_DEF ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
@@ -326,7 +328,7 @@ ITL_DEF bool itl_enter_raw_mode(void)
     ITL_TRY(SetConsoleCP(CP_UTF8), false);
 
     mode = _setmode(STDIN_FILENO, _O_BINARY);
-    ITL_TRY(mode == -1, false);
+    ITL_TRY(mode =! -1, false);
 
     itl_global_original_mode = mode;
 #elif defined ITL_POSIX
@@ -522,8 +524,7 @@ ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
 
     size = itl_utf8_width(first_byte);
     if (size == 0) { /* invalid character */
-        itl_trace_lf();
-        itl_trace("Invalid UTF-8 sequence '%d'\n", (uint8_t)first_byte);
+        itl_traceln("Invalid UTF-8 sequence '%d'\n", (uint8_t)first_byte);
         return itl_replacement_character;
     }
 
@@ -534,21 +535,19 @@ ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
 
     /* Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid. */
     if (size > 1 && itl_is_surrogate(first_byte, bytes[1])) {
-        itl_trace_lf();
-        itl_trace("Invalid UTF-16 surrogate: '%02X %02X'\n",
+        itl_traceln("Invalid UTF-16 surrogate: '%02X %02X'\n",
                   first_byte, bytes[1]);
         return itl_replacement_character;
     }
 
 #if defined ITL_DEBUG
-    itl_trace_lf();
-    itl_trace("utf8 char size: %zu\n'", size);
-    itl_trace("utf8 char bytes: '");
+    itl_traceln("utf8 char size: %zu\n'", size);
+    itl_traceln("utf8 char bytes: '");
 
     for (i = 0; i < (int)size - 1; ++i) {
-        itl_trace_sl("%02X ", bytes[i]);
+        itl_trace("%02X ", bytes[i]);
     }
-    itl_trace_sl("%02X'\n", bytes[size - 1]);
+    itl_trace("%02X'\n", bytes[size - 1]);
 #endif /* ITL_DEBUG */
 
     return itl_utf8_new(bytes, size);
@@ -718,9 +717,8 @@ ITL_DEF void itl_string_shift(itl_string_t *str, size_t position,
 ITL_DEF void itl_string_erase(itl_string_t *str, size_t position,
                              size_t count, bool backwards)
 {
-    itl_trace_lf();
-    itl_trace("string_erase: pos: %zu, count: %zu, backwards: %d, len %zu\n",
-              position, count, backwards, str->length);
+    itl_traceln("string_erase: pos: %zu, count: %zu, backwards: %d, len %zu\n",
+                position, count, backwards, str->length);
 
     if (count > str->length) {
         count = str->length;
@@ -960,7 +958,7 @@ ITL_DEF bool itl_global_history_append(itl_string_t *str)
 
 #define ITL_HISTORY_FILE_BUFFER_INIT_SIZE 64
 
-/* Returns TL_SUCCESS, or -errno */
+/* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF int itl_global_history_load_from_file(const char *path)
 {
     int ch;
@@ -993,15 +991,29 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
             ret = -errno;
             errno = 0;
             goto end;
-        } else if (ch != '\n') {
-            buffer[line_pos] = (char)ch;
+        }
+#if defined ITL_WIN32
+        else if (ch == '\r') {
             line_pos += 1;
-        } else {
+            continue;
+        }
+#endif /* ITL_WIN32 */
+        else if (ch == '\n') {
             buffer[line_pos] = '\0';
-            itl_trace("history entry: %s\n", buffer);
             itl_string_from_cstr(str, buffer);
             itl_global_history_append(str);
+            itl_traceln("loaded history entry: %s\n", buffer);
             line_pos = 0;
+        /* Loaded a binary file on accident? */
+        } else if (iscntrl((uint8_t)ch)) {
+            ret = -EINVAL;
+            itl_traceln("non-text byte '%X' detected in history file\n",
+                        (uint8_t)ch);
+            itl_global_history_free();
+            goto end;
+        } else {
+            buffer[line_pos] = (char)ch;
+            line_pos += 1;
         }
     }
 
@@ -1150,8 +1162,7 @@ ITL_DEF size_t itl_string_steps_to_token(itl_string_t *str, size_t position,
         --i;
     }
 
-    itl_trace_lf();
-    itl_trace("steps: i: %zu\n", i);
+    itl_traceln("steps: i: %zu\n", i);
 
     while (i < str->length) {
         byte = str->chars[i].bytes[0];
@@ -1195,7 +1206,7 @@ ITL_DEF void itl_global_history_get_prev(itl_le_t *le)
 
     if (le->history_selected_item) {
         if (le->history_selected_item->prev) {
-              le->history_selected_item = le->history_selected_item->prev;
+            le->history_selected_item = le->history_selected_item->prev;
         }
     } else {
         le->history_selected_item = itl_global_history_last;
@@ -1220,6 +1231,81 @@ ITL_DEF void itl_global_history_get_next(itl_le_t *le)
     }
 }
 
+#define ITL_CHAR_BUFFER_INIT_SIZE 32
+
+typedef struct itl_char_buf itl_char_buf_t;
+
+/* Holds multiple strings in *data, delimited by \0. */
+struct itl_char_buf
+{
+    char *data;
+    size_t size;
+    size_t capacity;
+    size_t count;
+};
+
+ITL_DEF itl_char_buf_t* itl_char_buf_alloc(void)
+{
+    itl_char_buf_t *list = (itl_char_buf_t *)
+        itl_malloc(sizeof(itl_char_buf_t));
+
+    list->size = 0;
+    list->count = 0;
+    list->capacity = ITL_CHAR_BUFFER_INIT_SIZE;
+
+    list->data = (char *)
+        itl_malloc(sizeof(char) * list->capacity);
+
+    return list;
+}
+
+#define itl_char_buf_free(list) \
+    do {                               \
+        itl_free(list->data);          \
+        itl_free(list);                \
+    } while (0)
+
+ITL_DEF void itl_char_buf_extend(itl_char_buf_t *cb)
+{
+    cb->capacity *= 2;
+    cb->data = (char *)
+        itl_realloc(cb->data, cb->capacity);
+}
+
+ITL_DEF void itl_char_buf_append(itl_char_buf_t *cb, char *data, size_t size)
+{
+    size_t i, j;
+    size_t new_size = cb->size + size;
+
+    while (cb->capacity < new_size) {
+        itl_char_buf_extend(cb);
+    }
+    for (i = cb->size, j = 0; j < size; ++i, ++j) {
+        cb->data[i] = data[j];
+    }
+    cb->size = new_size;
+    cb->count += 1;
+}
+
+ITL_DEF void itl_char_buf_dump(itl_char_buf_t *cb)
+{
+    size_t count = 0;
+    const char* s = cb->data;
+    fputc('\n', stdout);
+    while (*s != '\0') {
+        fputs(s, stdout);
+        if (++count != cb->count) {
+            fputs("  ", stdout);
+        } else {
+            fputc('\n', stdout);
+            break;
+        }
+        s += strlen(s) + 1;
+    }
+    fflush(stdout);
+}
+
+/* @@@: printf and fputs are slow. */
 #define itl_tty_hide_cursor() fputs("\x1b[?25l", stdout)
 #define itl_tty_show_cursor() fputs("\x1b[?25h", stdout)
 
@@ -1244,8 +1330,6 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
 
     itl_tty_move_forward(999);
     itl_tty_status_report();
-
-    /* This does not work without flushing if setvbuf was called previously */
     fflush(stdout);
 
     i = 0;
@@ -1312,7 +1396,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     wrap_cursor_row =
         (le->cursor_position + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
 
-    itl_trace("wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
+    itl_traceln("wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
               wrap_cursor_row, itl_global_tty_prev_wrap_row,
               wrap_cursor_col, le->cursor_position);
 
@@ -1671,7 +1755,7 @@ ITL_DEF void itl_split_extend(itl_split_t *split)
 }
 
 ITL_DEF void itl_split_append(itl_split_t *split, size_t start,
-                             size_t end)
+                              size_t end)
 {
     itl_offset_t *offset;
 
@@ -1717,84 +1801,11 @@ ITL_DEF itl_split_t *itl_string_split(itl_string_t *str, char delimiter)
     return split;
 }
 
-#define ITL_CHAR_BUFFER_INIT_SIZE 32
-
-typedef struct itl_completion_list itl_completion_list_t;
-
-struct itl_completion_list
-{
-    char *data;
-    size_t count;
-    size_t size;
-    size_t capacity;
-};
-
-ITL_DEF itl_completion_list_t* itl_completion_list_alloc(void)
-{
-    itl_completion_list_t *list = (itl_completion_list_t *)
-        itl_malloc(sizeof(itl_completion_list_t));
-
-    list->size = 0;
-    list->count = 0;
-    list->capacity = ITL_CHAR_BUFFER_INIT_SIZE;
-
-    list->data = (char *)
-        itl_malloc(sizeof(char) * list->capacity);
-
-    return list;
-}
-
-#define itl_completion_list_free(list) \
-    do {                               \
-        itl_free(list->data);          \
-        itl_free(list);                \
-    } while (0)
-
-ITL_DEF void itl_completion_list_extend(itl_completion_list_t *list)
-{
-    list->capacity *= 2;
-    list->data = (char *)
-        itl_realloc(list->data, list->capacity);
-}
-
-ITL_DEF void itl_completion_list_append(itl_completion_list_t *list,
-                                       char *data, size_t size)
-{
-    size_t i, j;
-    size_t new_size = list->size + size;
-
-    while (list->capacity < new_size) {
-        itl_completion_list_extend(list);
-    }
-    for (i = list->size, j = 0; j < size; ++i, ++j) {
-        list->data[i] = data[j];
-    }
-    list->size = new_size;
-    list->count += 1;
-}
-
-ITL_DEF void itl_completion_list_dump(itl_completion_list_t *list)
-{
-    size_t count = 0;
-    const char* s = list->data;
-    fputc('\n', stdout);
-    while (*s != '\0') {
-        fputs(s, stdout);
-        if (++count != list->count) {
-            fputs("  ", stdout);
-        } else {
-            fputc('\n', stdout);
-            break;
-        }
-        s += strlen(s) + 1;
-    }
-}
-
 /* Split the string by spaces. If a split fully matches, look at it's children.
    If none of the children fully match, rank them by longest common prefix, and
    autocomplete. If more than one have the same longest common prefix, print a
    list of possible matches. */
-ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
+ITL_DEF itl_char_buf_t *itl_string_complete(itl_string_t *str)
 {
     itl_offset_t *offset;
     size_t offset_difference;
@@ -1802,7 +1813,9 @@ ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
     size_t i, prefix_length, longest_prefix;
 
     itl_split_t *split = itl_string_split(str, ' ');
-    itl_completion_list_t *completion_list = NULL;
+    /* @@@: storing whole completions in char buf instead of just their pointers
+       is excessive. */
+    itl_char_buf_t *completion_list = NULL;
     itl_completion_t *completion = itl_global_completion_root->child;
 
     for (i = 0; i < split->size; ++i) {
@@ -1836,13 +1849,13 @@ ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
                    0, the string is empty, add it should add all completions. */
                 if (longest_prefix == prefix_length || offset_difference == 0) {
                     if (completion_list == NULL) {
-                        completion_list = itl_completion_list_alloc();
+                        completion_list = itl_char_buf_alloc();
                     }
                     size_t cstr_size = completion->str->size + 1;
                     char *cstr = (char *)
                         itl_malloc(cstr_size * sizeof(char));
                     itl_string_to_cstr(completion->str, cstr, cstr_size);
-                    itl_completion_list_append(completion_list, cstr,
+                    itl_char_buf_append(completion_list, cstr,
                                                cstr_size);
                     itl_free(cstr);
                 }
@@ -1858,7 +1871,7 @@ ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
                 itl_split_free(split);
                 return completion_list;
             } else {
-                itl_completion_list_free(completion_list);
+                itl_char_buf_free(completion_list);
             }
         }
         if (longest_prefix != 0) {
@@ -1875,10 +1888,10 @@ ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
 
 ITL_DEF bool itl_le_complete(itl_le_t *le)
 {
-    itl_completion_list_t *list = itl_string_complete(le->line);
+    itl_char_buf_t *list = itl_string_complete(le->line);
     if (list) {
-        itl_completion_list_dump(list);
-        itl_completion_list_free(list);
+        itl_char_buf_dump(list);
+        itl_char_buf_free(list);
         return false;
     }
     le->cursor_position = le->line->length;
@@ -2100,7 +2113,7 @@ TL_DEF int tl_exit(void)
     itl_global_completion_free();
     itl_free(itl_global_line_buffer.chars);
 
-    itl_trace("Exited, alloc count: %zu\n", itl_global_alloc_count);
+    itl_traceln("Exited, alloc count: %zu\n", itl_global_alloc_count);
     TL_ASSERT(itl_global_alloc_count == 0);
 
     ITL_TRY(itl_exit_raw_mode(), TL_ERROR);
@@ -2148,9 +2161,8 @@ TL_DEF int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
             itl_le_insert(&le, ch);
         }
 
-        itl_trace_lf();
-        itl_trace("strlen: %zu, hist: %zu\n",
-                  le.line->length, (size_t)le.history_selected_item);
+        itl_traceln("strlen: %zu, hist: %zu\n",
+                    le.line->length, (size_t)le.history_selected_item);
 
         itl_le_tty_refresh(&le);
     }
@@ -2270,5 +2282,7 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str)
  *  - Test all of this.
  *  - Do not overwrite history files if they exist and are not actually history
  *    files.
+ *  - Use pointers instead of storing entire contents in string_complete().
+ *  - Manually buffer output before writing it all in le_tty_refresh().
  *  - Squash things to make this tiny again :(
  */
