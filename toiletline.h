@@ -33,6 +33,10 @@ extern "C" {
 #if !defined TOILETLINE_H_
 #define TOILETLINE_H_
 
+#if defined _WIN32
+    #define _CRT_SECURE_NO_WARNINGS
+#endif /* _WIN32 */
+
 #include <stddef.h>
 
 /* If not defined, Ctrl-Z will raise `SIGTSTP` internally and toiletline will
@@ -194,7 +198,11 @@ TL_DEF int tl_dump_history(const char *file_path);
  */
 TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
 
-#endif /* TOILETLINE_H_ */
+#if !defined TOILETLINE_IMPLEMENTATION && defined _CRT_SECURE_NO_WARNINGS
+    #undef _CRT_SECURE_NO_WARNINGS
+#endif /* _CRT_SECURE_NO_WARNINGS */
+
+#endif /* TOILETLINE_H_ */ /* End of header file */
 
 #if defined TOILETLINE_IMPLEMENTATION
 
@@ -229,7 +237,6 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
 
 #if defined ITL_WIN32
     #define WIN32_LEAN_AND_MEAN
-    #define _CRT_SECURE_NO_WARNINGS
 
     #include <windows.h>
     #include <conio.h>
@@ -2484,6 +2491,10 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str)
     }
     return len;
 }
+
+#if defined _CRT_SECURE_NO_WARNINGS
+    #undef _CRT_SECURE_NO_WARNINGS
+#endif /* _CRT_SECURE_NO_WARNINGS */
 
 #endif /* TOILETLINE_IMPLEMENTATION */
 
