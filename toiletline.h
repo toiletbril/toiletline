@@ -363,29 +363,29 @@ ITL_DEF bool itl_exit_raw_mode(void)
     ITL_TRY(stdin_handle != INVALID_HANDLE_VALUE, false);
 
     if (itl_global_original_tty_mode != 0) {
-        ITL_TRY(SetConsoleMode(stdin_handle, itl_global_original_tty_mode),
-                false);
+        SetConsoleMode(stdin_handle, itl_global_original_tty_mode);
     }
     if (itl_global_original_tty_cp != 0) {
-        ITL_TRY(SetConsoleCP(itl_global_original_tty_cp), false);
+       SetConsoleCP(itl_global_original_tty_cp);
     }
-    if (itl_global_original_mode) {
-        ITL_TRY(_setmode(STDIN_FILENO, itl_global_original_mode) != -1, false);
+    if (itl_global_original_mode != 0) {
+        _setmode(STDIN_FILENO, itl_global_original_mode);
     }
 #elif defined ITL_POSIX
-    struct termios zero_term = {0};
-    if (memcmp(&itl_global_original_tty_mode, &zero_term,
+    struct termios zeroed_termios = {0};
+    if (memcmp(&itl_global_original_tty_mode, &zeroed_termios,
                sizeof(struct termios)) != 0) {
         ITL_TRY(tcsetattr(STDIN_FILENO, TCSAFLUSH,
-                    &itl_global_original_tty_mode) == 0,
+                          &itl_global_original_tty_mode) == 0,
                 false);
-    };
+    }
 #endif /* ITL_POSIX */
     return true;
 }
 
 ITL_DEF bool itl_enter_raw_mode(void)
 {
+    /* If raw mode failed, restore terminal's state */
     if (!itl_enter_raw_mode_impl()) {
         itl_exit_raw_mode();
         return false;
