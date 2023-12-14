@@ -1,6 +1,5 @@
 CC ?= clang
-CFLAGS := -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic
--std=c99 -fsanitize=undefined -g3
+CFLAGS := -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic -std=c99 -fsanitize=undefined -g3
 DBGFLAGS := -O0 -DITL_DEBUG -fsanitize=address
 
 default:
@@ -27,8 +26,7 @@ see_bytes: example
 
 ITEMS_TO_REMOVE :=
 ifeq ($(OS),Windows_NT)
-	ITEMS_TO_REMOVE = ./example_getc.exe ./example.exe ./example_history.txt
-	./tests
+	ITEMS_TO_REMOVE = ./example_getc.exe ./example.exe ./example_history.txt ./tests.exe
 else
 	ITEMS_TO_REMOVE = ./example_getc ./example ./example_history.txt ./tests
 endif
