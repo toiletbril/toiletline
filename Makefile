@@ -1,6 +1,10 @@
 CC ?= clang
-CFLAGS := -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic -std=c99 -fsanitize=undefined -g3
-DBGFLAGS := -O0 -DITL_DEBUG -fsanitize=address
+CFLAGS := -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic -std=c99
+DBGFLAGS := -O0 -g3 -DITL_DEBUG
+ifneq ($(OS),Windows_NT)
+	CFLAGS += -fsanitize=undefined -g3
+	DBGFLAGS += -fsanitize=address
+endif
 
 default:
 	@echo "Available targets: test, examples, examples_debug, see_bytes, clean"
@@ -26,7 +30,7 @@ see_bytes: example
 
 ITEMS_TO_REMOVE :=
 ifeq ($(OS),Windows_NT)
-	ITEMS_TO_REMOVE = ./example_getc.exe ./example.exe ./example_history.txt ./tests.exe
+	ITEMS_TO_REMOVE = ./*.exe ./example_history.txt ./*.pdb ./*.exp ./*.lib ./*.pdb
 else
 	ITEMS_TO_REMOVE = ./example_getc ./example ./example_history.txt ./tests
 endif
