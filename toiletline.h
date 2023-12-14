@@ -292,7 +292,7 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
     /* Print to stderr on the same line */
     #define itl_trace(...) fprintf(stderr, __VA_ARGS__)
 #else /* ITL_DEBUG */
-    #define itl_traceln(...)    /* nothing */
+    #define itl_traceln(...) /* nothing */
     #define itl_trace(...) /* nothing */
 #endif
 
@@ -539,8 +539,9 @@ ITL_DEF size_t itl_utf8_width(int byte)
     else return 0; /* invalid character */
 }
 
-#define itl_is_surrogate(first_byte, second_byte)              \
-    (((first_byte) & 0xE0) == 0xD0 && (second_byte) >= 0x80 && \
+#define itl_is_surrogate(first_byte, second_byte) \
+    (((first_byte) & 0xE0) == 0xD0 &&             \
+     (second_byte) >= 0x80 &&                     \
      (second_byte) <= 0xBF)
 
 #define itl_replacement_character \
@@ -1156,7 +1157,9 @@ ITL_DEF void itl_le_move_left(itl_le_t *le, size_t steps)
 
 ITL_DEF void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
 {
-    if (count == 0) return;
+    if (count == 0) {
+        return;
+    }
 
     if (backwards && le->cursor_position) {
         itl_string_erase(le->line, le->cursor_position, count, true);
@@ -1377,7 +1380,8 @@ ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb, itl_string_t *str)
 
 ITL_DEF void itl_char_buf_dump(itl_char_buf_t *cb)
 {
-/* `write()` works faster. Using stdio requires stinky `setbuf(stdout, NULL)` */
+/* `write()` works faster. Using stdio is slow and requires stinky
+   `setbuf(stdout, NULL)` */
 #if defined TL_REFRESH_STDIO
     size_t i;
     const char* s = cb->data;
@@ -1436,6 +1440,8 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
     char buf[32];
     size_t i;
 
+    /* Allocating and freeing is probably slow. This version should only be used
+       as a fallback */
     itl_char_buf_t *buffer = itl_char_buf_alloc();
     itl_tty_move_forward(buffer, 999);
     itl_tty_print_status_report(buffer);
@@ -1765,7 +1771,7 @@ ITL_DEF itl_completion_t *itl_completion_alloc(void)
 
 /* Takes ownership of *str */
 ITL_DEF itl_completion_t *itl_completion_append(itl_completion_t *completion,
-                                               itl_string_t *str)
+                                                itl_string_t *str)
 {
     itl_completion_t *new_child;
 
@@ -1974,6 +1980,7 @@ ITL_DEF void itl_completion_list_append(itl_completion_list_t *list,
 }
 
 #define ITL_COMPLETIONS_ON_SINGLE_LINE 5
+ /* Minimum word width */
 #define ITL_COMPLETIONS_MARGIN 12
 
 ITL_DEF void itl_completion_list_dump(itl_completion_list_t *list)
@@ -1996,7 +2003,6 @@ ITL_DEF void itl_completion_list_dump(itl_completion_list_t *list)
             break;
         }
         if (count < ITL_COMPLETIONS_ON_SINGLE_LINE) {
-            /* Minimum word width is TL_COMPLETIONS_MARGIN */
             for (i = str->length; i < ITL_COMPLETIONS_MARGIN - 2; ++i) {
                 itl_char_buf_append_byte(buffer, ' ');
             }
