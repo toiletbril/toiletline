@@ -1,6 +1,6 @@
 /*
  *  toiletline 0.5.0
- *  Tiny single-header replacement of GNU Readline :3
+ *  Small single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
  *  Before you include this file in C or C++ file to create the implementation.
@@ -66,10 +66,11 @@ extern "C" {
     #define ITL_DEF static
 #endif
 
+
 /* Max size of in-memory history, must be a power of 2. */
 #if !defined TL_HISTORY_MAX_SIZE
     #define TL_HISTORY_MAX_SIZE 64
-#endif
+#endif /* TL_HISTORY_MAX_SIZE */
 
 #define TL_SUCCESS 0
 /**
@@ -181,7 +182,8 @@ TL_DEF int tl_load_history(const char *file_path);
 /**
  * Dump history to a file, overwriting it.
  *
- * Returns `TL_SUCCESS` or `-errno` on failure.
+ * Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
+ * failures.
  */
 TL_DEF int tl_dump_history(const char *file_path);
 /**
@@ -258,12 +260,12 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
 #endif /* ITL_POSIX */
 
 #if defined ITL_DEFAULT_ASSERT
-    #define TL_ASSERT(boolval)                                                \
-        if (!(boolval)) {                                                     \
-            fprintf(stderr, "%s:%d: assert fail: %s\n",                       \
-                    __FILE__, __LINE__, #boolval);                            \
-            fflush(stderr);                                                   \
-            ITL_DEBUG_TRAP;                                                   \
+    #define TL_ASSERT(boolval)                           \
+        if (!(boolval)) {                                \
+            fprintf(stderr, "%s:%d: assert fail: %s\n",  \
+                    __FILE__, __LINE__, #boolval);       \
+            fflush(stderr);                              \
+            ITL_DEBUG_TRAP;                              \
         }
 #endif /* ITL_DEFAULT_ASSERT */
 
@@ -288,11 +290,11 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 #define ITL_MIN(type, i, j) ((((type)i) < ((type)j)) ? ((type)i) : ((type)j))
 
-#define ITL_TRY(boolval, return_error)           \
-    if (!(boolval)) {                            \
-        itl_traceln("\n%s:%d: try fail: %s\n",       \
-                  __FILE__, __LINE__, #boolval); \
-        return (return_error);                   \
+#define ITL_TRY(boolval, return_error)             \
+    if (!(boolval)) {                              \
+        itl_traceln("%s:%d: try fail: %s\n",       \
+                    __FILE__, __LINE__, #boolval); \
+        return (return_error);                     \
     }
 
 #if defined ITL_WIN32
@@ -300,10 +302,10 @@ ITL_DEF ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
 ITL_DEF ITL_THREAD_LOCAL UINT itl_global_original_tty_cp    = 0;
 ITL_DEF ITL_THREAD_LOCAL int itl_global_original_mode       = 0;
 #elif defined ITL_POSIX
-ITL_DEF ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode = { 0 };
+ITL_DEF ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode = {0};
 #endif
 
-ITL_DEF bool itl_enter_raw_mode(void)
+ITL_DEF bool itl_enter_raw_mode_impl(void)
 {
 #if defined ITL_WIN32
     HANDLE stdin_handle;
@@ -316,8 +318,8 @@ ITL_DEF bool itl_enter_raw_mode(void)
     ITL_TRY(GetConsoleMode(stdin_handle, &tty_mode), false);
 
     itl_global_original_tty_mode = tty_mode;
-    tty_mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT
-                                    | ENABLE_PROCESSED_INPUT);
+    tty_mode &= (DWORD)
+        ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
 
     ITL_TRY(SetConsoleMode(stdin_handle, tty_mode), false);
 
@@ -328,7 +330,7 @@ ITL_DEF bool itl_enter_raw_mode(void)
     ITL_TRY(SetConsoleCP(CP_UTF8), false);
 
     mode = _setmode(STDIN_FILENO, _O_BINARY);
-    ITL_TRY(mode =! -1, false);
+    ITL_TRY(mode != -1, false);
 
     itl_global_original_mode = mode;
 #elif defined ITL_POSIX
@@ -349,17 +351,36 @@ ITL_DEF bool itl_exit_raw_mode(void)
 {
 #if defined ITL_WIN32
     HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
-
     ITL_TRY(stdin_handle != INVALID_HANDLE_VALUE, false);
-    ITL_TRY(SetConsoleMode(stdin_handle, itl_global_original_tty_mode), false);
-    ITL_TRY(SetConsoleCP(itl_global_original_tty_cp), false);
-    ITL_TRY(_setmode(STDIN_FILENO, itl_global_original_mode) != -1, false);
 
+    if (itl_global_original_tty_mode != 0) {
+        ITL_TRY(SetConsoleMode(stdin_handle, itl_global_original_tty_mode),
+                false);
+    }
+    if (itl_global_original_tty_cp != 0) {
+        ITL_TRY(SetConsoleCP(itl_global_original_tty_cp), false);
+    }
+    if (itl_global_original_mode) {
+        ITL_TRY(_setmode(STDIN_FILENO, itl_global_original_mode) != -1, false);
+    }
 #elif defined ITL_POSIX
-    ITL_TRY(tcsetattr(STDIN_FILENO, TCSAFLUSH,
-                      &itl_global_original_tty_mode) == 0,
-            false);
+    struct termios zero_term = {0};
+    if (memcmp(&itl_global_original_tty_mode, &zero_term,
+               sizeof(struct termios)) != 0) {
+        ITL_TRY(tcsetattr(STDIN_FILENO, TCSAFLUSH,
+                    &itl_global_original_tty_mode) == 0,
+                false);
+    };
 #endif /* ITL_POSIX */
+    return true;
+}
+
+ITL_DEF bool itl_enter_raw_mode(void)
+{
+    if (!itl_enter_raw_mode_impl()) {
+        itl_exit_raw_mode();
+        return false;
+    }
     return true;
 }
 
@@ -824,7 +845,7 @@ ITL_DEF void itl_string_from_cstr(itl_string_t *str, const char *cstr)
     itl_utf8_new((uint8_t[]){ 0x20 }, 1)
 
 ITL_DEF void itl_string_append_completion(itl_string_t *dst, itl_string_t *src,
-                                         size_t prefix_length)
+                                          size_t prefix_length)
 {
     size_t i, j;
     size_t new_len = dst->length + src->length - prefix_length;
@@ -958,6 +979,8 @@ ITL_DEF bool itl_global_history_append(itl_string_t *str)
 
 #define ITL_HISTORY_FILE_BUFFER_INIT_SIZE 64
 
+ITL_DEF ITL_THREAD_LOCAL bool itl_global_history_is_file_bad = false;
+
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF int itl_global_history_load_from_file(const char *path)
 {
@@ -971,9 +994,11 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
     itl_string_t *str = itl_string_alloc();
 
     itl_global_history_free();
+    itl_global_history_is_file_bad = false;
 
     FILE *file = fopen(path, "rb");
     if (file == NULL) {
+        itl_global_history_is_file_bad = true;
         ret = -errno;
         errno = 0;
         goto end;
@@ -1010,6 +1035,7 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
             itl_traceln("non-text byte '%X' detected in history file\n",
                         (uint8_t)ch);
             itl_global_history_free();
+            itl_global_history_is_file_bad = true;
             goto end;
         } else {
             buffer[line_pos] = (char)ch;
@@ -1027,12 +1053,16 @@ end:
     return ret;
 }
 
-/* Returns TL_SUCCESS, or -errno */
+/* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF int itl_global_history_dump_to_file(const char *path)
 {
     size_t cstr_size;
     itl_history_item_t *item;
     itl_history_item_t *prev_item;
+
+    if (itl_global_history_is_file_bad) {
+        return -EINVAL;
+    }
 
     int ret = TL_SUCCESS;
     size_t buffer_size = ITL_HISTORY_FILE_BUFFER_INIT_SIZE;
@@ -1235,102 +1265,169 @@ ITL_DEF void itl_global_history_get_next(itl_le_t *le)
 
 typedef struct itl_char_buf itl_char_buf_t;
 
-/* Holds multiple strings in *data, delimited by \0. */
 struct itl_char_buf
 {
     char *data;
     size_t size;
     size_t capacity;
-    size_t count;
 };
+
+ITL_DEF void itl_char_buf_init(itl_char_buf_t *cb)
+{
+    cb->size = 0;
+    cb->capacity = ITL_CHAR_BUFFER_INIT_SIZE;
+    cb->data = (char *)
+        itl_malloc(sizeof(char) * cb->capacity);
+}
 
 ITL_DEF itl_char_buf_t* itl_char_buf_alloc(void)
 {
-    itl_char_buf_t *list = (itl_char_buf_t *)
+    itl_char_buf_t *cb = (itl_char_buf_t *)
         itl_malloc(sizeof(itl_char_buf_t));
-
-    list->size = 0;
-    list->count = 0;
-    list->capacity = ITL_CHAR_BUFFER_INIT_SIZE;
-
-    list->data = (char *)
-        itl_malloc(sizeof(char) * list->capacity);
-
-    return list;
+    itl_char_buf_init(cb);
+    return cb;
 }
 
-#define itl_char_buf_free(list) \
-    do {                               \
-        itl_free(list->data);          \
-        itl_free(list);                \
+#define itl_char_buf_free(cb) \
+    do {                      \
+        itl_free(cb->data);   \
+        itl_free(cb);         \
     } while (0)
+
+#define ITL_CHAR_BUF_REALLOC_CAPACITY(old_capacity) \
+    (old_capacity * 2)
 
 ITL_DEF void itl_char_buf_extend(itl_char_buf_t *cb)
 {
-    cb->capacity *= 2;
+    cb->capacity = ITL_CHAR_BUF_REALLOC_CAPACITY(cb->capacity);
     cb->data = (char *)
         itl_realloc(cb->data, cb->capacity);
 }
 
-ITL_DEF void itl_char_buf_append(itl_char_buf_t *cb, char *data, size_t size)
+ITL_DEF void itl_char_buf_append_cstr(itl_char_buf_t *cb, const char *data)
 {
     size_t i, j;
-    size_t new_size = cb->size + size;
+    size_t cstr_size = strlen(data);
+    size_t new_size = cb->size + cstr_size;
 
     while (cb->capacity < new_size) {
         itl_char_buf_extend(cb);
     }
-    for (i = cb->size, j = 0; j < size; ++i, ++j) {
+    for (i = cb->size, j = 0; j < cstr_size; ++i, ++j) {
         cb->data[i] = data[j];
     }
     cb->size = new_size;
-    cb->count += 1;
+}
+
+ITL_DEF void itl_char_buf_append_size(itl_char_buf_t *cb, size_t data)
+{
+    char digit;
+    size_t new_size, i;
+
+    size_t data_len = 0;
+    size_t data_copy = data;
+
+    while (data_copy > 0) {
+        data_len += 1;
+        data_copy /= 10;
+    }
+
+    new_size = cb->size + data_len;
+    while (cb->capacity < new_size) {
+        itl_char_buf_extend(cb);
+    }
+
+    /* Digits are put in reverse order */
+    for (i = new_size - 1; i >= cb->size; --i) {
+        digit = (char)(data % 10) + '0';
+        cb->data[i] = digit;
+        data /= 10;
+    }
+
+    cb->size = new_size;
+}
+
+ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
+{
+    while (cb->capacity < cb->size + 1) {
+        itl_char_buf_extend(cb);
+    }
+    cb->data[cb->size] = (char)data;
+    cb->size += 1;
+}
+
+ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb, itl_string_t *str)
+{
+    while (cb->capacity < cb->size + str->size) {
+        itl_char_buf_extend(cb);
+    }
+    char *data = cb->data + (cb->size * sizeof(char));
+    itl_string_to_cstr(str, data, str->size + 1);
+    cb->size += str->size; /* Ignore null at the end */
 }
 
 ITL_DEF void itl_char_buf_dump(itl_char_buf_t *cb)
 {
-    size_t count = 0;
+    size_t i;
     const char* s = cb->data;
-    fputc('\n', stdout);
-    while (*s != '\0') {
-        fputs(s, stdout);
-        if (++count != cb->count) {
-            fputs("  ", stdout);
-        } else {
-            fputc('\n', stdout);
-            break;
-        }
-        s += strlen(s) + 1;
+
+    for (i = 0; i < cb->size; ++i) {
+        fputc(s[i], stdout);
     }
     fflush(stdout);
 }
 
-/* @@@: printf and fputs are slow. */
-#define itl_tty_hide_cursor() fputs("\x1b[?25l", stdout)
-#define itl_tty_show_cursor() fputs("\x1b[?25h", stdout)
+#define itl_tty_hide_cursor(buffer) \
+    itl_char_buf_append_cstr(buffer, "\x1b[?25l")
 
-#define itl_tty_move_to_column(col) printf("\x1b[%zuG", (size_t)col)
-#define itl_tty_move_forward(steps) printf("\x1b[%zuC", (size_t)steps)
+#define itl_tty_show_cursor(buffer) \
+    itl_char_buf_append_cstr(buffer, "\x1b[?25h")
 
-#define itl_tty_move_up(rows) printf("\x1b[%zuA", (size_t)rows)
-#define itl_tty_move_down(rows) printf("\x1b[%zuB", (size_t)rows)
+#define itl_tty_move_to_column(buffer, col)        \
+    itl_char_buf_append_cstr(buffer, "\x1b[");     \
+    itl_char_buf_append_size(buffer, (size_t)col); \
+    itl_char_buf_append_byte(buffer, 'G');
 
-#define itl_tty_clear_whole_line() fputs("\r\x1b[0K", stdout)
-#define itl_tty_clear_to_end() fputs("\x1b[K", stdout)
+#define itl_tty_move_forward(buffer, steps)          \
+    itl_char_buf_append_cstr(buffer, "\x1b[");       \
+    itl_char_buf_append_size(buffer, (size_t)steps); \
+    itl_char_buf_append_byte(buffer, 'C');
 
-#define itl_tty_goto_home() fputs("\x1b[H", stdout)
-#define itl_tty_erase_screen() fputs("\033[2J", stdout)
+#define itl_tty_move_up(buffer, rows)               \
+    itl_char_buf_append_cstr(buffer, "\x1b[");      \
+    itl_char_buf_append_size(buffer, (size_t)rows); \
+    itl_char_buf_append_byte(buffer, 'A');
 
-#define itl_tty_status_report() fputs("\x1b[6n", stdout)
+#define itl_tty_move_down(buffer, rows)             \
+    itl_char_buf_append_cstr(buffer, "\x1b[");      \
+    itl_char_buf_append_size(buffer, (size_t)rows); \
+    itl_char_buf_append_byte(buffer, 'B');
+
+#define itl_tty_clear_whole_line(buffer) \
+    itl_char_buf_append_cstr(buffer, "\r\x1b[0K")
+
+#define itl_tty_clear_to_end(buffer) \
+    itl_char_buf_append_cstr(buffer, "\x1b[K")
+
+#define itl_tty_goto_home(buffer) \
+    itl_char_buf_append_cstr(buffer, "\x1b[H")
+
+#define itl_tty_erase_screen(buffer) \
+    itl_char_buf_append_cstr(buffer, "\033[2J")
+
+#define itl_tty_status_report(buffer) \
+    itl_char_buf_append_cstr(buffer, "\x1b[6n")
 
 ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
 #if defined TL_SIZE_USE_ESCAPES
     char buf[32];
     size_t i;
 
-    itl_tty_move_forward(999);
-    itl_tty_status_report();
-    fflush(stdout);
+    itl_char_buf_t *buffer = itl_char_buf_alloc();
+    itl_tty_move_forward(buffer, 999);
+    itl_tty_print_status_report(buffer);
+    itl_char_buf_dump(buffer);
+    itl_char_buf_free(buffer);
 
     i = 0;
     while (i < sizeof(buf) - 1) {
@@ -1350,8 +1447,10 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
                                        &buffer_info),
             false);
 
-    (*cols) = buffer_info.srWindow.Right - buffer_info.srWindow.Left + 1;
-    (*rows) = buffer_info.srWindow.Bottom - buffer_info.srWindow.Top + 1;
+    (*cols) = (size_t)
+        (buffer_info.srWindow.Right - buffer_info.srWindow.Left + 1);
+    (*rows) = (size_t)
+        (buffer_info.srWindow.Bottom - buffer_info.srWindow.Top + 1);
 
 #elif defined ITL_POSIX
     struct winsize window;
@@ -1365,6 +1464,8 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
     return true;
 }
 
+ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_refresh_char_buffer = {0};
+
 ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_lines = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
 
@@ -1375,12 +1476,15 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     size_t current_col, current_lines, dirty_lines;
     size_t prompt_len, wrap_cursor_col, wrap_cursor_row;
 
+    /* Write everything into a buffer, then dump it all at once */
+    itl_char_buf_t *buffer = &itl_global_refresh_char_buffer;
+
     TL_ASSERT(le->line);
     TL_ASSERT(le->line->chars);
     TL_ASSERT(le->line->size >= le->line->length);
     TL_ASSERT(le->line->length <= ITL_STRING_MAX_LEN);
 
-    itl_tty_hide_cursor();
+    itl_tty_hide_cursor(buffer);
 
     rows = 0;
     cols = 0;
@@ -1397,31 +1501,32 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         (le->cursor_position + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
 
     itl_traceln("wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
-              wrap_cursor_row, itl_global_tty_prev_wrap_row,
-              wrap_cursor_col, le->cursor_position);
+                wrap_cursor_row, itl_global_tty_prev_wrap_row,
+                wrap_cursor_col, le->cursor_position);
 
     /* Move appropriate amount of lines back, while clearing previous output */
     for (i = 0; i < itl_global_tty_prev_lines; ++i) {
-        itl_tty_clear_whole_line();
+        itl_tty_clear_whole_line(buffer);
         if (i < itl_global_tty_prev_wrap_row - 1) {
-            itl_tty_move_up(1);
+            itl_tty_move_up(buffer, 1);
         }
     }
 
     if (le->prompt) {
-        fputs(le->prompt, stdout);
+        itl_char_buf_append_cstr(buffer, le->prompt);
     }
 
     /* Print current contents of the line editor */
     for (i = 0; i < le->line->length; ++i) {
         for (j = 0; j < le->line->chars[i].size; ++j) {
-            fputc(le->line->chars[i].bytes[j], stdout);
+            itl_char_buf_append_byte(buffer,
+                                     le->line->chars[i].bytes[j]);
         }
 
         /* If line is full, wrap */
         current_col = (prompt_len + i) % ITL_MAX(size_t, cols, 1);
         if (current_col == cols - 1) {
-            fputs(ITL_LF, stdout);
+            itl_char_buf_append_cstr(buffer, ITL_LF);
         }
     }
 
@@ -1431,28 +1536,31 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     if (current_lines < itl_global_tty_prev_lines) {
         dirty_lines = itl_global_tty_prev_lines - current_lines;
         for (i = 0; i < dirty_lines; ++i) {
-            itl_tty_move_down(1);
-            itl_tty_clear_whole_line();
+            itl_tty_move_down(buffer, 1);
+            itl_tty_clear_whole_line(buffer);
         }
-        itl_tty_move_up(dirty_lines);
+        itl_tty_move_up(buffer, dirty_lines);
     }
     /* Otherwise clear to the end of line */
     else {
-        itl_tty_clear_to_end();
+        itl_tty_clear_to_end(buffer);
     }
 
     /* Move cursor to appropriate row and column. If row didn't change, stay on
        the same line */
     if (wrap_cursor_row < current_lines) {
-        itl_tty_move_up(current_lines - wrap_cursor_row);
+        itl_tty_move_up(buffer, current_lines - wrap_cursor_row);
     }
-    itl_tty_move_to_column(wrap_cursor_col);
+    itl_tty_move_to_column(buffer, wrap_cursor_col);
 
     itl_global_tty_prev_lines = current_lines;
     itl_global_tty_prev_wrap_row = wrap_cursor_row;
 
-    itl_tty_show_cursor();
-    fflush(stdout);
+    itl_tty_show_cursor(buffer);
+
+    itl_char_buf_dump(buffer);
+    /* Reset the buffer */
+    buffer->size = 0;
 
     return true;
 }
@@ -1614,6 +1722,13 @@ int *itl__last_control_location(void) {
 
 typedef struct itl_completion itl_completion_t;
 
+/* For example, Git completions in this structure:
+   ... -- checkout -- branch -- status   <- siblings of root
+             |          |
+            ...       master -- staging  <- children of `branch` completion,
+                     /      \      |        siblings of `master`
+                  HEAD      ...   ...
+*/
 struct itl_completion
 {
     itl_string_t *str;
@@ -1666,8 +1781,8 @@ ITL_DEF void itl_completion_free_all(itl_completion_t *completion)
     }
 }
 
-#define itl_global_completion_free()                         \
-        itl_completion_free_all(itl_global_completion_root); \
+#define itl_global_completion_free() \
+        itl_completion_free_all(itl_global_completion_root);
 
 typedef struct itl_offset itl_offset_t;
 
@@ -1801,21 +1916,104 @@ ITL_DEF itl_split_t *itl_string_split(itl_string_t *str, char delimiter)
     return split;
 }
 
+typedef struct itl_completion_list itl_completion_list_t;
+
+struct itl_completion_list
+{
+    itl_completion_t* completion;
+    itl_completion_list_t *next;
+};
+
+ITL_DEF itl_completion_list_t *itl_completion_list_alloc(void)
+{
+    itl_completion_list_t *list = (itl_completion_list_t *)
+        itl_malloc(sizeof(itl_completion_list_t));
+
+    list->completion = NULL;
+    list->next = NULL;
+
+    return list;
+}
+
+ITL_DEF void itl_completion_list_free(itl_completion_list_t *list)
+{
+    itl_completion_list_t *next;
+
+    while (list) {
+        next = list->next;
+        itl_free(list);
+        list = next;
+    }
+}
+
+ITL_DEF void itl_completion_list_append(itl_completion_list_t *list,
+                                        itl_completion_t *completion)
+{
+    if (list->completion == NULL) {
+        list->completion = completion;
+        return;
+    }
+    while (list->next) {
+        list = list->next;
+    }
+    list->next = itl_completion_list_alloc();
+    list->next->completion = completion;
+}
+
+#define ITL_COMPLETIONS_ON_SINGLE_LINE 5
+#define ITL_COMPLETIONS_MARGIN 12
+
+ITL_DEF void itl_completion_list_dump(itl_completion_list_t *list)
+{
+    size_t i;
+    itl_string_t *str;
+    itl_completion_list_t *next;
+
+    size_t count = 0;
+    itl_char_buf_t *buffer = itl_char_buf_alloc();
+
+    itl_char_buf_append_cstr(buffer, ITL_LF);
+    while (true) {
+        next = list->next;
+        str = list->completion->str;
+        itl_char_buf_append_string(buffer, str);
+        count += 1;
+        list = next;
+        if (list == NULL) {
+            break;
+        }
+        if (count < ITL_COMPLETIONS_ON_SINGLE_LINE) {
+            /* Minimum word width is TL_COMPLETIONS_MARGIN */
+            for (i = str->length; i < ITL_COMPLETIONS_MARGIN - 2; ++i) {
+                itl_char_buf_append_byte(buffer, ' ');
+            }
+            itl_char_buf_append_cstr(buffer, "  ");
+        } else {
+            itl_char_buf_append_cstr(buffer, ITL_LF);
+            count = 0;
+        }
+    }
+    itl_char_buf_append_cstr(buffer, ITL_LF);
+
+    itl_char_buf_dump(buffer);
+    itl_char_buf_free(buffer);
+}
+
 /* Split the string by spaces. If a split fully matches, look at it's children.
-   If none of the children fully match, rank them by longest common prefix, and
-   autocomplete. If more than one have the same longest common prefix, print a
-   list of possible matches. */
-ITL_DEF itl_char_buf_t *itl_string_complete(itl_string_t *str)
+   If none of the children fully match, rank them by longest common prefix,
+   complete the string, and return NULL. If more than one have the same longest
+   common prefix, or current split is empty, return a list of possible
+   matches. Otherwise, return NULL too. */
+ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
 {
     itl_offset_t *offset;
     size_t offset_difference;
     itl_string_t *possible_completion;
     size_t i, prefix_length, longest_prefix;
 
+    itl_completion_list_t *completion_list = NULL;
+    size_t completion_count = 0;
     itl_split_t *split = itl_string_split(str, ' ');
-    /* @@@: storing whole completions in char buf instead of just their pointers
-       is excessive. */
-    itl_char_buf_t *completion_list = NULL;
     itl_completion_t *completion = itl_global_completion_root->child;
 
     for (i = 0; i < split->size; ++i) {
@@ -1823,6 +2021,7 @@ ITL_DEF itl_char_buf_t *itl_string_complete(itl_string_t *str)
         possible_completion = NULL;
         offset = split->offsets[i];
         offset_difference = offset->end - offset->start;
+
         while (completion) {
             prefix_length = itl_string_prefix_with_offset(str,
                                                           offset->start,
@@ -1849,15 +2048,10 @@ ITL_DEF itl_char_buf_t *itl_string_complete(itl_string_t *str)
                    0, the string is empty, add it should add all completions. */
                 if (longest_prefix == prefix_length || offset_difference == 0) {
                     if (completion_list == NULL) {
-                        completion_list = itl_char_buf_alloc();
+                        completion_list = itl_completion_list_alloc();
                     }
-                    size_t cstr_size = completion->str->size + 1;
-                    char *cstr = (char *)
-                        itl_malloc(cstr_size * sizeof(char));
-                    itl_string_to_cstr(completion->str, cstr, cstr_size);
-                    itl_char_buf_append(completion_list, cstr,
-                                               cstr_size);
-                    itl_free(cstr);
+                    itl_completion_list_append(completion_list, completion);
+                    completion_count += 1;
                 }
             }
             /* If prefix didn't fully match, advance to completion's sibling */
@@ -1867,11 +2061,11 @@ ITL_DEF itl_char_buf_t *itl_string_complete(itl_string_t *str)
            with the same prefix, or the string is empty, otherwise
            autocomplete */
         if (completion_list) {
-            if (completion_list->count > 1 || offset_difference == 0) {
+            if (completion_count > 1 || offset_difference == 0) {
                 itl_split_free(split);
                 return completion_list;
             } else {
-                itl_char_buf_free(completion_list);
+                itl_completion_list_free(completion_list);
             }
         }
         if (longest_prefix != 0) {
@@ -1888,13 +2082,17 @@ ITL_DEF itl_char_buf_t *itl_string_complete(itl_string_t *str)
 
 ITL_DEF bool itl_le_complete(itl_le_t *le)
 {
-    itl_char_buf_t *list = itl_string_complete(le->line);
+    size_t old_len = le->line->length;
+    itl_completion_list_t *list = itl_string_complete(le->line);
+
     if (list) {
-        itl_char_buf_dump(list);
-        itl_char_buf_free(list);
+        itl_completion_list_dump(list);
+        itl_completion_list_free(list);
         return false;
     }
-    le->cursor_position = le->line->length;
+    if (old_len != le->line->length) {
+        le->cursor_position = le->line->length;
+    }
     return true;
 }
 
@@ -2069,8 +2267,14 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_CLEAR: {
-            itl_tty_goto_home();
-            itl_tty_erase_screen();
+            itl_char_buf_t *buffer = itl_char_buf_alloc();
+
+            itl_tty_goto_home(buffer);
+            itl_tty_erase_screen(buffer);
+
+            itl_char_buf_dump(buffer);
+            itl_char_buf_free(buffer);
+
             itl_le_tty_refresh(le);
         } break;
 
@@ -2102,6 +2306,7 @@ TL_DEF int tl_init(void)
     ITL_TRY(itl_enter_raw_mode(), TL_ERROR);
 
     itl_string_init(&itl_global_line_buffer);
+    itl_char_buf_init(&itl_global_refresh_char_buffer);
 
     itl_is_active = true;
     return TL_SUCCESS;
@@ -2109,9 +2314,12 @@ TL_DEF int tl_init(void)
 
 TL_DEF int tl_exit(void)
 {
+    TL_ASSERT(itl_is_active && "tl_init() should be called");
+
     itl_global_history_free();
     itl_global_completion_free();
     itl_free(itl_global_line_buffer.chars);
+    itl_free(itl_global_refresh_char_buffer.data);
 
     itl_traceln("Exited, alloc count: %zu\n", itl_global_alloc_count);
     TL_ASSERT(itl_global_alloc_count == 0);
@@ -2188,7 +2396,7 @@ TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
     TL_ASSERT(itl_is_active && "tl_init() should be called");
     TL_ASSERT(char_buffer_size > 1 &&
         "Size should be enough at least for one byte and a null terminator");
-    TL_ASSERT(char_buffer_size <= sizeof(char)*5 &&
+    TL_ASSERT(char_buffer_size <= sizeof(char) * 5 &&
         "Size should be less or equal to size of 4 characters with a null "
         "terminator.");
     TL_ASSERT(char_buffer != NULL);
@@ -2280,9 +2488,6 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str)
 /*
  * TODO:
  *  - Test all of this.
- *  - Do not overwrite history files if they exist and are not actually history
- *    files.
- *  - Use pointers instead of storing entire contents in string_complete().
- *  - Manually buffer output before writing it all in le_tty_refresh().
+ *  - Make refresh fasterrrr.
  *  - Squash things to make this tiny again :(
  */
