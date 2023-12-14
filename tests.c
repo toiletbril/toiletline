@@ -263,6 +263,47 @@ static bool test_string_split(void)
     return true;
 }
 
+static bool test_char_buf(void)
+{
+    char *result;
+    size_t result_size;
+
+    size_t the_number = 3912033312;
+    itl_string_t *str = itl_string_alloc();
+    itl_char_buf_t *cb = itl_char_buf_alloc();
+
+    const char *should_be = "привет, мир help me3912033312 ЛОЛ";
+
+    itl_string_from_cstr(str, "привет, ");
+    itl_char_buf_append_string(cb, str);
+    itl_char_buf_append_cstr(cb, "мир ");
+    itl_string_from_cstr(str, "help");
+    itl_char_buf_append_string(cb, str);
+    itl_char_buf_append_byte(cb, ' ');
+    itl_char_buf_append_byte(cb, 'm');
+    itl_char_buf_append_byte(cb, 'e');
+    itl_char_buf_append_size(cb, the_number);
+    itl_char_buf_append_cstr(cb, " ЛОЛ");
+
+    result = cb->data;
+    result_size = cb->size;
+
+    /* char_buf is not null-terminated */
+    while (cb->capacity < cb->size + 1) {
+        itl_char_buf_extend(cb);
+    }
+    result[result_size] = '\0';
+
+    if (result_size != strlen(should_be) ||
+        strcmp(should_be, cb->data) != 0) {
+        test_printf("Result: '%s', should be: '%s', len: %zu/%zu\n",
+                    result, should_be, result_size, strlen(should_be));
+        return false;
+    }
+
+    return true;
+}
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -284,7 +325,8 @@ test_case_t test_cases[] = {
     DEFINE_TEST_CASE(test_string_shift),
     DEFINE_TEST_CASE(test_string_erase),
     DEFINE_TEST_CASE(test_string_insert),
-    DEFINE_TEST_CASE(test_string_split)
+    DEFINE_TEST_CASE(test_string_split),
+    DEFINE_TEST_CASE(test_char_buf)
 };
 
 int main(void) {
