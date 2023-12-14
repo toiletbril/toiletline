@@ -1,6 +1,6 @@
 toiletline
 ----------------
-Tiny, crossplatform, single-header shell library, meant to replace a subset of
+Small, crossplatform, single-header shell library, meant to replace a subset of
 GNU Readline, and work on both Linux and Windows out of the box.
 
 NOTE: On Windows, UTF-8 locale feature is required for proper multibyte
@@ -32,7 +32,7 @@ Configuration macros
 These should be defined before including, in the same file with implementation
 macro.
 
-* TL_DEF and ITL_DEF are put before every public and internal definitions
+* TL_DEF and ITL_DEF are put before every definition, public and internal
   respectively.
 * TL_HISTORY_MAX_SIZE configures maximum history size;
 * TL_NO_SUSPEND prevents Ctrl-Z from sending `SIGTSTP` to the terminal. Since
@@ -169,7 +169,8 @@ int tl_dump_history(const char *file_path);
 --------
 Dump history to a file, overwriting it.
 
-Returns `TL_SUCCESS` or `-errno` on failure.
+Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
+failures.
 
 
 size_t tl_utf8_strlen(const char *utf8_str);
