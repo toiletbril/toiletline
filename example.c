@@ -19,12 +19,12 @@ int main(void)
 #endif
 
     /* Tab completions are a tree structure:
-         first          what         wow
+         first   ---    what  ---  wow  ---  привет
            |           /    \
          second  something  other
            |         /
-         third     else             привет   */
-
+         third     else
+    */
     void *first_completion = tl_add_completion(NULL, "first");
     void *second_completion = tl_add_completion(first_completion, "second");
     tl_add_completion(second_completion, "third");
