@@ -239,6 +239,8 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
     #define STDIN_FILENO  _fileno(stdin)
     #define STDOUT_FILENO _fileno(stdout)
 
+    #define write(fd, buf, size) _write(fd, buf, (unsigned long)(size))
+
     /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation> */
     #define ITL_STRING_MAX_LEN 8191
 
@@ -1368,13 +1370,17 @@ ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb, itl_string_t *str)
 
 ITL_DEF void itl_char_buf_dump(itl_char_buf_t *cb)
 {
+/* `write()` works faster. Using stdio requires stinky `setbuf(stdout, NULL)` */
+#if defined TL_REFRESH_STDIO
     size_t i;
     const char* s = cb->data;
-
     for (i = 0; i < cb->size; ++i) {
         fputc(s[i], stdout);
     }
     fflush(stdout);
+#else
+    write(STDOUT_FILENO, cb->data, cb->size);
+#endif
 }
 
 #define itl_tty_hide_cursor(buffer) \
