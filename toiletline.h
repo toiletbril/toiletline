@@ -1002,8 +1002,10 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
 
     FILE *file = fopen(path, "rb");
     if (file == NULL) {
-        itl_global_history_is_file_bad = true;
         ret = -errno;
+        if (ret != -ENOENT) {
+            itl_global_history_is_file_bad = true;
+        }
         errno = 0;
         goto end;
     }
