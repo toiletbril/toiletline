@@ -70,7 +70,6 @@ extern "C" {
     #define ITL_DEF static
 #endif
 
-
 /* Max size of in-memory history, must be a power of 2. */
 #if !defined TL_HISTORY_MAX_SIZE
     #define TL_HISTORY_MAX_SIZE 64
@@ -85,6 +84,10 @@ extern "C" {
 #define TL_PRESSED_EOF 3
 #define TL_PRESSED_SUSPEND 4
 #define TL_PRESSED_CONTROL_SEQUENCE 5
+#if defined TL_MANUAL_TAB_COMPLETION
+    #define TL_PRESSED_TAB 6
+#endif /* TL_MANUAL_TAB_COMPLETION */
+
 /**
  * Codes below 0 are errors.
  */
@@ -164,19 +167,6 @@ TL_DEF void tl_setline(const char *str);
 TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
                    const char *prompt);
 /**
- * Add a tab completion.
- *
- * Returns an opaque pointer that points to the added completion. Use it as
- * `*prefix` parameter to add further completions. If `*prefix` is NULL, adds a
- * root completion.
- */
-TL_DEF void *tl_add_completion(void *prefix, const char *completion);
-/**
- * Delete a tab completion and it's children using pointer returned from
- * `tl_add_completion()`.
- */
-TL_DEF void tl_delete_completion(void *completion);
-/**
  * Load history from a file.
  *
  * Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
@@ -197,6 +187,27 @@ TL_DEF int tl_dump_history(const char *file_path);
  * `strlen()` will not work, and will only return the number of bytes before \0.
  */
 TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
+
+#if !defined TL_MANUAL_TAB_COMPLETION
+/**
+ * Add a tab completion.
+ *
+ * Returns an opaque pointer that points to the added completion. Use it as
+ * `*prefix` parameter to add further completions. If `*prefix` is NULL, adds a
+ * root completion.
+ */
+TL_DEF void *tl_add_completion(void *prefix, const char *label);
+/**
+ *  Change a tab completion to `*label` using pointer returned from
+ * `tl_add_completion()`.
+ */
+TL_DEF void tl_change_completion(void *completion, const char *label);
+/**
+ * Delete a tab completion and it's children using pointer returned from
+ * `tl_add_completion()`.
+ */
+TL_DEF void tl_delete_completion(void *completion);
+#endif /* !TL_MANUAL_TAB_COMPLETION */
 
 #if !defined TOILETLINE_IMPLEMENTATION && defined _CRT_SECURE_NO_WARNINGS
     #undef _CRT_SECURE_NO_WARNINGS
@@ -265,7 +276,14 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
     /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
     #define ITL_STRING_MAX_LEN 4095
 
-    #define itl_read_byte_raw() fgetc(stdin)
+    ITL_DEF int itl_read_byte_raw()
+    {
+        int buf[1];
+        if (read(STDIN_FILENO, buf, 1) != 1) {
+            return -1;
+        }
+        return *buf;
+    }
 #endif /* ITL_POSIX */
 
 #if defined ITL_DEFAULT_ASSERT
@@ -397,6 +415,7 @@ ITL_DEF bool itl_read_byte(uint8_t *buffer)
 {
     int byte = itl_read_byte_raw();
     ITL_TRY(byte != EOF, false);
+    ITL_TRY(byte >= 0, false);
     (*buffer) = (uint8_t)byte;
     return true;
 }
@@ -854,31 +873,6 @@ ITL_DEF void itl_string_from_cstr(itl_string_t *str, const char *cstr)
 #define ITL_SPACE \
     itl_utf8_new((uint8_t[]){ 0x20 }, 1)
 
-ITL_DEF void itl_string_append_completion(itl_string_t *dst, itl_string_t *src,
-                                          size_t prefix_length)
-{
-    size_t i, j;
-    size_t new_len = dst->length + src->length - prefix_length;
-
-    while (dst->capacity < new_len) {
-        itl_string_extend(dst);
-    }
-
-    /* Insert a space before new word, if there is no matching prefix */
-    i = dst->length;
-    if (!itl_utf8_equal(dst->chars[i - 1], ITL_SPACE) && prefix_length == 0) {
-        dst->chars[i++] = ITL_SPACE;
-        dst->length += 1;
-    }
-    /* Append missing chars */
-    for (j = prefix_length; j <= new_len; ++i, ++j) {
-        dst->chars[i] = src->chars[j];
-    }
-    dst->length = new_len;
-
-    itl_string_recalc_size(dst);
-}
-
 typedef struct itl_history_item itl_history_item_t;
 
 struct itl_history_item
@@ -1122,7 +1116,7 @@ end:
 }
 
 ITL_DEF itl_le_t itl_le_new(itl_string_t *line_buf, char *out_buf,
-                           size_t out_size, const char *prompt)
+                            size_t out_size, const char *prompt)
 {
     itl_le_t le = {
         /* .line                  = */ line_buf,
@@ -1366,16 +1360,6 @@ ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
     }
     cb->data[cb->size] = (char)data;
     cb->size += 1;
-}
-
-ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb, itl_string_t *str)
-{
-    while (cb->capacity < cb->size + str->size) {
-        itl_char_buf_extend(cb);
-    }
-    char *data = cb->data + (cb->size * sizeof(char));
-    itl_string_to_cstr(str, data, str->size + 1);
-    cb->size += str->size; /* Ignore null at the end */
 }
 
 ITL_DEF void itl_char_buf_dump(itl_char_buf_t *cb)
@@ -1737,6 +1721,43 @@ ITL_DEF ITL_THREAD_LOCAL int itl_global_last_control = TL_KEY_UNKN;
 
 int *itl__last_control_location(void) {
     return &itl_global_last_control;
+}
+
+#if !defined TL_MANUAL_TAB_COMPLETION
+
+ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb, itl_string_t *str)
+{
+    while (cb->capacity < cb->size + str->size) {
+        itl_char_buf_extend(cb);
+    }
+    char *data = cb->data + (cb->size * sizeof(char));
+    itl_string_to_cstr(str, data, str->size + 1);
+    cb->size += str->size; /* Ignore null at the end */
+}
+
+ITL_DEF void itl_string_append_completion(itl_string_t *dst, itl_string_t *src,
+                                          size_t prefix_length)
+{
+    size_t i, j;
+    size_t new_len = dst->length + src->length - prefix_length;
+
+    while (dst->capacity < new_len) {
+        itl_string_extend(dst);
+    }
+
+    /* Insert a space before new word, if there is no matching prefix */
+    i = dst->length;
+    if (!itl_utf8_equal(dst->chars[i - 1], ITL_SPACE) && prefix_length == 0) {
+        dst->chars[i++] = ITL_SPACE;
+        dst->length += 1;
+    }
+    /* Append missing chars */
+    for (j = prefix_length; j <= new_len; ++i, ++j) {
+        dst->chars[i] = src->chars[j];
+    }
+    dst->length = new_len;
+
+    itl_string_recalc_size(dst);
 }
 
 typedef struct itl_completion itl_completion_t;
@@ -2114,6 +2135,7 @@ ITL_DEF bool itl_le_complete(itl_le_t *le)
     }
     return true;
 }
+#endif /* !TL_MANUAL_TAB_COMPLETION */
 
 ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
 {
@@ -2122,7 +2144,15 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
     tl_last_control = esc;
     switch (esc & TL_MASK_KEY) {
         case TL_KEY_TAB: {
-            itl_le_complete(le);
+#if !defined TL_MANUAL_TAB_COMPLETION
+            if (itl_global_completion_root != NULL) {
+                itl_le_complete(le);
+            }
+#else
+            ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
+                    TL_ERROR_SIZE);
+            return TL_PRESSED_TAB;
+#endif /* TL_MANUAL_TAB_COMPLETION */
         } break;
         case TL_KEY_UP: {
             itl_string_t *prev_line;
@@ -2336,7 +2366,9 @@ TL_DEF int tl_exit(void)
     TL_ASSERT(itl_is_active && "tl_init() should be called");
 
     itl_global_history_free();
+#if !defined TL_MANUAL_TAB_COMPLETION
     itl_global_completion_free();
+#endif /* !TL_MANUAL_TAB_COMPLETION */
     itl_free(itl_global_line_buffer.chars);
     itl_free(itl_global_refresh_char_buffer.data);
 
@@ -2445,38 +2477,6 @@ TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
     return TL_SUCCESS;
 }
 
-TL_DEF void *tl_add_completion(void *prefix, const char *completion)
-{
-    itl_completion_t *completion_node;
-    itl_string_t *str;
-
-    if (prefix != NULL) {
-        str = itl_string_alloc();
-        itl_string_from_cstr(str, completion);
-        completion_node = itl_completion_append((itl_completion_t *)prefix,
-                                                str);
-    } else {
-        if (itl_global_completion_root == NULL) {
-            itl_global_completion_root = itl_completion_alloc();
-        }
-        str = itl_string_alloc();
-        itl_string_from_cstr(str, completion);
-        completion_node = itl_completion_append(itl_global_completion_root,
-                                                str);
-    }
-
-    return completion_node;
-}
-
-TL_DEF void tl_delete_completion(void *completion)
-{
-    itl_completion_t *completion_node = (itl_completion_t *)completion;
-    if (completion_node != NULL) {
-        itl_completion_free_all(completion_node->child);
-        itl_completion_free(completion_node);
-    }
-}
-
 TL_DEF int tl_load_history(const char *file_path)
 {
     return itl_global_history_load_from_file(file_path);
@@ -2498,6 +2498,46 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str)
     return len;
 }
 
+#if !defined TL_MANUAL_TAB_COMPLETION
+TL_DEF void *tl_add_completion(void *prefix, const char *label)
+{
+    itl_completion_t *completion_node;
+    itl_string_t *str;
+
+    if (prefix != NULL) {
+        str = itl_string_alloc();
+        itl_string_from_cstr(str, label);
+        completion_node = itl_completion_append((itl_completion_t *)prefix,
+                                                str);
+    } else {
+        if (itl_global_completion_root == NULL) {
+            itl_global_completion_root = itl_completion_alloc();
+        }
+        str = itl_string_alloc();
+        itl_string_from_cstr(str, label);
+        completion_node = itl_completion_append(itl_global_completion_root,
+                                                str);
+    }
+
+    return completion_node;
+}
+
+TL_DEF void tl_change_completion(void *completion, const char *label)
+{
+    itl_completion_t *completion_node = (itl_completion_t *)completion;
+    itl_string_from_cstr(completion_node->str, label);
+}
+
+TL_DEF void tl_delete_completion(void *completion)
+{
+    itl_completion_t *completion_node = (itl_completion_t *)completion;
+    if (completion_node != NULL) {
+        itl_completion_free_all(completion_node->child);
+        itl_completion_free(completion_node);
+    }
+}
+#endif /* !TL_MANUAL_TAB_COMPLETION */
+
 #if defined _CRT_SECURE_NO_WARNINGS
     #undef _CRT_SECURE_NO_WARNINGS
 #endif /* _CRT_SECURE_NO_WARNINGS */
@@ -2510,7 +2550,7 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str)
 
 /*
  * TODO:
- *  - Test all of this.
+ *  - Test all of this. On different OSes.
  *  - Make refresh fasterrrr.
  *  - Squash things to make this tiny again :(
  */
