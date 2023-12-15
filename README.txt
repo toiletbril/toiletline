@@ -13,7 +13,7 @@ Current features
 * Emacs controls;
 * Autocompletion;
 * Line wrapping;
-* In-memory/persistent history;
+* Persistent history;
 * MIT License.
 
 
@@ -23,8 +23,8 @@ Before you include this file in C or C++ file, define
 `TOILETLINE_IMPLEMENTATION` to create the implementation.
 
 If you want to use this library in other languages, you will need to make a .c
-file which creates implementation and includes the library. Compile it to object
-file (`-c` flag in gcc/clang) and link your program against it.
+file which creates implementation and includes the library. Compile it to
+object file (`-c` flag in gcc/clang) and link your program against it.
 
 
 Configuration macros
@@ -195,6 +195,7 @@ void tl_delete_completion(void *completion);
 --------
 Delete a tab completion and it's children using pointer returned from
 `tl_add_completion()`.
+
 
 If this API does not satisfy your needs, take a look at
 TL_MANUAL_TAB_COMPLETION.
