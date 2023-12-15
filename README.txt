@@ -32,13 +32,18 @@ Configuration macros
 These should be defined before including, in the same file with implementation
 macro.
 
-* TL_DEF and ITL_DEF are put before every definition, public and internal
-  respectively.
+* TL_MANUAL_TAB_COMPLETION - when defined, completion API will be disabled.
+  Pressing Tab key in `tl_readline()` will now return TL_PRESSED_TAB and will
+  not append anything to history. Resulting line will represent current contents
+  of the line, and can be used to implement own completion, along with
+  `tl_setline()`.
 * TL_HISTORY_MAX_SIZE configures maximum history size;
 * TL_NO_SUSPEND prevents Ctrl-Z from sending `SIGTSTP` to the terminal. Since
   Windows does not have this signal, `exit(1)` will be called instead;
 * TL_SIZE_USE_ESCAPES forces to use escape codes instead of syscalls for
   retrieving terminal size;
+* TL_DEF and ITL_DEF are put before every definition, public and internal
+  respectively.
 * TL_ASSERT configures function used for assertions;
 * TL_MALLOC, TL_REALLOC, TL_FREE configure functions used for memory
   allocation;
@@ -125,6 +130,9 @@ Returns:
 * TL_PRESSED_INTERRUPT on Ctrl-C;
 * TL_PRESSED_EOF on Ctrl-D when there is no characters on the line;
 * TL_PRESSED_SUSPEND on Ctrl-Z.
+#if defined TL_MANUAL_TAB_COMPLETION
+* TL_PRESSED_TAB
+#endif /* TL_MANUAL_TAB_COMPLETION */
 
 
 void tl_setline(const char *str);
@@ -140,21 +148,6 @@ Returns:
 * TL_SUCCESS on a character;
 * TL_PRESSED_CONTROL_SEQUENCE on a control sequence (`tl_last_control` to check
   which one).
-
-
-void *tl_add_completion(void *prefix, const char *completion);
---------
-Add a tab completion.
-
-Returns an opaque pointer that points to the added completion. Use it as
-`*prefix` parameter to add further completions. If `*prefix` is `NULL`, adds a
-root completion.
-
-
-void tl_delete_completion(void *completion);
---------
-Delete a tab completion and it's children using pointer returned from
-`tl_add_completion()`.
 
 
 int tl_load_history(const char *file_path);
@@ -179,6 +172,34 @@ Get the amount of characters in a UTF-8 string.
 
 Since number of bytes can be bigger than amount of characters, regular
 `strlen()` will not work, and will only return the number of bytes before \0.
+
+
+#if !defined TL_MANUAL_TAB_COMPLETION
+
+void *tl_add_completion(void *prefix, const char *label);
+--------
+Add a tab completion.
+
+Returns an opaque pointer that points to the added completion. Use it as
+`*prefix` parameter to add further completions. If `*prefix` is `NULL`, adds a
+root completion.
+
+
+void tl_change_completion(void *completion, const char *label);
+--------
+Change a tab completion to `*label` using pointer returned from
+`tl_add_completion()`.
+
+
+void tl_delete_completion(void *completion);
+--------
+Delete a tab completion and it's children using pointer returned from
+`tl_add_completion()`.
+
+If this API does not satisfy your needs, take a look at
+TL_MANUAL_TAB_COMPLETION.
+
+#endif /* !TL_MANUAL_TAB_COMPLETION */
 
 
 Examples
