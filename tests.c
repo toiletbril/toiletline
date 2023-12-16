@@ -34,10 +34,10 @@ static bool test_string_from_cstr(void)
 {
     size_t i;
     int result;
+    from_cstr_test_case_t test;
     char out_buffer[OUT_BUFFER_SIZE];
 
-    itl_string_t *str;
-    from_cstr_test_case_t test;;
+    itl_string_t *str = itl_string_alloc();
 
     const from_cstr_test_case_t tests[] = {
         /* original, length, size */
@@ -48,7 +48,6 @@ static bool test_string_from_cstr(void)
 
     for (i = 0; i < countof(tests); ++i) {
         test = tests[i];
-        str = itl_string_alloc();
 
         itl_string_from_cstr(str, test.original);
         itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
@@ -61,9 +60,12 @@ static bool test_string_from_cstr(void)
                       "size: %zu/%zu\n",
                       i, out_buffer, test.original, str->length, test.length,
                       str->size, test.size);
+          itl_string_free(str);
           return false;
         }
     }
+
+    itl_string_free(str);
 
     return true;
 }
@@ -81,11 +83,11 @@ static bool test_string_shift(void)
 {
     size_t i;
     int result;
-    char out_buffer[OUT_BUFFER_SIZE];
-
-    itl_string_t *str;
     string_test_case_t test;
     shift_test_case_t shift;
+    char out_buffer[OUT_BUFFER_SIZE];
+
+    itl_string_t *str = itl_string_alloc();
 
     const string_test_case_t tests[] = {
         /* original, should_be */
@@ -100,7 +102,6 @@ static bool test_string_shift(void)
 
     for (i = 0; i < countof(tests); ++i) {
         test = tests[i];
-        str = itl_string_alloc();
         shift = settings[i];
 
         itl_string_from_cstr(str, test.original);
@@ -111,9 +112,12 @@ static bool test_string_shift(void)
         if (result != 0) {
             test_printf("Result %zu: '%s', should be: '%s'\n",
                         i, out_buffer, test.should_be);
+            itl_string_free(str);
             return false;
         }
     }
+
+    itl_string_free(str);
 
     return true;
 }
@@ -122,11 +126,11 @@ static bool test_string_erase(void)
 {
     size_t i;
     int result;
-    char out_buffer[OUT_BUFFER_SIZE];
-
-    itl_string_t *str;
     string_test_case_t test;
     shift_test_case_t erase;
+    char out_buffer[OUT_BUFFER_SIZE];
+
+    itl_string_t *str = itl_string_alloc();
 
     const string_test_case_t tests[] = {
         /* original, should_be */
@@ -147,7 +151,6 @@ static bool test_string_erase(void)
 
     for (i = 0; i < countof(tests); ++i) {
         test = tests[i];
-        str = itl_string_alloc();
         erase = settings[i];
 
         itl_string_from_cstr(str, test.original);
@@ -158,9 +161,12 @@ static bool test_string_erase(void)
         if (result != 0) {
             test_printf("Result %zu: '%s', should be: '%s'\n",
                         i, out_buffer, test.should_be);
+            itl_string_free(str);
             return false;
         }
     }
+
+    itl_string_free(str);
 
     return true;
 }
@@ -169,11 +175,10 @@ static bool test_string_insert(void)
 {
     int result;
     size_t i, pos;
+    string_test_case_t test;
     char out_buffer[OUT_BUFFER_SIZE];
 
-    itl_string_t *str;
-    string_test_case_t test;
-
+    itl_string_t *str = itl_string_alloc();
     itl_utf8_t A = itl_utf8_new((uint8_t[4]){ 0x41 }, 1);
 
     const string_test_case_t tests[] = {
@@ -192,7 +197,6 @@ static bool test_string_insert(void)
     for (i = 0; i < countof(tests); ++i) {
         test = tests[i];
         pos = positions[i];
-        str = itl_string_alloc();
 
         itl_string_from_cstr(str, test.original);
         itl_string_insert(str, pos, A);
@@ -202,9 +206,13 @@ static bool test_string_insert(void)
         if (result != 0) {
             test_printf("Result %zu: '%s', should be: '%s'\n",
                         i, out_buffer, test.should_be);
+            itl_string_free(str);
             return false;
         }
+
     }
+
+    itl_string_free(str);
 
     return true;
 }
@@ -223,11 +231,11 @@ static bool test_string_split(void)
 {
     size_t i, j;
     const char *cstr;
-
-    itl_string_t *str;
     itl_split_t *split;
     split_test_case_t pos;
     const itl_offset_t *offset;
+
+    itl_string_t *str = itl_string_alloc();
 
     const char *tests[] = {
         /* original */
@@ -242,7 +250,6 @@ static bool test_string_split(void)
 
     for (i = 0; i < countof(tests); ++i) {
         cstr = tests[i];
-        str = itl_string_alloc();
 
         itl_string_from_cstr(str, cstr);
         split = itl_string_split(str, ' ');
@@ -255,10 +262,16 @@ static bool test_string_split(void)
                             "%zu/%zu\n",
                             i, cstr, j, offset->start, pos.start, offset->end,
                             pos.end);
+                itl_string_free(str);
+                itl_split_free(split);
                 return false;
             }
         }
+
+        itl_split_free(split);
     }
+
+    itl_string_free(str);
 
     return true;
 }
@@ -268,7 +281,6 @@ static bool test_char_buf(void)
     char *result;
     size_t result_size;
 
-    size_t the_number = 3912033312;
     itl_string_t *str = itl_string_alloc();
     itl_char_buf_t *cb = itl_char_buf_alloc();
 
@@ -282,7 +294,7 @@ static bool test_char_buf(void)
     itl_char_buf_append_byte(cb, ' ');
     itl_char_buf_append_byte(cb, 'm');
     itl_char_buf_append_byte(cb, 'e');
-    itl_char_buf_append_size(cb, the_number);
+    itl_char_buf_append_size(cb, 3912033312);
     itl_char_buf_append_cstr(cb, " ЛОЛ");
 
     result = cb->data;
@@ -298,8 +310,13 @@ static bool test_char_buf(void)
         strcmp(should_be, cb->data) != 0) {
         test_printf("Result: '%s', should be: '%s', len: %zu/%zu\n",
                     result, should_be, result_size, strlen(should_be));
+        itl_string_free(str);
+        itl_char_buf_free(cb);
         return false;
     }
+
+    itl_string_free(str);
+    itl_char_buf_free(cb);
 
     return true;
 }
