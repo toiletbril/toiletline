@@ -9,6 +9,9 @@ endif
 default:
 	@echo "Available targets: test, examples, examples_debug, see_bytes, clean"
 
+cte: clean test examples
+cted: clean test examples_debug
+
 %: %.c
 	@echo "CC $< -o $@"
 ifeq ($(OS),Windows_NT)
