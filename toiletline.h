@@ -451,6 +451,7 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
 ITL_DEF void *itl_malloc(size_t size)
 {
     void *allocated = TL_MALLOC(size);
+    itl_global_alloc_count += 1;
 
 #if !defined TL_NO_ABORT
     if (allocated == NULL) {
@@ -458,14 +459,14 @@ ITL_DEF void *itl_malloc(size_t size)
     }
 #endif
 
-    itl_global_alloc_count += 1;
     return allocated;
 }
 
 #if 0
 ITL_DEF void *itl_calloc(size_t count, size_t size)
 {
-    void *allocated = itl_malloc(count * size);
+    void *allocated = TL_MALLOC(size);
+    itl_global_alloc_count += 1;
 
 #if !defined TL_NO_ABORT
     if (allocated == NULL) {
@@ -474,6 +475,7 @@ ITL_DEF void *itl_calloc(size_t count, size_t size)
 #endif
 
     memset(allocated, 0, count * size);
+
     return allocated;
 }
 #endif /* if 0 */
@@ -483,9 +485,11 @@ ITL_DEF void *itl_realloc(void *block, size_t size)
     void *allocated;
 
     if (block == NULL) {
+        allocated = TL_MALLOC(size);
         itl_global_alloc_count += 1;
+    } else {
+        allocated = TL_REALLOC(block, size);
     }
-    allocated = TL_REALLOC(block, size);
 
 #if !defined TL_NO_ABORT
     if (allocated == NULL) {
@@ -496,14 +500,22 @@ ITL_DEF void *itl_realloc(void *block, size_t size)
     return allocated;
 }
 
-#define itl_free(ptr)                     \
-    do {                                  \
-        if (ptr != NULL) {                \
-            itl_global_alloc_count -= 1;  \
-            TL_FREE(ptr);                 \
-            ptr = NULL;                   \
-        }                                 \
+#if defined ITL_DEBUG
+#define itl_free(ptr)                \
+    do {                             \
+        itl_global_alloc_count -= 1; \
+        TL_FREE(ptr);                \
     } while (0)
+#else /* ITL_DEBUG */
+#define itl_free(ptr)                 \
+    do {                              \
+        TL_ASSERT(ptr != NULL);       \
+        memset(ptr, 0, sizeof(*ptr)); \
+        TL_FREE(ptr);                 \
+        itl_global_alloc_count -= 1;  \
+        ptr = NULL;                   \
+    } while (0)
+#endif
 
 typedef struct itl_utf8 itl_utf8_t;
 
@@ -526,14 +538,7 @@ ITL_DEF itl_utf8_t itl_utf8_new(const uint8_t *bytes, size_t size)
     return ch;
 }
 
-ITL_DEF void itl_utf8_copy(itl_utf8_t *dst, const itl_utf8_t *src)
-{
-    size_t i;
-    for (i = 0; i < src->size; ++i) {
-        dst->bytes[i] = src->bytes[i];
-    }
-    dst->size = src->size;
-}
+#define itl_utf8_copy(dst, src) memcpy(dst, src, (src)->size)
 
 ITL_DEF bool itl_utf8_equal(itl_utf8_t ch1, itl_utf8_t ch2)
 {
@@ -590,7 +595,7 @@ ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
     }
 
 #if defined ITL_DEBUG
-    itl_traceln("utf8 char size: %zu\n'", size);
+    itl_traceln("utf8 char size: %zu\n", size);
     itl_traceln("utf8 char bytes: '");
 
     for (i = 0; i < (int)size - 1; ++i) {
@@ -1365,8 +1370,7 @@ ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 
 ITL_DEF void itl_char_buf_dump(itl_char_buf_t *cb)
 {
-/* `write()` works faster. Using stdio is slow and requires stinky
-   `setbuf(stdout, NULL)` */
+/* stdio is slow and requires stinky `setbuf(stdout, NULL)` */
 #if defined TL_REFRESH_STDIO
     size_t i;
     const char* s = cb->data;
@@ -1424,7 +1428,7 @@ ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_refresh_char_buffer = {0};
 
 ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
 #if defined TL_SIZE_USE_ESCAPES
-    char buf[32] = {0};
+    char buf[32];
     size_t i;
 
     itl_char_buf_t *buffer = &itl_global_refresh_char_buffer;
@@ -1439,9 +1443,9 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
         if (buf[i] == 'R') {
             break;
         }
-        i++;
+        i += 1;
     }
-    buf[i] = '\0';
+    buf[i + 1] = '\0';
 
     ITL_TRY(buf[0] == '\x1b' || buf[1] == '[', false);
     ITL_TRY(sscanf(&buf[2], "%zu;%zu", rows, cols) == 2, false);
