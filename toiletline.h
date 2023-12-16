@@ -527,12 +527,9 @@ struct itl_utf8
 
 ITL_DEF itl_utf8_t itl_utf8_new(const uint8_t *bytes, size_t size)
 {
-    size_t i;
     itl_utf8_t ch;
 
-    for (i = 0; i < size; ++i) {
-        ch.bytes[i] = bytes[i];
-    }
+    memcpy(ch.bytes, bytes, size);
     ch.size = size;
 
     return ch;
