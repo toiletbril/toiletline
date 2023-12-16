@@ -414,8 +414,7 @@ ITL_DEF bool itl_enter_raw_mode(void)
 ITL_DEF bool itl_read_byte(uint8_t *buffer)
 {
     int byte = itl_read_byte_raw();
-    ITL_TRY(byte != EOF, false);
-    ITL_TRY(byte >= 0, false);
+    ITL_TRY(byte != EOF && byte >= 0, false);
     (*buffer) = (uint8_t)byte;
     return true;
 }
@@ -1421,29 +1420,31 @@ ITL_DEF void itl_char_buf_dump(itl_char_buf_t *cb)
 #define itl_tty_status_report(buffer) \
     itl_char_buf_append_cstr(buffer, "\x1b[6n")
 
+ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_refresh_char_buffer = {0};
+
 ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
 #if defined TL_SIZE_USE_ESCAPES
-    char buf[32];
+    char buf[32] = {0};
     size_t i;
 
-    /* Allocating and freeing is probably slow. This version should only be used
-       as a fallback */
-    itl_char_buf_t *buffer = itl_char_buf_alloc();
+    itl_char_buf_t *buffer = &itl_global_refresh_char_buffer;
     itl_tty_move_forward(buffer, 999);
-    itl_tty_print_status_report(buffer);
+    itl_tty_status_report(buffer);
     itl_char_buf_dump(buffer);
-    itl_char_buf_free(buffer);
+    buffer->size = 0;
 
     i = 0;
     while (i < sizeof(buf) - 1) {
         ITL_TRY_READ_BYTE(&buf[i], false);
-        if (buf[i] == 'R') break;
-        ++i;
+        if (buf[i] == 'R') {
+            break;
+        }
+        i++;
     }
     buf[i] = '\0';
 
-    ITL_TRY(buf[0] != '\x1b' || buf[1] != '[', false);
-    ITL_TRY(sscanf(&buf[2], "%zu;%zu", rows, cols) != 2, false);
+    ITL_TRY(buf[0] == '\x1b' || buf[1] == '[', false);
+    ITL_TRY(sscanf(&buf[2], "%zu;%zu", rows, cols) == 2, false);
 
 #elif defined ITL_WIN32
     CONSOLE_SCREEN_BUFFER_INFO buffer_info;
@@ -1469,8 +1470,6 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
     return true;
 }
 
-ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_refresh_char_buffer = {0};
-
 ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_lines = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
 
@@ -1494,6 +1493,8 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     rows = 0;
     cols = 0;
     ITL_TRY(itl_tty_get_size(&rows, &cols), false);
+
+    TL_ASSERT(rows != 0 && cols != 0);
 
     prompt_len = (le->prompt) ? strlen(le->prompt) : 0;
 
@@ -1726,7 +1727,6 @@ int *itl__last_control_location(void) {
 }
 
 #if !defined TL_MANUAL_TAB_COMPLETION
-
 ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb, itl_string_t *str)
 {
     while (cb->capacity < cb->size + str->size) {
