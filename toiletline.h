@@ -2318,14 +2318,11 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_CLEAR: {
-            itl_char_buf_t *buffer = itl_char_buf_alloc();
-
+            itl_char_buf_t *buffer = &itl_global_refresh_char_buffer;
             itl_tty_goto_home(buffer);
             itl_tty_erase_screen(buffer);
-
             itl_char_buf_dump(buffer);
-            itl_char_buf_free(buffer);
-
+            buffer->size = 0;
             itl_le_tty_refresh(le);
         } break;
 
