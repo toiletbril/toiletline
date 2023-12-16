@@ -457,7 +457,7 @@ ITL_DEF void *itl_malloc(size_t size)
     if (allocated == NULL) {
         TL_ABORT();
     }
-#endif
+#endif /* TL_NO_ABORT */
 
     return allocated;
 }
@@ -472,7 +472,7 @@ ITL_DEF void *itl_calloc(size_t count, size_t size)
     if (allocated == NULL) {
         TL_ABORT();
     }
-#endif
+#endif /* TL_NO_ABORT */
 
     memset(allocated, 0, count * size);
 
@@ -495,18 +495,12 @@ ITL_DEF void *itl_realloc(void *block, size_t size)
     if (allocated == NULL) {
         TL_ABORT();
     }
-#endif
+#endif /* TL_NO_ABORT */
 
     return allocated;
 }
 
 #if defined ITL_DEBUG
-#define itl_free(ptr)                \
-    do {                             \
-        itl_global_alloc_count -= 1; \
-        TL_FREE(ptr);                \
-    } while (0)
-#else /* ITL_DEBUG */
 #define itl_free(ptr)                 \
     do {                              \
         TL_ASSERT(ptr != NULL);       \
@@ -514,6 +508,12 @@ ITL_DEF void *itl_realloc(void *block, size_t size)
         TL_FREE(ptr);                 \
         itl_global_alloc_count -= 1;  \
         ptr = NULL;                   \
+    } while (0)
+#else /* ITL_DEBUG */
+#define itl_free(ptr)                \
+    do {                             \
+        itl_global_alloc_count -= 1; \
+        TL_FREE(ptr);                \
     } while (0)
 #endif
 
