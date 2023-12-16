@@ -10,9 +10,9 @@ character support.
 Current features
 ----------------
 * UTF-8 support;
-* Emacs controls;
-* Autocompletion;
 * Line wrapping;
+* Emacs controls;
+* Optional, easy completion;
 * Persistent history;
 * MIT License.
 
@@ -32,10 +32,10 @@ Configuration macros
 These should be defined before including, in the same file with implementation
 macro.
 
-* TL_MANUAL_TAB_COMPLETION - when defined, completion API will be disabled.
-  Pressing Tab key in `tl_readline()` will now return TL_PRESSED_TAB and will
-  not append anything to history. Resulting line will represent current contents
-  of the line, and can be used to implement own completion, along with
+* TL_MANUAL_TAB_COMPLETION -- when defined, completion API will be disabled.
+  Pressing Tab key in `tl_readline()` will now return TL_PRESSED_TAB and not
+  append anything to history. Buffer contents will represent current state of
+  the line, which can be used to implement own completion, along with
   `tl_setline()`.
 * TL_HISTORY_MAX_SIZE configures maximum history size;
 * TL_NO_SUSPEND prevents Ctrl-Z from sending `SIGTSTP` to the terminal. Since
