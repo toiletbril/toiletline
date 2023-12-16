@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.5.0
+ *  toiletline 0.5.1
  *  Small single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
