@@ -44,13 +44,13 @@ extern "C" {
  * without breaking terminal's state if you haven't called tl_exit yet. */
 #if !defined TL_NO_SUSPEND
     #define ITL_SUSPEND
-#endif /* TL_NO_SUSPEND */
+#endif /* !TL_NO_SUSPEND */
 
 /* To use custom assertions or to disable them, you can define `TL_ASSERT` to
  * some other function or nothing before including. */
 #if !defined TL_ASSERT
     #define ITL_DEFAULT_ASSERT
-#endif /* TL_ASSERT */
+#endif /* !TL_ASSERT */
 
 /* Replaceable macros that are used to allocate memory. */
 #if !defined TL_MALLOC
@@ -60,13 +60,13 @@ extern "C" {
     /* Will be called on failed allocation. `TL_NO_ABORT` can be defined to
      * disable failure checking. */
     #define TL_ABORT() abort()
-#endif /* TL_MALLOC */
+#endif /* !TL_MALLOC */
 
 /* Macros that are placed before definitions. */
 #if !defined TL_DEF
     /* Public prototypes */
     #define TL_DEF extern
-#endif /* TL_DEF */
+#endif /* !TL_DEF */
 
 #if !defined ITL_DEF
     /* Internal definitions */
@@ -214,7 +214,7 @@ TL_DEF void tl_delete_completion(void *completion);
 
 #if !defined TOILETLINE_IMPLEMENTATION && defined _CRT_SECURE_NO_WARNINGS
     #undef _CRT_SECURE_NO_WARNINGS
-#endif /* _CRT_SECURE_NO_WARNINGS */
+#endif /* !TOILETLINE_IMPLEMENTATION && _CRT_SECURE_NO_WARNINGS */
 
 #endif /* TOILETLINE_H_ */ /* End of header file */
 
@@ -460,7 +460,7 @@ ITL_DEF void *itl_malloc(size_t size)
     if (allocated == NULL) {
         TL_ABORT();
     }
-#endif /* TL_NO_ABORT */
+#endif /* !TL_NO_ABORT */
 
     return allocated;
 }
@@ -475,7 +475,7 @@ ITL_DEF void *itl_calloc(size_t count, size_t size)
     if (allocated == NULL) {
         TL_ABORT();
     }
-#endif /* TL_NO_ABORT */
+#endif /* !TL_NO_ABORT */
 
     memset(allocated, 0, count * size);
 
@@ -498,7 +498,7 @@ ITL_DEF void *itl_realloc(void *block, size_t size)
     if (allocated == NULL) {
         TL_ABORT();
     }
-#endif /* TL_NO_ABORT */
+#endif /* !TL_NO_ABORT */
 
     return allocated;
 }
@@ -827,10 +827,10 @@ ITL_DEF void itl_string_insert(itl_string_t *str, size_t position,
 #if defined ITL_WIN32
     #define ITL_LF "\r\n"
     #define ITL_LF_LEN 2
-#else /* ITL_WIN32 */
+#elif defined ITL_POSIX
     #define ITL_LF "\n"
     #define ITL_LF_LEN 1
-#endif
+#endif /* ITL_POSIX */
 
 ITL_DEF bool itl_string_to_cstr(itl_string_t *str, char *cstr, size_t cstr_size)
 {
@@ -2154,12 +2154,13 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
             if (itl_global_completion_root != NULL) {
                 itl_le_complete(le);
             }
-#else
+#else /* !TL_MANUAL_TAB_COMPLETION */
             ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
                     TL_ERROR_SIZE);
             return TL_PRESSED_TAB;
-#endif /* TL_MANUAL_TAB_COMPLETION */
+#endif
         } break;
+
         case TL_KEY_UP: {
             itl_string_t *prev_line;
 
@@ -2304,7 +2305,7 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
         case TL_KEY_SUSPEND: {
 #if defined ITL_SUSPEND
             itl_raise_suspend();
-#endif
+#endif /* ITL_SUSPEND */
         } break;
 
         case TL_KEY_EOF: {
