@@ -66,9 +66,12 @@ extern "C" {
 #if !defined TL_DEF
     /* Public prototypes */
     #define TL_DEF extern
+#endif /* TL_DEF */
+
+#if !defined ITL_DEF
     /* Internal definitions */
     #define ITL_DEF static
-#endif
+#endif /* !ITL_DEF */
 
 /* Max size of in-memory history, must be a power of 2. */
 #if !defined TL_HISTORY_MAX_SIZE
