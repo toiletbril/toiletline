@@ -1665,7 +1665,8 @@ ITL_DEF int itl_esc_parse_win32(uint8_t byte)
 {
     int event = 0;
 
-    if (byte == 224) { /* esc */
+    /* https://learn.microsoft.com/en-us/previous-versions/visualstudio/visual-studio-6.0/aa299374(v=vs.60) */
+    if (byte == 224 || byte == 0) { /* esc */
         ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
         switch (byte) {
             case 'H': event = TL_KEY_UP;    break;
