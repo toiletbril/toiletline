@@ -321,12 +321,14 @@ TL_DEF void tl_delete_completion(void *completion);
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 #define ITL_MIN(type, i, j) ((((type)i) < ((type)j)) ? ((type)i) : ((type)j))
 
-#define ITL_TRY(boolval, return_error)             \
+#define ITL__TRY(boolval, expr)                    \
     if (!(boolval)) {                              \
         itl_traceln("%s:%d: try fail: %s\n",       \
                     __FILE__, __LINE__, #boolval); \
-        return (return_error);                     \
+        expr;                                      \
     }
+#define ITL_TRY(boolval, return_error) \
+    ITL__TRY(boolval, return (return_error))
 
 #if defined ITL_WIN32
 ITL_DEF ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
@@ -381,18 +383,23 @@ ITL_DEF bool itl_enter_raw_mode_impl(void)
 ITL_DEF bool itl_exit_raw_mode(void)
 {
 #if defined ITL_WIN32
+    bool something_failed = false;
     HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
     ITL_TRY(stdin_handle != INVALID_HANDLE_VALUE, false);
 
     if (itl_global_original_tty_mode != 0) {
-        SetConsoleMode(stdin_handle, itl_global_original_tty_mode);
+        ITL__TRY(SetConsoleMode(stdin_handle, itl_global_original_tty_mode),
+                 something_failed = true);
     }
     if (itl_global_original_tty_cp != 0) {
-       SetConsoleCP(itl_global_original_tty_cp);
+       ITL__TRY(SetConsoleCP(itl_global_original_tty_cp),
+                something_failed = true);
     }
     if (itl_global_original_mode != 0) {
-        _setmode(STDIN_FILENO, itl_global_original_mode);
+        ITL__TRY(_setmode(STDIN_FILENO, itl_global_original_mode) != -1,
+                 something_failed = true);
     }
+    return (something_failed == false);
 #elif defined ITL_POSIX
     struct termios zeroed_termios = {0};
     if (memcmp(&itl_global_original_tty_mode, &zeroed_termios,
@@ -401,8 +408,8 @@ ITL_DEF bool itl_exit_raw_mode(void)
                           &itl_global_original_tty_mode) == 0,
                 false);
     }
-#endif /* ITL_POSIX */
     return true;
+#endif /* ITL_POSIX */
 }
 
 ITL_DEF bool itl_enter_raw_mode(void)
@@ -850,8 +857,8 @@ ITL_DEF bool itl_string_to_cstr(itl_string_t *str, char *cstr, size_t cstr_size)
     k = 0;
     for (i = 0; i < str->length; ++i) {
         if (cstr_size - k - 1 < str->chars[i].size) break;
-        for (j = 0; j != str->chars[i].size; ++j) {
-            cstr[k++] = (char)str->chars[i].bytes[j];
+        for (j = 0; j != str->chars[i].size; ++j, ++k) {
+            cstr[k] = (char)str->chars[i].bytes[j];
         }
     }
     cstr[k] = '\0';
@@ -963,6 +970,7 @@ ITL_DEF void itl_global_history_free(void)
 
 ITL_DEF bool itl_global_history_append(itl_string_t *str)
 {
+    /* If history size was exceeded, release the last item first */
     if (itl_global_history_length >= TL_HISTORY_MAX_SIZE) {
         if (itl_global_history_first) {
             itl_history_item_t *next_item = itl_global_history_first->next;
@@ -994,13 +1002,14 @@ ITL_DEF bool itl_global_history_append(itl_string_t *str)
         itl_global_history_last = item;
     }
 
-    ++itl_global_history_length;
+    itl_global_history_length += 1;
 
     return true;
 }
 
 #define ITL_HISTORY_FILE_BUFFER_INIT_SIZE 64
 
+/* If this is true, do not overwrite file on `history_dump_to_file()` */
 ITL_DEF ITL_THREAD_LOCAL bool itl_global_history_is_file_bad = false;
 
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
@@ -1462,6 +1471,7 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
     buf[i + 1] = '\0';
 
     ITL_TRY(buf[0] == '\x1b' || buf[1] == '[', false);
+    /* @@@: replace `sscanf()` here */
     ITL_TRY(sscanf(&buf[2], "%zu;%zu", rows, cols) == 2, false);
 
 #elif defined ITL_WIN32
@@ -2190,8 +2200,7 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
                 }
                 itl_string_free(prev_line);
                 le->appended_to_history = true;
-            } else if (itl_global_history_last &&
-                       itl_global_history_last == le->history_selected_item) {
+            } else if (itl_global_history_last == le->history_selected_item) {
                 /* If some string was already appended, just update it */
                 itl_string_copy(itl_global_history_last->str, le->line);
                 itl_global_history_get_prev(le);
