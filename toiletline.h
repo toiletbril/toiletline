@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.5.1
+ *  toiletline 0.5.2
  *  Small single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -290,6 +290,7 @@ TL_DEF void tl_delete_completion(void *completion);
 #endif /* ITL_POSIX */
 
 #if defined ITL_DEFAULT_ASSERT
+    /* Fatal error :[ */
     #define TL_ASSERT(boolval)                           \
         if (!(boolval)) {                                \
             fprintf(stderr, "%s:%d: assert fail: %s\n",  \
@@ -537,19 +538,24 @@ ITL_DEF itl_utf8_t itl_utf8_new(const uint8_t *bytes, size_t size)
 {
     itl_utf8_t ch;
 
+    TL_ASSERT(size <= 4);
+
     memcpy(ch.bytes, bytes, size);
     ch.size = size;
 
     return ch;
 }
 
-#define itl_utf8_copy(dst, src) memcpy(dst, src, (src)->size)
+#define itl_utf8_copy(dst, src) memcpy(dst, src, sizeof(itl_utf8_t))
 
 ITL_DEF bool itl_utf8_equal(itl_utf8_t ch1, itl_utf8_t ch2)
 {
     if (ch1.size != ch2.size) {
         return false;
     }
+
+    TL_ASSERT(ch1.size <= 4 && ch2.size <= 4);
+
     if (memcmp(ch1.bytes,
                ch2.bytes,
                ch1.size * sizeof(uint8_t)) != 0) {
@@ -977,6 +983,7 @@ ITL_DEF bool itl_global_history_append(itl_string_t *str)
         itl_global_history_first = itl_global_history_last;
     }
     else {
+        /* Do not append the same string */
         if (itl_string_equal(itl_global_history_last->str, str)) {
             return false;
         }
