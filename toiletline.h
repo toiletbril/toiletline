@@ -417,7 +417,12 @@ ITL_DEF bool itl_enter_raw_mode(void)
 ITL_DEF bool itl_read_byte(uint8_t *buffer)
 {
     int byte = itl_read_byte_raw();
-    ITL_TRY(byte != EOF && byte >= 0, false);
+    /* Catch `read()` errors. `getch()` on Windows does not have error
+       returns */
+    ITL_TRY(byte != -1, false);
+    /* I think `read()` is not supposed to return EOF in the context of a
+       terminal session */
+    ITL_TRY(byte != EOF, false);
     (*buffer) = (uint8_t)byte;
     return true;
 }
@@ -972,7 +977,9 @@ ITL_DEF bool itl_global_history_append(itl_string_t *str)
         itl_global_history_first = itl_global_history_last;
     }
     else {
-        ITL_TRY(!itl_string_equal(itl_global_history_last->str, str), false);
+        if (itl_string_equal(itl_global_history_last->str, str)) {
+            return false;
+        }
 
         itl_history_item_t *item = itl_history_item_alloc(str);
         item->prev = itl_global_history_last;
