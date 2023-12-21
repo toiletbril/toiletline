@@ -1,9 +1,9 @@
 #define TOILETLINE_IMPLEMENTATION
 #include "toiletline.h"
 
-#define OUT_BUFFER_SIZE 128
+#define BUFFER_SIZE 128
 
-static char current_function_name[128];
+static char current_function_name[BUFFER_SIZE];
 
 #define test_printf(...)                  \
   do {                                    \
@@ -35,7 +35,7 @@ static bool test_string_from_cstr(void)
     size_t i;
     int result;
     from_cstr_test_case_t test;
-    char out_buffer[OUT_BUFFER_SIZE];
+    char out_buffer[BUFFER_SIZE];
 
     itl_string_t *str = itl_string_alloc();
 
@@ -50,7 +50,7 @@ static bool test_string_from_cstr(void)
         test = tests[i];
 
         itl_string_from_cstr(str, test.original);
-        itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
+        itl_string_to_cstr(str, out_buffer, BUFFER_SIZE);
 
         result = strcmp(out_buffer, test.original);
 
@@ -85,7 +85,7 @@ static bool test_string_shift(void)
     int result;
     string_test_case_t test;
     shift_test_case_t shift;
-    char out_buffer[OUT_BUFFER_SIZE];
+    char out_buffer[BUFFER_SIZE];
 
     itl_string_t *str = itl_string_alloc();
 
@@ -106,7 +106,7 @@ static bool test_string_shift(void)
 
         itl_string_from_cstr(str, test.original);
         itl_string_shift(str, shift.pos, shift.count, shift.backwards);
-        itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
+        itl_string_to_cstr(str, out_buffer, BUFFER_SIZE);
 
         result = strcmp(out_buffer, test.should_be);
         if (result != 0) {
@@ -128,7 +128,7 @@ static bool test_string_erase(void)
     int result;
     string_test_case_t test;
     shift_test_case_t erase;
-    char out_buffer[OUT_BUFFER_SIZE];
+    char out_buffer[BUFFER_SIZE];
 
     itl_string_t *str = itl_string_alloc();
 
@@ -155,7 +155,7 @@ static bool test_string_erase(void)
 
         itl_string_from_cstr(str, test.original);
         itl_string_erase(str, erase.pos, erase.count, erase.backwards);
-        itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
+        itl_string_to_cstr(str, out_buffer, BUFFER_SIZE);
 
         result = strcmp(out_buffer, test.should_be);
         if (result != 0) {
@@ -176,7 +176,7 @@ static bool test_string_insert(void)
     int result;
     size_t i, pos;
     string_test_case_t test;
-    char out_buffer[OUT_BUFFER_SIZE];
+    char out_buffer[BUFFER_SIZE];
 
     itl_string_t *str = itl_string_alloc();
     itl_utf8_t A = itl_utf8_new((uint8_t[4]){ 0x41 }, 1);
@@ -200,7 +200,7 @@ static bool test_string_insert(void)
 
         itl_string_from_cstr(str, test.original);
         itl_string_insert(str, pos, A);
-        itl_string_to_cstr(str, out_buffer, OUT_BUFFER_SIZE);
+        itl_string_to_cstr(str, out_buffer, BUFFER_SIZE);
 
         result = strcmp(out_buffer, test.should_be);
         if (result != 0) {
