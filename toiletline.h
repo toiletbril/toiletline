@@ -232,21 +232,30 @@ TL_DEF void tl_delete_completion(void *completion);
 
 #if defined _MSC_VER
     #define ITL_THREAD_LOCAL __declspec(thread)
-    #define ITL_UNREACHABLE __assume(false)
-    #define ITL_DEBUG_TRAP __debugbreak()
+    #define ITL_UNREACHABLE  __assume(0)
+    #define ITL_DEBUG_TRAP   __debugbreak()
+    #define ITL_NO_RETURN    __declspec(noreturn)
 #elif defined __GNUC__ || defined __clang__
     #define ITL_THREAD_LOCAL __thread
-    #define ITL_UNREACHABLE __builtin_unreachable()
-    #define ITL_DEBUG_TRAP __builtin_trap()
-#elif defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
-    #define ITL_THREAD_LOCAL _Thread_local
-    _Noreturn ITL_DEF void itl__unreachable() { while (true); }
-    #define ITL_UNREACHABLE itl__unreachable()
-    #define ITL_DEBUG_TRAP abort()
-#else /* __STDC_VERSION__ && __STDC_VERSION__ >= 201112L */
-    #define ITL_THREAD_LOCAL /* nothing */
-    #define ITL_UNREACHABLE  /* nothing */
-    #define ITL_DEBUG_TRAP abort()
+    #define ITL_UNREACHABLE  __builtin_unreachable()
+    #define ITL_DEBUG_TRAP   __builtin_trap()
+    #define ITL_NO_RETURN    __attribute__((noreturn))
+#else
+    #if defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
+        #define ITL_THREAD_LOCAL _Thread_local
+        #define ITL_NO_RETURN    _Noreturn
+    #else /* __STDC_VERSION__ && __STDC_VERSION__ >= 201112L */
+        #define ITL_THREAD_LOCAL /* nothing */
+        #define ITL_NO_RETURN    /* nothing */
+    #endif
+    ITL_NO_RETURN ITL_DEF void itl__unreachable(const char *file, int line)
+    {
+        fprintf(stderr, "%s:%d: unreachable fail\n", file, line);
+        fflush(stderr);
+        while (true);
+    }
+    #define ITL_UNREACHABLE  itl__unreachable(__FILE__, __LINE__)
+    #define ITL_DEBUG_TRAP   ITL_UNREACHABLE
 #endif
 
 #if defined ITL_WIN32
@@ -290,32 +299,34 @@ TL_DEF void tl_delete_completion(void *completion);
 #endif /* ITL_POSIX */
 
 #if defined ITL_DEFAULT_ASSERT
-    /* Fatal error :( */
-    #define TL_ASSERT(boolval)                           \
-        if (!(boolval)) {                                \
-            fprintf(stderr, "%s:%d: assert fail: %s\n",  \
-                    __FILE__, __LINE__, #boolval);       \
-            fflush(stderr);                              \
-            ITL_DEBUG_TRAP;                              \
+    #define TL_ASSERT(condition)                        \
+        if (!(condition)) {                             \
+            fprintf(stderr, "%s:%d: assert fail: %s\n", \
+                    __FILE__, __LINE__, #condition);    \
+            fflush(stderr);                             \
+            ITL_DEBUG_TRAP;                             \
         }
 #endif /* ITL_DEFAULT_ASSERT */
 
 #include <ctype.h>
 #include <errno.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#if defined ITL_SUSPEND
+    #include <signal.h>
+#endif /* ITL_SUSPEND */
+
 #if defined ITL_DEBUG
-    #define itl_traceln(...)  fprintf(stderr, "\n[TRACE] " __VA_ARGS__)
+    #define itl_traceln(...) fprintf(stderr, "\n[TRACE] " __VA_ARGS__)
     /* Print to stderr on the same line */
-    #define itl_trace(...) fprintf(stderr, __VA_ARGS__)
+    #define itl_trace(...)   fprintf(stderr, __VA_ARGS__)
 #else /* ITL_DEBUG */
     #define itl_traceln(...) /* nothing */
-    #define itl_trace(...) /* nothing */
+    #define itl_trace(...)   /* nothing */
 #endif
 
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
@@ -331,8 +342,8 @@ TL_DEF void tl_delete_completion(void *completion);
 
 #if defined ITL_WIN32
 ITL_DEF ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
-ITL_DEF ITL_THREAD_LOCAL UINT itl_global_original_tty_cp    = 0;
-ITL_DEF ITL_THREAD_LOCAL int itl_global_original_mode       = 0;
+ITL_DEF ITL_THREAD_LOCAL UINT  itl_global_original_tty_cp   = 0;
+ITL_DEF ITL_THREAD_LOCAL int   itl_global_original_mode     = 0;
 #elif defined ITL_POSIX
 ITL_DEF ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode = {0};
 #endif
@@ -446,19 +457,20 @@ ITL_DEF void itl_handle_sigcont(int signal_number)
 }
 #endif /* ITL_POSIX */
 
-/* Internally raise SIGTSTP and resume normally on SIGCONT, exit(1) on
-   Windows */
+#if defined ITL_POSIX
 ITL_DEF void itl_raise_suspend(void)
 {
-#if defined ITL_POSIX
     itl_exit_raw_mode();
     signal(SIGCONT, itl_handle_sigcont);
     raise(SIGTSTP);
-#else /* ITL_POSIX */
-    tl_exit();
-    exit(1);
-#endif
 }
+#else /* ITL_POSIX */
+ITL_NO_RETURN ITL_DEF void itl_raise_suspend(void)
+{
+    tl_exit();
+    exit(0);
+}
+#endif
 #endif /* ITL_SUSPEND */
 
 ITL_DEF ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
@@ -893,7 +905,7 @@ struct itl_history_item
     itl_history_item_t *prev;
 };
 
-ITL_DEF ITL_THREAD_LOCAL itl_history_item_t *itl_global_history_last = NULL;
+ITL_DEF ITL_THREAD_LOCAL itl_history_item_t *itl_global_history_last  = NULL;
 ITL_DEF ITL_THREAD_LOCAL itl_history_item_t *itl_global_history_first = NULL;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_global_history_length = 0;
 
@@ -1385,14 +1397,14 @@ ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 ITL_DEF void itl_char_buf_dump(itl_char_buf_t *cb)
 {
 /* stdio is slow and requires stinky `setbuf(stdout, NULL)` */
-#if defined TL_REFRESH_STDIO
+#if defined ITL_USE_STDIO
     size_t i;
     const char* s = cb->data;
     for (i = 0; i < cb->size; ++i) {
         fputc(s[i], stdout);
     }
     fflush(stdout);
-#else
+#else /* ITL_USE_STDIO */
     write(STDOUT_FILENO, cb->data, cb->size);
 #endif
 }
@@ -1489,7 +1501,7 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
     return true;
 }
 
-ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_lines = 1;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_lines    = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
 
 ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
@@ -1774,7 +1786,7 @@ ITL_DEF void itl_string_append_completion(itl_string_t *dst, itl_string_t *src,
 
     /* Insert a space before new word, if there is no matching prefix */
     i = dst->length;
-    if (!itl_utf8_equal(dst->chars[i - 1], ITL_SPACE) && prefix_length == 0) {
+    if (prefix_length == 0 && !itl_utf8_equal(dst->chars[i - 1], ITL_SPACE)) {
         dst->chars[i++] = ITL_SPACE;
         dst->length += 1;
     }
