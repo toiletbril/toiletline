@@ -290,7 +290,7 @@ TL_DEF void tl_delete_completion(void *completion);
 #endif /* ITL_POSIX */
 
 #if defined ITL_DEFAULT_ASSERT
-    /* Fatal error :[ */
+    /* Fatal error :( */
     #define TL_ASSERT(boolval)                           \
         if (!(boolval)) {                                \
             fprintf(stderr, "%s:%d: assert fail: %s\n",  \
@@ -321,14 +321,13 @@ TL_DEF void tl_delete_completion(void *completion);
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 #define ITL_MIN(type, i, j) ((((type)i) < ((type)j)) ? ((type)i) : ((type)j))
 
-#define ITL__TRY(boolval, expr)                    \
-    if (!(boolval)) {                              \
-        itl_traceln("%s:%d: try fail: %s\n",       \
-                    __FILE__, __LINE__, #boolval); \
-        expr;                                      \
+/* Do `expr` if condition is not true */
+#define ITL_TRY(condition, expr)                     \
+    if (!(condition)) {                              \
+        itl_traceln("%s:%d: try fail: %s\n",         \
+                    __FILE__, __LINE__, #condition); \
+        expr;                                        \
     }
-#define ITL_TRY(boolval, return_error) \
-    ITL__TRY(boolval, return (return_error))
 
 #if defined ITL_WIN32
 ITL_DEF ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
@@ -347,35 +346,35 @@ ITL_DEF bool itl_enter_raw_mode_impl(void)
     int mode;
 
     stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
-    ITL_TRY(stdin_handle != INVALID_HANDLE_VALUE, false);
-    ITL_TRY(GetConsoleMode(stdin_handle, &tty_mode), false);
+    ITL_TRY(stdin_handle != INVALID_HANDLE_VALUE, return false);
+    ITL_TRY(GetConsoleMode(stdin_handle, &tty_mode), return false);
 
     itl_global_original_tty_mode = tty_mode;
     tty_mode &= (DWORD)
         ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
 
-    ITL_TRY(SetConsoleMode(stdin_handle, tty_mode), false);
+    ITL_TRY(SetConsoleMode(stdin_handle, tty_mode), return false);
 
     codepage = GetConsoleCP();
-    ITL_TRY(codepage != 0, false);
+    ITL_TRY(codepage != 0, return false);
 
     itl_global_original_tty_cp = codepage;
-    ITL_TRY(SetConsoleCP(CP_UTF8), false);
+    ITL_TRY(SetConsoleCP(CP_UTF8), return false);
 
     mode = _setmode(STDIN_FILENO, _O_BINARY);
-    ITL_TRY(mode != -1, false);
+    ITL_TRY(mode != -1, return false);
 
     itl_global_original_mode = mode;
 #elif defined ITL_POSIX
     struct termios term;
 
-    ITL_TRY(tcgetattr(STDIN_FILENO, &term) == 0, false);
+    ITL_TRY(tcgetattr(STDIN_FILENO, &term) == 0, return false);
     itl_global_original_tty_mode = term;
     cfmakeraw(&term);
     /* Map \r to each \n so cursor gets back to the beginning */
     term.c_oflag = OPOST | ONLCR;
 
-    ITL_TRY(tcsetattr(STDIN_FILENO, TCSAFLUSH, &term) == 0, false);
+    ITL_TRY(tcsetattr(STDIN_FILENO, TCSAFLUSH, &term) == 0, return false);
 #endif /* ITL_POSIX */
     return true;
 }
@@ -385,19 +384,19 @@ ITL_DEF bool itl_exit_raw_mode(void)
 #if defined ITL_WIN32
     bool something_failed = false;
     HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
-    ITL_TRY(stdin_handle != INVALID_HANDLE_VALUE, false);
+    ITL_TRY(stdin_handle != INVALID_HANDLE_VALUE, return false);
 
     if (itl_global_original_tty_mode != 0) {
-        ITL__TRY(SetConsoleMode(stdin_handle, itl_global_original_tty_mode),
-                 something_failed = true);
+        ITL_TRY(SetConsoleMode(stdin_handle, itl_global_original_tty_mode),
+                something_failed = true);
     }
     if (itl_global_original_tty_cp != 0) {
-       ITL__TRY(SetConsoleCP(itl_global_original_tty_cp),
+        ITL_TRY(SetConsoleCP(itl_global_original_tty_cp),
                 something_failed = true);
     }
     if (itl_global_original_mode != 0) {
-        ITL__TRY(_setmode(STDIN_FILENO, itl_global_original_mode) != -1,
-                 something_failed = true);
+        ITL_TRY(_setmode(STDIN_FILENO, itl_global_original_mode) != -1,
+                something_failed = true);
     }
     return (something_failed == false);
 #elif defined ITL_POSIX
@@ -406,7 +405,7 @@ ITL_DEF bool itl_exit_raw_mode(void)
                sizeof(struct termios)) != 0) {
         ITL_TRY(tcsetattr(STDIN_FILENO, TCSAFLUSH,
                           &itl_global_original_tty_mode) == 0,
-                false);
+                return false);
     }
     return true;
 #endif /* ITL_POSIX */
@@ -427,16 +426,16 @@ ITL_DEF bool itl_read_byte(uint8_t *buffer)
     int byte = itl_read_byte_raw();
     /* Catch `read()` errors. `getch()` on Windows does not have error
        returns */
-    ITL_TRY(byte != -1, false);
+    ITL_TRY(byte != -1, return false);
     /* I think `read()` is not supposed to return EOF in the context of a
        terminal session */
-    ITL_TRY(byte != EOF, false);
+    ITL_TRY(byte != EOF, return false);
     (*buffer) = (uint8_t)byte;
     return true;
 }
 
-#define ITL_TRY_READ_BYTE(buffer, return_error) \
-        ITL_TRY(itl_read_byte(buffer), return_error)
+#define ITL_TRY_READ_BYTE(buffer, expr) \
+        ITL_TRY(itl_read_byte(buffer), expr)
 
 #if defined ITL_SUSPEND
 #if defined ITL_POSIX
@@ -470,9 +469,7 @@ ITL_DEF void *itl_malloc(size_t size)
     itl_global_alloc_count += 1;
 
 #if !defined TL_NO_ABORT
-    if (allocated == NULL) {
-        TL_ABORT();
-    }
+    ITL_TRY(allocated != NULL, TL_ABORT());
 #endif /* !TL_NO_ABORT */
 
     return allocated;
@@ -485,9 +482,7 @@ ITL_DEF void *itl_calloc(size_t count, size_t size)
     itl_global_alloc_count += 1;
 
 #if !defined TL_NO_ABORT
-    if (allocated == NULL) {
-        TL_ABORT();
-    }
+    ITL_TRY(allocated != NULL, TL_ABORT());
 #endif /* !TL_NO_ABORT */
 
     memset(allocated, 0, count * size);
@@ -508,9 +503,7 @@ ITL_DEF void *itl_realloc(void *block, size_t size)
     }
 
 #if !defined TL_NO_ABORT
-    if (allocated == NULL) {
-        TL_ABORT();
-    }
+    ITL_TRY(allocated != NULL, TL_ABORT());
 #endif /* !TL_NO_ABORT */
 
     return allocated;
@@ -602,13 +595,13 @@ ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
 
     bytes[0] = first_byte;
     for (i = 1; i < (int)size; ++i) { /* consequent bytes */
-        ITL_TRY_READ_BYTE(&bytes[i], itl_replacement_character);
+        ITL_TRY_READ_BYTE(&bytes[i], return itl_replacement_character);
     }
 
     /* Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid. */
     if (size > 1 && itl_is_surrogate(first_byte, bytes[1])) {
         itl_traceln("Invalid UTF-16 surrogate: '%02X %02X'\n",
-                  first_byte, bytes[1]);
+                    first_byte, bytes[1]);
         return itl_replacement_character;
     }
 
@@ -690,12 +683,8 @@ ITL_DEF bool itl_string_equal(itl_string_t *str1, itl_string_t *str2)
     if (str1->size != str2->size) {
         return false;
     }
-    if (str1->length == 0) {
-        if (str2->length == 0) {
-            return true;
-        } else {
-            return false;
-        }
+    if (str1->size == 0) {
+        return true;
     }
     return itl_string_prefix_with_offset(str1, 0, str1->length,
                                          str2) == str1->length;
@@ -1030,6 +1019,8 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
     FILE *file = fopen(path, "rb");
     if (file == NULL) {
         ret = -errno;
+        /* Do not mark file as bad if it does not exist. `dump_to_file` will
+           create it. */
         if (ret != -ENOENT) {
             itl_global_history_is_file_bad = true;
         }
@@ -1198,7 +1189,7 @@ ITL_DEF void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
 /* Inserts character at cursor position */
 ITL_DEF bool itl_le_insert(itl_le_t *le, const itl_utf8_t ch)
 {
-    ITL_TRY(le->line->size + ch.size < le->out_size, false);
+    ITL_TRY(le->line->size + ch.size < le->out_size, return false);
 
     itl_string_insert(le->line, le->cursor_position, ch);
     itl_le_move_right(le, 1);
@@ -1462,7 +1453,7 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
 
     i = 0;
     while (i < sizeof(buf) - 1) {
-        ITL_TRY_READ_BYTE(&buf[i], false);
+        ITL_TRY_READ_BYTE(&buf[i], return false);
         if (buf[i] == 'R') {
             break;
         }
@@ -1470,16 +1461,16 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
     }
     buf[i + 1] = '\0';
 
-    ITL_TRY(buf[0] == '\x1b' || buf[1] == '[', false);
+    ITL_TRY(buf[0] == '\x1b' || buf[1] == '[', return false);
     /* @@@: replace `sscanf()` here */
-    ITL_TRY(sscanf(&buf[2], "%zu;%zu", rows, cols) == 2, false);
+    ITL_TRY(sscanf(&buf[2], "%zu;%zu", rows, cols) == 2, return false);
 
 #elif defined ITL_WIN32
     CONSOLE_SCREEN_BUFFER_INFO buffer_info;
 
     ITL_TRY(GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE),
                                        &buffer_info),
-            false);
+            return false);
 
     (*cols) = (size_t)
         (buffer_info.srWindow.Right - buffer_info.srWindow.Left + 1);
@@ -1488,7 +1479,7 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
 
 #elif defined ITL_POSIX
     struct winsize window;
-    ITL_TRY(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0, false);
+    ITL_TRY(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0, return false);
 
     (*rows) = (size_t)window.ws_row;
     (*cols) = (size_t)window.ws_col;
@@ -1520,7 +1511,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
     rows = 0;
     cols = 0;
-    ITL_TRY(itl_tty_get_size(&rows, &cols), false);
+    ITL_TRY(itl_tty_get_size(&rows, &cols), return false);
 
     TL_ASSERT(rows != 0 && cols != 0);
 
@@ -1606,7 +1597,7 @@ ITL_DEF int itl_esc_parse_posix(uint8_t byte)
     int event = 0;
 
     if (byte == 27) { /* esc */
-        ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
+        ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
 
         if (byte != '[' && byte != 'O') {
             switch (byte) {
@@ -1625,19 +1616,24 @@ ITL_DEF int itl_esc_parse_posix(uint8_t byte)
             }
         }
 
-        ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
+        ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
 
         if (byte == '1') {
-            ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
-            ITL_TRY(byte == ';', TL_KEY_UNKN);
-            ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
+            ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
+
+            if (byte != ';') {
+                return TL_KEY_UNKN;
+            }
+
+            ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
+
             switch (byte) {
                 case '2': event |= TL_MOD_SHIFT; break;
                 case '5': event |= TL_MOD_CTRL;  break;
             }
-
             read_mod = true;
-            ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
+
+            ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
         }
 
         switch (byte) {
@@ -1654,23 +1650,23 @@ ITL_DEF int itl_esc_parse_posix(uint8_t byte)
             default: event |= TL_KEY_UNKN;
         }
     } else {
-        ITL_TRY(!iscntrl(byte), TL_KEY_UNKN);
+        ITL_TRY(!iscntrl(byte), return TL_KEY_UNKN);
         return TL_KEY_CHAR;
     }
 
     if (!read_mod) {
-        ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
+        ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
 
         if (byte == ';') {
-            ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
+            ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
             switch (byte) {
                 case '3': event |= TL_MOD_SHIFT; break;
                 case '5': event |= TL_MOD_CTRL;  break;
             }
-            ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
+            ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
         }
 
-        ITL_TRY(byte == '~', TL_KEY_UNKN);
+        ITL_TRY(byte == '~', return TL_KEY_UNKN);
     }
 
     return event;
@@ -1684,7 +1680,7 @@ ITL_DEF int itl_esc_parse_win32(uint8_t byte)
 
     /* https://learn.microsoft.com/en-us/previous-versions/visualstudio/visual-studio-6.0/aa299374(v=vs.60) */
     if (byte == 224 || byte == 0) { /* esc */
-        ITL_TRY_READ_BYTE(&byte, TL_KEY_UNKN);
+        ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
         switch (byte) {
             case 'H': event = TL_KEY_UP;    break;
             case 'P': event = TL_KEY_DOWN;  break;
@@ -1703,7 +1699,7 @@ ITL_DEF int itl_esc_parse_win32(uint8_t byte)
             default: event = TL_KEY_UNKN;
         }
     } else {
-        ITL_TRY(!iscntrl(byte), TL_KEY_UNKN);
+        ITL_TRY(!iscntrl(byte), return TL_KEY_UNKN);
         return TL_KEY_CHAR;
     }
 
@@ -2181,7 +2177,7 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
             }
 #else /* !TL_MANUAL_TAB_COMPLETION */
             ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
-                    TL_ERROR_SIZE);
+                    return TL_ERROR_SIZE);
             return TL_PRESSED_TAB;
 #endif
         } break;
@@ -2267,7 +2263,7 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
 
         case TL_KEY_ENTER: {
             ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
-                    TL_ERROR_SIZE);
+                    return TL_ERROR_SIZE);
             itl_global_history_append(le->line);
             return TL_PRESSED_ENTER;
         } break;
@@ -2379,8 +2375,8 @@ TL_DEF int tl_init(void)
     TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 &&
               "History size must be a power of 2");
 
-    ITL_TRY(isatty(STDIN_FILENO), TL_ERROR);
-    ITL_TRY(itl_enter_raw_mode(), TL_ERROR);
+    ITL_TRY(isatty(STDIN_FILENO), return TL_ERROR);
+    ITL_TRY(itl_enter_raw_mode(), return TL_ERROR);
 
     itl_string_init(&itl_global_line_buffer);
     itl_char_buf_init(&itl_global_refresh_char_buffer);
@@ -2403,7 +2399,7 @@ TL_DEF int tl_exit(void)
     itl_traceln("Exited, alloc count: %zu\n", itl_global_alloc_count);
     TL_ASSERT(itl_global_alloc_count == 0);
 
-    ITL_TRY(itl_exit_raw_mode(), TL_ERROR);
+    ITL_TRY(itl_exit_raw_mode(), return TL_ERROR);
 
     itl_is_active = false;
     return TL_SUCCESS;
@@ -2428,7 +2424,7 @@ TL_DEF int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
     itl_le_tty_refresh(&le);
 
     while (true) {
-        ITL_TRY_READ_BYTE(&input_byte, TL_ERROR);
+        ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
 
 #if defined ITL_SEE_BYTES
         if (input_byte == 3) exit(0); /* ctrl c */
@@ -2488,7 +2484,7 @@ TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
         itl_string_clear(&itl_global_line_buffer);
 
     itl_le_tty_refresh(&le);
-    ITL_TRY_READ_BYTE(&input_byte, TL_ERROR);
+    ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
 
     input_type = itl_esc_parse(input_byte);
     if (input_type != TL_KEY_CHAR) {
