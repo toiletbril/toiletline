@@ -231,15 +231,15 @@ TL_DEF void tl_delete_completion(void *completion);
 #endif
 
 #if defined _MSC_VER
-    #define ITL_THREAD_LOCAL __declspec(thread)
-    #define ITL_UNREACHABLE  __assume(0)
-    #define ITL_DEBUG_TRAP   __debugbreak()
-    #define ITL_NO_RETURN    __declspec(noreturn)
+    #define ITL_THREAD_LOCAL  __declspec(thread)
+    #define ITL_NO_RETURN     __declspec(noreturn)
+    #define itl_unreachable() __assume(0)
+    #define itl_debug_trap()  __debugbreak()
 #elif defined __GNUC__ || defined __clang__
-    #define ITL_THREAD_LOCAL __thread
-    #define ITL_UNREACHABLE  __builtin_unreachable()
-    #define ITL_DEBUG_TRAP   __builtin_trap()
-    #define ITL_NO_RETURN    __attribute__((noreturn))
+    #define ITL_THREAD_LOCAL  __thread
+    #define ITL_NO_RETURN     __attribute__((noreturn))
+    #define itl_unreachable() __builtin_unreachable()
+    #define itl_debug_trap()  __builtin_trap()
 #else
     #if defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
         #define ITL_THREAD_LOCAL _Thread_local
@@ -248,16 +248,20 @@ TL_DEF void tl_delete_completion(void *completion);
         #define ITL_THREAD_LOCAL /* nothing */
         #define ITL_NO_RETURN    /* nothing */
     #endif
-    ITL_NO_RETURN ITL_DEF void itl__unreachable(const char *file, int line)
+    ITL_NO_RETURN ITL_DEF void itl__unreachable(const char *file, int line,
+                                                const char *message)
     {
-        fprintf(stderr, "%s:%d: unreachable fail\n", file, line);
+        fprintf(stderr, "%s:%d: %s\n", file, line, message);
         fflush(stderr);
         while (true);
     }
-    #define ITL_UNREACHABLE  itl__unreachable(__FILE__, __LINE__)
-    #define ITL_DEBUG_TRAP   ITL_UNREACHABLE
+    #define itl_unreachable() \
+        itl__unreachable(__FILE__, __LINE__, "unreachable fail")
+    #define itl_debug_trap() \
+        itl__unreachable(__FILE__, __LINE__, "debug trap")
 #endif
 
+/* @@@: Add option to use stdio instead of `read()` */
 #if defined ITL_WIN32
     #define WIN32_LEAN_AND_MEAN
 
@@ -304,7 +308,7 @@ TL_DEF void tl_delete_completion(void *completion);
             fprintf(stderr, "%s:%d: assert fail: %s\n", \
                     __FILE__, __LINE__, #condition);    \
             fflush(stderr);                             \
-            ITL_DEBUG_TRAP;                             \
+            itl_debug_trap();                           \
         }
 #endif /* ITL_DEFAULT_ASSERT */
 
@@ -455,16 +459,16 @@ ITL_DEF void itl_handle_sigcont(int signal_number)
     (void)signal_number;
     itl_enter_raw_mode();
 }
-#endif /* ITL_POSIX */
 
-#if defined ITL_POSIX
 ITL_DEF void itl_raise_suspend(void)
 {
     itl_exit_raw_mode();
     signal(SIGCONT, itl_handle_sigcont);
     raise(SIGTSTP);
 }
+
 #else /* ITL_POSIX */
+
 ITL_NO_RETURN ITL_DEF void itl_raise_suspend(void)
 {
     tl_exit();
@@ -595,8 +599,7 @@ ITL_DEF size_t itl_utf8_width(int byte)
 
 ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
 {
-    int i;
-    size_t size;
+    size_t i, size;
     uint8_t bytes[4];
 
     size = itl_utf8_width(first_byte);
@@ -606,7 +609,7 @@ ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
     }
 
     bytes[0] = first_byte;
-    for (i = 1; i < (int)size; ++i) { /* consequent bytes */
+    for (i = 1; i < size; ++i) { /* consequent bytes */
         ITL_TRY_READ_BYTE(&bytes[i], return itl_replacement_character);
     }
 
@@ -621,7 +624,7 @@ ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
     itl_traceln("utf8 char size: %zu\n", size);
     itl_traceln("utf8 char bytes: '");
 
-    for (i = 0; i < (int)size - 1; ++i) {
+    for (i = 0; i < size - 1; ++i) {
         itl_trace("%02X ", bytes[i]);
     }
     itl_trace("%02X'\n", bytes[size - 1]);
@@ -754,6 +757,8 @@ ITL_DEF void itl_string_clear(itl_string_t *str)
     itl_string_shrink(str);
 }
 
+/* Shifts all characters after `position`. When shifting forward, character on
+   `position` is duplicated `shift_by` times. Does not recalculate the size */
 ITL_DEF void itl_string_shift(itl_string_t *str, size_t position,
                              size_t shift_by, bool backwards)
 {
@@ -1013,6 +1018,7 @@ ITL_DEF bool itl_global_history_append(itl_string_t *str)
 /* If this is true, do not overwrite file on `history_dump_to_file()` */
 ITL_DEF ITL_THREAD_LOCAL bool itl_global_history_is_file_bad = false;
 
+/* @@@: Get rid of stdio for history file */
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF int itl_global_history_load_from_file(const char *path)
 {
@@ -1238,7 +1244,7 @@ ITL_DEF size_t itl_string_steps_to_token(itl_string_t *str, size_t position,
         switch (token) {
             case ITL_TOKEN_DELIM: should_break = itl_is_delim(byte); break;
             case ITL_TOKEN_WORD: should_break = !itl_is_delim(byte); break;
-            default: ITL_UNREACHABLE;
+            default: itl_unreachable();
         }
         if (should_break) {
             break;
@@ -1496,7 +1502,7 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
     (*rows) = (size_t)window.ws_row;
     (*cols) = (size_t)window.ws_col;
 #else /* ITL_POSIX */
-    ITL_UNREACHABLE;
+    itl_unreachable();
 #endif
     return true;
 }
