@@ -303,12 +303,12 @@ TL_DEF void tl_completion_delete(void *completion);
 #endif /* ITL_POSIX */
 
 #if defined ITL_DEFAULT_ASSERT
-    #define TL_ASSERT(condition)                        \
-        if (!(condition)) {                             \
-            fprintf(stderr, "%s:%d: assert fail: %s\n", \
-                    __FILE__, __LINE__, #condition);    \
-            fflush(stderr);                             \
-            itl_debug_trap();                           \
+    #define TL_ASSERT(condition)                          \
+        if (!(condition)) {                               \
+            fprintf(stderr, "\n%s:%d: assert fail: %s\n", \
+                    __FILE__, __LINE__, #condition);      \
+            fflush(stderr);                               \
+            itl_debug_trap();                             \
         }
 #endif /* ITL_DEFAULT_ASSERT */
 
@@ -339,7 +339,7 @@ TL_DEF void tl_completion_delete(void *completion);
 /* Do `expr` if condition is not true */
 #define ITL_TRY(condition, expr)                     \
     if (!(condition)) {                              \
-        itl_traceln("%s:%d: try fail: %s\n",         \
+        itl_traceln("\n%s:%d: try fail: %s\n",       \
                     __FILE__, __LINE__, #condition); \
         expr;                                        \
     }
@@ -674,8 +674,9 @@ ITL_DEF void itl_string_extend(itl_string_t *str)
 }
 
 /* Return length of the matching prefix */
-ITL_DEF size_t itl_string_prefix_with_offset(itl_string_t *str1, size_t start,
-                                             size_t end, itl_string_t *str2)
+ITL_DEF size_t itl_string_prefix_with_offset(const itl_string_t *str1,
+                                             size_t start, size_t end,
+                                             const itl_string_t *str2)
 {
     size_t i, k;
 
@@ -693,7 +694,8 @@ ITL_DEF size_t itl_string_prefix_with_offset(itl_string_t *str1, size_t start,
     return k;
 }
 
-ITL_DEF bool itl_string_equal(itl_string_t *str1, itl_string_t *str2)
+ITL_DEF bool itl_string_equal(const itl_string_t *str1,
+                              const itl_string_t *str2)
 {
     if (str1->size != str2->size) {
         return false;
@@ -730,6 +732,8 @@ ITL_DEF void itl_string_recalc_size(itl_string_t *str)
 
     str->size = 0;
     for (i = 0; i < str->length; ++i) {
+        TL_ASSERT(str->chars[i].size > 0);
+        TL_ASSERT(str->chars[i].size <= 4);
         str->size += str->chars[i].size;
     }
 }
@@ -826,6 +830,9 @@ ITL_DEF void itl_string_erase(itl_string_t *str, size_t position,
 ITL_DEF void itl_string_insert(itl_string_t *str, size_t position,
                                itl_utf8_t ch)
 {
+    TL_ASSERT(ch.size > 0);
+    TL_ASSERT(ch.size <= 4);
+
     while (str->capacity < str->length + 1) {
         itl_string_extend(str);
     }
@@ -856,7 +863,8 @@ ITL_DEF void itl_string_insert(itl_string_t *str, size_t position,
     #define ITL_LF_LEN 1
 #endif /* ITL_POSIX */
 
-ITL_DEF bool itl_string_to_cstr(itl_string_t *str, char *cstr, size_t cstr_size)
+ITL_DEF bool itl_string_to_cstr(const itl_string_t *str, char *cstr,
+                                size_t cstr_size)
 {
     size_t i, j, k;
 
@@ -899,7 +907,7 @@ ITL_DEF void itl_string_from_cstr(itl_string_t *str, const char *cstr)
 }
 
 #define ITL_SPACE \
-    itl_utf8_new((uint8_t[]){ 0x20 }, 1)
+    itl_utf8_new((uint8_t[1]){ 0x20 }, 1)
 
 typedef struct itl_history_item itl_history_item_t;
 
@@ -974,7 +982,7 @@ ITL_DEF void itl_global_history_free(void)
     itl_global_history_last = NULL;
 }
 
-ITL_DEF bool itl_global_history_append(itl_string_t *str)
+ITL_DEF bool itl_global_history_append(const itl_string_t *str)
 {
     /* If history size was exceeded, release the last item first */
     if (itl_global_history_length >= TL_HISTORY_MAX_SIZE) {
@@ -1205,7 +1213,7 @@ ITL_DEF void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
 #define itl_le_erase_backward(le, count) itl_le_erase(le, count, true)
 
 /* Inserts character at cursor position */
-ITL_DEF bool itl_le_insert(itl_le_t *le, const itl_utf8_t ch)
+ITL_DEF bool itl_le_insert(itl_le_t *le, itl_utf8_t ch)
 {
     ITL_TRY(le->line->size + ch.size < le->out_size, return false);
 
@@ -1221,8 +1229,9 @@ ITL_DEF bool itl_le_insert(itl_le_t *le, const itl_utf8_t ch)
 #define ITL_TOKEN_WORD 1
 
 /* Returns amount of steps required to reach a token */
-ITL_DEF size_t itl_string_steps_to_token(itl_string_t *str, size_t position,
-                                         int token, bool backwards)
+ITL_DEF size_t itl_string_steps_to_token(const itl_string_t *str,
+                                         size_t position, int token,
+                                         bool backwards)
 {
     uint8_t byte;
     bool should_break;
@@ -1400,12 +1409,12 @@ ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
     cb->size += 1;
 }
 
-ITL_DEF void itl_char_buf_dump(itl_char_buf_t *cb)
+ITL_DEF void itl_char_buf_dump(const itl_char_buf_t *cb)
 {
 /* stdio is slow and requires stinky `setbuf(stdout, NULL)` */
 #if defined ITL_USE_STDIO
     size_t i;
-    const char* s = cb->data;
+    const char *s = cb->data;
     for (i = 0; i < cb->size; ++i) {
         fputc(s[i], stdout);
     }
@@ -1770,7 +1779,8 @@ int *itl__last_control_location(void) {
 }
 
 #if !defined TL_MANUAL_TAB_COMPLETION
-ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb, itl_string_t *str)
+ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb,
+                                        const itl_string_t *str)
 {
     while (cb->capacity < cb->size + str->size) {
         itl_char_buf_extend(cb);
@@ -1780,18 +1790,19 @@ ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb, itl_string_t *str)
     cb->size += str->size; /* Ignore null at the end */
 }
 
-ITL_DEF void itl_string_append_completion(itl_string_t *dst, itl_string_t *src,
+ITL_DEF void itl_string_append_completion(itl_string_t *dst,
+                                          const itl_string_t *src,
                                           size_t prefix_length)
 {
     size_t i, j;
     size_t new_len = dst->length + src->length - prefix_length;
 
-    while (dst->capacity < new_len) {
+    while (dst->capacity < new_len + 1) {
         itl_string_extend(dst);
     }
 
-    /* Insert a space before new word, if there is no matching prefix */
     i = dst->length;
+    /* Insert a space before new word, if there is no matching prefix */
     if (prefix_length == 0 && !itl_utf8_equal(dst->chars[i - 1], ITL_SPACE)) {
         dst->chars[i++] = ITL_SPACE;
         dst->length += 1;
@@ -1800,8 +1811,8 @@ ITL_DEF void itl_string_append_completion(itl_string_t *dst, itl_string_t *src,
     for (j = prefix_length; j <= new_len; ++i, ++j) {
         dst->chars[i] = src->chars[j];
     }
-    dst->length = new_len;
 
+    dst->length = new_len;
     itl_string_recalc_size(dst);
 }
 
@@ -1970,7 +1981,7 @@ ITL_DEF void itl_split_append(itl_split_t *split, size_t start,
     split->size += 1;
 }
 
-ITL_DEF itl_split_t *itl_string_split(itl_string_t *str, char delimiter)
+ITL_DEF itl_split_t *itl_string_split(const itl_string_t *str, char delimiter)
 {
     size_t i, j;
     itl_utf8_t ch;
@@ -2096,8 +2107,11 @@ ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
     itl_string_t *possible_completion;
     size_t i, prefix_length, longest_prefix;
 
-    itl_completion_list_t *completion_list = NULL;
     size_t completion_count = 0;
+    itl_completion_list_t *completion_list = NULL;
+
+    bool went_into_child = false;
+
     itl_split_t *split = itl_string_split(str, ' ');
     itl_completion_t *completion = itl_global_completion_root->child;
 
@@ -2118,6 +2132,7 @@ ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
             if (prefix_length == completion->str->length &&
                 prefix_length == offset_difference) {
                 completion = completion->child;
+                went_into_child = true;
                 break;
             /* If offset difference is the prefix, it must be a new longest
                prefix. If offset difference is 0, the string is empty. */
@@ -2141,6 +2156,7 @@ ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
             }
             /* If prefix didn't fully match, advance to completion's sibling */
             completion = completion->sibling;
+            went_into_child = false;
         }
         /* Dump completion list only if there are more than 2 completions
            with the same prefix, or the string is empty, otherwise
@@ -2156,6 +2172,16 @@ ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
         if (longest_prefix != 0) {
             itl_string_append_completion(str, possible_completion,
                                          longest_prefix);
+            itl_string_insert(str, str->length, ITL_SPACE);
+            itl_split_free(split);
+            return NULL;
+        }
+        /* Insert a space if a completion fully matches but there is no space
+           after the word */
+        if (went_into_child && completion == NULL) {
+            if (!itl_utf8_equal(str->chars[str->length - 1], ITL_SPACE)) {
+                itl_string_insert(str, str->length, ITL_SPACE);
+            }
             itl_split_free(split);
             return NULL;
         }
