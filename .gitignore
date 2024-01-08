@@ -4,4 +4,8 @@ example_getc
 example
 tests
 example_history.txt
+*.pdb
+*.exp
+*.lib
+*.ilk
 *.exe
