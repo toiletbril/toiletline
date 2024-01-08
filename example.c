@@ -25,20 +25,20 @@ int main(void)
            |         /
          third     else
     */
-    void *first_completion = tl_add_completion(NULL, "first");
-    void *second_completion = tl_add_completion(first_completion, "second");
-    tl_add_completion(second_completion, "third");
-    void *what_completion = tl_add_completion(NULL, "what");
-    tl_add_completion(what_completion, "other");
-    void *smth_completion = tl_add_completion(what_completion, "something");
-    tl_add_completion(smth_completion, "else");
-    tl_add_completion(NULL, "wow");
-    tl_add_completion(NULL, "привет");
+    void *first_completion = tl_completion_add(NULL, "first");
+    void *second_completion = tl_completion_add(first_completion, "second");
+    tl_completion_add(second_completion, "third");
+    void *what_completion = tl_completion_add(NULL, "what");
+    tl_completion_add(what_completion, "other");
+    void *smth_completion = tl_completion_add(what_completion, "something");
+    tl_completion_add(smth_completion, "else");
+    tl_completion_add(NULL, "wow");
+    tl_completion_add(NULL, "привет");
 
     char line_buffer[LINE_BUF_SIZE] = {0};
     int code = 0;
 
-    tl_load_history(HISTORY_FILE);
+    tl_history_load(HISTORY_FILE);
 
     int i = 0;
     while (code >= 0) {
@@ -70,7 +70,7 @@ int main(void)
         printf("An error occured (%d)\n", code);
 
     fflush(stdout);
-    tl_dump_history(HISTORY_FILE);
+    tl_history_dump(HISTORY_FILE);
     tl_exit();
 
     return 0;
