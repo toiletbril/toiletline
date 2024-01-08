@@ -150,7 +150,7 @@ Returns:
   which one).
 
 
-int tl_load_history(const char *file_path);
+int tl_history_load(const char *file_path);
 --------
 Load history from a file.
 
@@ -158,7 +158,7 @@ Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
 failures.
 
 
-int tl_dump_history(const char *file_path);
+int tl_history_dump(const char *file_path);
 --------
 Dump history to a file, overwriting it.
 
@@ -176,7 +176,7 @@ Since number of bytes can be bigger than amount of characters, regular
 
 #if !defined TL_MANUAL_TAB_COMPLETION
 
-void *tl_add_completion(void *prefix, const char *label);
+void *tl_completion_add(void *prefix, const char *label);
 --------
 Add a tab completion.
 
@@ -185,13 +185,13 @@ Returns an opaque pointer that points to the added completion. Use it as
 root completion.
 
 
-void tl_change_completion(void *completion, const char *label);
+void tl_completion_change(void *completion, const char *label);
 --------
 Change a tab completion to `*label` using pointer returned from
 `tl_add_completion()`.
 
 
-void tl_delete_completion(void *completion);
+void tl_completion_delete(void *completion);
 --------
 Delete a tab completion and it's children using pointer returned from
 `tl_add_completion()`.

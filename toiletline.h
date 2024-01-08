@@ -175,14 +175,14 @@ TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
  * Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
  * failures.
  */
-TL_DEF int tl_load_history(const char *file_path);
+TL_DEF int tl_history_load(const char *file_path);
 /**
  * Dump history to a file, overwriting it.
  *
  * Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
  * failures.
  */
-TL_DEF int tl_dump_history(const char *file_path);
+TL_DEF int tl_history_dump(const char *file_path);
 /**
  * Returns the number of UTF-8 characters.
  *
@@ -199,17 +199,17 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
  * `*prefix` parameter to add further completions. If `*prefix` is NULL, adds a
  * root completion.
  */
-TL_DEF void *tl_add_completion(void *prefix, const char *label);
+TL_DEF void *tl_completion_add(void *prefix, const char *label);
 /**
  *  Change a tab completion to `*label` using pointer returned from
  * `tl_add_completion()`.
  */
-TL_DEF void tl_change_completion(void *completion, const char *label);
+TL_DEF void tl_completion_change(void *completion, const char *label);
 /**
  * Delete a tab completion and it's children using pointer returned from
  * `tl_add_completion()`.
  */
-TL_DEF void tl_delete_completion(void *completion);
+TL_DEF void tl_completion_delete(void *completion);
 #endif /* !TL_MANUAL_TAB_COMPLETION */
 
 #if !defined TOILETLINE_IMPLEMENTATION && defined _CRT_SECURE_NO_WARNINGS
@@ -2519,12 +2519,12 @@ TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
     return TL_SUCCESS;
 }
 
-TL_DEF int tl_load_history(const char *file_path)
+TL_DEF int tl_history_load(const char *file_path)
 {
     return itl_global_history_load_from_file(file_path);
 }
 
-TL_DEF int tl_dump_history(const char *file_path)
+TL_DEF int tl_history_dump(const char *file_path)
 {
     return itl_global_history_dump_to_file(file_path);
 }
@@ -2541,7 +2541,7 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str)
 }
 
 #if !defined TL_MANUAL_TAB_COMPLETION
-TL_DEF void *tl_add_completion(void *prefix, const char *label)
+TL_DEF void *tl_completion_add(void *prefix, const char *label)
 {
     itl_completion_t *completion_node;
     itl_string_t *str;
@@ -2564,13 +2564,13 @@ TL_DEF void *tl_add_completion(void *prefix, const char *label)
     return completion_node;
 }
 
-TL_DEF void tl_change_completion(void *completion, const char *label)
+TL_DEF void tl_completion_change(void *completion, const char *label)
 {
     itl_completion_t *completion_node = (itl_completion_t *)completion;
     itl_string_from_cstr(completion_node->str, label);
 }
 
-TL_DEF void tl_delete_completion(void *completion)
+TL_DEF void tl_completion_delete(void *completion)
 {
     itl_completion_t *completion_node = (itl_completion_t *)completion;
     if (completion_node != NULL) {
