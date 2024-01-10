@@ -230,37 +230,6 @@ TL_DEF void tl_completion_delete(void *completion);
     #error "Your system is not supported"
 #endif
 
-#if defined _MSC_VER
-    #define ITL_THREAD_LOCAL  __declspec(thread)
-    #define ITL_NO_RETURN     __declspec(noreturn)
-    #define itl_unreachable() __assume(0)
-    #define itl_debug_trap()  __debugbreak()
-#elif defined __GNUC__ || defined __clang__
-    #define ITL_THREAD_LOCAL  __thread
-    #define ITL_NO_RETURN     __attribute__((noreturn))
-    #define itl_unreachable() __builtin_unreachable()
-    #define itl_debug_trap()  __builtin_trap()
-#else
-    #if defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
-        #define ITL_THREAD_LOCAL _Thread_local
-        #define ITL_NO_RETURN    _Noreturn
-    #else /* __STDC_VERSION__ && __STDC_VERSION__ >= 201112L */
-        #define ITL_THREAD_LOCAL /* nothing */
-        #define ITL_NO_RETURN    /* nothing */
-    #endif
-    ITL_NO_RETURN ITL_DEF void itl__unreachable(const char *file, int line,
-                                                const char *message)
-    {
-        fprintf(stderr, "%s:%d: %s\n", file, line, message);
-        fflush(stderr);
-        while (true);
-    }
-    #define itl_unreachable() \
-        itl__unreachable(__FILE__, __LINE__, "unreachable fail")
-    #define itl_debug_trap() \
-        itl__unreachable(__FILE__, __LINE__, "debug trap")
-#endif
-
 /* @@@: Add option to use stdio instead of `read()` */
 #if defined ITL_WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -323,6 +292,43 @@ TL_DEF void tl_completion_delete(void *completion);
 #if defined ITL_SUSPEND
     #include <signal.h>
 #endif /* ITL_SUSPEND */
+
+#if defined _MSC_VER
+    #define ITL_THREAD_LOCAL   __declspec(thread)
+    #define ITL_NO_RETURN      __declspec(noreturn)
+    #define itl__unreachable() __assume(0)
+    #define itl_debug_trap()   __debugbreak()
+#elif defined __GNUC__ || defined __clang__
+    #define ITL_THREAD_LOCAL   __thread
+    #define ITL_NO_RETURN      __attribute__((noreturn))
+    #define itl__unreachable() __builtin_unreachable()
+    #define itl_debug_trap()   __builtin_trap()
+#else
+    #if defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
+        #define ITL_THREAD_LOCAL _Thread_local
+        #define ITL_NO_RETURN    _Noreturn
+    #else /* __STDC_VERSION__ && __STDC_VERSION__ >= 201112L */
+        #define ITL_THREAD_LOCAL /* nothing */
+        #define ITL_NO_RETURN    /* nothing */
+    #endif
+
+    #define itl__unreachable() do {} while (true)
+    #define itl_debug_trap()  itl__unreachable()
+#endif
+
+#if defined ITL_DEBUG
+ITL_NO_RETURN ITL_DEF void itl_unreachable_impl(const char *file, int line,
+                                                const char *message)
+{
+    fprintf(stderr, "%s:%d: %s\n", file, line, message);
+    fflush(stderr);
+    itl__unreachable();
+}
+#define itl_unreachable() \
+    itl_unreachable_impl(__FILE__, __LINE__, "unreachable fail")
+#else /* ITL_DEBUG */
+#define itl_unreachable() itl__unreachable()
+#endif
 
 #if defined ITL_DEBUG
     #define itl_traceln(...) fprintf(stderr, "\n[TRACE] " __VA_ARGS__)
