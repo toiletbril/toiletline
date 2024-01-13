@@ -234,17 +234,22 @@ TL_DEF void tl_completion_delete(void *completion);
 #if defined ITL_WIN32
     #define WIN32_LEAN_AND_MEAN
 
-    #include <windows.h>
     #include <conio.h>
     #include <io.h>
+    #include <sys/stat.h>
+    #include <windows.h>
 
     #define STDIN_FILENO  0
     #define STDOUT_FILENO 1
 
-    #define write(fd, buf, size)   _write(fd, buf, (unsigned long)(size))
-    #define read(fd, buf, size)    _read(fd, buf, (unsigned long)(size))
-    #define open(pathname, flags)  _open(pathname, flags)
-    #define close(fd)              _close(fd)
+    #define write(fd, buf, size) _write(fd, buf, (unsigned long)size)
+    #define read(fd, buf, size)  _read(fd, buf, (unsigned long)size)
+
+    #define open  _open
+    #define close _close
+
+    #define S_IRUSR _S_IREAD
+    #define S_IWUSR _S_IWRITE
 
     /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation> */
     #define ITL_STRING_MAX_LEN 8191
@@ -297,9 +302,9 @@ TL_DEF void tl_completion_delete(void *completion);
 #endif
 #endif /* ITL_DEFAULT_ASSERT */
 
-#include <fcntl.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -1060,8 +1065,8 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_global_history_is_file_bad = false;
 ITL_DEF int itl_global_history_load_from_file(const char *path)
 {
     bool is_eof;
+    size_t buffer_pos;
     int ch, file, read_amount;
-    size_t line_pos;
 
     int ret = TL_SUCCESS;
     size_t buffer_size = ITL_HISTORY_FILE_BUFFER_INIT_SIZE;
@@ -1074,6 +1079,7 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
 
     file = open(path, O_RDONLY);
     if (file == -1) {
+        itl_traceln("could not open history file for load (%s)\n", path);
         /* Do not mark file as bad if it does not exist. `dump_to_file` will
            create it. */
         if (errno != ENOENT) {
@@ -1083,10 +1089,10 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
     }
 
     ch = 0;
-    line_pos = 0;
     is_eof = false;
+    buffer_pos = 0;
     while (!is_eof) {
-        if (buffer_size < line_pos + 1) {
+        if (buffer_size < buffer_pos + 1) {
             buffer_size *= 2;
             buffer = (char *)
                 itl_realloc(buffer, buffer_size);
@@ -1102,16 +1108,15 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
         }
 #if defined ITL_WIN32
         else if (ch == '\r') {
-            line_pos += 1;
             continue;
         }
 #endif /* ITL_WIN32 */
         else if (ch == '\n') {
-            buffer[line_pos] = '\0';
+            buffer[buffer_pos] = '\0';
             itl_string_from_cstr(str, buffer);
             itl_global_history_append(str);
             itl_traceln("loaded history entry: %s\n", buffer);
-            line_pos = 0;
+            buffer_pos = 0;
         /* Loaded a binary file on accident? */
         } else if (iscntrl((uint8_t)ch)) {
             ret = -EINVAL;
@@ -1121,8 +1126,8 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
             itl_global_history_is_file_bad = true;
             goto end;
         } else {
-            buffer[line_pos] = (char)ch;
-            line_pos += 1;
+            buffer[buffer_pos] = (char)ch;
+            buffer_pos += 1;
         }
     }
 
@@ -1153,10 +1158,8 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
     char *buffer = (char *)
         itl_malloc(sizeof(char) * ITL_HISTORY_FILE_BUFFER_INIT_SIZE);
 
-    file = open(path, O_WRONLY | O_CREAT);
-    if (file == -1) {
-        ITL_GOTO_END;
-    }
+    file = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    ITL_TRY(file == -1, ITL_GOTO_END);
 
     item = itl_global_history_first;
     if (item == NULL) {
