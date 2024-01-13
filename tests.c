@@ -1,6 +1,8 @@
 #define TOILETLINE_IMPLEMENTATION
 #include "toiletline.h"
 
+#include <stdio.h>
+
 #define BUFFER_SIZE 128
 
 static char current_function_name[BUFFER_SIZE];
