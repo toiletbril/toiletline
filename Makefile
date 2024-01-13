@@ -1,6 +1,7 @@
 CC ?= clang
 CFLAGS := -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic -std=c99
 DBGFLAGS := -O0 -g3 -DITL_DEBUG
+
 ifneq ($(OS),Windows_NT)
 	CFLAGS += -fsanitize=undefined -g3
 	DBGFLAGS += -fsanitize=address
@@ -21,7 +22,11 @@ else
 endif
 
 test: tests
+ifeq ($(OS),Windows_NT)
+	./tests.exe
+else
 	./tests
+endif
 
 examples: example example_getc
 
