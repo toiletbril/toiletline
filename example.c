@@ -1,6 +1,8 @@
 #define TOILETLINE_IMPLEMENTATION
 #include "toiletline.h"
 
+#include <stdio.h>
+
 #define LINE_BUF_SIZE 1024
 #define HISTORY_FILE "example_history.txt"
 

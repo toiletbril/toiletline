@@ -1,6 +1,8 @@
 #define TOILETLINE_IMPLEMENTATION
 #include "toiletline.h"
 
+#include <stdio.h>
+
 // Character buffer can be as large as 4 bytes, plus \0 at the end
 #define CHAR_BUF_SIZE 5
 
