@@ -283,9 +283,16 @@ TL_DEF void tl_completion_delete(void *completion);
             itl_debug_trap();                             \
         }
 #else /* ITL_DEBUG */
-    #define TL_ASSERT(condition) \
-        if (!(condition)) {      \
-            itl_debug_trap();    \
+    #define TL_ASSERT(condition)                                          \
+        if (!(condition)) {                                               \
+            const char *m = "\n"                                          \
+                            __FILE__": assert fail: "#condition           \
+                            "\n"                                          \
+                            "please recompile toiletline with ITL_DEBUG " \
+                            "defined"                                     \
+                            "\n";                                         \
+            write(STDOUT_FILENO, m, strlen(m));                           \
+            itl_debug_trap();                                             \
         }
 #endif
 #endif /* ITL_DEFAULT_ASSERT */
