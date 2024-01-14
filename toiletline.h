@@ -1079,7 +1079,8 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
 
     file = open(path, O_RDONLY);
     if (file == -1) {
-        itl_traceln("could not open history file for load (%s)\n", path);
+        itl_traceln("could not open history file for load (%s): %s\n",
+                    path, strerror(errno));
         /* Do not mark file as bad if it does not exist. `dump_to_file` will
            create it. */
         if (errno != ENOENT) {
@@ -1104,6 +1105,8 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
             is_eof = true;
             continue;
         } else if (read_amount != 1) {
+            itl_global_history_free();
+            itl_global_history_is_file_bad = true;
             ITL_GOTO_END;
         }
 #if defined ITL_WIN32
@@ -1159,7 +1162,11 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
         itl_malloc(sizeof(char) * ITL_HISTORY_FILE_BUFFER_INIT_SIZE);
 
     file = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-    ITL_TRY(file == -1, ITL_GOTO_END);
+    if (file == -1) {
+        itl_traceln("could not open history file for dump (%s): %s\n",
+                    path, strerror(errno));
+        ITL_GOTO_END;
+    }
 
     item = itl_global_history_first;
     if (item == NULL) {
@@ -2224,12 +2231,12 @@ ITL_DEF bool itl_le_complete(itl_le_t *le)
     if (list) {
         itl_completion_list_dump(list);
         itl_completion_list_free(list);
-        return false;
-    }
-    if (old_len != le->line->length) {
+    } else if (old_len != le->line->length) {
         le->cursor_position = le->line->length;
+        return true;
     }
-    return true;
+
+    return false;
 }
 #endif /* !TL_MANUAL_TAB_COMPLETION */
 
