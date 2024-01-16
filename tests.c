@@ -339,7 +339,7 @@ struct test_case
         .func = fn,          \
     }
 
-test_case_t test_cases[] = {
+static test_case_t test_cases[] = {
     DEFINE_TEST_CASE(test_string_from_cstr),
     DEFINE_TEST_CASE(test_string_shift),
     DEFINE_TEST_CASE(test_string_erase),

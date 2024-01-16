@@ -280,25 +280,29 @@ TL_DEF void tl_completion_delete(void *completion);
 
 #if defined ITL_DEFAULT_ASSERT
 #if defined ITL_DEBUG
-    #define TL_ASSERT(condition)                          \
-        if (!(condition)) {                               \
-            fprintf(stderr, "\n%s:%d: assert fail: %s\n", \
-                    __FILE__, __LINE__, #condition);      \
-            fflush(stderr);                               \
-            itl_debug_trap();                             \
-        }
+    #define TL_ASSERT(condition)                              \
+        do {                                                  \
+            if (!(condition)) {                               \
+                fprintf(stderr, "\n%s:%d: assert fail: %s\n", \
+                        __FILE__, __LINE__, #condition);      \
+                fflush(stderr);                               \
+                itl_debug_trap();                             \
+            }                                                 \
+        } while (0)
 #else /* ITL_DEBUG */
-    #define TL_ASSERT(condition)                                          \
-        if (!(condition)) {                                               \
-            const char *m = "\n"                                          \
-                            __FILE__": assert fail: "#condition           \
-                            "\n"                                          \
-                            "please recompile toiletline with ITL_DEBUG " \
-                            "defined"                                     \
-                            "\n";                                         \
-            write(STDOUT_FILENO, m, strlen(m));                           \
-            itl_debug_trap();                                             \
-        }
+    #define TL_ASSERT(condition)                                              \
+        do {                                                                  \
+            if (!(condition)) {                                               \
+                const char *m = "\n"                                          \
+                                __FILE__": assert fail: "#condition           \
+                                "\n"                                          \
+                                "please recompile toiletline with ITL_DEBUG " \
+                                "defined"                                     \
+                                "\n";                                         \
+                write(STDOUT_FILENO, m, strlen(m));                           \
+                itl_debug_trap();                                             \
+            }                                                                 \
+        } while (0)
 #endif
 #endif /* ITL_DEFAULT_ASSERT */
 
@@ -368,12 +372,14 @@ ITL_NO_RETURN ITL_DEF void itl_unreachable_impl(const char *file, int line,
 #define ITL_MIN(type, i, j) ((((type)i) < ((type)j)) ? ((type)i) : ((type)j))
 
 /* Do `expr` if condition is not true */
-#define ITL_TRY(condition, expr)                     \
-    if (!(condition)) {                              \
-        itl_traceln("\n%s:%d: try fail: %s\n",       \
-                    __FILE__, __LINE__, #condition); \
-        expr;                                        \
-    }
+#define ITL_TRY(condition, expr)                         \
+    do {                                                 \
+        if (!(condition)) {                              \
+            itl_traceln("\n%s:%d: try fail: %s\n",       \
+                        __FILE__, __LINE__, #condition); \
+            expr;                                        \
+        }                                                \
+    } while (0)
 
 #if defined ITL_WIN32
 ITL_DEF ITL_THREAD_LOCAL DWORD itl_global_original_tty_mode = 0;
@@ -713,11 +719,10 @@ ITL_DEF size_t itl_string_prefix_with_offset(const itl_string_t *str1,
     if (end > str1->length) {
         end = ITL_MIN(size_t, str1->length, str2->length);
     }
-    for (i = start, k = 0; i < end && k < str2->length; ++i) {
+    for (i = start, k = 0; i < end && k < str2->length; ++i, ++k) {
         if (!itl_utf8_equal(str1->chars[i], str2->chars[k])) {
             break;
         }
-        k += 1;
     }
     return k;
 }
@@ -792,7 +797,7 @@ ITL_DEF void itl_string_clear(itl_string_t *str)
 /* Shifts all characters after `position`. When shifting forward, character on
    `position` is duplicated `shift_by` times. Does not recalculate the size */
 ITL_DEF void itl_string_shift(itl_string_t *str, size_t position,
-                             size_t shift_by, bool backwards)
+                              size_t shift_by, bool backwards)
 {
     size_t i;
 
@@ -825,7 +830,7 @@ ITL_DEF void itl_string_shift(itl_string_t *str, size_t position,
 }
 
 ITL_DEF void itl_string_erase(itl_string_t *str, size_t position,
-                             size_t count, bool backwards)
+                              size_t count, bool backwards)
 {
     itl_traceln("string_erase: pos: %zu, count: %zu, backwards: %d, len %zu\n",
                 position, count, backwards, str->length);
@@ -875,12 +880,10 @@ ITL_DEF void itl_string_insert(itl_string_t *str, size_t position,
     itl_string_recalc_size(str);
 }
 
-#define itl_string_free(str)      \
-    do {                          \
-        if (str != NULL) {        \
-            itl_free(str->chars); \
-            itl_free(str);        \
-        }                         \
+#define itl_string_free(str)  \
+    do {                      \
+        itl_free(str->chars); \
+        itl_free(str);        \
     } while (0)
 
 #if defined ITL_WIN32
@@ -896,8 +899,7 @@ ITL_DEF bool itl_string_to_cstr(const itl_string_t *str, char *cstr,
 {
     size_t i, j, k;
 
-    k = 0;
-    for (i = 0; i < str->length; ++i) {
+    for (i = 0, k = 0; i < str->length; ++i) {
         if (cstr_size - k - 1 < str->chars[i].size) break;
         for (j = 0; j != str->chars[i].size; ++j, ++k) {
             cstr[k] = (char)str->chars[i].bytes[j];
@@ -917,8 +919,7 @@ ITL_DEF void itl_string_from_cstr(itl_string_t *str, const char *cstr)
 {
     size_t i, j, k, rune_width;
 
-    k = 0;
-    for (i = 0; cstr[k]; ++i) {
+    for (i = 0, k = 0; cstr[k]; ++i) {
         while (str->capacity < i + 1) {
             itl_string_extend(str);
         }
@@ -982,11 +983,11 @@ ITL_DEF itl_history_item_t *itl_history_item_alloc(const itl_string_t *str)
     return item;
 }
 
-ITL_DEF void itl_history_item_free(itl_history_item_t *item)
-{
-    itl_string_free(item->str);
-    itl_free(item);
-}
+#define itl_history_item_free(item) \
+    do {                            \
+        itl_string_free(item->str); \
+        itl_free(item);             \
+    } while (0)
 
 ITL_DEF void itl_global_history_free(void)
 {
@@ -1033,12 +1034,14 @@ ITL_DEF bool itl_global_history_append(const itl_string_t *str)
         itl_global_history_first = itl_global_history_last;
     }
     else {
+        itl_history_item_t *item;
+
         /* Do not append the same string */
         if (itl_string_equal(itl_global_history_last->str, str)) {
             return false;
         }
 
-        itl_history_item_t *item = itl_history_item_alloc(str);
+        item = itl_history_item_alloc(str);
         item->prev = itl_global_history_last;
         itl_global_history_last->next = item;
         itl_global_history_last = item;
@@ -1147,8 +1150,10 @@ end:
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF int itl_global_history_dump_to_file(const char *path)
 {
-    int file;
-    size_t cstr_size;
+    int file, ret;
+    size_t cstr_size, buffer_size;
+    char *buffer;
+
     itl_history_item_t *item;
     itl_history_item_t *prev_item;
 
@@ -1156,9 +1161,9 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
         return -EINVAL;
     }
 
-    int ret = TL_SUCCESS;
-    size_t buffer_size = ITL_HISTORY_FILE_BUFFER_INIT_SIZE;
-    char *buffer = (char *)
+    ret = TL_SUCCESS;
+    buffer_size = ITL_HISTORY_FILE_BUFFER_INIT_SIZE;
+    buffer = (char *)
         itl_malloc(sizeof(char) * ITL_HISTORY_FILE_BUFFER_INIT_SIZE);
 
     file = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
@@ -1465,22 +1470,22 @@ ITL_DEF void itl_char_buf_dump(const itl_char_buf_t *cb)
 #define itl_tty_move_to_column(buffer, col)        \
     itl_char_buf_append_cstr(buffer, "\x1b[");     \
     itl_char_buf_append_size(buffer, (size_t)col); \
-    itl_char_buf_append_byte(buffer, 'G');
+    itl_char_buf_append_byte(buffer, 'G')
 
 #define itl_tty_move_forward(buffer, steps)          \
     itl_char_buf_append_cstr(buffer, "\x1b[");       \
     itl_char_buf_append_size(buffer, (size_t)steps); \
-    itl_char_buf_append_byte(buffer, 'C');
+    itl_char_buf_append_byte(buffer, 'C')
 
 #define itl_tty_move_up(buffer, rows)               \
     itl_char_buf_append_cstr(buffer, "\x1b[");      \
     itl_char_buf_append_size(buffer, (size_t)rows); \
-    itl_char_buf_append_byte(buffer, 'A');
+    itl_char_buf_append_byte(buffer, 'A')
 
 #define itl_tty_move_down(buffer, rows)             \
     itl_char_buf_append_cstr(buffer, "\x1b[");      \
     itl_char_buf_append_size(buffer, (size_t)rows); \
-    itl_char_buf_append_byte(buffer, 'B');
+    itl_char_buf_append_byte(buffer, 'B')
 
 #define itl_tty_clear_whole_line(buffer) \
     itl_char_buf_append_cstr(buffer, "\r\x1b[0K")
@@ -1814,10 +1819,11 @@ int *itl__last_control_location(void) {
 ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb,
                                         const itl_string_t *str)
 {
+    char *data;
     while (cb->capacity < cb->size + str->size) {
         itl_char_buf_extend(cb);
     }
-    char *data = cb->data + (cb->size * sizeof(char));
+    data = cb->data + (cb->size * sizeof(char));
     itl_string_to_cstr(str, data, str->size + 1);
     cb->size += str->size; /* Ignore null at the end */
 }
@@ -1893,10 +1899,12 @@ ITL_DEF itl_completion_t *itl_completion_append(itl_completion_t *completion,
     return new_child;
 }
 
-#define itl_completion_free(completion)   \
-    do {                                  \
-        itl_string_free(completion->str); \
-        itl_free(completion);             \
+#define itl_completion_free(completion)       \
+    do {                                      \
+        if (completion->str != NULL) {        \
+            itl_string_free(completion->str); \
+        }                                     \
+        itl_free(completion);                 \
     } while (0)
 
 /* Recursively free all completions connected to current one */
@@ -1910,7 +1918,7 @@ ITL_DEF void itl_completion_free_all(itl_completion_t *completion)
 }
 
 #define itl_global_completion_free() \
-        itl_completion_free_all(itl_global_completion_root);
+        itl_completion_free_all(itl_global_completion_root)
 
 typedef struct itl_offset itl_offset_t;
 
