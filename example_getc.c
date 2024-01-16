@@ -17,10 +17,10 @@ int main(void)
            "Try to press keys while holding Control or Alt.\n"
            "You can also use non-latin keyboard layout.\n");
 
-    char char_buffer[CHAR_BUF_SIZE] = {0};
-    int code = 0;
-
     int i = 0;
+    int code = 0;
+    char char_buffer[CHAR_BUF_SIZE] = {0};
+
     while (code >= 0) {
         code = tl_getc(char_buffer, CHAR_BUF_SIZE, "> ");
 
