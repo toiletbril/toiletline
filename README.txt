@@ -157,8 +157,15 @@ int tl_history_load(const char *file_path);
 --------
 Load history from a file.
 
-Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
-failures.
+If loading a history file fails for any reason other than non-existent file,
+`tl_history_dump()` will be a no-op to avoid overwriting wrong files. Finding a
+non alphanumeric character while loading the file is treated as an error as
+well (that means you accidentaly loaded a binary file T__T).
+
+Returns:
+* `TL_SUCCESS`
+* `-EINVAL` if file is invalid
+* `-errno` on other failures.
 
 
 int tl_history_dump(const char *file_path);
