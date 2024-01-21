@@ -319,7 +319,7 @@ TL_DEF void tl_completion_delete(void *completion);
     #define itl_read(file, buf, size) fread(buf, size, 1, file)
 #endif /* ITL_USE_STDIO */
 
-ITL_DEF int itl_read_byte_raw()
+ITL_DEF int itl_read_byte_raw(void)
 {
     int buf[1];
     if (itl_read(ITL_STDIN, buf, 1) != 1) {
@@ -970,7 +970,6 @@ ITL_DEF void itl_string_from_cstr(itl_string_t *str, const char *cstr)
             itl_string_extend(str);
         }
         rune_width = itl_utf8_width(cstr[k]);
-
         str->chars[i].size = rune_width;
         for (j = 0; j < rune_width && cstr[k]; ++j, ++k) {
             str->chars[i].bytes[j] = (uint8_t)cstr[k];
