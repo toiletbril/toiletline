@@ -9,12 +9,13 @@ character support.
 
 Current features
 ----------------
+* MIT License;
 * UTF-8 support;
 * Line wrapping;
 * Emacs controls;
-* Optional, easy completion;
+* Rich configuration;
 * Persistent history;
-* MIT License.
+* Optional autocompletion.
 
 
 Documentation
@@ -32,6 +33,8 @@ Configuration macros
 These should be defined before including, in the same file with implementation
 macro.
 
+* TL_USE_STDIO can be defined to use <stdio.h> functions instead of raw
+  `read()`, `open()` and etc.
 * TL_MANUAL_TAB_COMPLETION -- when defined, completion API will be disabled.
   Pressing Tab key in `tl_readline()` will now return TL_PRESSED_TAB and not
   append anything to history. Buffer contents will represent current state of
