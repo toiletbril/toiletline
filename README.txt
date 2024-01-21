@@ -163,9 +163,9 @@ non alphanumeric character while loading the file is treated as an error as
 well (that means you accidentaly loaded a binary file T__T).
 
 Returns:
-* `TL_SUCCESS`
-* `-EINVAL` if file is invalid
-* `-errno` on other failures.
+* `TL_SUCCESS`;
+* `-EINVAL` if file is binary;
+* `-errno` on other failures. `errno` itself is unchanged.
 
 
 int tl_history_dump(const char *file_path);
