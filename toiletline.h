@@ -230,7 +230,6 @@ TL_DEF void tl_completion_delete(void *completion);
     #error "Your system is not supported"
 #endif
 
-/* @@@: Add option to use stdio instead of syscalls */
 #if defined ITL_WIN32
     #define WIN32_LEAN_AND_MEAN
 
@@ -288,7 +287,8 @@ TL_DEF void tl_completion_delete(void *completion);
     #endif /* !ITL_USE_STDIO */
 #endif /* ITL_POSIX */
 
-#if defined ITL_DEBUG || defined TL_USE_STDIO
+/* @@@: parse terminal size without sscanf for TL_SIZE_USE_ESCAPES */
+#if defined ITL_DEBUG || defined TL_USE_STDIO || defined TL_SIZE_USE_ESCAPES
     #include <stdio.h>
 #endif /* ITL_DEBUG */
 
