@@ -239,23 +239,26 @@ TL_DEF void tl_completion_delete(void *completion);
     #include <sys/stat.h>
     #include <windows.h>
 
-    #define STDIN_FILENO  0
-    #define STDOUT_FILENO 1
+    #if !defined TL_USE_STDIO
+        #define ITL_STDIN  0
+        #define ITL_STDOUT 1
+        #define ITL_FILE   int
 
-    #define write(fd, buf, size) _write(fd, buf, (unsigned long)size)
-    #define read(fd, buf, size)  _read(fd, buf, (unsigned long)size)
+        #define itl_open_for_read(path) \
+            _open(path, O_RDONLY)
+        #define itl_open_for_write(path) \
+            _open(path, O_WRONLY | O_CREAT | O_TRUNC, _S_IREAD | _S_IWRITE)
+        #define itl_file_is_bad(file) (file < 0)
+        #define itl_close _close
 
-    #define open  _open
-    #define close _close
-
-    #define S_IRUSR _S_IREAD
-    #define S_IWUSR _S_IWRITE
+        #define itl_write(fd, buf, size) _write(fd, buf, (unsigned long)size)
+        #define itl_read(fd, buf, size)  _read(fd, buf, (unsigned long)size)
+    #endif /* !ITL_USE_STDIO */
 
     /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation> */
     #define ITL_STRING_MAX_LEN 8191
 
     #define isatty(fd) _isatty(fd)
-    #define itl_read_byte_raw() _getch()
 #elif defined ITL_POSIX
     #if !defined _DEFAULT_SOURCE
         #define _DEFAULT_SOURCE
@@ -268,15 +271,57 @@ TL_DEF void tl_completion_delete(void *completion);
     /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
     #define ITL_STRING_MAX_LEN 4095
 
-    ITL_DEF int itl_read_byte_raw()
+    #if !defined TL_USE_STDIO
+        #define ITL_STDIN  0
+        #define ITL_STDOUT 1
+        #define ITL_FILE int
+
+        #define itl_open_for_read(path) \
+            open(path, O_RDONLY)
+        #define itl_open_for_write(path) \
+            open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR)
+        #define itl_file_is_bad(file) (file < 0)
+        #define itl_close close
+
+        #define itl_write(fd, buf, size) write(fd, buf, (unsigned long)size)
+        #define itl_read(fd, buf, size)  read(fd, buf, (unsigned long)size)
+    #endif /* !ITL_USE_STDIO */
+#endif /* ITL_POSIX */
+
+#if defined ITL_DEBUG || defined TL_USE_STDIO
+    #include <stdio.h>
+#endif /* ITL_DEBUG */
+
+#if defined TL_USE_STDIO
+    #define ITL_STDIN  stdin
+    #define ITL_STDOUT stdout
+    #define ITL_FILE   FILE *
+
+    #define itl_open_for_read(path)  fopen(path, "rb")
+    #define itl_open_for_write(path) fopen(path, "wb")
+    #define itl_file_is_bad(file)    (file == NULL || ferror(file))
+    #define itl_close                fclose
+
+    ITL_DEF int itl_write(FILE *f, const void *buf, size_t size)
     {
-        int buf[1];
-        if (read(STDIN_FILENO, buf, 1) != 1) {
+        size_t written_count = fwrite(buf, (unsigned long)size, 1, f);
+        if (ferror(f)) {
             return -1;
         }
-        return *buf;
+        fflush(f);
+        return (int)written_count;
     }
-#endif /* ITL_POSIX */
+    #define itl_read(file, buf, size) fread(buf, size, 1, file)
+#endif /* ITL_USE_STDIO */
+
+ITL_DEF int itl_read_byte_raw()
+{
+    int buf[1];
+    if (itl_read(ITL_STDIN, buf, 1) != 1) {
+        return -1;
+    }
+    return *buf;
+}
 
 #if defined ITL_DEFAULT_ASSERT
 #if defined ITL_DEBUG
@@ -299,7 +344,7 @@ TL_DEF void tl_completion_delete(void *completion);
                                 "please recompile toiletline with ITL_DEBUG " \
                                 "defined"                                     \
                                 "\n";                                         \
-                write(STDOUT_FILENO, m, strlen(m));                           \
+                itl_write(ITL_STDOUT, m, strlen(m));                          \
                 itl_debug_trap();                                             \
             }                                                                 \
         } while (0)
@@ -313,10 +358,6 @@ TL_DEF void tl_completion_delete(void *completion);
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if defined ITL_DEBUG
-    #include <stdio.h>
-#endif /* ITL_DEBUG */
 
 #if defined ITL_SUSPEND
     #include <signal.h>
@@ -1068,8 +1109,9 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_global_history_is_file_bad = false;
 ITL_DEF int itl_global_history_load_from_file(const char *path)
 {
     bool is_eof;
+    ITL_FILE file;
     size_t buffer_pos;
-    int ch, file, read_amount;
+    int ch, read_amount;
 
     int ret = TL_SUCCESS;
     size_t buffer_size = ITL_HISTORY_FILE_BUFFER_INIT_SIZE;
@@ -1080,8 +1122,8 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
     itl_global_history_free();
     itl_global_history_is_file_bad = false;
 
-    file = open(path, O_RDONLY);
-    if (file == -1) {
+    file = itl_open_for_read(path);
+    if (itl_file_is_bad(file)) {
         itl_traceln("could not open history file for load (%s): %s\n",
                     path, strerror(errno));
         /* Do not mark file as bad if it does not exist. `dump_to_file` will
@@ -1102,12 +1144,19 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
                 itl_realloc(buffer, buffer_size);
         }
 
-        read_amount = (int)read(file, &ch, 1);
-
-        if (read_amount == 0) {
-            is_eof = true;
-            continue;
-        } else if (read_amount != 1) {
+        read_amount = (int)itl_read(file, &ch, 1);
+        if (read_amount != 1) {
+#if defined TL_USE_STDIO
+            if (feof(file)) {
+                is_eof = true;
+                continue;
+            }
+#else /* TL_USE_STDIO */
+            if (read_amount == 0) {
+                is_eof = true;
+                continue;
+            }
+#endif
             itl_global_history_free();
             itl_global_history_is_file_bad = true;
             ITL_GOTO_END;
@@ -1138,8 +1187,8 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
     }
 
 end:
-    if (file != -1) {
-        close(file);
+    if (!itl_file_is_bad(file)) {
+        itl_close(file);
     }
     itl_free(buffer);
     itl_string_free(str);
@@ -1150,9 +1199,10 @@ end:
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF int itl_global_history_dump_to_file(const char *path)
 {
-    int file, ret;
-    size_t cstr_size, buffer_size;
+    int ret;
     char *buffer;
+    ITL_FILE file;
+    size_t cstr_size, buffer_size;
 
     itl_history_item_t *item;
     itl_history_item_t *prev_item;
@@ -1166,8 +1216,8 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
     buffer = (char *)
         itl_malloc(sizeof(char) * ITL_HISTORY_FILE_BUFFER_INIT_SIZE);
 
-    file = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-    if (file == -1) {
+    file = itl_open_for_write(path);
+    if (itl_file_is_bad(file)) {
         itl_traceln("could not open history file for dump (%s): %s\n",
                     path, strerror(errno));
         ITL_GOTO_END;
@@ -1191,8 +1241,8 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
         }
         itl_string_to_cstr(item->str, buffer, cstr_size);
         if (item->str->length > 1) {
-            if (write(file, buffer, cstr_size - 1) == -1 ||
-                write(file, "\n", 1) == -1) {
+            if (itl_write(file, buffer, cstr_size - 1) == -1 ||
+                itl_write(file, "\n", 1) == -1) {
                 ITL_GOTO_END;
             }
         }
@@ -1200,8 +1250,8 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
     }
 
 end:
-    if (file == -1) {
-        close(file);
+    if (!itl_file_is_bad(file)) {
+        itl_close(file);
     }
     itl_free(buffer);
 
@@ -1458,7 +1508,7 @@ ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 
 ITL_DEF void itl_char_buf_dump(const itl_char_buf_t *cb)
 {
-    write(STDOUT_FILENO, cb->data, cb->size);
+    itl_write(ITL_STDOUT, cb->data, cb->size);
 }
 
 #define itl_tty_hide_cursor(buffer) \
