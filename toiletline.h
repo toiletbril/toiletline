@@ -1104,11 +1104,11 @@ ITL_DEF bool itl_global_history_append(const itl_string_t *str)
 
 #define ITL_HISTORY_FILE_BUFFER_INIT_SIZE 64
 
-#define ITL_GOTO_END  \
-    do {              \
-        ret = -errno; \
-        errno = 0;    \
-        goto end;     \
+#define ITL_GOTO_END        \
+    do {                    \
+        ret = -errno;       \
+        errno = save_errno; \
+        goto end;           \
     } while (0)
 
 /* If this is true, do not overwrite file on `history_dump_to_file()` */
@@ -1127,6 +1127,7 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
     char *buffer = (char *)
         itl_malloc(sizeof(char) * ITL_HISTORY_FILE_BUFFER_INIT_SIZE);
     itl_string_t *str = itl_string_alloc();
+    int save_errno = errno;
 
     itl_global_history_free();
     itl_global_history_is_file_bad = false;
@@ -1208,9 +1209,9 @@ end:
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF int itl_global_history_dump_to_file(const char *path)
 {
-    int ret;
     char *buffer;
     ITL_FILE file;
+    int ret, save_errno;
     size_t cstr_size, buffer_size;
 
     itl_history_item_t *item;
@@ -1220,6 +1221,7 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
         return -EINVAL;
     }
 
+    save_errno = errno;
     ret = TL_SUCCESS;
     buffer_size = ITL_HISTORY_FILE_BUFFER_INIT_SIZE;
     buffer = (char *)
