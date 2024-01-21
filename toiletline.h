@@ -292,6 +292,8 @@ TL_DEF void tl_completion_delete(void *completion);
     #include <stdio.h>
 #endif /* ITL_DEBUG */
 
+/* This is everything that this library requires for IO. If a different
+   underlying API is desired, this may easily be extended. */
 #if defined TL_USE_STDIO
     #define ITL_STDIN  stdin
     #define ITL_STDOUT stdout
