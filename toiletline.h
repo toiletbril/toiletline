@@ -238,6 +238,9 @@ TL_DEF void tl_completion_delete(void *completion);
     #include <sys/stat.h>
     #include <windows.h>
 
+    #define STDIN_FILENO  0
+    #define STDOUT_FILENO 1
+
     #if !defined TL_USE_STDIO
         #define ITL_STDIN  0
         #define ITL_STDOUT 1
@@ -257,7 +260,7 @@ TL_DEF void tl_completion_delete(void *completion);
     /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation> */
     #define ITL_STRING_MAX_LEN 8191
 
-    #define isatty(fd) _isatty(fd)
+    #define itl_tty_is_tty() _isatty(STDIN_FILENO)
 #elif defined ITL_POSIX
     #if !defined _DEFAULT_SOURCE
         #define _DEFAULT_SOURCE
@@ -266,9 +269,6 @@ TL_DEF void tl_completion_delete(void *completion);
     #include <sys/ioctl.h>
     #include <termios.h>
     #include <unistd.h>
-
-    /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
-    #define ITL_STRING_MAX_LEN 4095
 
     #if !defined TL_USE_STDIO
         #define ITL_STDIN  0
@@ -285,6 +285,11 @@ TL_DEF void tl_completion_delete(void *completion);
         #define itl_write(fd, buf, size) write(fd, buf, (unsigned long)size)
         #define itl_read(fd, buf, size)  read(fd, buf, (unsigned long)size)
     #endif /* !ITL_USE_STDIO */
+
+    /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
+    #define ITL_STRING_MAX_LEN 4095
+
+    #define itl_tty_is_tty() _isatty(STDIN_FILENO)
 #endif /* ITL_POSIX */
 
 /* @@@: parse terminal size without sscanf for TL_SIZE_USE_ESCAPES */
@@ -1510,10 +1515,8 @@ ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
     cb->size += 1;
 }
 
-ITL_DEF void itl_char_buf_dump(const itl_char_buf_t *cb)
-{
+#define itl_char_buf_dump(cb) \
     itl_write(ITL_STDOUT, cb->data, cb->size);
-}
 
 #define itl_tty_hide_cursor(buffer) \
     itl_char_buf_append_cstr(buffer, "\x1b[?25l")
@@ -2514,7 +2517,7 @@ TL_DEF int tl_init(void)
     TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 &&
               "History size must be a power of 2");
 
-    ITL_TRY(isatty(STDIN_FILENO), return TL_ERROR);
+    ITL_TRY(itl_tty_is_tty(), return TL_ERROR);
     ITL_TRY(itl_enter_raw_mode(), return TL_ERROR);
 
     itl_string_init(&itl_global_line_buffer);
