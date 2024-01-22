@@ -44,10 +44,11 @@ macro.
   the line, which can be used to implement own completion, along with
   `tl_setline()`.
 * TL_HISTORY_MAX_SIZE configures maximum history size;
-* TL_NO_SUSPEND prevents Ctrl-Z from sending `SIGTSTP` to the terminal. Since
-  Windows does not have this signal, `exit(1)` will be called instead;
-* TL_SIZE_USE_ESCAPES forces to use escape codes instead of syscalls for
-  retrieving terminal size;
+* TL_NO_SUSPEND prevents Ctrl-Z from sending `SIGTSTP` to the terminal. Note
+  that Windows does not have this signal, and if this macro is not defined,
+  Ctrl-Z will call `exit(0)`;
+* TL_SIZE_USE_ESCAPES forces to use escape codes instead of native API to
+  retrieve terminal size;
 * TL_DEF and ITL_DEF are put before every definition, public and internal
   respectively.
 * TL_ASSERT configures function used for assertions;
