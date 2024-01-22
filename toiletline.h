@@ -532,9 +532,11 @@ ITL_DEF bool itl_enter_raw_mode(void)
 ITL_DEF bool itl_read_byte(uint8_t *buffer)
 {
     int byte = itl_read_byte_raw();
-    /* Catch `read()` errors. `getch()` on Windows does not have error
+#if defined ITL_POSIX
+    /* Catch `read()` errors. `_getch()` on Windows does not have error
        returns */
     ITL_TRY(byte != -1, return false);
+#endif /* ITL_POSIX */
     (*buffer) = (uint8_t)byte;
     return true;
 }
@@ -1079,7 +1081,7 @@ ITL_DEF bool itl_global_history_append(const itl_string_t *str)
                 itl_global_history_first->prev = NULL;
             }
 
-            --itl_global_history_length;
+            itl_global_history_length -= 1;
         }
     }
 
@@ -1161,19 +1163,15 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
         read_amount = (int)itl_read(file, &ch, 1);
         if (read_amount != 1) {
 #if defined TL_USE_STDIO
-            if (feof(file)) {
-                is_eof = true;
-                continue;
-            }
+            is_eof = feof(file);
 #else /* TL_USE_STDIO */
-            if (read_amount == 0) {
-                is_eof = true;
-                continue;
-            }
+            is_eof = (read_amount == 0);
 #endif
-            itl_global_history_free();
-            itl_global_history_is_file_bad = true;
-            ITL_GOTO_END;
+            if (!is_eof) {
+                itl_global_history_free();
+                itl_global_history_is_file_bad = true;
+                ITL_GOTO_END;
+            }
         }
 #if defined ITL_WIN32
         else if (ch == '\r') {
@@ -1353,8 +1351,8 @@ ITL_DEF size_t itl_string_steps_to_token(const itl_string_t *str,
 
     /* Prevent usage of uninitialized characters */
     if (backwards && i > 0 && i == str->length) {
-        ++steps;
-        --i;
+        steps += 1;
+        i -= 1;
     }
 
     itl_traceln("steps: i: %zu\n", i);
@@ -1373,9 +1371,9 @@ ITL_DEF size_t itl_string_steps_to_token(const itl_string_t *str,
 
         steps += 1;
         if (backwards && i > 0) {
-            --i;
+            i -= 1;
         } else if (!backwards && i < str->length - 1) {
-            ++i;
+            i += 1;
         } else {
             break;
         }
