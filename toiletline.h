@@ -292,8 +292,7 @@ TL_DEF void tl_completion_delete(void *completion);
     #define itl_tty_is_tty() isatty(STDIN_FILENO)
 #endif /* ITL_POSIX */
 
-/* @@@: parse terminal size without sscanf for TL_SIZE_USE_ESCAPES */
-#if defined ITL_DEBUG || defined TL_USE_STDIO || defined TL_SIZE_USE_ESCAPES || defined ITL_SEE_BYTES
+#if defined ITL_DEBUG || defined TL_USE_STDIO || defined ITL_SEE_BYTES
     #include <stdio.h>
 #endif /* ITL_DEBUG */
 
@@ -1562,36 +1561,76 @@ ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 #define itl_tty_status_report(buffer) \
     itl_char_buf_append_cstr(buffer, "\x1b[6n")
 
+ITL_DEF size_t itl_parse_size(const char *cstr, size_t *result)
+{
+    size_t i, number;
+    for (i = 0, number = 0; i < strlen(cstr); ++i) {
+        if (!isdigit(cstr[i])) {
+            break;
+        }
+        number *= 10;
+        number += (size_t)(cstr[i] - '0');
+    }
+    (*result) = number;
+    return i;
+}
+
 ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_refresh_char_buffer = {0};
 
 ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
+    char *emacs_buf;
+    size_t temp_rows, temp_cols;
 #if defined TL_SIZE_USE_ESCAPES
-    char buf[32];
-    size_t i;
+    char size_buf[32];
+    bool correct_response;
+    size_t i, parse_diff;
+    itl_char_buf_t *buffer;
+#elif defined ITL_WIN32
+    CONSOLE_SCREEN_BUFFER_INFO buffer_info;
+#else /* ITL_WIN32 */
+    struct winsize window;
+#endif
 
-    itl_char_buf_t *buffer = &itl_global_refresh_char_buffer;
+    emacs_buf = getenv("COLUMNS");
+    if (emacs_buf == NULL) goto next;
+    itl_parse_size(emacs_buf, &temp_cols);
+    emacs_buf = getenv("ROWS");
+    if (emacs_buf == NULL) goto next;
+    itl_parse_size(emacs_buf, &temp_rows);
+    if (temp_cols > 0 && temp_rows > 0) {
+        (*rows) = temp_rows;
+        (*cols) = temp_cols;
+        return true;
+    }
+
+next:
+#if defined TL_SIZE_USE_ESCAPES
+    buffer = &itl_global_refresh_char_buffer;
     itl_tty_move_forward(buffer, 999);
     itl_tty_status_report(buffer);
     itl_char_buf_dump(buffer);
     buffer->size = 0;
 
     i = 0;
-    while (i < sizeof(buf) - 1) {
-        ITL_TRY_READ_BYTE(&buf[i], return false);
-        if (buf[i] == 'R') {
+    correct_response = false;
+    while (i < sizeof(size_buf) - 1) {
+        ITL_TRY_READ_BYTE((uint8_t *)&size_buf[i], return false);
+        if (size_buf[i] == 'R') {
+            correct_response = true;
             break;
         }
         i += 1;
     }
-    buf[i + 1] = '\0';
+    size_buf[i + 1] = '\0';
 
-    ITL_TRY(buf[0] == '\x1b' || buf[1] == '[', return false);
-    /* @@@: replace `sscanf()` here */
-    ITL_TRY(sscanf(&buf[2], "%zu;%zu", rows, cols) == 2, return false);
+    TL_ASSERT(correct_response);
+    ITL_TRY(size_buf[0] == '\x1b' || size_buf[1] == '[', return false);
+    parse_diff = 2;
+    parse_diff += itl_parse_size(size_buf + parse_diff, rows);
+    TL_ASSERT(size_buf[parse_diff] == ';');
+    itl_parse_size(size_buf + parse_diff + 1, cols);
 
 #elif defined ITL_WIN32
-    CONSOLE_SCREEN_BUFFER_INFO buffer_info;
-
     ITL_TRY(GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE),
                                        &buffer_info),
             return false);
@@ -1601,14 +1640,12 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
     (*rows) = (size_t)
         (buffer_info.srWindow.Bottom - buffer_info.srWindow.Top + 1);
 
-#elif defined ITL_POSIX
-    struct winsize window;
+#else
     ITL_TRY(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0, return false);
 
     (*rows) = (size_t)window.ws_row;
     (*cols) = (size_t)window.ws_col;
-#else /* ITL_POSIX */
-    itl_unreachable();
+
 #endif
     return true;
 }
