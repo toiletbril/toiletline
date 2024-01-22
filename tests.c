@@ -323,6 +323,34 @@ static bool test_char_buf(void)
     return true;
 }
 
+static bool test_parse_size(void)
+{
+    size_t i, diff;
+    const char test_string[] = "123;7788a88891231231hello!";
+
+    const size_t should_be[] = {
+        123,
+        7788,
+        88891231231,
+        0
+    };
+
+    size_t result = 0;
+    size_t offset = 0;
+    for (i = 0, offset = 0; i < countof(should_be); ++i) {
+        diff = itl_parse_size(test_string + offset, &result);
+        if (result != should_be[i]) {
+            test_printf("Result: '%zu', should be: '%zu', diff: %zu, "
+                        "offset %zu\n",
+                        result, should_be[i], diff, offset);
+            return false;
+        }
+        offset += diff + 1;
+    }
+
+    return true;
+}
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -345,13 +373,13 @@ static test_case_t test_cases[] = {
     DEFINE_TEST_CASE(test_string_erase),
     DEFINE_TEST_CASE(test_string_insert),
     DEFINE_TEST_CASE(test_string_split),
-    DEFINE_TEST_CASE(test_char_buf)
+    DEFINE_TEST_CASE(test_char_buf),
+    DEFINE_TEST_CASE(test_parse_size)
 };
 
 int main(void) {
     size_t i;
     bool result;
-
     for (i = 0; i < countof(test_cases); ++i) {
         strncpy(current_function_name, test_cases[i].name, 32);
         result = test_cases[i].func();
@@ -361,6 +389,5 @@ int main(void) {
             test_printf("ok.\n");
         }
     }
-
     return 0;
 }
