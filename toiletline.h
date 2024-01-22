@@ -293,7 +293,7 @@ TL_DEF void tl_completion_delete(void *completion);
 #endif /* ITL_POSIX */
 
 /* @@@: parse terminal size without sscanf for TL_SIZE_USE_ESCAPES */
-#if defined ITL_DEBUG || defined TL_USE_STDIO || defined TL_SIZE_USE_ESCAPES
+#if defined ITL_DEBUG || defined TL_USE_STDIO || defined TL_SIZE_USE_ESCAPES || defined ITL_SEE_BYTES
     #include <stdio.h>
 #endif /* ITL_DEBUG */
 
@@ -2572,8 +2572,9 @@ TL_DEF int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 #if defined ITL_SEE_BYTES
         if (input_byte == 3) exit(0); /* ctrl c */
         printf("%d\n", input_byte);
+        fflush(stdout);
         continue;
-#endif /* TL_SEE_BYTES */
+#endif /* ITL_SEE_BYTES */
 
         input_type = itl_esc_parse(input_byte);
         if (input_type != TL_KEY_CHAR) {
