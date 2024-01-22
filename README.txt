@@ -27,6 +27,9 @@ If you want to use this library in other languages, you will need to make a .c
 file which creates implementation and includes the library. Compile it to
 object file (`-c` flag in gcc/clang) and link your program against it.
 
+Assume that every function is thread-unsafe until stated otherwise. UI probably
+shouldn't be modified my multiple threads anyway.
+
 
 Configuration macros
 --------
