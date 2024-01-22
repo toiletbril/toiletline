@@ -289,7 +289,7 @@ TL_DEF void tl_completion_delete(void *completion);
     /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
     #define ITL_STRING_MAX_LEN 4095
 
-    #define itl_tty_is_tty() _isatty(STDIN_FILENO)
+    #define itl_tty_is_tty() isatty(STDIN_FILENO)
 #endif /* ITL_POSIX */
 
 /* @@@: parse terminal size without sscanf for TL_SIZE_USE_ESCAPES */
@@ -309,16 +309,16 @@ TL_DEF void tl_completion_delete(void *completion);
 
     #define itl_open_for_read(path)  fopen(path, "rb")
     #define itl_open_for_write(path) fopen(path, "wb")
-    #define itl_file_is_bad(file)    (file == NULL || ferror(file))
+    #define itl_file_is_bad(file)    (file == NULL)
     #define itl_close                fclose
 
     ITL_DEF int itl_write(FILE *f, const void *buf, size_t size)
     {
         size_t written_count = fwrite(buf, (unsigned long)size, 1, f);
+        fflush(f);
         if (ferror(f)) {
             return -1;
         }
-        fflush(f);
         return (int)written_count;
     }
     #define itl_read(file, buf, size) fread(buf, size, 1, file)
