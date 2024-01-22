@@ -553,7 +553,6 @@ ITL_DEF void itl_raise_suspend(void)
 }
 
 #else /* ITL_POSIX */
-
 ITL_NO_RETURN ITL_DEF void itl_raise_suspend(void)
 {
     tl_exit();
