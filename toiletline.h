@@ -324,6 +324,10 @@ TL_DEF void tl_completion_delete(void *completion);
     #define itl_read(file, buf, size) fread(buf, size, 1, file)
 #endif /* ITL_USE_STDIO */
 
+#if defined ITL_WIN32
+    /* Windows can't read arrow keys otherwise */
+    #define itl_read_byte_raw _getch
+#else /* ITL_WIN32 */
 ITL_DEF int itl_read_byte_raw(void)
 {
     int buf[1];
@@ -332,6 +336,7 @@ ITL_DEF int itl_read_byte_raw(void)
     }
     return *buf;
 }
+#endif
 
 #if defined ITL_DEFAULT_ASSERT
 #if defined ITL_DEBUG
@@ -2570,7 +2575,12 @@ TL_DEF int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
         ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
 
 #if defined ITL_SEE_BYTES
-        if (input_byte == 3) exit(0); /* ctrl c */
+        if (input_byte == 3) return -69; /* ctrl c */
+        if (iscntrl((char)input_byte) || input_byte > 127) {
+            printf("cntrl seq -> ");
+        } else {
+            printf("'%c' -> ", (char)input_byte);
+        }
         printf("%d\n", input_byte);
         fflush(stdout);
         continue;
