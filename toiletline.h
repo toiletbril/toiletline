@@ -617,13 +617,12 @@ ITL_DEF void *itl_realloc(void *block, size_t size)
 }
 
 #if defined ITL_DEBUG
-#define itl_free(ptr)                 \
-    do {                              \
-        TL_ASSERT(ptr != NULL);       \
-        memset(ptr, 0, sizeof(*ptr)); \
-        TL_FREE(ptr);                 \
-        itl_global_alloc_count -= 1;  \
-        ptr = NULL;                   \
+#define itl_free(ptr)                    \
+    do {                                 \
+        TL_ASSERT(ptr != NULL);          \
+        memset(ptr, 0x7F, sizeof(*ptr)); \
+        TL_FREE(ptr);                    \
+        itl_global_alloc_count -= 1;     \
     } while (0)
 #else /* ITL_DEBUG */
 #define itl_free(ptr)                \
