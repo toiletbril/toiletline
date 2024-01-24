@@ -299,13 +299,14 @@ static bool test_char_buf(void)
     itl_char_buf_append_size(cb, 3912033312);
     itl_char_buf_append_cstr(cb, " ЛОЛ");
 
-    result = cb->data;
-    result_size = cb->size;
-
     /* char_buf is not null-terminated */
     while (cb->capacity < cb->size + 1) {
         itl_char_buf_extend(cb);
     }
+
+    result = cb->data;
+    result_size = cb->size;
+
     result[result_size] = '\0';
 
     if (result_size != strlen(should_be) ||

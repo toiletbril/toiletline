@@ -2125,11 +2125,10 @@ ITL_DEF itl_split_t *itl_string_split(const itl_string_t *str, char delimiter)
 {
     size_t i, j;
     itl_utf8_t ch;
-    bool is_prev_delim;
 
+    bool is_prev_delim = false;
     itl_split_t *split = itl_split_alloc();
 
-    is_prev_delim = false;
     for (i = 0, j = 0; i < str->length; ++i) {
         ch = str->chars[i];
         if (ch.bytes[0] == (uint8_t)delimiter) {
@@ -2533,7 +2532,6 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
             itl_tty_erase_screen(buffer);
             itl_char_buf_dump(buffer);
             buffer->size = 0;
-            itl_le_tty_refresh(le);
         } break;
 
         case TL_KEY_HISTORY_END: {
