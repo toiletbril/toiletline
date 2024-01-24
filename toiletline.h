@@ -246,12 +246,12 @@ TL_DEF void tl_completion_delete(void *completion);
         #define ITL_STDOUT 1
         #define ITL_FILE   int
 
-        #define itl_open_for_read(path) \
+        #define itl_file_open_for_read(path) \
             _open(path, O_RDONLY)
-        #define itl_open_for_write(path) \
+        #define itl_file_open_for_write(path) \
             _open(path, O_WRONLY | O_CREAT | O_TRUNC, _S_IREAD | _S_IWRITE)
         #define itl_file_is_bad(file) (file < 0)
-        #define itl_close _close
+        #define itl_file_close _close
 
         #define itl_write(fd, buf, size) _write(fd, buf, (unsigned long)size)
         #define itl_read(fd, buf, size)  _read(fd, buf, (unsigned long)size)
@@ -266,21 +266,24 @@ TL_DEF void tl_completion_delete(void *completion);
         #define _DEFAULT_SOURCE
     #endif
 
-    #include <sys/ioctl.h>
     #include <termios.h>
     #include <unistd.h>
+
+#if !defined TL_SIZE_USE_ESCAPES
+    #include <sys/ioctl.h>
+#endif /* TL_SIZE_USE_ESCAPES */
 
     #if !defined TL_USE_STDIO
         #define ITL_STDIN  0
         #define ITL_STDOUT 1
         #define ITL_FILE int
 
-        #define itl_open_for_read(path) \
+        #define itl_file_open_for_read(path) \
             open(path, O_RDONLY)
-        #define itl_open_for_write(path) \
+        #define itl_file_open_for_write(path) \
             open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR)
         #define itl_file_is_bad(file) (file < 0)
-        #define itl_close close
+        #define itl_file_close close
 
         #define itl_write(fd, buf, size) write(fd, buf, (unsigned long)size)
         #define itl_read(fd, buf, size)  read(fd, buf, (unsigned long)size)
@@ -306,10 +309,10 @@ TL_DEF void tl_completion_delete(void *completion);
     #define ITL_STDOUT stdout
     #define ITL_FILE   FILE *
 
-    #define itl_open_for_read(path)  fopen(path, "rb")
-    #define itl_open_for_write(path) fopen(path, "wb")
+    #define itl_file_open_for_read(path)  fopen(path, "rb")
+    #define itl_file_open_for_write(path) fopen(path, "wb")
     #define itl_file_is_bad(file)    (file == NULL)
-    #define itl_close                fclose
+    #define itl_file_close                fclose
 
     ITL_DEF int itl_write(FILE *f, const void *buf, size_t size)
     {
@@ -1116,7 +1119,7 @@ ITL_DEF bool itl_global_history_append(const itl_string_t *str)
     } while (0)
 
 /* If this is true, do not overwrite file on `history_dump_to_file()` */
-ITL_DEF ITL_THREAD_LOCAL bool itl_global_history_is_file_bad = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_global_history_file_is_bad = false;
 
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF int itl_global_history_load_from_file(const char *path)
@@ -1134,16 +1137,16 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
     int save_errno = errno;
 
     itl_global_history_free();
-    itl_global_history_is_file_bad = false;
+    itl_global_history_file_is_bad = false;
 
-    file = itl_open_for_read(path);
+    file = itl_file_open_for_read(path);
     if (itl_file_is_bad(file)) {
         itl_traceln("could not open history file for load (%s): %s\n",
                     path, strerror(errno));
         /* Do not mark file as bad if it does not exist. `dump_to_file` will
            create it. */
         if (errno != ENOENT) {
-            itl_global_history_is_file_bad = true;
+            itl_global_history_file_is_bad = true;
         }
         ITL_GOTO_END;
     }
@@ -1167,7 +1170,7 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
 #endif
             if (!is_eof) {
                 itl_global_history_free();
-                itl_global_history_is_file_bad = true;
+                itl_global_history_file_is_bad = true;
                 ITL_GOTO_END;
             }
         }
@@ -1188,7 +1191,7 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
             itl_traceln("non-text byte '%X' detected in history file\n",
                         (uint8_t)ch);
             itl_global_history_free();
-            itl_global_history_is_file_bad = true;
+            itl_global_history_file_is_bad = true;
             goto end;
         } else {
             buffer[buffer_pos] = (char)ch;
@@ -1198,7 +1201,7 @@ ITL_DEF int itl_global_history_load_from_file(const char *path)
 
 end:
     if (!itl_file_is_bad(file)) {
-        itl_close(file);
+        itl_file_close(file);
     }
     itl_free(buffer);
     itl_string_free(str);
@@ -1217,7 +1220,7 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
     itl_history_item_t *item;
     itl_history_item_t *prev_item;
 
-    if (itl_global_history_is_file_bad) {
+    if (itl_global_history_file_is_bad) {
         return -EINVAL;
     }
 
@@ -1227,7 +1230,7 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
     buffer = (char *)
         itl_malloc(sizeof(char) * ITL_HISTORY_FILE_BUFFER_INIT_SIZE);
 
-    file = itl_open_for_write(path);
+    file = itl_file_open_for_write(path);
     if (itl_file_is_bad(file)) {
         itl_traceln("could not open history file for dump (%s): %s\n",
                     path, strerror(errno));
@@ -1262,7 +1265,7 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
 
 end:
     if (!itl_file_is_bad(file)) {
-        itl_close(file);
+        itl_file_close(file);
     }
     itl_free(buffer);
 
