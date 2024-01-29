@@ -1616,6 +1616,7 @@ next:
 
     ITL_TRY(correct_response,
             return false);
+    /* @@@: this sometimes fails */
     ITL_TRY(size_buf[0] == '\x1b' || size_buf[1] == '[',
             return false);
     parse_diff = 2; /* skip first two characters */
