@@ -261,6 +261,7 @@ TL_DEF void tl_completion_delete(void *completion);
     #define ITL_STRING_MAX_LEN 8191
 
     #define itl_tty_is_tty() _isatty(STDIN_FILENO)
+
 #elif defined ITL_POSIX
     #if !defined _DEFAULT_SOURCE
         #define _DEFAULT_SOURCE
@@ -269,9 +270,9 @@ TL_DEF void tl_completion_delete(void *completion);
     #include <termios.h>
     #include <unistd.h>
 
-#if !defined TL_SIZE_USE_ESCAPES
-    #include <sys/ioctl.h>
-#endif /* TL_SIZE_USE_ESCAPES */
+    #if !defined TL_SIZE_USE_ESCAPES
+        #include <sys/ioctl.h>
+    #endif /* TL_SIZE_USE_ESCAPES */
 
     #if !defined TL_USE_STDIO
         #define ITL_STDIN  0
@@ -283,7 +284,7 @@ TL_DEF void tl_completion_delete(void *completion);
         #define itl_file_open_for_write(path) \
             open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR)
         #define itl_file_is_bad(file) (file < 0)
-        #define itl_file_close close
+        #define itl_file_close        close
 
         #define itl_write(fd, buf, size) write(fd, buf, (unsigned long)size)
         #define itl_read(fd, buf, size)  read(fd, buf, (unsigned long)size)
@@ -311,7 +312,7 @@ TL_DEF void tl_completion_delete(void *completion);
 
     #define itl_file_open_for_read(path)  fopen(path, "rb")
     #define itl_file_open_for_write(path) fopen(path, "wb")
-    #define itl_file_is_bad(file)    (file == NULL)
+    #define itl_file_is_bad(file)         (file == NULL)
     #define itl_file_close                fclose
 
     ITL_DEF int itl_write(FILE *f, const void *buf, size_t size)
@@ -327,8 +328,8 @@ TL_DEF void tl_completion_delete(void *completion);
 #endif /* ITL_USE_STDIO */
 
 #if defined ITL_WIN32
-    /* Windows can't read arrow keys otherwise */
-    #define itl_read_byte_raw _getch
+/* Windows can't read arrow keys otherwise */
+#define itl_read_byte_raw _getch
 #else /* ITL_WIN32 */
 ITL_DEF int itl_read_byte_raw(void)
 {
@@ -584,22 +585,6 @@ ITL_DEF void *itl_malloc(size_t size)
     return allocated;
 }
 
-#if 0
-ITL_DEF void *itl_calloc(size_t count, size_t size)
-{
-    void *allocated = TL_MALLOC(size);
-    itl_global_alloc_count += 1;
-
-#if !defined TL_NO_ABORT
-    ITL_TRY(allocated != NULL, TL_ABORT());
-#endif /* !TL_NO_ABORT */
-
-    memset(allocated, 0, count * size);
-
-    return allocated;
-}
-#endif /* if 0 */
-
 ITL_DEF void *itl_realloc(void *block, size_t size)
 {
     void *allocated;
@@ -674,7 +659,7 @@ ITL_DEF bool itl_utf8_equal(itl_utf8_t ch1, itl_utf8_t ch2)
 
 ITL_DEF size_t itl_utf8_width(int byte)
 {
-    if ((byte & 0x80) == 0) return 1;         /* 1 byte */
+    if ((byte & 0x80) == 0)         return 1; /* 1 byte */
     else if ((byte & 0xE0) == 0xC0) return 2; /* 2 bytes */
     else if ((byte & 0xF0) == 0xE0) return 3; /* 3 bytes */
     else if ((byte & 0xF8) == 0xF0) return 4; /* 4 bytes */
@@ -1520,8 +1505,11 @@ ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
     cb->size += 1;
 }
 
+#define itl_char_buf_clear(cb) \
+    (cb)->size = 0
+
 #define itl_char_buf_dump(cb) \
-    itl_write(ITL_STDOUT, cb->data, cb->size);
+    itl_write(ITL_STDOUT, cb->data, cb->size)
 
 #define itl_tty_hide_cursor(buffer) \
     itl_char_buf_append_cstr(buffer, "\x1b[?25l")
@@ -1612,7 +1600,7 @@ next:
     itl_tty_move_forward(buffer, 999);
     itl_tty_status_report(buffer);
     itl_char_buf_dump(buffer);
-    buffer->size = 0;
+    itl_char_buf_clear(buffer);
 
     i = 0;
     correct_response = false;
@@ -1626,12 +1614,17 @@ next:
     }
     size_buf[i + 1] = '\0';
 
-    TL_ASSERT(correct_response);
-    ITL_TRY(size_buf[0] == '\x1b' || size_buf[1] == '[', return false);
-    parse_diff = 2;
+    ITL_TRY(correct_response,
+            return false);
+    ITL_TRY(size_buf[0] == '\x1b' || size_buf[1] == '[',
+            return false);
+    parse_diff = 2; /* skip first two characters */
     parse_diff += itl_parse_size(size_buf + parse_diff, rows);
-    TL_ASSERT(size_buf[parse_diff] == ';');
+    ITL_TRY(size_buf[parse_diff] == ';',
+            return false);
     itl_parse_size(size_buf + parse_diff + 1, cols);
+
+    return true;
 
 #elif defined ITL_WIN32
     ITL_TRY(GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE),
@@ -1644,13 +1637,16 @@ next:
         (buffer_info.srWindow.Bottom - buffer_info.srWindow.Top + 1);
 
 #else
-    ITL_TRY(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0, return false);
+    ITL_TRY(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0,
+            return false);
 
     (*rows) = (size_t)window.ws_row;
     (*cols) = (size_t)window.ws_col;
 
-#endif
     return true;
+
+#endif
+    return false;
 }
 
 ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_lines    = 1;
@@ -1675,7 +1671,11 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
     rows = 0;
     cols = 0;
-    ITL_TRY(itl_tty_get_size(&rows, &cols), return false);
+    ITL_TRY(itl_tty_get_size(&rows, &cols), {
+        /* Could not get terminal size */
+        rows = 24;
+        cols = 80;
+    });
 
     TL_ASSERT(rows != 0 && cols != 0);
 
@@ -1748,8 +1748,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     itl_tty_show_cursor(buffer);
 
     itl_char_buf_dump(buffer);
-    /* Reset the buffer */
-    buffer->size = 0;
+    itl_char_buf_clear(buffer);
 
     return true;
 }
@@ -2531,7 +2530,7 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
             itl_tty_goto_home(buffer);
             itl_tty_erase_screen(buffer);
             itl_char_buf_dump(buffer);
-            buffer->size = 0;
+            itl_char_buf_clear(buffer);
         } break;
 
         case TL_KEY_HISTORY_END: {
