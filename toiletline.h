@@ -1570,204 +1570,6 @@ ITL_DEF size_t itl_parse_size(const char *cstr, size_t *result)
     return i;
 }
 
-ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_refresh_char_buffer = {0};
-
-ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
-    char *emacs_buf;
-    size_t temp_rows, temp_cols;
-#if defined TL_SIZE_USE_ESCAPES
-    char size_buf[32];
-    bool correct_response;
-    size_t i, tries, parse_diff;
-    itl_char_buf_t *buffer;
-#elif defined ITL_WIN32
-    CONSOLE_SCREEN_BUFFER_INFO buffer_info;
-#else /* ITL_WIN32 */
-    struct winsize window;
-#endif
-
-    emacs_buf = getenv("COLUMNS");
-    if (emacs_buf == NULL) goto next;
-    itl_parse_size(emacs_buf, &temp_cols);
-    emacs_buf = getenv("ROWS");
-    if (emacs_buf == NULL) goto next;
-    itl_parse_size(emacs_buf, &temp_rows);
-    if (temp_cols > 0 && temp_rows > 0) {
-        (*rows) = temp_rows;
-        (*cols) = temp_cols;
-        return true;
-    }
-
-next:
-#if defined TL_SIZE_USE_ESCAPES
-    buffer = &itl_global_refresh_char_buffer;
-    tries = 0;
-
-again:
-    itl_tty_move_forward(buffer, 999);
-    itl_tty_status_report(buffer);
-    itl_char_buf_dump(buffer);
-    itl_char_buf_clear(buffer);
-
-    /* @@@: Try to get terminal size 10 times, because reading escapes may fail
-       if user pastes a large chunk of text. */
-    tries += 1;
-    if (tries > 10) {
-        return false;
-    }
-
-    i = 0;
-    correct_response = false;
-    while (i < sizeof(size_buf) - 1) {
-        ITL_TRY_READ_BYTE((uint8_t *)&size_buf[i], return false);
-        if (size_buf[i] == 'R') {
-            correct_response = true;
-            break;
-        }
-        i += 1;
-    }
-    size_buf[i + 1] = '\0';
-
-    ITL_TRY(correct_response,
-            goto again);
-    ITL_TRY(size_buf[0] == '\x1b' && size_buf[1] == '[',
-            goto again);
-
-    parse_diff = 2; /* skip first two characters */
-    parse_diff += itl_parse_size(size_buf + parse_diff, rows);
-    ITL_TRY(size_buf[parse_diff] == ';',
-            goto again);
-    itl_parse_size(size_buf + parse_diff + 1, cols);
-
-    return true;
-
-#elif defined ITL_WIN32
-    ITL_TRY(GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE),
-                                       &buffer_info),
-            return false);
-
-    (*cols) = (size_t)
-        (buffer_info.srWindow.Right - buffer_info.srWindow.Left + 1);
-    (*rows) = (size_t)
-        (buffer_info.srWindow.Bottom - buffer_info.srWindow.Top + 1);
-
-#else
-    ITL_TRY(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0,
-            return false);
-
-    (*rows) = (size_t)window.ws_row;
-    (*cols) = (size_t)window.ws_col;
-
-    return true;
-
-#endif
-    return false;
-}
-
-ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_lines    = 1;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
-
-ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
-{
-    size_t i, j;
-    size_t rows, cols;
-    size_t current_col, current_lines, dirty_lines;
-    size_t prompt_len, wrap_cursor_col, wrap_cursor_row;
-
-    /* Write everything into a buffer, then dump it all at once */
-    itl_char_buf_t *buffer = &itl_global_refresh_char_buffer;
-
-    TL_ASSERT(le->line);
-    TL_ASSERT(le->line->chars);
-    TL_ASSERT(le->line->size >= le->line->length);
-    TL_ASSERT(le->line->length <= ITL_STRING_MAX_LEN);
-
-    itl_tty_hide_cursor(buffer);
-
-    rows = 0;
-    cols = 0;
-    ITL_TRY(itl_tty_get_size(&rows, &cols), {
-        /* Could not get terminal size */
-        rows = 24;
-        cols = 80;
-    });
-
-    TL_ASSERT(rows != 0 && cols != 0);
-
-    prompt_len = (le->prompt) ? strlen(le->prompt) : 0;
-
-    current_lines =
-        (le->line->length + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
-
-    wrap_cursor_col =
-        (le->cursor_position + prompt_len) % ITL_MAX(size_t, cols, 1) + 1;
-    wrap_cursor_row =
-        (le->cursor_position + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
-
-    itl_traceln("wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
-                wrap_cursor_row, itl_global_tty_prev_wrap_row,
-                wrap_cursor_col, le->cursor_position);
-
-    /* Move appropriate amount of lines back, while clearing previous output */
-    for (i = 0; i < itl_global_tty_prev_lines; ++i) {
-        itl_tty_clear_whole_line(buffer);
-        if (i < itl_global_tty_prev_wrap_row - 1) {
-            itl_tty_move_up(buffer, 1);
-        }
-    }
-
-    if (le->prompt) {
-        itl_char_buf_append_cstr(buffer, le->prompt);
-    }
-
-    /* Print current contents of the line editor */
-    for (i = 0; i < le->line->length; ++i) {
-        for (j = 0; j < le->line->chars[i].size; ++j) {
-            itl_char_buf_append_byte(buffer,
-                                     le->line->chars[i].bytes[j]);
-        }
-
-        /* If line is full, wrap */
-        current_col = (prompt_len + i) % ITL_MAX(size_t, cols, 1);
-        if (current_col == cols - 1) {
-            itl_char_buf_append_cstr(buffer, ITL_LF);
-        }
-    }
-
-    /* If current amount of lines is less than previous amount of lines, then
-       input was cleared by kill line or such. Clear each dirty line, then go
-       back up */
-    if (current_lines < itl_global_tty_prev_lines) {
-        dirty_lines = itl_global_tty_prev_lines - current_lines;
-        for (i = 0; i < dirty_lines; ++i) {
-            itl_tty_move_down(buffer, 1);
-            itl_tty_clear_whole_line(buffer);
-        }
-        itl_tty_move_up(buffer, dirty_lines);
-    }
-    /* Otherwise clear to the end of line */
-    else {
-        itl_tty_clear_to_end(buffer);
-    }
-
-    /* Move cursor to appropriate row and column. If row didn't change, stay on
-       the same line */
-    if (wrap_cursor_row < current_lines) {
-        itl_tty_move_up(buffer, current_lines - wrap_cursor_row);
-    }
-    itl_tty_move_to_column(buffer, wrap_cursor_col);
-
-    itl_global_tty_prev_lines = current_lines;
-    itl_global_tty_prev_wrap_row = wrap_cursor_row;
-
-    itl_tty_show_cursor(buffer);
-
-    itl_char_buf_dump(buffer);
-    itl_char_buf_clear(buffer);
-
-    return true;
-}
-
 #ifdef ITL_POSIX
 ITL_DEF int itl_esc_parse_posix(uint8_t byte)
 {
@@ -1921,6 +1723,217 @@ ITL_DEF int itl_esc_parse(uint8_t byte)
 #elif defined ITL_POSIX
     return itl_esc_parse_posix(byte);
 #endif /* ITL_POSIX */
+}
+
+ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_refresh_char_buffer = {0};
+
+ITL_DEF bool itl_tty_get_size(itl_le_t *le, size_t *rows, size_t *cols) {
+    char *emacs_buf;
+    size_t temp_rows, temp_cols;
+#if defined TL_SIZE_USE_ESCAPES
+    itl_utf8_t ch;
+    bool correct_response;
+    size_t i, tries, parse_diff;
+    char size_buf[32], *first;
+    itl_char_buf_t *buffer;
+#elif defined ITL_WIN32
+    CONSOLE_SCREEN_BUFFER_INFO buffer_info;
+#else /* ITL_WIN32 */
+    struct winsize window;
+#endif
+
+    emacs_buf = getenv("COLUMNS");
+    if (emacs_buf == NULL) {
+        goto next;
+    }
+    itl_parse_size(emacs_buf, &temp_cols);
+    emacs_buf = getenv("ROWS");
+    if (emacs_buf == NULL) {
+        goto next;
+    }
+    itl_parse_size(emacs_buf, &temp_rows);
+    if (temp_cols > 0 && temp_rows > 0) {
+        (*rows) = temp_rows;
+        (*cols) = temp_cols;
+        return true;
+    }
+
+next:
+#if defined TL_SIZE_USE_ESCAPES
+    buffer = &itl_global_refresh_char_buffer;
+    tries = 0;
+
+    itl_tty_move_forward(buffer, 999);
+    itl_tty_status_report(buffer);
+    itl_char_buf_dump(buffer);
+    itl_char_buf_clear(buffer);
+
+    /* There might be pasted input awaiting to be processed. Read and parse all
+       bytes until escape is encountered. */
+    first = &size_buf[0];
+    while (true) {
+        ITL_TRY_READ_BYTE((uint8_t *)first, return false);
+        if (*first == '\x1b') {
+            break;
+        }
+        /* don't print control sequences if they got pasted */
+        if (itl_esc_parse(*first) != TL_KEY_CHAR) {
+            continue;
+        }
+        ch = itl_utf8_parse(*first);
+        itl_le_insert(le, ch);
+    }
+
+    i = 1; /* already read the escape */
+    correct_response = false;
+    while (i < sizeof(size_buf) - 1) {
+        ITL_TRY_READ_BYTE((uint8_t *)&size_buf[i], return false);
+        if (size_buf[i] == 'R') {
+            correct_response = true;
+            break;
+        }
+        i += 1;
+    }
+    size_buf[i + 1] = '\0';
+
+    ITL_TRY(correct_response,
+            return false);
+    ITL_TRY(size_buf[0] == '\x1b' && size_buf[1] == '[',
+            return false);
+
+    parse_diff = 2; /* skip first two characters */
+    parse_diff += itl_parse_size(size_buf + parse_diff, rows);
+    ITL_TRY(size_buf[parse_diff] == ';',
+            return false);
+    itl_parse_size(size_buf + parse_diff + 1, cols);
+
+    return true;
+
+#elif defined ITL_WIN32
+    (void)le;
+    ITL_TRY(GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE),
+                                       &buffer_info),
+            return false);
+    (*cols) = (size_t)
+        (buffer_info.srWindow.Right - buffer_info.srWindow.Left + 1);
+    (*rows) = (size_t)
+        (buffer_info.srWindow.Bottom - buffer_info.srWindow.Top + 1);
+
+#else
+    (void)le;
+    ITL_TRY(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0,
+            return false);
+    (*rows) = (size_t)window.ws_row;
+    (*cols) = (size_t)window.ws_col;
+
+    return true;
+
+#endif
+    return false;
+}
+
+ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_lines    = 1;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
+
+ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
+{
+    size_t i, j;
+    size_t rows, cols;
+    size_t current_col, current_lines, dirty_lines;
+    size_t prompt_len, wrap_cursor_col, wrap_cursor_row;
+
+    /* Write everything into a buffer, then dump it all at once */
+    itl_char_buf_t *buffer = &itl_global_refresh_char_buffer;
+
+    TL_ASSERT(le->line);
+    TL_ASSERT(le->line->chars);
+    TL_ASSERT(le->line->size >= le->line->length);
+    TL_ASSERT(le->line->length <= ITL_STRING_MAX_LEN);
+
+    itl_tty_hide_cursor(buffer);
+
+    rows = 0;
+    cols = 0;
+    ITL_TRY(itl_tty_get_size(le, &rows, &cols), {
+        /* Could not get terminal size */
+        rows = 24;
+        cols = 80;
+    });
+
+    TL_ASSERT(rows != 0 && cols != 0);
+
+    prompt_len = (le->prompt) ? strlen(le->prompt) : 0;
+
+    current_lines =
+        (le->line->length + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
+
+    wrap_cursor_col =
+        (le->cursor_position + prompt_len) % ITL_MAX(size_t, cols, 1) + 1;
+    wrap_cursor_row =
+        (le->cursor_position + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
+
+    itl_traceln("wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
+                wrap_cursor_row, itl_global_tty_prev_wrap_row,
+                wrap_cursor_col, le->cursor_position);
+
+    /* Move appropriate amount of lines back, while clearing previous output */
+    for (i = 0; i < itl_global_tty_prev_lines; ++i) {
+        itl_tty_clear_whole_line(buffer);
+        if (i < itl_global_tty_prev_wrap_row - 1) {
+            itl_tty_move_up(buffer, 1);
+        }
+    }
+
+    if (le->prompt) {
+        itl_char_buf_append_cstr(buffer, le->prompt);
+    }
+
+    /* Print current contents of the line editor */
+    for (i = 0; i < le->line->length; ++i) {
+        for (j = 0; j < le->line->chars[i].size; ++j) {
+            itl_char_buf_append_byte(buffer,
+                                     le->line->chars[i].bytes[j]);
+        }
+
+        /* If line is full, wrap */
+        current_col = (prompt_len + i) % ITL_MAX(size_t, cols, 1);
+        if (current_col == cols - 1) {
+            itl_char_buf_append_cstr(buffer, ITL_LF);
+        }
+    }
+
+    /* If current amount of lines is less than previous amount of lines, then
+       input was cleared by kill line or such. Clear each dirty line, then go
+       back up */
+    if (current_lines < itl_global_tty_prev_lines) {
+        dirty_lines = itl_global_tty_prev_lines - current_lines;
+        for (i = 0; i < dirty_lines; ++i) {
+            itl_tty_move_down(buffer, 1);
+            itl_tty_clear_whole_line(buffer);
+        }
+        itl_tty_move_up(buffer, dirty_lines);
+    }
+    /* Otherwise clear to the end of line */
+    else {
+        itl_tty_clear_to_end(buffer);
+    }
+
+    /* Move cursor to appropriate row and column. If row didn't change, stay on
+       the same line */
+    if (wrap_cursor_row < current_lines) {
+        itl_tty_move_up(buffer, current_lines - wrap_cursor_row);
+    }
+    itl_tty_move_to_column(buffer, wrap_cursor_col);
+
+    itl_global_tty_prev_lines = current_lines;
+    itl_global_tty_prev_wrap_row = wrap_cursor_row;
+
+    itl_tty_show_cursor(buffer);
+
+    itl_char_buf_dump(buffer);
+    itl_char_buf_clear(buffer);
+
+    return true;
 }
 
 ITL_DEF ITL_THREAD_LOCAL int itl_global_last_control = TL_KEY_UNKN;
