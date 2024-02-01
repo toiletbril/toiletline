@@ -1578,7 +1578,7 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
 #if defined TL_SIZE_USE_ESCAPES
     char size_buf[32];
     bool correct_response;
-    size_t i, parse_diff;
+    size_t i, tries, parse_diff;
     itl_char_buf_t *buffer;
 #elif defined ITL_WIN32
     CONSOLE_SCREEN_BUFFER_INFO buffer_info;
@@ -1601,10 +1601,20 @@ ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols) {
 next:
 #if defined TL_SIZE_USE_ESCAPES
     buffer = &itl_global_refresh_char_buffer;
+    tries = 0;
+
+again:
     itl_tty_move_forward(buffer, 999);
     itl_tty_status_report(buffer);
     itl_char_buf_dump(buffer);
     itl_char_buf_clear(buffer);
+
+    /* @@@: Try to get terminal size 10 times, because reading escapes may fail
+       if user pastes a large chunk of text. */
+    tries += 1;
+    if (tries > 10) {
+        return false;
+    }
 
     i = 0;
     correct_response = false;
@@ -1619,14 +1629,14 @@ next:
     size_buf[i + 1] = '\0';
 
     ITL_TRY(correct_response,
-            return false);
-    /* @@@: this sometimes fails */
-    ITL_TRY(size_buf[0] == '\x1b' || size_buf[1] == '[',
-            return false);
+            goto again);
+    ITL_TRY(size_buf[0] == '\x1b' && size_buf[1] == '[',
+            goto again);
+
     parse_diff = 2; /* skip first two characters */
     parse_diff += itl_parse_size(size_buf + parse_diff, rows);
     ITL_TRY(size_buf[parse_diff] == ';',
-            return false);
+            goto again);
     itl_parse_size(size_buf + parse_diff + 1, cols);
 
     return true;
