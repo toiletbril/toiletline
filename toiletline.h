@@ -1731,7 +1731,6 @@ ITL_DEF bool itl_tty_get_size(itl_le_t *le, size_t *rows, size_t *cols) {
     char *emacs_buf;
     size_t temp_rows, temp_cols;
 #if defined TL_SIZE_USE_ESCAPES
-    itl_utf8_t ch;
     bool correct_response;
     size_t i, tries, parse_diff;
     char size_buf[32], *first;
@@ -1780,8 +1779,7 @@ next:
         if (itl_esc_parse(*first) != TL_KEY_CHAR) {
             continue;
         }
-        ch = itl_utf8_parse(*first);
-        itl_le_insert(le, ch);
+        itl_le_insert(le, itl_utf8_parse(*first));
     }
 
     i = 1; /* already read the escape */
@@ -2618,7 +2616,6 @@ TL_DEF int tl_exit(void)
 TL_DEF int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 {
     itl_le_t le;
-    itl_utf8_t ch;
     uint8_t input_byte;
     int input_type, code;
 
@@ -2656,8 +2653,7 @@ TL_DEF int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
                 return code;
             }
         } else {
-            ch = itl_utf8_parse(input_byte);
-            itl_le_insert(&le, ch);
+            itl_le_insert(&le, itl_utf8_parse(input_byte));
         }
 
         itl_traceln("strlen: %zu, hist: %zu\n",
@@ -2680,7 +2676,6 @@ TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
                    const char *prompt)
 {
     itl_le_t le;
-    itl_utf8_t ch;
     int input_type;
     uint8_t input_byte;
 
@@ -2708,8 +2703,7 @@ TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
         return TL_PRESSED_CONTROL_SEQUENCE;
     }
 
-    ch = itl_utf8_parse(input_byte);
-    itl_le_insert(&le, ch);
+    itl_le_insert(&le, itl_utf8_parse(input_byte));
     itl_le_tty_refresh(&le);
     itl_string_to_cstr(le.line, char_buffer, char_buffer_size);
     itl_le_clear(&le);
