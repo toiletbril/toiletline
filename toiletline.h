@@ -33,6 +33,10 @@ extern "C" {
 #if !defined TOILETLINE_H_
 #define TOILETLINE_H_
 
+#define TL_MAJOR_VERSION 0
+#define TL_MINOR_VERSION 6
+#define TL_PATCH_VERSION 0
+
 #if defined _WIN32
     #define _CRT_SECURE_NO_WARNINGS
 #endif /* _WIN32 */
@@ -153,7 +157,7 @@ TL_DEF int *itl__last_control_location(void);
  */
 TL_DEF int tl_init(void);
 /**
- * Exit toiletline and restore terminal state.
+ * Exit toiletline, restore terminal state and free internal memory.
  */
 TL_DEF int tl_exit(void);
 /**

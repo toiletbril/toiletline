@@ -112,7 +112,7 @@ Returns TL_SUCCESS.
 
 int tl_exit(void);
 --------
-Exit toiletline and restore terminal state.
+Exit toiletline, restore terminal state and free internal memory.
 Returns TL_SUCCESS.
 
 
