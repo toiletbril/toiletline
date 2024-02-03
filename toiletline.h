@@ -388,14 +388,18 @@ ITL_DEF int itl_read_byte_raw(void)
 #if defined _MSC_VER
     #define ITL_THREAD_LOCAL   __declspec(thread)
     #define ITL_NO_RETURN      __declspec(noreturn)
+    #define ITL_MAYBE_UNUSED   /* nothing */
     #define itl__unreachable() __assume(0)
     #define itl_debug_trap()   __debugbreak()
 #elif defined __GNUC__ || defined __clang__
     #define ITL_THREAD_LOCAL   __thread
     #define ITL_NO_RETURN      __attribute__((noreturn))
+    #define ITL_MAYBE_UNUSED   __attribute__((unused))
     #define itl__unreachable() __builtin_unreachable()
     #define itl_debug_trap()   __builtin_trap()
 #else
+    #define ITL_MAYBE_UNUSED /* nothing */
+
     #if defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
         #define ITL_THREAD_LOCAL _Thread_local
         #define ITL_NO_RETURN    _Noreturn
@@ -670,9 +674,9 @@ ITL_DEF size_t itl_utf8_width(int byte)
     else return 0; /* invalid character */
 }
 
-#define itl_is_surrogate(first_byte, second_byte) \
-    (((first_byte) & 0xE0) == 0xD0 &&             \
-     (second_byte) >= 0x80 &&                     \
+#define itl_utf8_is_surrogate(first_byte, second_byte) \
+    (((first_byte) & 0xE0) == 0xD0 &&                  \
+     (second_byte) >= 0x80 &&                          \
      (second_byte) <= 0xBF)
 
 #define itl_replacement_character \
@@ -695,7 +699,7 @@ ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
     }
 
     /* Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid. */
-    if (size > 1 && itl_is_surrogate(first_byte, bytes[1])) {
+    if (size > 1 && itl_utf8_is_surrogate(first_byte, bytes[1])) {
         itl_traceln("Invalid UTF-16 surrogate: '%02X %02X'\n",
                     first_byte, bytes[1]);
         return itl_replacement_character;
@@ -1323,7 +1327,7 @@ ITL_DEF bool itl_le_insert(itl_le_t *le, itl_utf8_t ch)
     return true;
 }
 
-#define itl_is_delim(c) (ispunct(c) || isspace(c))
+#define itl_char_is_delim(c) (ispunct(c) || isspace(c))
 
 #define ITL_TOKEN_DELIM 0
 #define ITL_TOKEN_WORD 1
@@ -1351,9 +1355,12 @@ ITL_DEF size_t itl_string_steps_to_token(const itl_string_t *str,
         byte = str->chars[i].bytes[0];
 
         switch (token) {
-            case ITL_TOKEN_DELIM: should_break = itl_is_delim(byte); break;
-            case ITL_TOKEN_WORD: should_break = !itl_is_delim(byte); break;
-            default: itl_unreachable();
+            case ITL_TOKEN_DELIM:
+                should_break = itl_char_is_delim(byte); break;
+            case ITL_TOKEN_WORD:
+                should_break = !itl_char_is_delim(byte); break;
+            default:
+                itl_unreachable();
         }
         if (should_break) {
             break;
@@ -1726,13 +1733,16 @@ ITL_DEF int itl_esc_parse(uint8_t byte)
 }
 
 ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_refresh_char_buffer = {0};
+ITL_DEF ITL_THREAD_LOCAL bool itl_tty_is_dumb = true;
 
-ITL_DEF bool itl_tty_get_size(itl_le_t *le, size_t *rows, size_t *cols) {
+ITL_DEF bool itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows,
+                              size_t *cols)
+{
     char *emacs_buf;
     size_t temp_rows, temp_cols;
 #if defined TL_SIZE_USE_ESCAPES
     bool correct_response;
-    size_t i, tries, parse_diff;
+    size_t i, parse_diff;
     char size_buf[32], *first;
     itl_char_buf_t *buffer;
 #elif defined ITL_WIN32
@@ -1741,26 +1751,29 @@ ITL_DEF bool itl_tty_get_size(itl_le_t *le, size_t *rows, size_t *cols) {
     struct winsize window;
 #endif
 
-    emacs_buf = getenv("COLUMNS");
-    if (emacs_buf == NULL) {
-        goto next;
-    }
-    itl_parse_size(emacs_buf, &temp_cols);
-    emacs_buf = getenv("ROWS");
-    if (emacs_buf == NULL) {
-        goto next;
-    }
-    itl_parse_size(emacs_buf, &temp_rows);
-    if (temp_cols > 0 && temp_rows > 0) {
-        (*rows) = temp_rows;
-        (*cols) = temp_cols;
-        return true;
+    if (itl_tty_is_dumb) {
+        emacs_buf = getenv("COLUMNS");
+        if (emacs_buf == NULL) {
+            itl_tty_is_dumb = false;
+            goto next;
+        }
+        itl_parse_size(emacs_buf, &temp_cols);
+        emacs_buf = getenv("ROWS");
+        if (emacs_buf == NULL) {
+            itl_tty_is_dumb = false;
+            goto next;
+        }
+        itl_parse_size(emacs_buf, &temp_rows);
+        if (temp_cols > 0 && temp_rows > 0) {
+            (*rows) = temp_rows;
+            (*cols) = temp_cols;
+            return true;
+        }
     }
 
 next:
 #if defined TL_SIZE_USE_ESCAPES
     buffer = &itl_global_refresh_char_buffer;
-    tries = 0;
 
     itl_tty_move_forward(buffer, 999);
     itl_tty_status_report(buffer);
