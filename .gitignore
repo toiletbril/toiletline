@@ -4,6 +4,7 @@ example_getc
 example
 tests
 example_history.txt
+*.raddbg
 *.pdb
 *.exp
 *.lib

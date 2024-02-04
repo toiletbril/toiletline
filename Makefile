@@ -38,7 +38,7 @@ see_bytes: example
 
 ITEMS_TO_REMOVE :=
 ifeq ($(OS),Windows_NT)
-	ITEMS_TO_REMOVE = ./*.exe ./*.pdb ./*.exp ./*.lib ./*.ilk ./example_history.txt
+	ITEMS_TO_REMOVE = ./*.exe ./*.raddbg ./*.pdb ./*.exp ./*.lib ./*.ilk ./example_history.txt
 else
 	ITEMS_TO_REMOVE = ./example_getc ./example ./tests ./example_history.txt
 endif
