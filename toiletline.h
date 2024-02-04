@@ -951,7 +951,9 @@ ITL_DEF bool itl_string_to_cstr(const itl_string_t *str, char *cstr,
     size_t i, j, k;
 
     for (i = 0, k = 0; i < str->length; ++i) {
-        if (cstr_size - k - 1 < str->chars[i].size) break;
+        if (cstr_size - k - 1 < str->chars[i].size) {
+            break;
+        }
         for (j = 0; j != str->chars[i].size; ++j, ++k) {
             cstr[k] = (char)str->chars[i].bytes[j];
         }
@@ -970,13 +972,13 @@ ITL_DEF void itl_string_from_cstr(itl_string_t *str, const char *cstr)
 {
     size_t i, j, k, rune_width;
 
-    for (i = 0, k = 0; cstr[k]; ++i) {
+    for (i = 0, k = 0; cstr[k] != '\0'; ++i) {
         while (str->capacity < i + 1) {
             itl_string_extend(str);
         }
         rune_width = itl_utf8_width(cstr[k]);
         str->chars[i].size = rune_width;
-        for (j = 0; j < rune_width && cstr[k]; ++j, ++k) {
+        for (j = 0; j < rune_width && cstr[k] != '\0'; ++j, ++k) {
             str->chars[i].bytes[j] = (uint8_t)cstr[k];
         }
     }
@@ -1382,7 +1384,7 @@ ITL_DEF size_t itl_string_steps_to_token(const itl_string_t *str,
 #define itl_le_steps_to_token(le, token, backwards) \
     itl_string_steps_to_token(le->line, le->cursor_position, token, backwards)
 
-ITL_DEF void itl_le_clear(itl_le_t *le)
+ITL_DEF void itl_le_clear_line(itl_le_t *le)
 {
     itl_string_clear(le->line);
     le->cursor_position = 0;
@@ -1403,7 +1405,7 @@ ITL_DEF void itl_global_history_get_prev(itl_le_t *le)
     }
 
     if (le->history_selected_item) {
-        itl_le_clear(le);
+        itl_le_clear_line(le);
         itl_string_copy(le->line, le->history_selected_item->str);
         le->cursor_position = le->line->length;
     }
@@ -1414,7 +1416,7 @@ ITL_DEF void itl_global_history_get_next(itl_le_t *le)
     if (le->history_selected_item) {
         if (le->history_selected_item->next) {
             le->history_selected_item = le->history_selected_item->next;
-            itl_le_clear(le);
+            itl_le_clear_line(le);
             itl_string_copy(le->line, le->history_selected_item->str);
             le->cursor_position = le->line->length;
         }
@@ -1732,8 +1734,8 @@ ITL_DEF int itl_esc_parse(uint8_t byte)
 #endif /* ITL_POSIX */
 }
 
-ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_refresh_char_buffer = {0};
-ITL_DEF ITL_THREAD_LOCAL bool itl_tty_is_dumb = true;
+ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_char_buffer = {0};
+ITL_DEF ITL_THREAD_LOCAL bool itl_global_tty_is_dumb = true;
 
 ITL_DEF bool itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows,
                               size_t *cols)
@@ -1751,16 +1753,16 @@ ITL_DEF bool itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows,
     struct winsize window;
 #endif
 
-    if (itl_tty_is_dumb) {
+    if (itl_global_tty_is_dumb) {
         emacs_buf = getenv("COLUMNS");
         if (emacs_buf == NULL) {
-            itl_tty_is_dumb = false;
+            itl_global_tty_is_dumb = false;
             goto next;
         }
         itl_parse_size(emacs_buf, &temp_cols);
         emacs_buf = getenv("ROWS");
         if (emacs_buf == NULL) {
-            itl_tty_is_dumb = false;
+            itl_global_tty_is_dumb = false;
             goto next;
         }
         itl_parse_size(emacs_buf, &temp_rows);
@@ -1830,6 +1832,7 @@ next:
     (*rows) = (size_t)
         (buffer_info.srWindow.Bottom - buffer_info.srWindow.Top + 1);
 
+    return true;
 #else
     (void)le;
     ITL_TRY(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0,
@@ -1854,7 +1857,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     size_t prompt_len, wrap_cursor_col, wrap_cursor_row;
 
     /* Write everything into a buffer, then dump it all at once */
-    itl_char_buf_t *buffer = &itl_global_refresh_char_buffer;
+    itl_char_buf_t *buffer = &itl_global_char_buffer;
 
     TL_ASSERT(le->line);
     TL_ASSERT(le->line->chars);
@@ -2565,7 +2568,7 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
         } break;
 
         case TL_KEY_CLEAR: {
-            itl_char_buf_t *buffer = &itl_global_refresh_char_buffer;
+            itl_char_buf_t *buffer = &itl_global_char_buffer;
             itl_tty_goto_home(buffer);
             itl_tty_erase_screen(buffer);
             itl_char_buf_dump(buffer);
@@ -2600,7 +2603,7 @@ TL_DEF int tl_init(void)
     ITL_TRY(itl_enter_raw_mode(), return TL_ERROR);
 
     itl_string_init(&itl_global_line_buffer);
-    itl_char_buf_init(&itl_global_refresh_char_buffer);
+    itl_char_buf_init(&itl_global_char_buffer);
 
     itl_is_active = true;
     return TL_SUCCESS;
@@ -2615,7 +2618,7 @@ TL_DEF int tl_exit(void)
     itl_global_completion_free();
 #endif /* !TL_MANUAL_TAB_COMPLETION */
     itl_free(itl_global_line_buffer.chars);
-    itl_free(itl_global_refresh_char_buffer.data);
+    itl_free(itl_global_char_buffer.data);
 
     itl_traceln("Exited, alloc count: %zu\n", itl_global_alloc_count);
     TL_ASSERT(itl_global_alloc_count == 0);
@@ -2662,7 +2665,7 @@ TL_DEF int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
         if (input_type != TL_KEY_CHAR) {
             code = itl_le_key_handle(&le, input_type);
             if (code != TL_SUCCESS) {
-                itl_le_clear(&le);
+                itl_le_clear_line(&le);
                 return code;
             }
         } else {
@@ -2719,7 +2722,7 @@ TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
     itl_le_insert(&le, itl_utf8_parse(input_byte));
     itl_le_tty_refresh(&le);
     itl_string_to_cstr(le.line, char_buffer, char_buffer_size);
-    itl_le_clear(&le);
+    itl_le_clear_line(&le);
 
     return TL_SUCCESS;
 }
