@@ -825,14 +825,11 @@ ITL_DEF void itl_string_recalc_size(itl_string_t *str)
 /* Shrinks string to capacity of ITL_STRING_INIT_SIZE */
 ITL_DEF void itl_string_shrink(itl_string_t *str)
 {
-    str->chars = (itl_utf8_t *)
-        itl_realloc(str->chars, ITL_STRING_INIT_SIZE * sizeof(itl_utf8_t));
     str->capacity = ITL_STRING_INIT_SIZE;
+    str->chars = (itl_utf8_t *)
+        itl_realloc(str->chars, str->capacity * sizeof(itl_utf8_t));
 
-    if (str->length > ITL_STRING_INIT_SIZE) {
-        str->length = ITL_STRING_INIT_SIZE;
-    }
-    if (str->capacity < str->length) {
+    if (str->length > str->capacity) {
         str->length = str->capacity;
     }
     itl_string_recalc_size(str);
