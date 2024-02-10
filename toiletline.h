@@ -962,25 +962,29 @@ ITL_DEF bool itl_string_to_cstr(const itl_string_t *str, char *cstr,
     return true;
 }
 
-/* Requires null-terminated string. */
-ITL_DEF void itl_string_from_cstr(itl_string_t *str, const char *cstr)
+ITL_DEF void itl_string_from_bytes(itl_string_t *str, const char *data,
+                                   size_t size)
 {
     size_t i, j, k, rune_width;
 
-    for (i = 0, k = 0; cstr[k] != '\0'; ++i) {
+    for (i = 0, k = 0; k < size; ++i) {
         while (str->capacity < i + 1) {
             itl_string_extend(str);
         }
-        rune_width = itl_utf8_width(cstr[k]);
+        rune_width = itl_utf8_width(data[k]);
         str->chars[i].size = rune_width;
-        for (j = 0; j < rune_width && cstr[k] != '\0'; ++j, ++k) {
-            str->chars[i].bytes[j] = (uint8_t)cstr[k];
+        for (j = 0; j < rune_width && k < size; ++j, ++k) {
+            str->chars[i].bytes[j] = (uint8_t)data[k];
         }
     }
 
     str->length = i;
     itl_string_recalc_size(str);
 }
+
+/* Requires null-terminated string. */
+#define itl_string_from_cstr(str, cstr) \
+    itl_string_from_bytes(str, cstr, strlen(cstr));
 
 #define ITL_SPACE \
     itl_utf8_new((uint8_t[1]){ 0x20 }, 1)
@@ -1096,169 +1100,6 @@ ITL_DEF bool itl_global_history_append(const itl_string_t *str)
     itl_global_history_length += 1;
 
     return true;
-}
-
-#define ITL_HISTORY_FILE_BUFFER_INIT_SIZE 64
-
-#define ITL_GOTO_END        \
-    do {                    \
-        ret = -errno;       \
-        errno = save_errno; \
-        goto end;           \
-    } while (0)
-
-/* If this is true, do not overwrite file on `history_dump_to_file()` */
-ITL_DEF ITL_THREAD_LOCAL bool itl_global_history_file_is_bad = false;
-
-/* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
-ITL_DEF int itl_global_history_load_from_file(const char *path)
-{
-    bool is_eof;
-    ITL_FILE file;
-    size_t buffer_pos;
-    int ch, read_amount;
-
-    int ret = TL_SUCCESS;
-    size_t buffer_size = ITL_HISTORY_FILE_BUFFER_INIT_SIZE;
-    char *buffer = (char *)
-        itl_malloc(sizeof(char) * ITL_HISTORY_FILE_BUFFER_INIT_SIZE);
-    itl_string_t *str = itl_string_alloc();
-    int save_errno = errno;
-
-    itl_global_history_free();
-    itl_global_history_file_is_bad = false;
-
-    file = itl_file_open_for_read(path);
-    if (itl_file_is_bad(file)) {
-        itl_traceln("could not open history file for load (%s): %s\n",
-                    path, strerror(errno));
-        /* Do not mark file as bad if it does not exist. `dump_to_file` will
-           create it. */
-        if (errno != ENOENT) {
-            itl_global_history_file_is_bad = true;
-        }
-        ITL_GOTO_END;
-    }
-
-    ch = 0;
-    is_eof = false;
-    buffer_pos = 0;
-    while (!is_eof) {
-        if (buffer_size < buffer_pos + 1) {
-            buffer_size *= 2;
-            buffer = (char *)
-                itl_realloc(buffer, buffer_size);
-        }
-
-        read_amount = (int)itl_read(file, &ch, 1);
-        if (read_amount != 1) {
-#if defined TL_USE_STDIO
-            is_eof = feof(file);
-#else /* TL_USE_STDIO */
-            is_eof = (read_amount == 0);
-#endif
-            if (!is_eof) {
-                itl_global_history_free();
-                itl_global_history_file_is_bad = true;
-                ITL_GOTO_END;
-            }
-        }
-#if defined ITL_WIN32
-        else if (ch == '\r') {
-            continue;
-        }
-#endif /* ITL_WIN32 */
-        else if (ch == '\n') {
-            buffer[buffer_pos] = '\0';
-            itl_string_from_cstr(str, buffer);
-            itl_global_history_append(str);
-            itl_traceln("loaded history entry: %s\n", buffer);
-            buffer_pos = 0;
-        /* Loaded a binary file on accident? */
-        } else if (iscntrl((uint8_t)ch)) {
-            ret = -EINVAL;
-            itl_traceln("non-text byte '%X' detected in history file\n",
-                        (uint8_t)ch);
-            itl_global_history_free();
-            itl_global_history_file_is_bad = true;
-            goto end;
-        } else {
-            buffer[buffer_pos] = (char)ch;
-            buffer_pos += 1;
-        }
-    }
-
-end:
-    if (!itl_file_is_bad(file)) {
-        itl_file_close(file);
-    }
-    itl_free(buffer);
-    itl_string_free(str);
-
-    return ret;
-}
-
-/* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
-ITL_DEF int itl_global_history_dump_to_file(const char *path)
-{
-    char *buffer;
-    ITL_FILE file;
-    int ret, save_errno;
-    size_t cstr_size, buffer_size;
-
-    itl_history_item_t *item;
-    itl_history_item_t *prev_item;
-
-    if (itl_global_history_file_is_bad) {
-        return -EINVAL;
-    }
-
-    save_errno = errno;
-    ret = TL_SUCCESS;
-    buffer_size = ITL_HISTORY_FILE_BUFFER_INIT_SIZE;
-    buffer = (char *)
-        itl_malloc(sizeof(char) * ITL_HISTORY_FILE_BUFFER_INIT_SIZE);
-
-    file = itl_file_open_for_write(path);
-    if (itl_file_is_bad(file)) {
-        itl_traceln("could not open history file for dump (%s): %s\n",
-                    path, strerror(errno));
-        ITL_GOTO_END;
-    }
-
-    item = itl_global_history_first;
-    if (item == NULL) {
-        goto end;
-    }
-
-    while (item->prev) {
-        item = item->prev;
-    }
-    while (item) {
-        prev_item = item->next;
-        cstr_size = item->str->size + 1;
-        while (buffer_size < cstr_size) {
-            buffer_size *= 2;
-            buffer = (char *)
-                itl_realloc(buffer, buffer_size);
-        }
-        itl_string_to_cstr(item->str, buffer, cstr_size);
-        if (item->str->length > 1) {
-            if (itl_write(file, buffer, cstr_size - 1) == -1 ||
-                itl_write(file, "\n", 1) == -1) {
-                ITL_GOTO_END;
-            }
-        }
-        item = prev_item;
-    }
-
-end:
-    if (!itl_file_is_bad(file)) {
-        itl_file_close(file);
-    }
-    itl_free(buffer);
-
-    return ret;
 }
 
 ITL_DEF itl_le_t itl_le_new(itl_string_t *line_buf, char *out_buf,
@@ -1500,6 +1341,18 @@ ITL_DEF void itl_char_buf_append_size(itl_char_buf_t *cb, size_t data)
     cb->size = new_size;
 }
 
+ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb,
+                                        const itl_string_t *str)
+{
+    char *data;
+    while (cb->capacity < cb->size + str->size) {
+        itl_char_buf_extend(cb);
+    }
+    data = cb->data + (cb->size * sizeof(char));
+    itl_string_to_cstr(str, data, str->size + 1);
+    cb->size += str->size; /* Ignore null at the end */
+}
+
 ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 {
     while (cb->capacity < cb->size + 1) {
@@ -1555,6 +1408,146 @@ ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 
 #define itl_tty_status_report(buffer) \
     itl_char_buf_append_cstr(buffer, "\x1b[6n")
+
+#define ITL_GOTO_END        \
+    do {                    \
+        ret = -errno;       \
+        errno = save_errno; \
+        goto end;           \
+    } while (0)
+
+/* If this is true, do not overwrite file on `history_dump_to_file()` */
+ITL_DEF ITL_THREAD_LOCAL bool itl_global_history_file_is_bad = false;
+
+/* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
+ITL_DEF int itl_global_history_load_from_file(const char *path)
+{
+    bool is_eof;
+    ITL_FILE file;
+
+    itl_string_t *str = itl_string_alloc();
+    itl_char_buf_t *buffer = itl_char_buf_alloc();
+    int ch, read_amount, ret = TL_SUCCESS, save_errno = errno;
+
+    itl_global_history_free();
+    itl_global_history_file_is_bad = false;
+
+    file = itl_file_open_for_read(path);
+    if (itl_file_is_bad(file)) {
+        itl_traceln("could not open history file for load (%s): %s\n",
+                    path, strerror(errno));
+        /* Do not mark file as bad if it does not exist. `dump_to_file` will
+           create it. */
+        if (errno != ENOENT) {
+            itl_global_history_file_is_bad = true;
+        }
+        ITL_GOTO_END;
+    }
+
+    ch = 0;
+    is_eof = false;
+    while (!is_eof) {
+        read_amount = (int)itl_read(file, &ch, 1);
+        if (read_amount != 1) {
+#if defined TL_USE_STDIO
+            is_eof = feof(file);
+#else /* TL_USE_STDIO */
+            is_eof = (read_amount == 0);
+#endif
+            if (!is_eof) {
+                itl_global_history_free();
+                itl_global_history_file_is_bad = true;
+                ITL_GOTO_END;
+            }
+        }
+#if defined ITL_WIN32
+        else if (ch == '\r') {
+            continue;
+        }
+#endif /* ITL_WIN32 */
+        else if (ch == '\n') {
+            itl_string_from_bytes(str, buffer->data, buffer->size);
+            itl_global_history_append(str);
+            itl_traceln("loaded history entry: %.*s\n",
+                        (int)buffer->size, buffer->data);
+            itl_char_buf_clear(buffer);
+        /* Loaded a binary file on accident? */
+        } else if (iscntrl((uint8_t)ch)) {
+            ret = -EINVAL;
+            itl_traceln("non-text byte '%X' detected in history file\n",
+                        (uint8_t)ch);
+            itl_global_history_free();
+            itl_global_history_file_is_bad = true;
+            goto end;
+        } else {
+            itl_char_buf_append_byte(buffer, (uint8_t)ch);
+        }
+    }
+
+end:
+    if (!itl_file_is_bad(file)) {
+        itl_file_close(file);
+    }
+    itl_char_buf_free(buffer);
+    itl_string_free(str);
+
+    return ret;
+}
+
+/* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
+ITL_DEF int itl_global_history_dump_to_file(const char *path)
+{
+    ITL_FILE file;
+    int ret, save_errno;
+
+    itl_history_item_t *item;
+    itl_history_item_t *prev_item;
+    itl_char_buf_t *buffer = itl_char_buf_alloc();
+
+    if (itl_global_history_file_is_bad) {
+        return -EINVAL;
+    }
+
+    save_errno = errno;
+    ret = TL_SUCCESS;
+
+    file = itl_file_open_for_write(path);
+    if (itl_file_is_bad(file)) {
+        itl_traceln("could not open history file for dump (%s): %s\n",
+                    path, strerror(errno));
+        ITL_GOTO_END;
+    }
+
+    item = itl_global_history_first;
+    if (item == NULL) {
+        goto end;
+    }
+
+    while (item->prev) {
+        item = item->prev;
+    }
+    while (item) {
+        prev_item = item->next;
+        itl_char_buf_append_string(buffer, item->str);
+        if (item->str->length > 1) {
+            if (itl_write(file, buffer->data, buffer->size) == -1 ||
+                itl_write(file, "\n", 1) == -1) {
+                ITL_GOTO_END;
+            }
+        }
+        itl_char_buf_clear(buffer);
+        item = prev_item;
+    }
+
+end:
+    if (!itl_file_is_bad(file)) {
+        itl_file_close(file);
+    }
+    itl_char_buf_free(buffer);
+
+    return ret;
+}
+
 
 ITL_DEF size_t itl_parse_size(const char *cstr, size_t *result)
 {
@@ -1948,18 +1941,6 @@ int *itl__last_control_location(void) {
 }
 
 #if !defined TL_MANUAL_TAB_COMPLETION
-ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb,
-                                        const itl_string_t *str)
-{
-    char *data;
-    while (cb->capacity < cb->size + str->size) {
-        itl_char_buf_extend(cb);
-    }
-    data = cb->data + (cb->size * sizeof(char));
-    itl_string_to_cstr(str, data, str->size + 1);
-    cb->size += str->size; /* Ignore null at the end */
-}
-
 ITL_DEF void itl_string_append_completion(itl_string_t *dst,
                                           const itl_string_t *src,
                                           size_t prefix_length)
