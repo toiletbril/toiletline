@@ -3,11 +3,15 @@
 
 #include <stdio.h>
 
-// Character buffer can be as large as 4 bytes, plus \0 at the end
+/* Character buffer can be as large as 4 bytes, with \0 at the end */
 #define CHAR_BUF_SIZE 5
+#define MAX_CHARS 20
 
 int main(void)
 {
+    int i = 0, code = 0;
+    char char_buffer[CHAR_BUF_SIZE] = {0};
+
     if (tl_init() != TL_SUCCESS) {
         printf("Failed to enter raw mode!\n");
         return 1;
@@ -17,10 +21,6 @@ int main(void)
            "Try to press keys while holding Control or Alt.\n"
            "You can also use non-latin keyboard layout.\n");
 
-    int i = 0;
-    int code = 0;
-    char char_buffer[CHAR_BUF_SIZE] = {0};
-
     while (code >= 0) {
         code = tl_getc(char_buffer, CHAR_BUF_SIZE, "> ");
 
@@ -29,36 +29,31 @@ int main(void)
             break;
         }
 
-        switch (code) {
-            case TL_PRESSED_CONTROL_SEQUENCE: {
-                printf("\nReceived control sequence. tl_last_control: %X\n",
-                       tl_last_control);
-            } break;
+        if (code == TL_PRESSED_CONTROL_SEQUENCE) {
+            printf("\nReceived control sequence. tl_last_control: %X\n",
+                   tl_last_control);
+        } else {
+            size_t j, size = strlen(char_buffer);
 
-            default: {
-                size_t size = strlen(char_buffer);
+            printf("\nReceived character: '%s' of of size %zu. Bytes:",
+                   char_buffer, size);
 
-                printf("\nReceived character: '%s' of of size %zu. Bytes:",
-                       char_buffer, size);
-
-                for (size_t j = 0; j < size; ++j)
-                    printf(" %d", (uint8_t)char_buffer[j]);
-
-                fputc('\n', stdout);
+            for (j = 0; j < size; ++j) {
+                printf(" %d", (uint8_t)char_buffer[j]);
             }
+            fputc('\n', stdout);
         }
-
         fflush(stdout);
 
-        if (i++ >= 20) {
-            printf("Read 20 characters, exiting!\n");
+        if (i++ >= MAX_CHARS) {
+            printf("Read %d characters, exiting!\n", MAX_CHARS);
             break;
         }
     }
 
-    if (code < 0)
+    if (code < 0) {
         printf("An error occured (%d)\n", code);
-
+    }
     fflush(stdout);
 
     tl_exit();

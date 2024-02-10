@@ -5,9 +5,16 @@
 
 #define LINE_BUF_SIZE 1024
 #define HISTORY_FILE "example_history.txt"
+#define MAX_MESSAGES 10
 
 int main(void)
 {
+    void *what_completion, *smth_completion;
+    void *first_completion, *second_completion;
+
+    int i = 0, code = 0;
+    char line_buffer[LINE_BUF_SIZE] = {0};
+
     if (tl_init() != TL_SUCCESS) {
         printf("Failed to enter raw mode!\n");
         return 1;
@@ -27,22 +34,18 @@ int main(void)
            |         /
          third     else
     */
-    void *first_completion = tl_completion_add(NULL, "first");
-    void *second_completion = tl_completion_add(first_completion, "second");
+    first_completion = tl_completion_add(NULL, "first");
+    second_completion = tl_completion_add(first_completion, "second");
     tl_completion_add(second_completion, "third");
-    void *what_completion = tl_completion_add(NULL, "what");
+    what_completion = tl_completion_add(NULL, "what");
     tl_completion_add(what_completion, "other");
-    void *smth_completion = tl_completion_add(what_completion, "something");
+    smth_completion = tl_completion_add(what_completion, "something");
     tl_completion_add(smth_completion, "else");
     tl_completion_add(NULL, "wow");
     tl_completion_add(NULL, "привет");
 
-    char line_buffer[LINE_BUF_SIZE] = {0};
-    int code = 0;
-
     tl_history_load(HISTORY_FILE);
 
-    int i = 0;
     while (code >= 0) {
         switch (i) {
             case 0: tl_setline("erase me :3c"); break;
@@ -62,14 +65,15 @@ int main(void)
 
         fflush(stdout);
 
-        if (i++ >= 10) {
-            printf("Reached 10 messages, exiting!\n");
+        if (i++ >= MAX_MESSAGES) {
+            printf("Reached %d messages, exiting!\n", MAX_MESSAGES);
             break;
         }
     }
 
-    if (code < 0)
+    if (code < 0) {
         printf("An error occured (%d)\n", code);
+    }
 
     fflush(stdout);
     tl_history_dump(HISTORY_FILE);
