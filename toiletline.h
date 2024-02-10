@@ -677,7 +677,7 @@ ITL_DEF size_t itl_utf8_width(int byte)
      (second_byte) >= 0x80 &&                          \
      (second_byte) <= 0xBF)
 
-#define itl_replacement_character \
+#define ITL_REPLACEMENT_CHARACTER \
     itl_utf8_new((uint8_t[]){ 0xEF, 0xBF, 0xBD }, 3)
 
 ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
@@ -688,19 +688,19 @@ ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
     size = itl_utf8_width(first_byte);
     if (size == 0) { /* invalid character */
         itl_traceln("Invalid UTF-8 sequence '%d'\n", (uint8_t)first_byte);
-        return itl_replacement_character;
+        return ITL_REPLACEMENT_CHARACTER;
     }
 
     bytes[0] = first_byte;
     for (i = 1; i < size; ++i) { /* consequent bytes */
-        ITL_TRY_READ_BYTE(&bytes[i], return itl_replacement_character);
+        ITL_TRY_READ_BYTE(&bytes[i], return ITL_REPLACEMENT_CHARACTER);
     }
 
     /* Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid. */
     if (size > 1 && itl_utf8_is_surrogate(first_byte, bytes[1])) {
         itl_traceln("Invalid UTF-16 surrogate: '%02X %02X'\n",
                     first_byte, bytes[1]);
-        return itl_replacement_character;
+        return ITL_REPLACEMENT_CHARACTER;
     }
 
 #if defined ITL_DEBUG
@@ -764,7 +764,6 @@ ITL_DEF size_t itl_string_prefix_with_offset(const itl_string_t *str1,
     size_t i, k;
 
     TL_ASSERT(start <= end);
-
     if (end > str1->length) {
         end = ITL_MIN(size_t, str1->length, str2->length);
     }
@@ -795,7 +794,6 @@ ITL_DEF void itl_string_copy(itl_string_t *dst, const itl_string_t *src)
 
     TL_ASSERT(dst);
     TL_ASSERT(src);
-
     while (dst->capacity < src->capacity) {
         itl_string_extend(dst);
     }
@@ -858,7 +856,6 @@ ITL_DEF void itl_string_shift(itl_string_t *str, size_t position,
         }
 
         TL_ASSERT(str->length >= shift_by);
-
         str->length -= shift_by;
     } else {
         str->length += shift_by;
@@ -867,7 +864,6 @@ ITL_DEF void itl_string_shift(itl_string_t *str, size_t position,
         }
 
         TL_ASSERT(str->length >= shift_by + 1);
-
         for (i = str->length - shift_by - 1; i >= position; --i) {
             str->chars[i + shift_by] = str->chars[i];
             if (i == 0) break; /* avoid wrapping */
@@ -1009,10 +1005,12 @@ typedef struct itl_le itl_le_t;
 /* Line editor */
 struct itl_le
 {
+    /* Contents of the line */
     itl_string_t *line;
     size_t cursor_position;
-    bool appended_to_history;
 
+    /* Whether unsubmitted line was already appended to history */
+    bool appended_to_history;
     itl_history_item_t *history_selected_item;
 
     char *out_buf;
@@ -1042,8 +1040,7 @@ ITL_DEF itl_history_item_t *itl_history_item_alloc(const itl_string_t *str)
 
 ITL_DEF void itl_global_history_free(void)
 {
-    itl_history_item_t *item;
-    itl_history_item_t *prev_item;
+    itl_history_item_t *item, *prev_item;
 
     item = itl_global_history_last;
     if (item == NULL) {
@@ -1176,16 +1173,13 @@ ITL_DEF size_t itl_string_steps_to_token(const itl_string_t *str,
 {
     uint8_t byte;
     bool should_break;
-
-    size_t i = position;
-    size_t steps = 0;
+    size_t i = position, steps = 0;
 
     /* Prevent usage of uninitialized characters */
     if (backwards && i > 0 && i == str->length) {
         steps += 1;
         i -= 1;
     }
-
     itl_traceln("steps: i: %zu\n", i);
 
     while (i < str->length) {
@@ -1300,8 +1294,7 @@ ITL_DEF void itl_char_buf_extend(itl_char_buf_t *cb)
 
 ITL_DEF void itl_char_buf_append_cstr(itl_char_buf_t *cb, const char *data)
 {
-    size_t i, j;
-    size_t cstr_size = strlen(data);
+    size_t i, j, cstr_size = strlen(data);
     size_t new_size = cb->size + cstr_size;
 
     while (cb->capacity < new_size) {
@@ -1317,9 +1310,7 @@ ITL_DEF void itl_char_buf_append_size(itl_char_buf_t *cb, size_t data)
 {
     char digit;
     size_t new_size, i;
-
-    size_t data_len = 0;
-    size_t data_copy = data;
+    size_t data_len = 0, data_copy = data;
 
     while (data_copy > 0) {
         data_len += 1;
@@ -1345,6 +1336,7 @@ ITL_DEF void itl_char_buf_append_string(itl_char_buf_t *cb,
                                         const itl_string_t *str)
 {
     char *data;
+
     while (cb->capacity < cb->size + str->size) {
         itl_char_buf_extend(cb);
     }
@@ -1548,10 +1540,10 @@ end:
     return ret;
 }
 
-
 ITL_DEF size_t itl_parse_size(const char *cstr, size_t *result)
 {
     size_t i, number;
+
     for (i = 0, number = 0; i < strlen(cstr); ++i) {
         if (!isdigit(cstr[i])) {
             break;
@@ -1560,14 +1552,15 @@ ITL_DEF size_t itl_parse_size(const char *cstr, size_t *result)
         number += (size_t)(cstr[i] - '0');
     }
     (*result) = number;
+
     return i;
 }
 
 #ifdef ITL_POSIX
 ITL_DEF int itl_esc_parse_posix(uint8_t byte)
 {
-    bool read_mod = false;
     int event = 0;
+    bool read_mod = false;
 
     if (byte == 27) { /* esc */
         ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
@@ -1593,13 +1586,11 @@ ITL_DEF int itl_esc_parse_posix(uint8_t byte)
 
         if (byte == '1') {
             ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-
             if (byte != ';') {
                 return TL_KEY_UNKN;
             }
 
             ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-
             switch (byte) {
                 case '2': event |= TL_MOD_SHIFT; break;
                 case '5': event |= TL_MOD_CTRL;  break;
@@ -1629,7 +1620,6 @@ ITL_DEF int itl_esc_parse_posix(uint8_t byte)
 
     if (!read_mod) {
         ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-
         if (byte == ';') {
             ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
             switch (byte) {
@@ -1835,8 +1825,7 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
 
 ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 {
-    size_t i, j;
-    size_t rows, cols;
+    size_t i, j, rows, cols;
     size_t current_col, current_lines, dirty_lines;
     size_t prompt_len, wrap_cursor_col, wrap_cursor_row;
 
@@ -1857,7 +1846,6 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         rows = 24;
         cols = 80;
     });
-
     TL_ASSERT(rows != 0 && cols != 0);
 
     prompt_len = (le->prompt) ? strlen(le->prompt) : 0;
@@ -1910,9 +1898,8 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
             itl_tty_clear_whole_line(buffer);
         }
         itl_tty_move_up(buffer, dirty_lines);
-    }
-    /* Otherwise clear to the end of line */
-    else {
+    } else {
+        /* Otherwise clear to the end of line */
         itl_tty_clear_to_end(buffer);
     }
 
@@ -2098,10 +2085,8 @@ ITL_DEF void itl_split_free(itl_split_t *split)
 
 ITL_DEF void itl_split_extend(itl_split_t *split)
 {
-    size_t i;
     itl_offset_t **new_offsets;
-
-    size_t old_capacity = split->capacity;
+    size_t i, old_capacity = split->capacity;
 
     split->capacity = ITL_STRING_SPLIT_REALLOC_CAPACITY(split->capacity);
     new_offsets = (itl_offset_t **)
@@ -2186,7 +2171,6 @@ ITL_DEF itl_completion_list_t *itl_completion_list_alloc(void)
 ITL_DEF void itl_completion_list_free(itl_completion_list_t *list)
 {
     itl_completion_list_t *next;
-
     while (list) {
         next = list->next;
         itl_free(list);
@@ -2214,14 +2198,13 @@ ITL_DEF void itl_completion_list_append(itl_completion_list_t *list,
 
 ITL_DEF void itl_completion_list_dump(itl_completion_list_t *list)
 {
-    size_t i;
     itl_string_t *str;
+    size_t i, count = 0;
     itl_completion_list_t *next;
 
-    size_t count = 0;
     itl_char_buf_t *buffer = itl_char_buf_alloc();
-
     itl_char_buf_append_cstr(buffer, ITL_LF);
+
     while (true) {
         next = list->next;
         str = list->completion->str;
@@ -2322,6 +2305,7 @@ ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
             }
         }
         if (longest_prefix != 0) {
+            TL_ASSERT(possible_completion);
             itl_string_append_completion(str, possible_completion,
                                          longest_prefix);
             itl_string_insert(str, str->length, ITL_SPACE);
@@ -2377,7 +2361,6 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
             return TL_PRESSED_TAB;
 #endif
         } break;
-
         case TL_KEY_UP: {
             itl_string_t *prev_line;
 
@@ -2401,11 +2384,9 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
                 itl_global_history_get_prev(le);
             }
         } break;
-
         case TL_KEY_DOWN: {
             itl_global_history_get_next(le);
         } break;
-
         case TL_KEY_RIGHT: {
             if (le->cursor_position < le->line->length) {
                 if (esc & TL_MOD_CTRL) {
@@ -2425,7 +2406,6 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
                 }
             }
         } break;
-
         case TL_KEY_LEFT: {
             if (le->cursor_position > 0 &&
                 le->cursor_position <= le->line->length) {
@@ -2449,22 +2429,18 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
                 }
             }
         } break;
-
         case TL_KEY_END: {
             itl_le_move_right(le, le->line->length - le->cursor_position);
         } break;
-
         case TL_KEY_HOME: {
             itl_le_move_left(le, le->cursor_position);
         } break;
-
         case TL_KEY_ENTER: {
             ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
                     return TL_ERROR_SIZE);
             itl_global_history_append(le->line);
             return TL_PRESSED_ENTER;
         } break;
-
         case TL_KEY_BACKSPACE: {
             if (esc & TL_MOD_CTRL && le->line->length > 0) {
                 steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, true);
@@ -2489,7 +2465,6 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
                 itl_le_erase_backward(le, 1);
             }
         } break;
-
         case TL_KEY_DELETE: {
             if (esc & TL_MOD_CTRL) {
                 steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, false);
@@ -2510,21 +2485,17 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
                 itl_le_erase_forward(le, 1);
             }
         } break;
-
         case TL_KEY_KILL_LINE: {
             itl_le_erase_forward(le, le->line->length - le->cursor_position);
         } break;
-
         case TL_KEY_KILL_LINE_BEFORE: {
             itl_le_erase_backward(le, le->cursor_position);
         } break;
-
         case TL_KEY_SUSPEND: {
 #if defined ITL_SUSPEND
             itl_raise_suspend();
 #endif /* ITL_SUSPEND */
         } break;
-
         case TL_KEY_EOF: {
             if (le->line->length > 0) {
                 itl_le_erase_forward(le, 1);
@@ -2533,12 +2504,10 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
                 return TL_PRESSED_EOF;
             }
         } break;
-
         case TL_KEY_INTERRUPT: {
             itl_string_to_cstr(le->line, le->out_buf, le->out_size);
             return TL_PRESSED_INTERRUPT;
         } break;
-
         case TL_KEY_CLEAR: {
             itl_char_buf_t *buffer = &itl_global_char_buffer;
             itl_tty_goto_home(buffer);
@@ -2546,14 +2515,12 @@ ITL_DEF int itl_le_key_handle(itl_le_t *le, int esc)
             itl_char_buf_dump(buffer);
             itl_char_buf_clear(buffer);
         } break;
-
         case TL_KEY_HISTORY_END: {
             for (i = 0; i < itl_global_history_length; ++i) {
                 itl_global_history_get_next(le);
             }
             itl_global_history_get_prev(le);
         } break;
-
         case TL_KEY_HISTORY_BEGINNING: {
             for (i = 0; i < itl_global_history_length; ++i) {
                 itl_global_history_get_prev(le);
@@ -2646,7 +2613,6 @@ TL_DEF int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 
         itl_traceln("strlen: %zu, hist: %zu\n",
                     le.line->length, (size_t)le.history_selected_item);
-
         itl_le_tty_refresh(&le);
     }
 
