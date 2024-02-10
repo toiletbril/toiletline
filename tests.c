@@ -5,12 +5,10 @@
 
 #define BUFFER_SIZE 128
 
-static char current_function_name[BUFFER_SIZE];
-
-#define test_printf(...)                  \
-  do {                                    \
-    fputs(current_function_name, stdout); \
-    printf(": "__VA_ARGS__);              \
+#define test_printf(...)     \
+  do {                       \
+    fputs(__func__, stdout); \
+    printf(": "__VA_ARGS__); \
   } while (0)
 
 #define countof(a) (sizeof(a)/sizeof((a)[0]))
@@ -56,8 +54,8 @@ static bool test_string_from_cstr(void)
 
         result = strcmp(out_buffer, test.original);
 
-        if (result != 0 || str->length != test.length
-                        || str->size != test.size) {
+        if (result != 0 || str->length != test.length ||
+            str->size != test.size) {
           test_printf("Result %zu: '%s', should be: '%s'. Length: %zu/%zu, "
                       "size: %zu/%zu\n",
                       i, out_buffer, test.original, str->length, test.length,
@@ -280,9 +278,6 @@ static bool test_string_split(void)
 
 static bool test_char_buf(void)
 {
-    char *result;
-    size_t result_size;
-
     itl_string_t *str = itl_string_alloc();
     itl_char_buf_t *cb = itl_char_buf_alloc();
 
@@ -299,20 +294,16 @@ static bool test_char_buf(void)
     itl_char_buf_append_size(cb, 3912033312);
     itl_char_buf_append_cstr(cb, " ЛОЛ");
 
-    /* char_buf is not null-terminated */
+    /* null-terminate cb->data */
     while (cb->capacity < cb->size + 1) {
         itl_char_buf_extend(cb);
     }
+    cb->data[cb->size] = '\0';
 
-    result = cb->data;
-    result_size = cb->size;
-
-    result[result_size] = '\0';
-
-    if (result_size != strlen(should_be) ||
+    if (cb->size != strlen(should_be) ||
         strcmp(should_be, cb->data) != 0) {
         test_printf("Result: '%s', should be: '%s', len: %zu/%zu\n",
-                    result, should_be, result_size, strlen(should_be));
+                    cb->data, should_be, cb->size, strlen(should_be));
         itl_string_free(str);
         itl_char_buf_free(cb);
         return false;
@@ -326,7 +317,7 @@ static bool test_char_buf(void)
 
 static bool test_parse_size(void)
 {
-    size_t i, diff;
+    size_t i, diff, offset, result = 0;
     const char test_string[] = "123;7788a88891231231hello!";
 
     const size_t should_be[] = {
@@ -336,8 +327,6 @@ static bool test_parse_size(void)
         0
     };
 
-    size_t result = 0;
-    size_t offset = 0;
     for (i = 0, offset = 0; i < countof(should_be); ++i) {
         diff = itl_parse_size(test_string + offset, &result);
         if (result != should_be[i]) {
@@ -381,14 +370,15 @@ static test_case_t test_cases[] = {
 int main(void) {
     size_t i;
     bool result;
+
     for (i = 0; i < countof(test_cases); ++i) {
-        strncpy(current_function_name, test_cases[i].name, 32);
         result = test_cases[i].func();
         if (!result) {
-            test_printf("*** FAIL.\n");
+            printf("%s: *** FAIL.\n", test_cases[i].name);
         } else {
-            test_printf("ok.\n");
+            printf("%s: ok.\n", test_cases[i].name);
         }
     }
+
     return 0;
 }
