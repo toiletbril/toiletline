@@ -37,9 +37,11 @@ extern "C" {
 #define TL_MINOR_VERSION 6
 #define TL_PATCH_VERSION 0
 
-#if defined _WIN32
+/* Compile with -Werror on Windows */
+#if defined TOILETLINE_IMPLEMENTATION && !defined _CRT_SECURE_NO_WARNINGS
+    #define ITL_WIN32_DISABLED_WARNINGS
     #define _CRT_SECURE_NO_WARNINGS
-#endif /* _WIN32 */
+#endif /* !_CRT_SECURE_NO_WARNINGS */
 
 #include <stddef.h>
 
@@ -215,10 +217,6 @@ TL_DEF void tl_completion_change(void *completion, const char *label);
  */
 TL_DEF void tl_completion_delete(void *completion);
 #endif /* !TL_MANUAL_TAB_COMPLETION */
-
-#if !defined TOILETLINE_IMPLEMENTATION && defined _CRT_SECURE_NO_WARNINGS
-    #undef _CRT_SECURE_NO_WARNINGS
-#endif /* !TOILETLINE_IMPLEMENTATION && _CRT_SECURE_NO_WARNINGS */
 
 #endif /* TOILETLINE_H_ */ /* End of header file */
 
@@ -1081,8 +1079,7 @@ ITL_DEF bool itl_global_history_append(const itl_string_t *str)
     if (itl_global_history_last == NULL) {
         itl_global_history_last = itl_history_item_alloc(str);
         itl_global_history_first = itl_global_history_last;
-    }
-    else {
+    } else {
         itl_history_item_t *item;
 
         /* Do not append the same string */
@@ -1401,22 +1398,19 @@ ITL_DEF void itl_global_history_get_prev(itl_le_t *le)
         le->history_selected_item = itl_global_history_last;
     }
 
-    if (le->history_selected_item) {
-        itl_le_clear_line(le);
-        itl_string_copy(le->line, le->history_selected_item->str);
-        le->cursor_position = le->line->length;
-    }
+    TL_ASSERT(le->history_selected_item);
+    itl_le_clear_line(le);
+    itl_string_copy(le->line, le->history_selected_item->str);
+    le->cursor_position = le->line->length;
 }
 
 ITL_DEF void itl_global_history_get_next(itl_le_t *le)
 {
-    if (le->history_selected_item) {
-        if (le->history_selected_item->next) {
-            le->history_selected_item = le->history_selected_item->next;
-            itl_le_clear_line(le);
-            itl_string_copy(le->line, le->history_selected_item->str);
-            le->cursor_position = le->line->length;
-        }
+    if (le->history_selected_item && le->history_selected_item->next) {
+        le->history_selected_item = le->history_selected_item->next;
+        itl_le_clear_line(le);
+        itl_string_copy(le->line, le->history_selected_item->str);
+        le->cursor_position = le->line->length;
     }
 }
 
@@ -2785,9 +2779,9 @@ TL_DEF void tl_completion_delete(void *completion)
 }
 #endif /* !TL_MANUAL_TAB_COMPLETION */
 
-#if defined _CRT_SECURE_NO_WARNINGS
+#if defined ITL_WIN32_DISABLED_WARNINGS
     #undef _CRT_SECURE_NO_WARNINGS
-#endif /* _CRT_SECURE_NO_WARNINGS */
+#endif /* ITL_WIN32_NO_WARNINGS */
 
 #endif /* TOILETLINE_IMPLEMENTATION */
 
