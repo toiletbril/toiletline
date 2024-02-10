@@ -436,14 +436,14 @@ ITL_NO_RETURN ITL_DEF void itl_unreachable_impl(const char *file, int line,
 #define ITL_MAX(type, i, j) ((((type)i) > ((type)j)) ? ((type)i) : ((type)j))
 #define ITL_MIN(type, i, j) ((((type)i) < ((type)j)) ? ((type)i) : ((type)j))
 
-/* Do `expr` if condition is not true */
-#define ITL_TRY(condition, expr)                         \
-    do {                                                 \
-        if (!(condition)) {                              \
-            itl_traceln("\n%s:%d: try fail: %s\n",       \
-                        __FILE__, __LINE__, #condition); \
-            expr;                                        \
-        }                                                \
+/* Do `catch_` if `expr` is not true */
+#define ITL_TRY(expr, catch_)                       \
+    do {                                            \
+        if (!(expr)) {                              \
+            itl_traceln("\n%s:%d: try fail: %s\n",  \
+                        __FILE__, __LINE__, #expr); \
+            catch_;                                 \
+        }                                           \
     } while (0)
 
 #if defined ITL_WIN32
