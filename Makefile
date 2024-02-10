@@ -1,9 +1,9 @@
 CC ?= clang
-CFLAGS := -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic -std=c99
-DBGFLAGS := -O0 -g3 -DITL_DEBUG
+CFLAGS := -g3 -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic -std=c99
+DBGFLAGS := -O0 -DITL_DEBUG
 
 ifneq ($(OS),Windows_NT)
-	CFLAGS += -fsanitize=undefined -g3
+	CFLAGS += -fsanitize=undefined
 	DBGFLAGS += -fsanitize=address
 endif
 
