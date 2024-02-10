@@ -980,7 +980,7 @@ ITL_DEF void itl_string_from_bytes(itl_string_t *str, const char *data,
 
 /* Requires null-terminated string. */
 #define itl_string_from_cstr(str, cstr) \
-    itl_string_from_bytes(str, cstr, strlen(cstr));
+    itl_string_from_bytes(str, cstr, strlen(cstr))
 
 #define ITL_SPACE \
     itl_utf8_new((uint8_t[1]){ 0x20 }, 1)
