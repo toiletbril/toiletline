@@ -756,18 +756,16 @@ ITL_DEF void itl_string_extend(itl_string_t *str)
         itl_realloc(str->chars, str->capacity * sizeof(itl_utf8_t));
 }
 
-/* Return length of the matching prefix */
+/* Returns length of the matching prefix */
 ITL_DEF size_t itl_string_prefix_with_offset(const itl_string_t *str1,
                                              size_t start, size_t end,
                                              const itl_string_t *str2)
 {
-    size_t i, k;
+    size_t i, k, actual_end = ITL_MIN(size_t, end, str1->length);
 
-    TL_ASSERT(start <= end);
-    if (end > str1->length) {
-        end = ITL_MIN(size_t, str1->length, str2->length);
-    }
-    for (i = start, k = 0; i < end && k < str2->length; ++i, ++k) {
+    TL_ASSERT(start <= actual_end);
+
+    for (i = start, k = 0; i < actual_end && k < str2->length; ++i, ++k) {
         if (!itl_utf8_equal(str1->chars[i], str2->chars[k])) {
             break;
         }
@@ -1187,9 +1185,11 @@ ITL_DEF size_t itl_string_steps_to_token(const itl_string_t *str,
 
         switch (token) {
             case ITL_TOKEN_DELIM:
-                should_break = itl_char_is_delim(byte); break;
+                should_break = itl_char_is_delim(byte);
+                break;
             case ITL_TOKEN_WORD:
-                should_break = !itl_char_is_delim(byte); break;
+                should_break = !itl_char_is_delim(byte);
+                break;
             default:
                 itl_unreachable();
         }
@@ -1198,6 +1198,7 @@ ITL_DEF size_t itl_string_steps_to_token(const itl_string_t *str,
         }
 
         steps += 1;
+
         if (backwards && i > 0) {
             i -= 1;
         } else if (!backwards && i < str->length - 1) {
@@ -1234,6 +1235,7 @@ ITL_DEF void itl_global_history_get_prev(itl_le_t *le)
     }
 
     TL_ASSERT(le->history_selected_item);
+
     itl_le_clear_line(le);
     itl_string_copy(le->line, le->history_selected_item->str);
     le->cursor_position = le->line->length;
@@ -1492,8 +1494,7 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
     ITL_FILE file;
     int ret, save_errno;
 
-    itl_history_item_t *item;
-    itl_history_item_t *prev_item;
+    itl_history_item_t *item, *next_item;
     itl_char_buf_t *buffer = itl_char_buf_alloc();
 
     if (itl_global_history_file_is_bad) {
@@ -1519,7 +1520,7 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
         item = item->prev;
     }
     while (item) {
-        prev_item = item->next;
+        next_item = item->next;
         itl_char_buf_append_string(buffer, item->str);
         if (item->str->length > 1) {
             if (itl_write(file, buffer->data, buffer->size) == -1 ||
@@ -1528,7 +1529,7 @@ ITL_DEF int itl_global_history_dump_to_file(const char *path)
             }
         }
         itl_char_buf_clear(buffer);
-        item = prev_item;
+        item = next_item;
     }
 
 end:
