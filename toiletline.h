@@ -2739,7 +2739,9 @@ TL_DEF void tl_completion_delete(void *completion)
 
 /*
  * TODO:
- *  - Test all of this. On different OSes.
+ *  - Test all of this on different OSes.
+ *  - History search.
+ *  - Edit multiple lines simultaneously.
  *  - Make refresh fasterrrr.
- *  - Squash things to make this tiny again :(
+ *  - Squash things to make this tiny again =3
  */
