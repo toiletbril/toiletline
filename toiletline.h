@@ -2729,7 +2729,7 @@ TL_DEF void tl_completion_delete(void *completion)
 
 #if defined ITL_WIN32_DISABLED_WARNINGS
     #undef _CRT_SECURE_NO_WARNINGS
-#endif /* ITL_WIN32_NO_WARNINGS */
+#endif /* ITL_WIN32_DISABLED_WARNINGS */
 
 #endif /* TOILETLINE_IMPLEMENTATION */
 
