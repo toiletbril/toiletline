@@ -1924,7 +1924,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
 ITL_DEF ITL_THREAD_LOCAL int itl_global_last_control = TL_KEY_UNKN;
 
-int *itl__last_control_location(void) {
+TL_DEF int *itl__last_control_location(void) {
     return &itl_global_last_control;
 }
 
@@ -2646,8 +2646,9 @@ TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
                     char_buffer_size, prompt);
 
     /* Avoid overriding buffer if tl_setline was used */
-    if (itl_global_line_buffer.length != 0)
+    if (itl_global_line_buffer.length != 0) {
         itl_string_clear(&itl_global_line_buffer);
+    }
 
     itl_le_tty_refresh(&le);
     ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
@@ -2680,8 +2681,9 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str)
 {
     size_t len = 0;
     while (*utf8_str) {
-        if ((*utf8_str & 0xC0) != 0x80)
+        if ((*utf8_str & 0xC0) != 0x80) {
             ++len;
+        }
         ++utf8_str;
     }
     return len;
