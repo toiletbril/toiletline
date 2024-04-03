@@ -677,8 +677,7 @@ ITL_DEF size_t itl_utf8_width(int byte)
      (second_byte) >= 0x80 &&                          \
      (second_byte) <= 0xBF)
 
-#define ITL_REPLACEMENT_CHARACTER \
-    itl_utf8_new((uint8_t[]){ 0xEF, 0xBF, 0xBD }, 3)
+const itl_utf8_t itl_replacement_character = { { 0xEF, 0xBF, 0xBD }, 3 };
 
 ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
 {
@@ -688,19 +687,19 @@ ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
     size = itl_utf8_width(first_byte);
     if (size == 0) { /* invalid character */
         itl_traceln("Invalid UTF-8 sequence '%d'\n", (uint8_t)first_byte);
-        return ITL_REPLACEMENT_CHARACTER;
+        return itl_replacement_character;
     }
 
     bytes[0] = first_byte;
     for (i = 1; i < size; ++i) { /* consequent bytes */
-        ITL_TRY_READ_BYTE(&bytes[i], return ITL_REPLACEMENT_CHARACTER);
+        ITL_TRY_READ_BYTE(&bytes[i], return itl_replacement_character);
     }
 
     /* Codepoints U+D800 to U+DFFF (known as UTF-16 surrogates) are invalid. */
     if (size > 1 && itl_utf8_is_surrogate(first_byte, bytes[1])) {
         itl_traceln("Invalid UTF-16 surrogate: '%02X %02X'\n",
                     first_byte, bytes[1]);
-        return ITL_REPLACEMENT_CHARACTER;
+        return itl_replacement_character;
     }
 
 #if defined ITL_DEBUG
@@ -980,8 +979,7 @@ ITL_DEF void itl_string_from_bytes(itl_string_t *str, const char *data,
 #define itl_string_from_cstr(str, cstr) \
     itl_string_from_bytes(str, cstr, strlen(cstr))
 
-#define ITL_SPACE \
-    itl_utf8_new((uint8_t[1]){ 0x20 }, 1)
+const itl_utf8_t itl_space = { { 0x20 }, 1 };
 
 typedef struct itl_history_item itl_history_item_t;
 
@@ -1942,8 +1940,8 @@ ITL_DEF void itl_string_append_completion(itl_string_t *dst,
 
     i = dst->length;
     /* Insert a space before new word, if there is no matching prefix */
-    if (prefix_length == 0 && !itl_utf8_equal(dst->chars[i - 1], ITL_SPACE)) {
-        dst->chars[i++] = ITL_SPACE;
+    if (prefix_length == 0 && !itl_utf8_equal(dst->chars[i - 1], itl_space)) {
+        dst->chars[i++] = itl_space;
         dst->length += 1;
     }
     /* Append missing chars */
@@ -2309,15 +2307,15 @@ ITL_DEF itl_completion_list_t *itl_string_complete(itl_string_t *str)
             TL_ASSERT(possible_completion);
             itl_string_append_completion(str, possible_completion,
                                          longest_prefix);
-            itl_string_insert(str, str->length, ITL_SPACE);
+            itl_string_insert(str, str->length, itl_space);
             itl_split_free(split);
             return NULL;
         }
         /* Insert a space if a completion fully matches but there is no space
            after the word */
         if (went_into_child && completion == NULL) {
-            if (!itl_utf8_equal(str->chars[str->length - 1], ITL_SPACE)) {
-                itl_string_insert(str, str->length, ITL_SPACE);
+            if (!itl_utf8_equal(str->chars[str->length - 1], itl_space)) {
+                itl_string_insert(str, str->length, itl_space);
             }
             itl_split_free(split);
             return NULL;
