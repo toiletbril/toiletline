@@ -2083,8 +2083,8 @@ itl_offset_alloc(void)
 
 typedef struct itl_split itl_split_t;
 
-#define ITL_STRING_SPLIT_INIT_CAPACITY              4
-#define ITL_STRING_SPLIT_REALLOC_CAPACITY(old_size) ((old_size) << 1)
+#define ITL_SPLIT_INIT_CAPACITY              4
+#define ITL_SPLIT_REALLOC_CAPACITY(old_size) ((old_size) << 1)
 
 struct itl_split
 {
@@ -2100,9 +2100,9 @@ itl_split_alloc(void)
 
   itl_split_t *split = (itl_split_t *) itl_malloc(sizeof(itl_split_t));
   split->offsets = (itl_offset_t **) itl_malloc(sizeof(itl_offset_t) *
-                                                ITL_STRING_SPLIT_INIT_CAPACITY);
+                                                ITL_SPLIT_INIT_CAPACITY);
 
-  split->capacity = ITL_STRING_SPLIT_INIT_CAPACITY;
+  split->capacity = ITL_SPLIT_INIT_CAPACITY;
   split->size = 0;
 
   for (i = 0; i < split->capacity; ++i) {
@@ -2129,7 +2129,7 @@ itl_split_extend(itl_split_t *split)
   itl_offset_t **new_offsets;
   size_t         i, old_capacity = split->capacity;
 
-  split->capacity = ITL_STRING_SPLIT_REALLOC_CAPACITY(split->capacity);
+  split->capacity = ITL_SPLIT_REALLOC_CAPACITY(split->capacity);
   new_offsets =
       (itl_offset_t **) itl_malloc(sizeof(itl_split_t *) * split->capacity);
 
