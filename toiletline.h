@@ -2582,6 +2582,10 @@ TL_DEF int tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 
     le = itl_le_new(&itl_global_line_buffer, buffer,
                     buffer_size, prompt);
+
+    /* Avoid clearing lines that don't belong to us. */
+    itl_global_tty_prev_lines = 1;
+    itl_global_tty_prev_wrap_row = 1;
     itl_le_tty_refresh(&le);
 
     while (true) {
