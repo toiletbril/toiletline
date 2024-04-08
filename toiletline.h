@@ -694,7 +694,7 @@ itl_utf8_width(int byte)
   (((first_byte) &0xE0) == 0xD0 && (second_byte) >= 0x80 &&                    \
    (second_byte) <= 0xBF)
 
-const itl_utf8_t itl_replacement_character = {
+ITL_DEF const itl_utf8_t itl_replacement_character = {
     {0xEF, 0xBF, 0xBD},
     3
 };
@@ -1007,7 +1007,7 @@ itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
 #define itl_string_from_cstr(str, cstr)                                        \
   itl_string_from_bytes(str, cstr, strlen(cstr))
 
-const itl_utf8_t itl_space = {{0x20}, 1};
+ITL_DEF const itl_utf8_t itl_space = {{0x20}, 1};
 
 typedef struct itl_history_item itl_history_item_t;
 

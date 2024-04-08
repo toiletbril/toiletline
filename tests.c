@@ -40,12 +40,14 @@ test_string_from_cstr(void)
 
   itl_string_t *str = itl_string_alloc();
 
+  /* clang-format off */
   const from_cstr_test_case_t tests[] = {
   /* original, length, size */
-      {"hello, world",         12, 12},
-      {"привет, мир", 11, 20},
-      {"你好世界",         4,  12}
+      {"hello, world", 12, 12},
+      {"привет, мир",  11, 20},
+      {"你好世界",     4,  12}
   };
+  /* clang-format on */
 
   for (i = 0; i < countof(tests); ++i) {
     test = tests[i];
@@ -90,13 +92,16 @@ test_string_shift(void)
 
   itl_string_t *str = itl_string_alloc();
 
+  /* clang-format off */
   const string_test_case_t tests[] = {
-  /* original, should_be */
-      {"hello world sailor",  "hello sailor"     },
-      {"это строка", "то строка"},
+      /* original, should_be */
+      {"hello world sailor", "hello sailor"},
+      {"это строка",         "то строка"},
   };
+  /* clang-format on */
+
   const shift_test_case_t settings[] = {
-  /* pos, count, backwards */
+  /*  pos, count, backwards */
       {12, 6, true},
       {1,  1, true}
   };
@@ -134,16 +139,19 @@ test_string_erase(void)
 
   itl_string_t *str = itl_string_alloc();
 
+  /* clang-format off */ 
   const string_test_case_t tests[] = {
-  /* original, should_be */
-      {"hello world sailor",  "hello sailor"       },
-      {"это строка", "то строка"  },
-      {"это строка", "это стр"      },
-      {"это строка", "это строка"},
-      {"это строка", "это строка"}
+  /*  original               should_be */
+      {"hello world sailor", "hello sailor"},
+      {"это строка",         "то строка"},
+      {"это строка",         "это стр"},
+      {"это строка",         "это строка"},
+      {"это строка",         "это строка"}
   };
+  /* clang-format on */
+
   const shift_test_case_t settings[] = {
-  /* pos, count, backwards */
+  /*  pos, count, backwards */
       {12, 6, true },
       {0,  1, false},
       {10, 3, true },
@@ -184,14 +192,16 @@ test_string_insert(void)
   itl_string_t *str = itl_string_alloc();
   itl_utf8_t    A = itl_utf8_new((uint8_t[4]){0x41}, 1);
 
+  /* clang-format off */
   const string_test_case_t tests[] = {
   /* original, should_be */
       {"hello, wrld",  "hello, wArld" },
       {"hello, wrld",  "hello, wrldA" },
       {"hello, world", "Ahello, world"}
   };
-  const size_t positions[] = {/* pos */
-                              8, 11, 0};
+  /* clang-format on*/
+
+  const size_t positions[] = {8, 11, 0};
 
   for (i = 0; i < countof(tests); ++i) {
     test = tests[i];
@@ -242,7 +252,7 @@ test_string_split(void)
       "привет как дела",
   };
   const split_test_case_t positions[][SPLIT_POSITION_COUNT] = {
-  /* { { start, end }, ... } */
+  /*  {{start, end }, ... } */
       {{0, 5}, {6, 11}, {12, 18}},
       {{0, 6}, {7, 10}, {11, 15}}
   };
