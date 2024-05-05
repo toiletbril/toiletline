@@ -1524,18 +1524,17 @@ end:
 ITL_DEF int
 itl_global_history_dump_to_file(const char *path)
 {
-  ITL_FILE file;
-  int      ret, save_errno;
-
+  ITL_FILE            file;
   itl_history_item_t *item, *next_item;
-  itl_char_buf_t     *buffer = itl_char_buf_alloc();
+  itl_char_buf_t     *buffer;
+
+  int ret = TL_SUCCESS, save_errno = errno;
 
   if (itl_global_history_file_is_bad) {
     return -EINVAL;
   }
 
-  save_errno = errno;
-  ret = TL_SUCCESS;
+  buffer = itl_char_buf_alloc();
 
   file = itl_file_open_for_write(path);
   if (itl_file_is_bad(file)) {
