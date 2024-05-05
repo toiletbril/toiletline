@@ -248,6 +248,7 @@ TL_DEF void tl_completion_delete(void *completion);
 #if !defined TL_USE_STDIO
 #define ITL_STDIN  0
 #define ITL_STDOUT 1
+#define ITL_STDERR 2
 #define ITL_FILE   int
 
 #define itl_file_open_for_read(path) _open(path, O_RDONLY)
@@ -361,11 +362,8 @@ itl_read_byte_raw(void)
 #define TL_ASSERT(condition)                                                   \
   do {                                                                         \
     if (!(condition)) {                                                        \
-      const char *m = "\n" __FILE__ ": assert fail: " #condition "\n"          \
-                      "please recompile toiletline with ITL_DEBUG "            \
-                      "defined"                                                \
-                      "\n";                                                    \
-      itl_write(ITL_STDOUT, m, strlen(m));                                     \
+      const char *m = "\n" __FILE__ ": assert fail: " #condition "\n";         \
+      itl_write(ITL_STDERR, m, strlen(m));                                     \
       itl_debug_trap();                                                        \
     }                                                                          \
   } while (0)
@@ -424,6 +422,7 @@ itl_popcnt(unsigned int n)
 
 #define itl__unreachable()                                                     \
   do {                                                                         \
+    abort();                                                                   \
   } while (true)
 #define itl_debug_trap() itl__unreachable()
 
