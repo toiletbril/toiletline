@@ -379,18 +379,22 @@ itl_read_byte_raw(void)
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #if defined ITL_SUSPEND
 #include <signal.h>
 #endif /* ITL_SUSPEND */
 
 #if defined _MSC_VER
+#include <intrin.h>
+#define itl_popcnt         __popcnt
 #define ITL_THREAD_LOCAL   __declspec(thread)
 #define ITL_NO_RETURN      __declspec(noreturn)
 #define ITL_MAYBE_UNUSED   /* nothing */
 #define itl__unreachable() __assume(0)
 #define itl_debug_trap()   __debugbreak()
 #elif defined __GNUC__ || defined __clang__
+#define itl_popcnt         __builtin_popcnt
 #define ITL_THREAD_LOCAL   __thread
 #define ITL_NO_RETURN      __attribute__((noreturn))
 #define ITL_MAYBE_UNUSED   __attribute__((unused))
@@ -398,7 +402,6 @@ itl_read_byte_raw(void)
 #define itl_debug_trap()   __builtin_trap()
 #else
 #define ITL_MAYBE_UNUSED /* nothing */
-
 #if defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
 #define ITL_THREAD_LOCAL _Thread_local
 #define ITL_NO_RETURN    _Noreturn
@@ -407,10 +410,23 @@ itl_read_byte_raw(void)
 #define ITL_NO_RETURN    /* nothing */
 #endif
 
+ITL_DEF int
+itl_popcnt(unsigned int n)
+{
+  int i, count = 0;
+  for (i = 0; i < sizeof(n) * CHAR_BIT; ++i) {
+    if (n >> i & 1) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 #define itl__unreachable()                                                     \
   do {                                                                         \
   } while (true)
 #define itl_debug_trap() itl__unreachable()
+
 #endif
 
 #if defined ITL_DEBUG
@@ -2583,7 +2599,7 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_is_active = false;
 TL_DEF int
 tl_init(void)
 {
-  TL_ASSERT(TL_HISTORY_MAX_SIZE % 2 == 0 &&
+  TL_ASSERT(itl_popcnt(TL_HISTORY_MAX_SIZE) == 1 &&
             "History size must be a power of 2");
 
   ITL_TRY(itl_tty_is_tty(), return TL_ERROR);
