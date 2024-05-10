@@ -392,7 +392,7 @@ itl_read_byte_raw(void)
 #define itl__unreachable() __assume(0)
 #define itl_debug_trap()   __debugbreak()
 #elif defined __GNUC__ || defined __clang__
-#define itl_popcnt         __builtin_popcnt
+#define itl_popcnt         __builtin_popcount
 #define ITL_THREAD_LOCAL   __thread
 #define ITL_NO_RETURN      __attribute__((noreturn))
 #define ITL_MAYBE_UNUSED   __attribute__((unused))
