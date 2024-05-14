@@ -106,13 +106,24 @@ Possible key values:
 
 int tl_init(void);
 --------
-Initialize toiletline and put terminal in semi-raw mode.
+Initialize toiletline and put terminal in raw mode.
 Returns TL_SUCCESS.
 
+
+int tl_enter_raw_mode(void);
+--------
+Put the terminal into raw mode without doing anything else.
+Returns TL_SUCCESS.
 
 int tl_exit(void);
 --------
 Exit toiletline, restore terminal state and free internal memory.
+Returns TL_SUCCESS.
+
+
+int tl_exit_raw_mode(void);
+--------
+Restore the terminal state without doing anything else.
 Returns TL_SUCCESS.
 
 
@@ -189,6 +200,13 @@ Get the amount of characters in a UTF-8 string.
 
 Since number of bytes can be bigger than amount of characters, regular
 `strlen()` will not work, and will only return the number of bytes before \0.
+
+
+int tl_emit_newlines(const char *buffer);
+--------
+Emit newlines after getting the input.
+
+*buffer should be the buffer used in tl_readline().
 
 
 #if !defined TL_MANUAL_TAB_COMPLETION

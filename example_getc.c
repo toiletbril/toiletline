@@ -23,20 +23,22 @@ main(void)
          "You can also use non-latin keyboard layout.\n");
 
   while (code >= 0) {
+    fflush(stdout);
+
     code = tl_getc(char_buffer, CHAR_BUF_SIZE, "> ");
 
     if (tl_last_control == TL_KEY_INTERRUPT) {
-      printf("\nInterrupted.\n");
+      printf("Interrupted.\n");
       break;
     }
 
     if (code == TL_PRESSED_CONTROL_SEQUENCE) {
-      printf("\nReceived control sequence. tl_last_control: %X\n",
+      printf("Received control sequence. tl_last_control: %X\n",
              tl_last_control);
     } else {
       size_t j, size = strlen(char_buffer);
 
-      printf("\nReceived character: '%s' of of size %zu. Bytes:", char_buffer,
+      printf("Received character: '%s' of of size %zu. Bytes:", char_buffer,
              size);
 
       for (j = 0; j < size; ++j) {
@@ -44,7 +46,6 @@ main(void)
       }
       fputc('\n', stdout);
     }
-    fflush(stdout);
 
     if (i++ >= MAX_CHARS) {
       printf("Read %d characters, exiting!\n", MAX_CHARS);
@@ -55,8 +56,8 @@ main(void)
   if (code < 0) {
     printf("An error occured (%d)\n", code);
   }
-  fflush(stdout);
 
+  fflush(stdout);
   tl_exit();
 
   return 0;
