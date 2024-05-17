@@ -289,9 +289,13 @@ TL_DEF void tl_completion_delete(void *completion);
 #include <termios.h>
 #include <unistd.h>
 
-#if !defined TL_SIZE_USE_ESCAPES
+/* It makes no sense to use escapes on WIN32 which does not support them
+   anyway */
+#if defined TL_SIZE_USE_ESCAPES && !defined ITL_WIN32
+#define ITL_VT_SIZE
+#elif defined ITL_POSIX
 #include <sys/ioctl.h>
-#endif /* TL_SIZE_USE_ESCAPES */
+#endif /* ITL_POSIX */
 
 #if !defined TL_USE_STDIO
 #define ITL_STDIN  0
@@ -1827,7 +1831,7 @@ itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows, size_t *cols)
 {
   char  *emacs_buf;
   size_t temp_rows, temp_cols;
-#if defined TL_SIZE_USE_ESCAPES
+#if defined ITL_VT_SIZE
   bool            correct_response;
   size_t          i, parse_diff;
   char            size_buf[32], *first;
@@ -1859,8 +1863,8 @@ itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows, size_t *cols)
   }
 
 next:
-#if defined TL_SIZE_USE_ESCAPES
-  buffer = &itl_global_refresh_char_buffer;
+#if defined ITL_VT_SIZE
+  buffer = &itl_global_char_buffer;
 
   itl_tty_move_forward(buffer, 999);
   itl_tty_status_report(buffer);
@@ -1942,14 +1946,12 @@ itl_le_tty_refresh(itl_le_t *le)
   size_t prompt_len, wrap_cursor_col, wrap_cursor_row;
 
   /* Write everything into a buffer, then dump it all at once */
-  itl_char_buf_t *buffer = &itl_global_char_buffer;
+  itl_char_buf_t *b;
 
   TL_ASSERT(le->line);
   TL_ASSERT(le->line->chars);
   TL_ASSERT(le->line->size >= le->line->length);
   TL_ASSERT(le->line->length <= ITL_STRING_MAX_LEN);
-
-  itl_tty_hide_cursor(buffer);
 
   ITL_TRY(itl_tty_get_size(le, &rows, &cols), {
     /* Could not get terminal size */
@@ -1971,28 +1973,31 @@ itl_le_tty_refresh(itl_le_t *le)
               itl_global_tty_prev_wrap_row, wrap_cursor_col,
               le->cursor_position);
 
+  b = &itl_global_char_buffer;
+  itl_tty_hide_cursor(b);
+
   /* Move appropriate amount of lines back, while clearing previous output */
   for (i = 0; i < itl_global_tty_prev_lines; ++i) {
-    itl_tty_clear_whole_line(buffer);
+    itl_tty_clear_whole_line(b);
     if (i < itl_global_tty_prev_wrap_row - 1) {
-      itl_tty_move_up(buffer, 1);
+      itl_tty_move_up(b, 1);
     }
   }
 
   if (le->prompt) {
-    itl_char_buf_append_cstr(buffer, le->prompt);
+    itl_char_buf_append_cstr(b, le->prompt);
   }
 
   /* Print current contents of the line editor */
   for (i = 0; i < le->line->length; ++i) {
     for (j = 0; j < le->line->chars[i].size; ++j) {
-      itl_char_buf_append_byte(buffer, le->line->chars[i].bytes[j]);
+      itl_char_buf_append_byte(b, le->line->chars[i].bytes[j]);
     }
 
     /* If line is full, wrap */
     current_col = (prompt_len + i) % ITL_MAX(size_t, cols, 1);
     if (current_col == cols - 1) {
-      itl_char_buf_append_cstr(buffer, ITL_LF);
+      itl_char_buf_append_cstr(b, ITL_LF);
     }
   }
 
@@ -2002,29 +2007,29 @@ itl_le_tty_refresh(itl_le_t *le)
   if (current_lines < itl_global_tty_prev_lines) {
     dirty_lines = itl_global_tty_prev_lines - current_lines;
     for (i = 0; i < dirty_lines; ++i) {
-      itl_tty_move_down(buffer, 1);
-      itl_tty_clear_whole_line(buffer);
+      itl_tty_move_down(b, 1);
+      itl_tty_clear_whole_line(b);
     }
-    itl_tty_move_up(buffer, dirty_lines);
+    itl_tty_move_up(b, dirty_lines);
   } else {
     /* Otherwise clear to the end of line */
-    itl_tty_clear_to_end(buffer);
+    itl_tty_clear_to_end(b);
   }
 
   /* Move cursor to appropriate row and column. If row didn't change, stay on
      the same line */
   if (wrap_cursor_row < current_lines) {
-    itl_tty_move_up(buffer, current_lines - wrap_cursor_row);
+    itl_tty_move_up(b, current_lines - wrap_cursor_row);
   }
-  itl_tty_move_to_column(buffer, wrap_cursor_col);
+  itl_tty_move_to_column(b, wrap_cursor_col);
 
   itl_global_tty_prev_lines = current_lines;
   itl_global_tty_prev_wrap_row = wrap_cursor_row;
 
-  itl_tty_show_cursor(buffer);
+  itl_tty_show_cursor(b);
 
-  itl_char_buf_dump(buffer);
-  itl_char_buf_clear(buffer);
+  itl_char_buf_dump(b);
+  itl_char_buf_clear(b);
 
   return true;
 }
