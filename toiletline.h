@@ -2890,10 +2890,8 @@ tl_completion_delete(void *completion)
 #endif
 
 /*
- * TODO:
- *  - Test all of this on different OSes.
+ * TODO (not soon):
  *  - History search.
- *  - Edit multiple lines simultaneously.
- *  - Make refresh fasterrrr.
- *  - Squash things to make this tiny again =3
+ *  - Better cmd.exe handling.
+ *  - Support multiple lines simultaneously.
  */
