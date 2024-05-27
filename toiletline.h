@@ -2642,6 +2642,9 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_SUSPEND: {
 #if defined ITL_SUSPEND
     itl_raise_suspend();
+#else
+    itl_string_to_cstr(le->line, le->out_buf, le->out_size);
+    return TL_PRESSED_SUSPEND;
 #endif /* ITL_SUSPEND */
   } break;
 
