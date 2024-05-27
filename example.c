@@ -64,7 +64,7 @@ main(void)
       break;
     }
 
-    printf("Received string: '%s' of length %zu, of size %zu\n", line_buffer,
+    printf("Received string: '%s' of length %lu, of size %lu\n", line_buffer,
            tl_utf8_strlen(line_buffer), strlen(line_buffer));
 
     if (i++ >= MAX_MESSAGES) {

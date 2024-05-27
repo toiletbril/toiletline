@@ -1,7 +1,7 @@
 toiletline
 ----------------
-Small, crossplatform, single-header shell library, meant to replace a subset of
-GNU Readline, and work on both Linux and Windows out of the box.
+Small, crossplatform, single-header shell library in C89, meant to replace a
+subset of GNU Readline, and work on both Linux and Windows out of the box.
 
 NOTE: On Windows, UTF-8 locale feature is required for proper multibyte
 character support.
@@ -114,6 +114,7 @@ int tl_enter_raw_mode(void);
 --------
 Put the terminal into raw mode without doing anything else.
 Returns TL_SUCCESS.
+
 
 int tl_exit(void);
 --------

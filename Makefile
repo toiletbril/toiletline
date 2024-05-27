@@ -1,5 +1,5 @@
 CC ?= clang
-CFLAGS := -g3 -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic -std=c99
+CFLAGS := -g3 -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic
 DBGFLAGS := -O0 -DITL_DEBUG
 
 ifneq ($(OS),Windows_NT)
@@ -28,12 +28,13 @@ else
 	./tests
 endif
 
+examples: CFLAGS += -std=c89
 examples: example example_getc
 
 examples_debug: CFLAGS += $(DBGFLAGS)
 examples_debug: examples
 
-see_bytes: CFLAGS += "-DITL_SEE_BYTES"
+see_bytes: CFLAGS += -DITL_SEE_BYTES
 see_bytes: example
 
 ITEMS_TO_REMOVE :=

@@ -385,10 +385,31 @@ itl_read_byte_raw(void)
 #endif
 #endif /* ITL_DEFAULT_ASSERT */
 
+#if !defined __STDC_VERSION__ || __STDC_VERSION__ < 199409L
+#define ITL_C89
+#if !defined __cplusplus
+#define ITL_ZERO_INIT                                                          \
+  {                                                                            \
+    0                                                                          \
+  }
+typedef unsigned char bool;
+#define true 1
+#define false 0
+#else
+#define ITL_ZERO_INIT                                                          \
+  {}
+#endif /* __cplusplus */
+#else
+#include <stdbool.h>
+#define ITL_ZERO_INIT                                                          \
+  {                                                                            \
+    0                                                                          \
+  }
+#endif /* !__STDC_VERSION__ || __STDC_VERSION__ >= 199409L */
+
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -442,11 +463,15 @@ itl_unreachable_impl(const char *file, int line, const char *message)
 
 #if defined ITL_DEBUG
 #define itl_traceln(...) fprintf(stderr, "\n[TRACE] " __VA_ARGS__)
-/* Print to stderr on the same line */
-#define itl_trace(...) fprintf(stderr, __VA_ARGS__)
-#else                    /* ITL_DEBUG */
+#else /* ITL_DEBUG */
+#if defined ITL_C89
+ITL_DEF void
+itl_traceln(ITL_MAYBE_UNUSED const char *f, ...)
+{}
+#else /* ITL_C89 */
+
 #define itl_traceln(...) /* nothing */
-#define itl_trace(...)   /* nothing */
+#endif
 #endif
 
 #define ITL_MAX(type, i, j)                                                    \
@@ -481,7 +506,8 @@ ITL_DEF ITL_THREAD_LOCAL int   itl_global_original_mode = 0;
 
 #elif defined ITL_POSIX
 
-ITL_DEF ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode = {0};
+ITL_DEF ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode =
+    ITL_ZERO_INIT;
 
 #endif /* ITL_POSIX */
 
@@ -1095,7 +1121,7 @@ ITL_DEF ITL_THREAD_LOCAL itl_history_item_t *itl_global_history_last = NULL;
 ITL_DEF ITL_THREAD_LOCAL itl_history_item_t *itl_global_history_first = NULL;
 ITL_DEF ITL_THREAD_LOCAL size_t              itl_global_history_length = 0;
 
-ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_global_line_buffer = {0};
+ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_global_line_buffer = ITL_ZERO_INIT;
 
 typedef struct itl_le itl_le_t;
 
@@ -1203,15 +1229,15 @@ ITL_DEF itl_le_t
 itl_le_new(itl_string_t *line_buf, char *out_buf, size_t out_size,
            const char *prompt)
 {
-  itl_le_t le = {
-      /* .line                  = */ line_buf,
-      /* .cursor_position       = */ line_buf->length,
-      /* .appended_to_history   = */ false,
-      /* .history_selected_item = */ NULL,
-      /* .out_buf               = */ out_buf,
-      /* .out_size              = */ out_size,
-      /* .prompt                = */ prompt,
-  };
+  itl_le_t le = ITL_ZERO_INIT;
+
+  le.line = line_buf;
+  le.cursor_position = line_buf->length;
+  le.appended_to_history = false;
+  le.history_selected_item = NULL;
+  le.out_buf = out_buf;
+  le.out_size = out_size;
+  le.prompt = prompt;
 
   return le;
 }
@@ -1822,7 +1848,7 @@ itl_esc_parse(uint8_t byte)
 #endif /* ITL_POSIX */
 }
 
-ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_char_buffer = {0};
+ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_char_buffer = ITL_ZERO_INIT;
 ITL_DEF ITL_THREAD_LOCAL bool           itl_global_tty_is_dumb = true;
 
 /* *le, *rows, *cols can be NULL. */
