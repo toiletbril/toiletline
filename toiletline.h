@@ -393,7 +393,7 @@ itl_read_byte_raw(void)
     0                                                                          \
   }
 typedef unsigned char bool;
-#define true 1
+#define true  1
 #define false 0
 #else
 #define ITL_ZERO_INIT                                                          \
@@ -613,8 +613,9 @@ itl_exit_raw_mode_impl(void)
 TL_DEF int
 tl_enter_raw_mode(void)
 {
-  ITL_TRY(itl_tty_is_tty(), return TL_ERROR);
   ITL_TRY(!itl_global_entered_raw_mode, return TL_SUCCESS);
+
+  ITL_TRY(itl_tty_is_tty(), return TL_ERROR);
 
   /* If raw mode failed, restore terminal's state */
   ITL_TRY(itl_enter_raw_mode_impl(), {
@@ -630,9 +631,9 @@ tl_enter_raw_mode(void)
 TL_DEF int
 tl_exit_raw_mode(void)
 {
-  ITL_TRY(itl_tty_is_tty(), return TL_ERROR);
   ITL_TRY(itl_global_entered_raw_mode, return TL_SUCCESS);
 
+  ITL_TRY(itl_tty_is_tty(), return TL_ERROR);
   ITL_TRY(itl_exit_raw_mode_impl(), return TL_ERROR);
 
   itl_global_entered_raw_mode = false;
@@ -2687,7 +2688,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
   return TL_SUCCESS;
 }
 
-ITL_DEF ITL_THREAD_LOCAL bool itl_is_active = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_global_is_active = false;
 
 TL_DEF int
 tl_init(void)
@@ -2695,13 +2696,19 @@ tl_init(void)
   TL_ASSERT(!(TL_HISTORY_MAX_SIZE & (TL_HISTORY_MAX_SIZE - 1)) &&
             "History size must be a power of 2");
 
-  ITL_TRY(itl_tty_is_tty(), return TL_ERROR);
-  ITL_TRY(tl_enter_raw_mode() == TL_SUCCESS, return TL_ERROR);
+  if (itl_global_is_active) {
+    return TL_SUCCESS;
+  }
+
+  if (!itl_global_entered_raw_mode) {
+    ITL_TRY(itl_tty_is_tty(), return TL_ERROR);
+    ITL_TRY(tl_enter_raw_mode() == TL_SUCCESS, return TL_ERROR);
+  }
 
   itl_string_init(&itl_global_line_buffer);
   itl_char_buf_init(&itl_global_char_buffer);
 
-  itl_is_active = true;
+  itl_global_is_active = true;
 
   return TL_SUCCESS;
 }
@@ -2709,7 +2716,7 @@ tl_init(void)
 TL_DEF int
 tl_exit(void)
 {
-  TL_ASSERT(itl_is_active && "tl_init() should be called");
+  TL_ASSERT(itl_global_is_active && "tl_init() should be called");
 
   itl_global_history_free();
 #if !defined TL_MANUAL_TAB_COMPLETION
@@ -2721,9 +2728,11 @@ tl_exit(void)
   itl_traceln("Exited, alloc count: %zu\n", itl_global_alloc_count);
   TL_ASSERT(itl_global_alloc_count == 0);
 
-  ITL_TRY(tl_exit_raw_mode() == TL_SUCCESS, return TL_ERROR);
+  if (itl_global_entered_raw_mode) {
+    ITL_TRY(tl_exit_raw_mode() == TL_SUCCESS, return TL_ERROR);
+  }
 
-  itl_is_active = false;
+  itl_global_is_active = false;
 
   return TL_SUCCESS;
 }
@@ -2735,7 +2744,7 @@ tl_readline(char *buffer, size_t buffer_size, const char *prompt)
   uint8_t  input_byte;
   int      input_type, code;
 
-  TL_ASSERT(itl_is_active && "tl_init() should be called");
+  TL_ASSERT(itl_global_is_active && "tl_init() should be called");
   TL_ASSERT(
       buffer_size > 1 &&
       "Size should be enough at least for one byte and a null terminator");
@@ -2789,7 +2798,7 @@ tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 TL_DEF void
 tl_setline(const char *str)
 {
-  TL_ASSERT(itl_is_active && "tl_init() should be called");
+  TL_ASSERT(itl_global_is_active && "tl_init() should be called");
   itl_string_shrink(&itl_global_line_buffer);
   itl_string_from_cstr(&itl_global_line_buffer, str);
 }
@@ -2801,7 +2810,7 @@ tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
   uint8_t  input_byte = 0;
   int      input_type = TL_KEY_UNKN;
 
-  TL_ASSERT(itl_is_active && "tl_init() should be called");
+  TL_ASSERT(itl_global_is_active && "tl_init() should be called");
   TL_ASSERT(
       char_buffer_size > 1 &&
       "Size should be enough at least for one byte and a null terminator");
