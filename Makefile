@@ -1,10 +1,9 @@
 CC ?= clang
-CFLAGS := -g3 -Wall -Wextra -Wconversion -Wdouble-promotion -Werror -pedantic
-DBGFLAGS := -O0 -DITL_DEBUG
+CFLAGS := -g3 -Wall -Wextra -Wconversion -Wno-sign-conversion -Wdouble-promotion -Werror -pedantic
+DBGFLAGS := -DITL_DEBUG
 
 ifneq ($(OS),Windows_NT)
-	CFLAGS += -fsanitize=undefined
-	DBGFLAGS += -fsanitize=address
+	DBGFLAGS += -fsanitize=address -fsanitize=undefined
 endif
 
 default:
@@ -14,11 +13,10 @@ cte: clean test examples
 cted: clean test examples_debug
 
 %: %.c
-	@echo "CC $< -o $@"
 ifeq ($(OS),Windows_NT)
-	@$(CC) $(CFLAGS) $< -o $@.exe
+	$(CC) $(CFLAGS) $< -o $@.exe
 else
-	@$(CC) $(CFLAGS) $< -o $@
+	$(CC) $(CFLAGS) $< -o $@
 endif
 
 test: tests
@@ -28,11 +26,11 @@ else
 	./tests
 endif
 
-examples: CFLAGS += -std=c89
+examples: CFLAGS += -std=c89 -O2
 examples: example example_getc
 
-examples_debug: CFLAGS += $(DBGFLAGS)
-examples_debug: examples
+examples_debug: CFLAGS += $(DBGFLAGS) -std=c99 -O0
+examples_debug: example example_getc
 
 see_bytes: CFLAGS += -DITL_SEE_BYTES
 see_bytes: example

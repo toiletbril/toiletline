@@ -300,7 +300,7 @@ test_char_buf(void)
   itl_char_buf_append_byte(cb, ' ');
   itl_char_buf_append_byte(cb, 'm');
   itl_char_buf_append_byte(cb, 'e');
-  itl_char_buf_append_size(cb, 3912033312);
+  itl_char_buf_append_size_t(cb, 3912033312);
   itl_char_buf_append_cstr(cb, " ЛОЛ");
 
   /* null-terminate cb->data */

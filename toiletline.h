@@ -596,7 +596,7 @@ itl_exit_raw_mode_impl(void)
   return !something_failed;
 #elif defined ITL_POSIX
   struct termios zeroed_termios;
-  bzero(&zeroed_termios, sizeof(struct termios));
+  memset(&zeroed_termios, 0, sizeof(struct termios));
 
   if (memcmp(&itl_global_original_tty_mode, &zeroed_termios,
              sizeof(struct termios)) != 0)
@@ -822,10 +822,9 @@ itl_utf8_parse(uint8_t first_byte)
   itl_traceln("utf8 char size: %zu\n", size);
   itl_traceln("utf8 char bytes: '");
 
-  for (i = 0; i < size - 1; ++i) {
-    itl_trace("%02X ", bytes[i]);
+  for (i = 0; i < size; ++i) {
+    itl_traceln("%02X ", bytes[i]);
   }
-  itl_trace("%02X'\n", bytes[size - 1]);
 #endif /* ITL_DEBUG */
 
   return itl_utf8_new(bytes, size);
@@ -1137,9 +1136,11 @@ struct itl_le
   bool                appended_to_history;
   itl_history_item_t *history_selected_item;
 
-  char       *out_buf;
-  size_t      out_size;
+  char  *out_buf;
+  size_t out_size;
+
   const char *prompt;
+  size_t      prompt_size;
 };
 
 ITL_DEF itl_history_item_t *
@@ -1239,6 +1240,7 @@ itl_le_new(itl_string_t *line_buf, char *out_buf, size_t out_size,
   le.out_buf = out_buf;
   le.out_size = out_size;
   le.prompt = prompt;
+  le.prompt_size = (prompt != NULL) ? strlen(prompt) : 0;
 
   return le;
 }
@@ -1427,22 +1429,22 @@ itl_char_buf_extend(itl_char_buf_t *cb)
 }
 
 ITL_DEF void
-itl_char_buf_append_cstr(itl_char_buf_t *cb, const char *data)
+itl_char_buf_append_cstr(itl_char_buf_t *cb, const char *cstr)
 {
-  size_t i, j, cstr_size = strlen(data);
-  size_t new_size = cb->size + cstr_size;
+  size_t new_size, j;
 
-  while (cb->capacity < new_size) {
-    itl_char_buf_extend(cb);
+  for (new_size = cb->size, j = 0; cstr[j] != '\0'; ++j, ++new_size) {
+    while (cb->capacity <= new_size) {
+      itl_char_buf_extend(cb);
+    }
+    cb->data[new_size] = cstr[j];
   }
-  for (i = cb->size, j = 0; j < cstr_size; ++i, ++j) {
-    cb->data[i] = data[j];
-  }
+
   cb->size = new_size;
 }
 
 ITL_DEF void
-itl_char_buf_append_size(itl_char_buf_t *cb, size_t data)
+itl_char_buf_append_size_t(itl_char_buf_t *cb, size_t data)
 {
   char   digit;
   size_t new_size, i;
@@ -1503,22 +1505,22 @@ itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 
 #define itl_tty_move_to_column(buffer, col)                                    \
   itl_char_buf_append_cstr(buffer, "\x1b[");                                   \
-  itl_char_buf_append_size(buffer, (size_t) col);                              \
+  itl_char_buf_append_size_t(buffer, (size_t) col);                            \
   itl_char_buf_append_byte(buffer, 'G')
 
 #define itl_tty_move_forward(buffer, steps)                                    \
   itl_char_buf_append_cstr(buffer, "\x1b[");                                   \
-  itl_char_buf_append_size(buffer, (size_t) steps);                            \
+  itl_char_buf_append_size_t(buffer, (size_t) steps);                          \
   itl_char_buf_append_byte(buffer, 'C')
 
 #define itl_tty_move_up(buffer, rows)                                          \
   itl_char_buf_append_cstr(buffer, "\x1b[");                                   \
-  itl_char_buf_append_size(buffer, (size_t) rows);                             \
+  itl_char_buf_append_size_t(buffer, (size_t) rows);                           \
   itl_char_buf_append_byte(buffer, 'A')
 
 #define itl_tty_move_down(buffer, rows)                                        \
   itl_char_buf_append_cstr(buffer, "\x1b[");                                   \
-  itl_char_buf_append_size(buffer, (size_t) rows);                             \
+  itl_char_buf_append_size_t(buffer, (size_t) rows);                           \
   itl_char_buf_append_byte(buffer, 'B')
 
 #define itl_tty_clear_whole_line(buffer)                                       \
@@ -1856,13 +1858,13 @@ ITL_DEF ITL_THREAD_LOCAL bool           itl_global_tty_is_dumb = true;
 ITL_DEF bool
 itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows, size_t *cols)
 {
-  char  *emacs_buf;
   size_t temp_rows, temp_cols;
+  char  *emacs_buf = NULL;
 #if defined ITL_VT_SIZE
   bool            correct_response;
   size_t          i, parse_diff;
   char            size_buf[32], *first;
-  itl_char_buf_t *buffer;
+  itl_char_buf_t *b;
 #elif defined ITL_WIN32
   CONSOLE_SCREEN_BUFFER_INFO buffer_info;
 #else /* ITL_WIN32 */
@@ -1891,12 +1893,12 @@ itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows, size_t *cols)
 
 next:
 #if defined ITL_VT_SIZE
-  buffer = &itl_global_char_buffer;
 
-  itl_tty_move_forward(buffer, 999);
-  itl_tty_status_report(buffer);
-  itl_char_buf_dump(buffer);
-  itl_char_buf_clear(buffer);
+  b = &itl_global_char_buffer;
+  itl_tty_move_forward(b, 999);
+  itl_tty_status_report(b);
+  itl_char_buf_dump(b);
+  itl_char_buf_clear(b);
 
   /* There might be pasted input awaiting to be processed. Read and parse all
      bytes until escape is encountered. */
@@ -1918,7 +1920,7 @@ next:
 
   i = 1; /* already read the escape */
   correct_response = false;
-  while (i < sizeof(size_buf) - 1) {
+  while (i < sizeof(size_buf) - 2) {
     ITL_TRY_READ_BYTE((uint8_t *) &size_buf[i], return false);
     if (size_buf[i] == 'R') {
       correct_response = true;
@@ -1970,7 +1972,7 @@ itl_le_tty_refresh(itl_le_t *le)
 {
   size_t i, j, rows, cols;
   size_t current_col, current_lines, dirty_lines;
-  size_t prompt_len, wrap_cursor_col, wrap_cursor_row;
+  size_t wrap_cursor_col, wrap_cursor_row;
 
   /* Write everything into a buffer, then dump it all at once */
   itl_char_buf_t *b;
@@ -1986,15 +1988,13 @@ itl_le_tty_refresh(itl_le_t *le)
     cols = 80;
   });
 
-  prompt_len = (le->prompt) ? strlen(le->prompt) : 0;
-
   current_lines =
-      (le->line->length + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
+      (le->line->length + le->prompt_size) / ITL_MAX(size_t, cols, 1) + 1;
 
   wrap_cursor_col =
-      (le->cursor_position + prompt_len) % ITL_MAX(size_t, cols, 1) + 1;
+      (le->cursor_position + le->prompt_size) % ITL_MAX(size_t, cols, 1) + 1;
   wrap_cursor_row =
-      (le->cursor_position + prompt_len) / ITL_MAX(size_t, cols, 1) + 1;
+      (le->cursor_position + le->prompt_size) / ITL_MAX(size_t, cols, 1) + 1;
 
   itl_traceln("wrow: %zu, prev: %zu, col: %zu, curp: %zu\n", wrap_cursor_row,
               itl_global_tty_prev_wrap_row, wrap_cursor_col,
@@ -2022,7 +2022,7 @@ itl_le_tty_refresh(itl_le_t *le)
     }
 
     /* If line is full, wrap */
-    current_col = (prompt_len + i) % ITL_MAX(size_t, cols, 1);
+    current_col = (le->prompt_size + i) % ITL_MAX(size_t, cols, 1);
     if (current_col == cols - 1) {
       itl_char_buf_append_cstr(b, ITL_LF);
     }
@@ -2937,4 +2937,5 @@ tl_completion_delete(void *completion)
  *  - History search.
  *  - Better cmd.exe handling.
  *  - Support multiple lines simultaneously.
+ *  - Fix refresh artifacts if killing more than one row with Ctrl-U.
  */
