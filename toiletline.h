@@ -467,7 +467,9 @@ itl_unreachable_impl(const char *file, int line, const char *message)
 #if defined ITL_C89
 ITL_DEF void
 itl_traceln(ITL_MAYBE_UNUSED const char *f, ...)
-{}
+{
+  (void) f;
+}
 #else /* ITL_C89 */
 
 #define itl_traceln(...) /* nothing */
