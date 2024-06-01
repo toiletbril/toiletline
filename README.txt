@@ -118,7 +118,8 @@ Returns TL_SUCCESS.
 
 int tl_exit(void);
 --------
-Exit toiletline, restore terminal state and free internal memory.
+Exit toiletline, restore terminal state, delete all completions, and free
+internal memory.
 Returns TL_SUCCESS.
 
 
@@ -227,10 +228,21 @@ Change a tab completion to `*label` using pointer returned from
 `tl_add_completion()`.
 
 
-void tl_completion_delete(void *completion);
+void tl_completion_delete(void **completion);
 --------
-Delete a tab completion and it's children using pointer returned from
+Delete a tab completion and it's children using the address of the pointer
+returned from `tl_add_completion()`. Sets *completion to NULL.
+
+
+void tl_completion_delete_children(void *completion);
+-------
+Delete a tab completion's children using pointer returned from
 `tl_add_completion()`.
+
+
+void tl_completion_delete_all(void);
+-------
+Delete all tab completions.
 
 
 If this API does not satisfy your needs, take a look at

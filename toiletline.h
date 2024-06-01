@@ -165,7 +165,8 @@ TL_DEF int tl_init(void);
  */
 TL_DEF int tl_enter_raw_mode(void);
 /**
- * Exit toiletline, restore terminal state and free internal memory.
+ * Exit toiletline, restore terminal state, delete all completions, and free
+ * internal memory.
  */
 TL_DEF int tl_exit(void);
 /**
@@ -228,10 +229,19 @@ TL_DEF void *tl_completion_add(void *prefix, const char *label);
  */
 TL_DEF void tl_completion_change(void *completion, const char *label);
 /**
- * Delete a tab completion and it's children using pointer returned from
+ * Delete a tab completion and it's children using the address of the pointer
+ * returned from `tl_add_completion()`. Sets *completion to NULL.
+ */
+TL_DEF void tl_completion_delete(void **completion);
+/**
+ * Delete a tab completion's children using pointer returned from
  * `tl_add_completion()`.
  */
-TL_DEF void tl_completion_delete(void *completion);
+TL_DEF void tl_completion_delete_children(void *completion);
+/**
+ * Delete all tab completions.
+ */
+TL_DEF void tl_completion_delete_all(void);
 #endif /* !TL_MANUAL_TAB_COMPLETION */
 
 #endif /* TOILETLINE_H_ */ /* End of header file */
@@ -2146,8 +2156,8 @@ itl_completion_append(itl_completion_t *completion, itl_string_t *str)
 
 #define itl_completion_free(completion)                                        \
   do {                                                                         \
-    if (completion->str != NULL) {                                             \
-      itl_string_free(completion->str);                                        \
+    if ((completion)->str != NULL) {                                           \
+      itl_string_free((completion)->str);                                      \
     }                                                                          \
     itl_free(completion);                                                      \
   } while (0)
@@ -2914,12 +2924,33 @@ tl_completion_change(void *completion, const char *label)
 }
 
 TL_DEF void
-tl_completion_delete(void *completion)
+tl_completion_delete(void **completion)
+{
+  itl_completion_t **completion_node = (itl_completion_t **) completion;
+  if (completion_node != NULL && *completion_node != NULL) {
+    itl_completion_free_all((*completion_node)->child);
+    itl_completion_free(*completion_node);
+    *completion_node = NULL;
+  }
+}
+
+TL_DEF void
+tl_completion_delete_children(void *completion)
 {
   itl_completion_t *completion_node = (itl_completion_t *) completion;
   if (completion_node != NULL) {
     itl_completion_free_all(completion_node->child);
-    itl_completion_free(completion_node);
+    completion_node->child = NULL;
+  }
+}
+
+TL_DEF void
+tl_completion_delete_all(void)
+{
+  if (itl_global_completion_root != NULL) {
+    itl_completion_free_all(itl_global_completion_root->child);
+    itl_completion_free(itl_global_completion_root);
+    itl_global_completion_root = NULL;
   }
 }
 #endif /* !TL_MANUAL_TAB_COMPLETION */
