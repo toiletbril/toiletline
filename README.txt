@@ -182,7 +182,7 @@ well (that means you accidentaly loaded a binary file T__T).
 Returns:
 * `TL_SUCCESS`;
 * `-EINVAL` if file is binary;
-* `-errno` on other failures. `errno` itself is unchanged.
+* `-errno` on other failures.
 
 
 int tl_history_dump(const char *file_path);
@@ -193,7 +193,7 @@ Returns:
 * `TL_SUCCESS`;
 * `-EINVAL` if a previous call to `tl_history_load()` was attempted on a binary
   file.
-* `-errno` on other failures. `errno` itself is unchanged.
+* `-errno` on other failures.
 
 
 size_t tl_utf8_strlen(const char *utf8_str);

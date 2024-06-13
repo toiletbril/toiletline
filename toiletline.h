@@ -1550,7 +1550,6 @@ itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 #define ITL_GOTO_END                                                           \
   do {                                                                         \
     ret = -errno;                                                              \
-    errno = save_errno;                                                        \
     goto end;                                                                  \
   } while (0)
 
@@ -1566,7 +1565,7 @@ itl_global_history_load_from_file(const char *path)
 
   itl_string_t   *str = itl_string_alloc();
   itl_char_buf_t *buffer = itl_char_buf_alloc();
-  int             ch = 0, read_amount = 0, ret = TL_SUCCESS, save_errno = errno;
+  int             ch = 0, read_amount = 0, ret = TL_SUCCESS;
 
   itl_global_history_free();
   itl_global_history_file_is_bad = false;
@@ -1642,7 +1641,7 @@ itl_global_history_dump_to_file(const char *path)
   itl_char_buf_t     *buffer = NULL;
   itl_history_item_t *item = NULL, *next_item = NULL;
 
-  int ret = TL_SUCCESS, save_errno = errno;
+  int ret = TL_SUCCESS;
 
   if (itl_global_history_file_is_bad) {
     return -EINVAL;
