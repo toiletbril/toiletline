@@ -292,7 +292,7 @@ TL_DEF void tl_completion_delete_all(void);
 #define itl_tty_is_tty() _isatty(STDIN_FILENO)
 
 #elif defined ITL_POSIX
-#if !defined  _DEFAULT_SOURCE
+#if !defined _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
 #endif
 
@@ -398,10 +398,7 @@ itl_read_byte_raw(void)
 #if !defined __STDC_VERSION__ || __STDC_VERSION__ < 199409L
 #define ITL_C89
 #if !defined __cplusplus
-#define ITL_ZERO_INIT                                                          \
-  {                                                                            \
-    0                                                                          \
-  }
+#define ITL_ZERO_INIT {0}
 typedef unsigned char bool;
 #define true  1
 #define false 0
@@ -411,10 +408,7 @@ typedef unsigned char bool;
 #endif /* __cplusplus */
 #else
 #include <stdbool.h>
-#define ITL_ZERO_INIT                                                          \
-  {                                                                            \
-    0                                                                          \
-  }
+#define ITL_ZERO_INIT {0}
 #endif /* !__STDC_VERSION__ || __STDC_VERSION__ >= 199409L */
 
 #include <ctype.h>
@@ -507,6 +501,7 @@ itl_traceln(ITL_MAYBE_UNUSED const char *f, ...)
     }                                                                          \
   } while (0)
 
+ITL_DEF ITL_THREAD_LOCAL bool itl_global_is_active = false;
 ITL_DEF ITL_THREAD_LOCAL bool itl_global_entered_raw_mode = false;
 
 #if defined ITL_WIN32
@@ -798,7 +793,7 @@ itl_utf8_width(int byte)
 }
 
 #define itl_utf8_is_surrogate(first_byte, second_byte)                         \
-  (((first_byte) &0xE0) == 0xD0 && (second_byte) >= 0x80 &&                    \
+  (((first_byte) & 0xE0) == 0xD0 && (second_byte) >= 0x80 &&                   \
    (second_byte) <= 0xBF)
 
 ITL_DEF const itl_utf8_t itl_replacement_character = {
@@ -845,7 +840,7 @@ itl_utf8_parse(uint8_t first_byte)
 #define itl_utf8_free(c) itl_free(c)
 
 #define ITL_STRING_INIT_SIZE                      64
-#define ITL_STRING_REALLOC_CAPACITY(old_capacity) (((old_capacity) *3) >> 1)
+#define ITL_STRING_REALLOC_CAPACITY(old_capacity) (((old_capacity) * 3) >> 1)
 
 typedef struct itl_string itl_string_t;
 
@@ -1596,15 +1591,10 @@ itl_global_history_load_from_file(const char *path)
         itl_global_history_file_is_bad = true;
         ITL_GOTO_END;
       }
-    }
-#if defined ITL_WIN32
-    else if (ch == '\r')
-    {
+    } else if (ch == '\r') {
+      /* TODO: Multiline support for history. */
       continue;
-    }
-#endif /* ITL_WIN32 */
-    else if (ch == '\n')
-    {
+    } else if (ch == '\n') {
       itl_string_from_bytes(str, buffer->data, buffer->size);
       itl_global_history_append(str);
       itl_traceln("loaded history entry: %.*s\n", (int) buffer->size,
@@ -1643,6 +1633,8 @@ itl_global_history_dump_to_file(const char *path)
 
   int ret = TL_SUCCESS;
 
+  TL_ASSERT(itl_global_is_active && "Dump history before calling tl_exit()!");
+
   if (itl_global_history_file_is_bad) {
     return -EINVAL;
   }
@@ -1661,7 +1653,7 @@ itl_global_history_dump_to_file(const char *path)
     goto end;
   }
 
-  while (item->prev) {
+  while (item->prev != NULL) {
     item = item->prev;
   }
   while (item) {
@@ -2698,8 +2690,6 @@ itl_le_key_handle(itl_le_t *le, int esc)
 
   return TL_SUCCESS;
 }
-
-ITL_DEF ITL_THREAD_LOCAL bool itl_global_is_active = false;
 
 TL_DEF int
 tl_init(void)

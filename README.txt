@@ -187,7 +187,7 @@ Returns:
 
 int tl_history_dump(const char *file_path);
 --------
-Dump history to a file, overwriting it.
+Dump history to a file, overwriting it. Should be called before tl_exit()!
 
 Returns:
 * `TL_SUCCESS`;
