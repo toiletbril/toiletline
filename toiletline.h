@@ -82,7 +82,7 @@ extern "C"
 
 /* Max size of in-memory history, must be a power of 2. */
 #if !defined TL_HISTORY_MAX_SIZE
-#define TL_HISTORY_MAX_SIZE 64
+#define TL_HISTORY_MAX_SIZE 256
 #endif /* TL_HISTORY_MAX_SIZE */
 
 #define TL_SUCCESS 0
