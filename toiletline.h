@@ -695,7 +695,11 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
 ITL_DEF void *
 itl_malloc(size_t size)
 {
-  void *allocated = TL_MALLOC(size);
+  void *allocated;
+
+  TL_ASSERT(size > 0);
+
+  allocated = TL_MALLOC(size);
   itl_global_alloc_count += 1;
 
 #if !defined TL_NO_ABORT
@@ -709,6 +713,8 @@ ITL_DEF void *
 itl_realloc(void *block, size_t size)
 {
   void *allocated;
+
+  TL_ASSERT(size > 0);
 
   if (block == NULL) {
     allocated = TL_MALLOC(size);
