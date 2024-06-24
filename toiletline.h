@@ -535,15 +535,14 @@ itl_enter_raw_mode_impl(void)
   ITL_TRY(GetConsoleMode(stdout_handle, &tty_out_mode), return false);
   ITL_TRY(GetConsoleMode(stdin_handle, &tty_in_mode), return false);
 
+  /* TODO: Look at this later. */
   itl_global_original_tty_in_mode = tty_in_mode;
-  tty_in_mode &=
-      (DWORD) ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT |
-                ENABLE_VIRTUAL_TERMINAL_INPUT);
+  tty_in_mode = (DWORD) 0;
 
   itl_global_original_tty_out_mode = tty_out_mode;
-  tty_out_mode &= (DWORD) ~(ENABLE_WRAP_AT_EOL_OUTPUT) |
-                  ENABLE_PROCESSED_INPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING |
-                  DISABLE_NEWLINE_AUTO_RETURN;
+  tty_out_mode = (DWORD) ENABLE_PROCESSED_INPUT |
+                 ENABLE_VIRTUAL_TERMINAL_PROCESSING |
+                 DISABLE_NEWLINE_AUTO_RETURN;
 
   ITL_TRY(SetConsoleMode(stdin_handle, tty_in_mode), return false);
   ITL_TRY(SetConsoleMode(stdout_handle, tty_out_mode), return false);
