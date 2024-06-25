@@ -1,6 +1,6 @@
 toiletline
 ----------------
-Small, crossplatform, single-header shell library in C89, meant to replace a
+Small, crossplatform, single-header shell library in C99, meant to replace a
 subset of GNU Readline, and work on both Linux and Windows out of the box.
 
 NOTE: On Windows, UTF-8 locale feature is required for proper multibyte
