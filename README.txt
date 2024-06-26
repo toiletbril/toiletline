@@ -2,8 +2,7 @@ toiletline
 ----------------
 Small, crossplatform, single-header shell library in C99, meant to replace a
 subset of GNU Readline, and work on both Linux and Windows out of the box. It
-uses native API on both platforms and is based on VT100 terminal escape
-sequences.
+uses native API on both platforms and relies on VT100 terminal escape sequences.
 
 
 Notes on Windows
@@ -70,6 +69,7 @@ macro.
 * TL_SEE_BYTES forces tl_readline() to output terminal codes of pressed keys
   instead of processing and echoing them. This is useful for debugging.
 * TL_DEBUG can be defined to output various debug information at runtime.
+
 
 Definitions
 --------
