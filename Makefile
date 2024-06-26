@@ -1,9 +1,9 @@
 CC ?= clang
-CFLAGS := -g3 -Wall -Wextra -Wconversion -Wno-sign-conversion -Wdouble-promotion -Werror -pedantic
-DBGFLAGS := -DITL_DEBUG
+CFLAGS := -g3 -Wall -Wextra -Wconversion -Wno-sign-conversion -Wdouble-promotion \
+		  -Werror -pedantic -std=c99
 
 ifneq ($(OS),Windows_NT)
-	DBGFLAGS += -fsanitize=address -fsanitize=undefined
+CFLAGS += -fsanitize=address -fsanitize=undefined
 endif
 
 default:
@@ -26,10 +26,10 @@ else
 	./tests
 endif
 
-examples: CFLAGS += -std=c89 -O2
+examples: CFLAGS += -O2
 examples: example example_getc
 
-examples_debug: CFLAGS += $(DBGFLAGS) -std=c99 -O0
+examples_debug: CFLAGS += -DITL_DEBUG -O0
 examples_debug: example example_getc
 
 see_bytes: CFLAGS += -DITL_SEE_BYTES
@@ -37,7 +37,8 @@ see_bytes: example
 
 ITEMS_TO_REMOVE :=
 ifeq ($(OS),Windows_NT)
-	ITEMS_TO_REMOVE = ./*.exe ./*.raddbg ./*.pdb ./*.exp ./*.lib ./*.ilk ./example_history.txt
+	ITEMS_TO_REMOVE = ./*.exe ./*.raddbg ./*.pdb ./*.exp ./*.lib ./*.ilk \
+					  ./example_history.txt
 else
 	ITEMS_TO_REMOVE = ./example_getc ./example ./tests ./example_history.txt
 endif

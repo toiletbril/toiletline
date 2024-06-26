@@ -583,11 +583,15 @@ itl_exit_raw_mode_impl(void)
   stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
   ITL_TRY(stdout_handle != INVALID_HANDLE_VALUE, something_failed = true);
 
-  if (stdin_handle != NULL && itl_global_original_tty_in_mode != 0) {
+  if (stdin_handle != INVALID_HANDLE_VALUE &&
+      itl_global_original_tty_in_mode != 0)
+  {
     ITL_TRY(SetConsoleMode(stdin_handle, itl_global_original_tty_in_mode),
             something_failed = true);
   }
-  if (stdout_handle != NULL && itl_global_original_tty_out_mode != 0) {
+  if (stdout_handle != INVALID_HANDLE_VALUE &&
+      itl_global_original_tty_out_mode != 0)
+  {
     ITL_TRY(SetConsoleMode(stdout_handle, itl_global_original_tty_out_mode),
             something_failed = true);
   }
@@ -798,8 +802,7 @@ itl_utf8_width(int byte)
 }
 
 #define itl_utf8_is_surrogate(first_byte, second_byte)                         \
-  (((first_byte) & 0xE0) == 0xD0 && (second_byte) >= 0x80 &&                   \
-   (second_byte) <= 0xBF)
+  (((first_byte) == 0xED) && ((second_byte) >= 0xA0 && (second_byte) <= 0xBF))
 
 ITL_DEF const itl_utf8_t itl_replacement_character = {
     {0xEF, 0xBF, 0xBD},
@@ -812,8 +815,7 @@ itl_utf8_parse(uint8_t first_byte)
   size_t  i, size;
   uint8_t bytes[4];
 
-  size = itl_utf8_width(first_byte);
-  if (size == 0) { /* invalid character */
+  if ((size = itl_utf8_width(first_byte)) == 0) { /* invalid character */
     itl_traceln("Invalid UTF-8 sequence '%d'\n", (uint8_t) first_byte);
     return itl_replacement_character;
   }
@@ -936,10 +938,10 @@ ITL_DEF void
 itl_string_recalc_size(itl_string_t *str)
 {
   size_t i;
+  str->size = 0;
 
   TL_ASSERT(str->length <= ITL_STRING_MAX_LEN);
 
-  str->size = 0;
   for (i = 0; i < str->length; ++i) {
     TL_ASSERT(str->chars[i].size > 0);
     TL_ASSERT(str->chars[i].size <= 4);
@@ -1181,8 +1183,7 @@ itl_global_history_free(void)
 {
   itl_history_item_t *item, *prev_item;
 
-  item = itl_global_history_last;
-  if (item == NULL) {
+  if ((item = itl_global_history_last) == NULL) {
     return;
   }
 
@@ -1245,14 +1246,16 @@ itl_le_new(itl_string_t *line_buf, char *out_buf, size_t out_size,
 {
   itl_le_t le = ITL_ZERO_INIT;
 
-  le.line = line_buf;
-  le.cursor_position = line_buf->length;
-  le.appended_to_history = false;
+  /* clang-format off */
+  le.line                  = line_buf;
+  le.cursor_position       = line_buf->length;
+  le.appended_to_history   = false;
   le.history_selected_item = NULL;
-  le.out_buf = out_buf;
-  le.out_size = out_size;
-  le.prompt = prompt;
-  le.prompt_size = (prompt != NULL) ? strlen(prompt) : 0;
+  le.out_buf               = out_buf;
+  le.out_size              = out_size;
+  le.prompt                = prompt;
+  le.prompt_size           = (prompt != NULL) ? strlen(prompt) : 0;
+  /* clang-format on */
 
   return le;
 }
@@ -1456,27 +1459,26 @@ itl_char_buf_append_cstr(itl_char_buf_t *cb, const char *cstr)
 }
 
 ITL_DEF void
-itl_char_buf_append_size_t(itl_char_buf_t *cb, size_t data)
+itl_char_buf_append_size_t(itl_char_buf_t *cb, size_t n)
 {
-  char   digit;
   size_t new_size, i;
-  size_t data_len = 0, data_copy = data;
+  size_t data_len = 0, data_copy = n;
 
-  while (data_copy > 0) {
+  do {
     data_len += 1;
     data_copy /= 10;
-  }
+  } while (data_copy > 0);
 
   new_size = cb->size + data_len;
+
   while (cb->capacity < new_size) {
     itl_char_buf_extend(cb);
   }
 
   /* Digits are put in reverse order */
   for (i = new_size - 1; i >= cb->size; --i) {
-    digit = (char) (data % 10) + '0';
-    cb->data[i] = digit;
-    data /= 10;
+    cb->data[i] = (char) (n % 10) + '0';
+    n /= 10;
   }
 
   cb->size = new_size;
@@ -1501,6 +1503,7 @@ itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
   while (cb->capacity < cb->size + 1) {
     itl_char_buf_extend(cb);
   }
+
   cb->data[cb->size] = (char) data;
   cb->size += 1;
 }
@@ -1880,14 +1883,12 @@ itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows, size_t *cols)
 #endif
 
   if (itl_global_tty_is_dumb) {
-    emacs_buf = getenv("COLUMNS");
-    if (emacs_buf == NULL) {
+    if ((emacs_buf = getenv("COLUMNS")) == NULL) {
       itl_global_tty_is_dumb = false;
       goto next;
     }
     itl_parse_size(emacs_buf, &temp_cols);
-    emacs_buf = getenv("ROWS");
-    if (emacs_buf == NULL) {
+    if ((emacs_buf = getenv("LINES")) == NULL) {
       itl_global_tty_is_dumb = false;
       goto next;
     }
@@ -1920,7 +1921,6 @@ next:
     if (itl_esc_parse(*first) != TL_KEY_CHAR) {
       continue;
     }
-
     if (le != NULL) {
       itl_le_insert(le, itl_utf8_parse(*first));
     }
@@ -1975,6 +1975,7 @@ next:
 ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_lines = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
 
+/* NOTE: Hottest function in the library. */
 ITL_DEF bool
 itl_le_tty_refresh(itl_le_t *le)
 {
@@ -2382,9 +2383,10 @@ itl_completion_list_dump(itl_completion_list_t *list)
       count = 0;
     }
   }
-  itl_char_buf_append_cstr(buffer, ITL_LF);
 
+  itl_char_buf_append_cstr(buffer, ITL_LF);
   itl_char_buf_dump(buffer);
+
   itl_char_buf_free(buffer);
 }
 
@@ -2962,7 +2964,7 @@ tl_completion_delete_all(void)
 /*
  * TODO (not soon):
  *  - History search.
- *  - Better cmd.exe handling.
  *  - Support multiple lines simultaneously.
  *  - Fix refresh artifacts if killing more than one row with Ctrl-U.
+ *  - Use Windows' console API instead of terminal sequences on Windows.
  */
