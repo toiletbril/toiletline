@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.6.1
+ *  toiletline 0.6.2
  *  Small single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -275,6 +275,12 @@ TL_DEF void tl_completion_delete_all(void);
 #define ITL_STDERR 2
 #define ITL_FILE   int
 
+#if !defined ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ITL_NO_WIN_ESCAPES
+#warning ENABLE_VIRTUAL_TERMINAL_PROCESSING is not defined. Terminal escape    \
+         sequences will not work in some terminals, like conhost.exe.
+#endif /* !ENABLE_VIRTUAL_TERMINAL_PROCESSING */
+
 #define itl_file_open_for_read(path) _open(path, O_RDONLY)
 #define itl_file_open_for_write(path)                                          \
   _open(path, O_WRONLY | O_CREAT | O_TRUNC, _S_IREAD | _S_IWRITE)
@@ -301,11 +307,15 @@ TL_DEF void tl_completion_delete_all(void);
 
 /* It makes no sense to use escapes on WIN32 which does not support them
    anyway */
-#if defined TL_SIZE_USE_ESCAPES && !defined ITL_WIN32
+#if defined TL_SIZE_USE_ESCAPES
+#if defined ITL_POSIX || defined ENABLE_VIRTUAL_TERMINAL_PROCESSING
 #define ITL_VT_SIZE
+#else
+#warning Will not use terminal escapes for size.
+#endif /* ITL_POSIX */
 #elif defined ITL_POSIX
 #include <sys/ioctl.h>
-#endif /* ITL_POSIX */
+#endif /* TL_SIZE_USE_ESCAPES */
 
 #if !defined TL_USE_STDIO
 #define ITL_STDIN  0
@@ -329,9 +339,9 @@ TL_DEF void tl_completion_delete_all(void);
 #define itl_tty_is_tty() isatty(STDIN_FILENO)
 #endif /* ITL_POSIX */
 
-#if defined ITL_DEBUG || defined TL_USE_STDIO || defined ITL_SEE_BYTES
+#if defined TL_DEBUG || defined TL_USE_STDIO || defined TL_SEE_BYTES
 #include <stdio.h>
-#endif /* ITL_DEBUG */
+#endif /* TL_DEBUG */
 
 /* This is almost everything that this library requires for IO. If a different
    underlying API is desired, this may easily be extended. Please note that
@@ -373,7 +383,7 @@ itl_read_byte_raw(void)
 #endif
 
 #if defined ITL_DEFAULT_ASSERT
-#if defined ITL_DEBUG
+#if defined TL_DEBUG
 #define TL_ASSERT(condition)                                                   \
   do {                                                                         \
     if (!(condition)) {                                                        \
@@ -383,7 +393,7 @@ itl_read_byte_raw(void)
       itl_debug_trap();                                                        \
     }                                                                          \
   } while (0)
-#else /* ITL_DEBUG */
+#else /* TL_DEBUG */
 #define TL_ASSERT(condition)                                                   \
   do {                                                                         \
     if (!(condition)) {                                                        \
@@ -451,7 +461,7 @@ typedef unsigned char bool;
 #define itl_debug_trap() itl__unreachable()
 #endif
 
-#if defined ITL_DEBUG
+#if defined TL_DEBUG
 ITL_NO_RETURN ITL_DEF void
 itl_unreachable_impl(const char *file, int line, const char *message)
 {
@@ -461,13 +471,13 @@ itl_unreachable_impl(const char *file, int line, const char *message)
 }
 #define itl_unreachable()                                                      \
   itl_unreachable_impl(__FILE__, __LINE__, "unreachable fail")
-#else /* ITL_DEBUG */
+#else /* TL_DEBUG */
 #define itl_unreachable() itl__unreachable()
 #endif
 
-#if defined ITL_DEBUG
+#if defined TL_DEBUG
 #define itl_traceln(...) fprintf(stderr, "\n[TRACE] " __VA_ARGS__)
-#else /* ITL_DEBUG */
+#else /* TL_DEBUG */
 #if defined ITL_C89
 ITL_DEF void
 itl_traceln(ITL_MAYBE_UNUSED const char *f, ...)
@@ -540,9 +550,13 @@ itl_enter_raw_mode_impl(void)
   tty_in_mode = (DWORD) 0;
 
   itl_global_original_tty_out_mode = tty_out_mode;
+#if !defined ITL_NO_WIN_ESCAPES
   tty_out_mode = (DWORD) ENABLE_PROCESSED_INPUT |
                  ENABLE_VIRTUAL_TERMINAL_PROCESSING |
                  DISABLE_NEWLINE_AUTO_RETURN;
+#else /* !ITL_NO_WIN_ESCAPES */
+  tty_out_mode = (DWORD) 0;
+#endif
 
   ITL_TRY(SetConsoleMode(stdin_handle, tty_in_mode), return false);
   ITL_TRY(SetConsoleMode(stdout_handle, tty_out_mode), return false);
@@ -733,7 +747,7 @@ itl_realloc(void *block, size_t size)
   return allocated;
 }
 
-#if defined ITL_DEBUG
+#if defined TL_DEBUG
 #define itl_free(ptr)                                                          \
   do {                                                                         \
     TL_ASSERT(ptr != NULL);                                                    \
@@ -741,7 +755,7 @@ itl_realloc(void *block, size_t size)
     TL_FREE(ptr);                                                              \
     itl_global_alloc_count -= 1;                                               \
   } while (0)
-#else /* ITL_DEBUG */
+#else /* TL_DEBUG */
 #define itl_free(ptr)                                                          \
   do {                                                                         \
     itl_global_alloc_count -= 1;                                               \
@@ -832,14 +846,14 @@ itl_utf8_parse(uint8_t first_byte)
     return itl_replacement_character;
   }
 
-#if defined ITL_DEBUG
+#if defined TL_DEBUG
   itl_traceln("utf8 char size: %zu\n", size);
   itl_traceln("utf8 char bytes: '");
 
   for (i = 0; i < size; ++i) {
     itl_traceln("%02X ", bytes[i]);
   }
-#endif /* ITL_DEBUG */
+#endif /* TL_DEBUG */
 
   return itl_utf8_new(bytes, size);
 }
@@ -2771,7 +2785,7 @@ tl_readline(char *buffer, size_t buffer_size, const char *prompt)
   while (true) {
     ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
 
-#if defined ITL_SEE_BYTES
+#if defined TL_SEE_BYTES
     if (input_byte == 3)
       return -69; /* ctrl c */
     if (iscntrl((char) input_byte) || input_byte > 127) {
@@ -2782,7 +2796,7 @@ tl_readline(char *buffer, size_t buffer_size, const char *prompt)
     printf("%d\n", input_byte);
     fflush(stdout);
     continue;
-#endif /* ITL_SEE_BYTES */
+#endif /* TL_SEE_BYTES */
 
     input_type = itl_esc_parse(input_byte);
     if (input_type != TL_KEY_CHAR) {

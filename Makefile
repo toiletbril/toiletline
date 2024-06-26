@@ -26,13 +26,13 @@ else
 	./tests
 endif
 
-examples: CFLAGS += -O2
+examples: CFLAGS += -O0
 examples: example example_getc
 
-examples_debug: CFLAGS += -DITL_DEBUG -O0
+examples_debug: CFLAGS += -DTL_DEBUG -O0
 examples_debug: example example_getc
 
-see_bytes: CFLAGS += -DITL_SEE_BYTES
+see_bytes: CFLAGS += -DTL_SEE_BYTES
 see_bytes: example
 
 ITEMS_TO_REMOVE :=

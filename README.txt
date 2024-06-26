@@ -1,10 +1,21 @@
 toiletline
 ----------------
 Small, crossplatform, single-header shell library in C99, meant to replace a
-subset of GNU Readline, and work on both Linux and Windows out of the box.
+subset of GNU Readline, and work on both Linux and Windows out of the box. It
+uses native API on both platforms and is based on VT100 terminal escape
+sequences.
 
-NOTE: On Windows, UTF-8 locale feature is required for proper multibyte
-character support.
+
+Notes on Windows
+--------
+The library makes use of ENABLE_VIRTUAL_TERMINAL_PROCESSING switch that allows
+to enable native VT100 escape sequence processing for conhost.exe and such. That
+a requires Windows 10 version with build number 10586 or later. This is not
+crucial. The library can still be used with a VT100 compatible terminal with
+it's own terminal proccessing, like Windows Terminal or Alacritty.
+
+And also, UTF-8 locale feature is required for proper multibyte character
+support.
 
 
 Current features
@@ -55,8 +66,10 @@ macro.
 * TL_MALLOC, TL_REALLOC, TL_FREE configure functions used for memory
   allocation;
 * TL_ABORT sets function that will be called on a failed allocation;
-* TL_NO_ABORT disables checks for failed memory allocations.
-
+* TL_NO_ABORT disables checks for failed memory allocations;
+* TL_SEE_BYTES forces tl_readline() to output terminal codes of pressed keys
+  instead of processing and echoing them. This is useful for debugging.
+* TL_DEBUG can be defined to output various debug information at runtime.
 
 Definitions
 --------
