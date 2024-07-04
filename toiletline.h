@@ -1095,7 +1095,7 @@ itl_string_to_cstr(const itl_string_t *str, char *cstr, size_t cstr_size)
     if (cstr_size - k - 1 < str->chars[i].size) {
       break;
     }
-    for (j = 0; j != str->chars[i].size; ++j, ++k) {
+    for (j = 0; j < str->chars[i].size; ++j, ++k) {
       cstr[k] = (char) str->chars[i].bytes[j];
     }
   }
