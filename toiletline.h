@@ -1108,7 +1108,7 @@ itl_string_to_cstr(const itl_string_t *str, char *cstr, size_t cstr_size)
   return true;
 }
 
-ITL_DEF void
+ITL_DEF bool
 itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
 {
   size_t i, j, k, rune_width;
@@ -1119,6 +1119,9 @@ itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
     }
 
     rune_width = itl_utf8_width(data[k]);
+    if (rune_width == 0) {
+      return false; /* Something went wrong. */
+    }
     str->chars[i].size = rune_width;
 
     for (j = 0; j < rune_width && k < size; ++j, ++k) {
@@ -1128,6 +1131,8 @@ itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
 
   str->length = i;
   itl_string_recalc_size(str);
+
+  return true;
 }
 
 /* Requires null-terminated string. */
@@ -1210,7 +1215,10 @@ itl_global_history_free(void)
     item = prev_item;
   }
 
+  itl_global_history_length = 0;
+
   itl_global_history_last = NULL;
+  itl_global_history_first = NULL;
 }
 
 ITL_DEF bool
@@ -1564,10 +1572,17 @@ itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 #define itl_tty_status_report(buffer)                                          \
   itl_char_buf_append_cstr(buffer, "\x1b[6n")
 
-#define ITL_GOTO_END                                                           \
+#define ITL_GOTO_END()                                                         \
   do {                                                                         \
     ret = -errno;                                                              \
     goto end;                                                                  \
+  } while (0)
+
+#define ITL_GOTO_END_FILE_BAD()                                                \
+  do {                                                                         \
+    itl_global_history_free();                                                 \
+    itl_global_history_file_is_bad = true;                                     \
+    ITL_GOTO_END();                                                            \
   } while (0)
 
 /* If this is true, do not overwrite file on `history_dump_to_file()` */
@@ -1581,8 +1596,9 @@ itl_global_history_load_from_file(const char *path)
   bool     is_eof = false;
 
   itl_string_t   *str = itl_string_alloc();
-  itl_char_buf_t *buffer = itl_char_buf_alloc();
+  itl_char_buf_t *cb = itl_char_buf_alloc();
   int             ch = 0, read_amount = 0, ret = TL_SUCCESS;
+  size_t          pos = 0, line = 1;
 
   itl_global_history_free();
   itl_global_history_file_is_bad = false;
@@ -1596,12 +1612,13 @@ itl_global_history_load_from_file(const char *path)
     if (errno != ENOENT) {
       itl_global_history_file_is_bad = true;
     }
-    ITL_GOTO_END;
+    ITL_GOTO_END();
   }
 
   is_eof = false;
   while (!is_eof) {
     read_amount = (int) itl_read(file, &ch, 1);
+    pos++;
     if (read_amount != 1) {
 #if defined TL_USE_STDIO
       is_eof = feof(file);
@@ -1609,29 +1626,35 @@ itl_global_history_load_from_file(const char *path)
       is_eof = (read_amount == 0);
 #endif
       if (!is_eof) {
-        itl_global_history_free();
-        itl_global_history_file_is_bad = true;
-        ITL_GOTO_END;
+        ITL_GOTO_END_FILE_BAD();
       }
     } else if (ch == '\r') {
       /* TODO: Multiline support for history. */
       continue;
     } else if (ch == '\n') {
-      itl_string_from_bytes(str, buffer->data, buffer->size);
+      /* TODO: Here long lines are silently truncated. */
+      if (!itl_string_from_bytes(str, cb->data,
+                                 ITL_MIN(size_t, cb->size, ITL_STRING_MAX_LEN)))
+      {
+        itl_traceln(
+            "incorrect calculated string size in history file at %zu:%zu\n",
+            line, pos);
+        errno = EINVAL;
+        ITL_GOTO_END_FILE_BAD();
+      }
       itl_global_history_append(str);
-      itl_traceln("loaded history entry: %.*s\n", (int) buffer->size,
-                  buffer->data);
-      itl_char_buf_clear(buffer);
+      itl_traceln("loaded history entry: %.*s\n", (int) cb->size, cb->data);
+      itl_char_buf_clear(cb);
+      pos = 0;
+      line++;
       /* Loaded a binary file on accident? */
-    } else if (iscntrl((uint8_t) ch)) {
-      ret = -EINVAL;
-      itl_traceln("non-text byte '%X' detected in history file\n",
-                  (uint8_t) ch);
-      itl_global_history_free();
-      itl_global_history_file_is_bad = true;
-      goto end;
+    } else if (iscntrl(ch) && !isspace(ch)) {
+      itl_traceln("non-text byte '%X' detected in history file at %zu:%zu\n",
+                  (uint8_t) ch, line, pos);
+      errno = EINVAL;
+      ITL_GOTO_END_FILE_BAD();
     } else {
-      itl_char_buf_append_byte(buffer, (uint8_t) ch);
+      itl_char_buf_append_byte(cb, (uint8_t) ch);
     }
   }
 
@@ -1639,7 +1662,7 @@ end:
   if (!itl_file_is_bad(file)) {
     itl_file_close(file);
   }
-  itl_char_buf_free(buffer);
+  itl_char_buf_free(cb);
   itl_string_free(str);
 
   return ret;
@@ -1667,7 +1690,7 @@ itl_global_history_dump_to_file(const char *path)
   if (itl_file_is_bad(file)) {
     itl_traceln("could not open history file for dump (%s): %s\n", path,
                 strerror(errno));
-    ITL_GOTO_END;
+    ITL_GOTO_END();
   }
 
   item = itl_global_history_first;
@@ -1685,7 +1708,7 @@ itl_global_history_dump_to_file(const char *path)
       if (itl_write(file, buffer->data, buffer->size) == -1 ||
           itl_write(file, "\n", 1) == -1)
       {
-        ITL_GOTO_END;
+        ITL_GOTO_END();
       }
     }
     itl_char_buf_clear(buffer);
@@ -2717,6 +2740,7 @@ tl_init(void)
 {
   TL_ASSERT(!(TL_HISTORY_MAX_SIZE & (TL_HISTORY_MAX_SIZE - 1)) &&
             "History size must be a power of 2");
+  TL_ASSERT(TL_HISTORY_MAX_SIZE >= 0 && "History size must be positive");
 
   if (itl_global_is_active) {
     return TL_SUCCESS;
