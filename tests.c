@@ -101,7 +101,7 @@ test_string_shift(void)
   /* clang-format on */
 
   const shift_test_case_t settings[] = {
-  /*  pos, count, backwards */
+      /*  pos, count, backwards */
       {12, 6, true},
       {1,  1, true}
   };
@@ -151,7 +151,7 @@ test_string_erase(void)
   /* clang-format on */
 
   const shift_test_case_t settings[] = {
-  /*  pos, count, backwards */
+      /*  pos, count, backwards */
       {12, 6, true },
       {0,  1, false},
       {10, 3, true },

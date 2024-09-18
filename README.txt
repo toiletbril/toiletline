@@ -224,6 +224,12 @@ Emit newlines after getting the input.
 *buffer should be the buffer used in tl_readline().
 
 
+TL_DEF int tl_set_title(const char *title);
+--------
+Sets a new title for the terminal. Returns -1 and does nothing if stdout is not
+a tty or amount of bytes written.
+
+
 #if !defined TL_MANUAL_TAB_COMPLETION
 
 void *tl_completion_add(void *prefix, const char *label);

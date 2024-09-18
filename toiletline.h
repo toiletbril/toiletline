@@ -213,6 +213,11 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
  * *buffer should be the buffer used in tl_readline().
  */
 TL_DEF int tl_emit_newlines(const char *buffer);
+/**
+ * Sets a new title for the terminal. Returns -1 and does nothing if stdout is
+ * not a tty or amount of bytes written.
+ */
+TL_DEF int tl_set_title(const char *title);
 
 #if !defined TL_MANUAL_TAB_COMPLETION
 /**
@@ -2930,6 +2935,17 @@ tl_emit_newlines(const char *char_buffer)
   }
 
   return TL_SUCCESS;
+}
+
+TL_DEF int
+tl_set_title(const char *title)
+{
+  if (isatty(ITL_STDOUT)) {
+    return itl_write(ITL_STDOUT, "\x1b]0;", 4) +
+           itl_write(ITL_STDOUT, title, strlen(title)) +
+           itl_write(ITL_STDOUT, "\x07", 1);
+  }
+  return TL_ERROR;
 }
 
 #if !defined TL_MANUAL_TAB_COMPLETION
