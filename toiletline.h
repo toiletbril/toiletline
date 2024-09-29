@@ -1402,7 +1402,10 @@ itl_string_steps_to_token(const itl_string_t *str, size_t position,
 }
 
 #define itl_le_steps_to_token(le, backwards)                                   \
-  itl_string_steps_to_token(le->line, le->cursor_position, backwards)
+  itl_string_steps_to_token((le)->line, (le)->cursor_position, backwards)
+
+#define itl_le_cursor_is_on_space(le)                                          \
+  itl_char_is_space((le)->line->chars[le->cursor_position].bytes[0])
 
 ITL_DEF void
 itl_le_clear_line(itl_le_t *le)
@@ -1620,6 +1623,10 @@ itl_global_history_load_from_file(const char *path)
   itl_char_buf_t *cb = itl_char_buf_alloc();
   int             ch = 0, read_amount = 0, ret = TL_SUCCESS;
   size_t          pos = 0, line = 1;
+
+  /* Shut up the compiler :3c */
+  (void) pos;
+  (void) line;
 
   itl_global_history_free();
   itl_global_history_file_is_bad = false;
@@ -2565,6 +2572,7 @@ ITL_DEF int
 itl_le_key_handle(itl_le_t *le, int esc)
 {
   size_t i, steps;
+  bool   cursor_was_on_space;
 
   /* Remember the last control sequence. */
   tl_last_control = esc;
@@ -2613,7 +2621,11 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_RIGHT: {
     if (le->cursor_position < le->line->length) {
       if (esc & TL_MOD_CTRL) {
+        cursor_was_on_space = itl_le_cursor_is_on_space(le);
         itl_le_move_right(le, itl_le_steps_to_token(le, false));
+        if (cursor_was_on_space) {
+          itl_le_move_right(le, itl_le_steps_to_token(le, false));
+        }
       } else {
         itl_le_move_right(le, 1);
       }
@@ -2622,9 +2634,13 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_LEFT: {
     if (le->cursor_position > 0 && le->cursor_position <= le->line->length) {
       if (esc & TL_MOD_CTRL) {
+        cursor_was_on_space = itl_le_cursor_is_on_space(le);
         steps = itl_le_steps_to_token(le, true);
         if (steps > 0) {
           itl_le_move_left(le, steps - 1);
+        }
+        if (!cursor_was_on_space) {
+          itl_le_move_left(le, itl_le_steps_to_token(le, true) - 1);
         }
       } else {
         itl_le_move_left(le, 1);
@@ -2926,9 +2942,9 @@ TL_DEF int
 tl_set_title(const char *title)
 {
   if (isatty(ITL_STDOUT)) {
-    return itl_write(ITL_STDOUT, "\x1b]0;", 4) +
-           itl_write(ITL_STDOUT, title, strlen(title)) +
-           itl_write(ITL_STDOUT, "\x07", 1);
+    return (int) (itl_write(ITL_STDOUT, "\x1b]0;", 4) +
+                  itl_write(ITL_STDOUT, title, strlen(title)) +
+                  itl_write(ITL_STDOUT, "\x07", 1));
   }
   return TL_ERROR;
 }
