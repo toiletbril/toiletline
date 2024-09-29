@@ -1,12 +1,12 @@
 toiletline
-----------------
+----------
 Small, crossplatform, single-header shell library in C99, meant to replace a
 subset of GNU Readline, and work on both Linux and Windows out of the box. It
 uses native API on both platforms and relies on VT100 terminal escape sequences.
 
 
 Notes on Windows
---------
+----------------
 The library makes use of ENABLE_VIRTUAL_TERMINAL_PROCESSING switch that allows
 to enable native VT100 escape sequence processing for conhost.exe and such. That
 a requires Windows 10 version with build number 10586 or later. This is not
@@ -28,8 +28,8 @@ Current features
 * Optional autocompletion.
 
 
-Documentation
-----------------
+Notes on usage
+--------------
 Before you include this file in C or C++ file, define
 `TOILETLINE_IMPLEMENTATION` to create the implementation.
 
@@ -42,7 +42,7 @@ shouldn't be modified my multiple threads anyway.
 
 
 Configuration macros
---------
+--------------------
 These should be defined before including, in the same file with implementation
 macro.
 
@@ -72,14 +72,14 @@ macro.
 
 
 Definitions
---------
+-----------
 Some functions return their status. Errors are always below 0. All statuses are
 defined in the TL_STATUS_CODE enum. Each function's return code is documented
 here.
 
 
 int tl_last_control;
---------
+--------------------
 Last pressed control sequence.
 
 Related values:
@@ -117,32 +117,36 @@ Possible key values:
 
 
 TL_STATUS_CODE tl_init(void);
---------
+-----------------------------
 Initialize toiletline and put terminal in raw mode.
-Returns TL_SUCCESS.
+
+Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
 
 TL_STATUS_CODE tl_enter_raw_mode(void);
---------
+---------------------------------------
 Put the terminal into raw mode without doing anything else.
-Returns TL_SUCCESS.
+
+Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
 
 TL_STATUS_CODE tl_exit(void);
---------
+-----------------------------
 Exit toiletline, restore terminal state, delete all completions, and free
 internal memory.
-Returns TL_SUCCESS.
+
+Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
 
 TL_STATUS_CODE tl_exit_raw_mode(void);
---------
+--------------------------------------
 Restore the terminal state without doing anything else.
-Returns TL_SUCCESS.
+
+Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
 
 TL_STATUS_CODE tl_readline(char *line_buffer, size_t size, const char *prompt);
---------
+-------------------------------------------------------------------------------
 Read a line.
 
 To support multi-byte characters and null at the end, size needs to be at least
@@ -165,25 +169,27 @@ Returns:
 #if defined TL_MANUAL_TAB_COMPLETION
 * TL_PRESSED_TAB
 #endif /* TL_MANUAL_TAB_COMPLETION */
+* `TL_ERROR` on errors.
 
 
 void tl_setline(const char *str);
---------
+---------------------------------
 Predefine input for `tl_readline()`. Does not work for `tl_getc()`.
 
 
 TL_STATUS_CODE tl_getc(char *char_buffer, size_t size, const char *prompt);
---------
+---------------------------------------------------------------------------
 Read a character without waiting and modify `tl_last_control`.
 
 Returns:
 * TL_SUCCESS on a character;
 * TL_PRESSED_CONTROL_SEQUENCE on a control sequence (`tl_last_control` to check
   which one).
+* `TL_ERROR` on errors.
 
 
 TL_STATUS_CODE tl_history_load(const char *file_path);
---------
+------------------------------------------------------
 Load history from a file.
 
 If loading a history file fails for any reason other than non-existent file,
@@ -199,7 +205,7 @@ Returns:
 
 
 TL_STATUS_CODE tl_history_dump(const char *file_path);
---------
+------------------------------------------------------
 Dump history to a file, overwriting it. Should be called before tl_exit()!
 
 Returns:
@@ -210,30 +216,36 @@ Returns:
 
 
 size_t tl_utf8_strlen(const char *utf8_str);
---------
+--------------------------------------------
 Get the amount of characters in a UTF-8 string.
 
 Since number of bytes can be bigger than amount of characters, regular
 `strlen()` will not work, and will only return the number of bytes before \0.
 
+Returns `TL_SUCCESS` or `TL_ERROR` on errors.
+
 
 TL_STATUS_CODE tl_emit_newlines(const char *buffer);
---------
+----------------------------------------------------
 Emit newlines after getting the input.
 
 *buffer should be the buffer used in tl_readline().
 
+Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
-TL_DEF TL_STATUS_CODE tl_set_title(const char *title);
---------
-Sets a new title for the terminal. Returns -1 and does nothing if stdout is not
-a tty or amount of bytes written.
+
+TL_STATUS_CODE tl_set_title(const char *title);
+-----------------------------------------------
+Sets a new title for the terminal. Returns `TL_ERROR` and does nothing if stdout
+is not a tty.
+
+Returns `TL_SUCCESS` or `TL_ERROR` on other errors.
 
 
 #if !defined TL_MANUAL_TAB_COMPLETION
 
 void *tl_completion_add(void *prefix, const char *label);
---------
+---------------------------------------------------------
 Add a tab completion.
 
 Returns an opaque pointer that points to the added completion. Use it as
@@ -242,25 +254,25 @@ root completion.
 
 
 void tl_completion_change(void *completion, const char *label);
---------
+---------------------------------------------------------------
 Change a tab completion to `*label` using pointer returned from
 `tl_add_completion()`.
 
 
 void tl_completion_delete(void **completion);
---------
+---------------------------------------------
 Delete a tab completion and it's children using the address of the pointer
 returned from `tl_add_completion()`. Sets *completion to NULL.
 
 
 void tl_completion_delete_children(void *completion);
--------
+-----------------------------------------------------
 Delete a tab completion's children using pointer returned from
 `tl_add_completion()`.
 
 
 void tl_completion_delete_all(void);
--------
+------------------------------------
 Delete all tab completions.
 
 
@@ -271,5 +283,5 @@ TL_MANUAL_TAB_COMPLETION.
 
 
 Examples
-----------------
+--------
 For example usage, take a look at `example.c` and `example_getc.c`
