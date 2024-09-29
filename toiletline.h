@@ -1337,33 +1337,47 @@ itl_le_insert(itl_le_t *le, itl_utf8_t ch)
   return true;
 }
 
-#define itl_char_is_delim(c) (ispunct(c) || isspace(c))
+#define itl_char_is_delim(c) (ispunct(c))
+#define itl_char_is_space(c) (isspace(c))
 
 #define ITL_TOKEN_DELIM 0
 #define ITL_TOKEN_WORD  1
+#define ITL_TOKEN_SPACE 2
 
-/* Returns amount of steps required to reach a token */
+/* Returns amount of steps required to reach next/previos token */
 ITL_DEF size_t
-itl_string_steps_to_token(const itl_string_t *str, size_t position, int token,
+itl_string_steps_to_token(const itl_string_t *str, size_t position,
                           bool backwards)
 {
-  uint8_t byte = 0;
+  uint8_t b;
+  int     token_kind;
   bool    should_break = false;
   size_t  i = position, steps = 0;
 
-  /* Prevent usage of uninitialized characters */
-  if (backwards && i > 0 && i == str->length) {
+  if (backwards && i > 0) {
     steps += 1;
     i -= 1;
   }
-  itl_traceln("steps: i: %zu\n", i);
+
+  b = str->chars[i].bytes[0];
+
+  if (itl_char_is_space(b)) {
+    token_kind = ITL_TOKEN_SPACE;
+  } else if (itl_char_is_delim(b)) {
+    token_kind = ITL_TOKEN_DELIM;
+  } else {
+    token_kind = ITL_TOKEN_WORD;
+  }
 
   while (i < str->length) {
-    byte = str->chars[i].bytes[0];
+    b = str->chars[i].bytes[0];
 
-    switch (token) {
-    case ITL_TOKEN_DELIM: should_break = itl_char_is_delim(byte); break;
-    case ITL_TOKEN_WORD: should_break = !itl_char_is_delim(byte); break;
+    switch (token_kind) {
+    case ITL_TOKEN_DELIM: should_break = !itl_char_is_delim(b); break;
+    case ITL_TOKEN_WORD:
+      should_break = itl_char_is_delim(b) || itl_char_is_space(b);
+      break;
+    case ITL_TOKEN_SPACE: should_break = !itl_char_is_space(b); break;
     default: itl_unreachable();
     }
 
@@ -1382,11 +1396,13 @@ itl_string_steps_to_token(const itl_string_t *str, size_t position, int token,
     }
   }
 
+  itl_traceln("mode: %d, steps: %zu", token_kind, steps);
+
   return steps;
 }
 
-#define itl_le_steps_to_token(le, token, backwards)                            \
-  itl_string_steps_to_token(le->line, le->cursor_position, token, backwards)
+#define itl_le_steps_to_token(le, backwards)                                   \
+  itl_string_steps_to_token(le->line, le->cursor_position, backwards)
 
 ITL_DEF void
 itl_le_clear_line(itl_le_t *le)
@@ -2597,15 +2613,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_RIGHT: {
     if (le->cursor_position < le->line->length) {
       if (esc & TL_MOD_CTRL) {
-        steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, false);
-        if (steps != 0) {
-          itl_le_move_right(le, steps);
-        } else {
-          steps = itl_le_steps_to_token(le, ITL_TOKEN_WORD, false);
-          itl_le_move_right(le, steps);
-          steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, false);
-          itl_le_move_right(le, steps);
-        }
+        itl_le_move_right(le, itl_le_steps_to_token(le, false));
       } else {
         itl_le_move_right(le, 1);
       }
@@ -2614,17 +2622,9 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_LEFT: {
     if (le->cursor_position > 0 && le->cursor_position <= le->line->length) {
       if (esc & TL_MOD_CTRL) {
-        steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, true);
-        if (steps > 1) {
+        steps = itl_le_steps_to_token(le, true);
+        if (steps > 0) {
           itl_le_move_left(le, steps - 1);
-        } else {
-          itl_le_move_left(le, steps);
-          steps = itl_le_steps_to_token(le, ITL_TOKEN_WORD, true);
-          itl_le_move_left(le, steps);
-          steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, true);
-          if (steps > 0) {
-            itl_le_move_left(le, steps - 1);
-          }
         }
       } else {
         itl_le_move_left(le, 1);
@@ -2646,21 +2646,16 @@ itl_le_key_handle(itl_le_t *le, int esc)
     return TL_PRESSED_ENTER;
   } break;
 
+#define ITL_RULE_STEPS(a, b) a == 0 ? b : b == 0 ? a : ITL_MIN(size_t, a, b)
+
   case TL_KEY_BACKSPACE: {
     if (esc & TL_MOD_CTRL && le->line->length > 0) {
-      steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, true);
-      if (steps > 1) {
-        itl_le_erase_backward(le, steps - 1);
-      } else if (le->cursor_position >= steps) {
-        /* `cursor_position - steps` can wrap here. Handle it in
-           steps_to_token. */
-        steps += itl_string_steps_to_token(
-            le->line, le->cursor_position - steps, ITL_TOKEN_WORD, true);
-        steps += itl_string_steps_to_token(
-            le->line, le->cursor_position - steps, ITL_TOKEN_DELIM, true);
-        if (steps > 0) {
-          itl_le_erase_backward(le, steps - 1);
+      steps = itl_le_steps_to_token(le, true);
+      if (steps > 0) {
+        if (le->cursor_position <= steps) {
+          steps = le->cursor_position + 1;
         }
+        itl_le_erase_backward(le, steps - 1);
       }
     } else {
       itl_le_erase_backward(le, 1);
@@ -2669,16 +2664,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
 
   case TL_KEY_DELETE: {
     if (esc & TL_MOD_CTRL) {
-      steps = itl_le_steps_to_token(le, ITL_TOKEN_DELIM, false);
-      if (steps > 1) {
-        itl_le_erase_forward(le, steps);
-      } else if (le->cursor_position < le->line->length) {
-        steps += itl_string_steps_to_token(
-            le->line, le->cursor_position + steps, ITL_TOKEN_WORD, false);
-        steps += itl_string_steps_to_token(
-            le->line, le->cursor_position + steps, ITL_TOKEN_DELIM, false);
-        itl_le_erase_forward(le, steps);
-      }
+      itl_le_erase_forward(le, itl_le_steps_to_token(le, false));
     } else {
       itl_le_erase_forward(le, 1);
     }
@@ -2815,8 +2801,7 @@ tl_readline(char *buffer, size_t buffer_size, const char *prompt)
     ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
 
 #if defined TL_SEE_BYTES
-    if (input_byte == 3)
-      return -69; /* ctrl c */
+    if (input_byte == 3) return -69; /* ctrl c */
     if (iscntrl((char) input_byte) || input_byte > 127) {
       printf("cntrl seq -> ");
     } else {
@@ -3018,6 +3003,7 @@ tl_completion_delete_all(void)
 /*
  * TODO (not soon):
  *  - History search.
+ *  - Replace macros with enums.
  *  - Support multiple lines simultaneously.
  *  - Fix refresh artifacts if killing more than one row with Ctrl-U.
  *  - Use Windows' console API instead of terminal sequences on Windows.
