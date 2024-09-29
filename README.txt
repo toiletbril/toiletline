@@ -73,10 +73,9 @@ macro.
 
 Definitions
 --------
-Int functions can return error codes. They are always below 0, and defined as:
-* TL_ERROR;
-* TL_ERROR_SIZE;
-* TL_ERROR_ALLOC.
+Some functions return their status. Errors are always below 0. All statuses are
+defined in the TL_STATUS_CODE enum. Each function's return code is documented
+here.
 
 
 int tl_last_control;
@@ -117,32 +116,32 @@ Possible key values:
 * TL_KEY_INTERRUPT (Ctrl-C).
 
 
-int tl_init(void);
+TL_STATUS_CODE tl_init(void);
 --------
 Initialize toiletline and put terminal in raw mode.
 Returns TL_SUCCESS.
 
 
-int tl_enter_raw_mode(void);
+TL_STATUS_CODE tl_enter_raw_mode(void);
 --------
 Put the terminal into raw mode without doing anything else.
 Returns TL_SUCCESS.
 
 
-int tl_exit(void);
+TL_STATUS_CODE tl_exit(void);
 --------
 Exit toiletline, restore terminal state, delete all completions, and free
 internal memory.
 Returns TL_SUCCESS.
 
 
-int tl_exit_raw_mode(void);
+TL_STATUS_CODE tl_exit_raw_mode(void);
 --------
 Restore the terminal state without doing anything else.
 Returns TL_SUCCESS.
 
 
-int tl_readline(char *line_buffer, size_t size, const char *prompt);
+TL_STATUS_CODE tl_readline(char *line_buffer, size_t size, const char *prompt);
 --------
 Read a line.
 
@@ -173,7 +172,7 @@ void tl_setline(const char *str);
 Predefine input for `tl_readline()`. Does not work for `tl_getc()`.
 
 
-int tl_getc(char *char_buffer, size_t size, const char *prompt);
+TL_STATUS_CODE tl_getc(char *char_buffer, size_t size, const char *prompt);
 --------
 Read a character without waiting and modify `tl_last_control`.
 
@@ -183,7 +182,7 @@ Returns:
   which one).
 
 
-int tl_history_load(const char *file_path);
+TL_STATUS_CODE tl_history_load(const char *file_path);
 --------
 Load history from a file.
 
@@ -194,19 +193,20 @@ well (that means you accidentaly loaded a binary file T__T).
 
 Returns:
 * `TL_SUCCESS`;
-* `-EINVAL` if file is binary;
-* `-errno` on other failures.
+* `TL_ERROR` on errors. Sets `errno` to `-EINVAL` if a previous call to
+  `tl_history_load()` was attempted on a binary file, sets `errno` to respective
+  values on other failures.
 
 
-int tl_history_dump(const char *file_path);
+TL_STATUS_CODE tl_history_dump(const char *file_path);
 --------
 Dump history to a file, overwriting it. Should be called before tl_exit()!
 
 Returns:
 * `TL_SUCCESS`;
-* `-EINVAL` if a previous call to `tl_history_load()` was attempted on a binary
-  file.
-* `-errno` on other failures.
+* `TL_ERROR` on errors. Sets `errno` to `-EINVAL` if a previous call to
+  `tl_history_load()` was attempted on a binary file, sets `errno` to respective
+  values on other failures.
 
 
 size_t tl_utf8_strlen(const char *utf8_str);
@@ -217,14 +217,14 @@ Since number of bytes can be bigger than amount of characters, regular
 `strlen()` will not work, and will only return the number of bytes before \0.
 
 
-int tl_emit_newlines(const char *buffer);
+TL_STATUS_CODE tl_emit_newlines(const char *buffer);
 --------
 Emit newlines after getting the input.
 
 *buffer should be the buffer used in tl_readline().
 
 
-TL_DEF int tl_set_title(const char *title);
+TL_DEF TL_STATUS_CODE tl_set_title(const char *title);
 --------
 Sets a new title for the terminal. Returns -1 and does nothing if stdout is not
 a tty or amount of bytes written.

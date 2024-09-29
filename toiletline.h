@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.6.3
+ *  toiletline 0.6.4
  *  Small single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -85,26 +85,26 @@ extern "C"
 #define TL_HISTORY_MAX_SIZE 256
 #endif /* TL_HISTORY_MAX_SIZE */
 
-#define TL_SUCCESS 0
 /**
  * Codes which may be returned from reading functions.
  */
-#define TL_PRESSED_ENTER            1
-#define TL_PRESSED_INTERRUPT        2
-#define TL_PRESSED_EOF              3
-#define TL_PRESSED_SUSPEND          4
-#define TL_PRESSED_CONTROL_SEQUENCE 5
+typedef enum
+{
+  TL_SUCCESS = 0,
+  TL_PRESSED_ENTER = 1,
+  TL_PRESSED_INTERRUPT = 2,
+  TL_PRESSED_EOF = 3,
+  TL_PRESSED_SUSPEND = 4,
+  TL_PRESSED_CONTROL_SEQUENCE = 5,
+  TL_PRESSED_TAB = 6,
 
-#if defined TL_MANUAL_TAB_COMPLETION
-#define TL_PRESSED_TAB 6
-#endif /* TL_MANUAL_TAB_COMPLETION */
-
-/**
- * Codes below 0 are errors.
- */
-#define TL_ERROR       -1
-#define TL_ERROR_SIZE  -2
-#define TL_ERROR_ALLOC -3
+  /**
+   * Codes below 0 are errors.
+   */
+  TL_ERROR = -1,
+  TL_ERROR_SIZE = -2,
+  TL_ERROR_ALLOC = -3,
+} TL_STATUS_CODE;
 
 /**
  * Control sequences.
@@ -159,24 +159,25 @@ TL_DEF int *itl__last_control_location(void);
 /**
  * Initialize toiletline and put terminal in raw mode.
  */
-TL_DEF int tl_init(void);
+TL_DEF TL_STATUS_CODE tl_init(void);
 /**
  * Put the terminal into raw mode without doing anything else.
  */
-TL_DEF int tl_enter_raw_mode(void);
+TL_DEF TL_STATUS_CODE tl_enter_raw_mode(void);
 /**
  * Exit toiletline, restore terminal state, delete all completions, and free
  * internal memory.
  */
-TL_DEF int tl_exit(void);
+TL_DEF TL_STATUS_CODE tl_exit(void);
 /**
  * Restore the terminal state without doing anything else.
  */
-TL_DEF int tl_exit_raw_mode(void);
+TL_DEF TL_STATUS_CODE tl_exit_raw_mode(void);
 /**
  * Read input into the buffer.
  */
-TL_DEF int tl_readline(char *buffer, size_t buffer_size, const char *prompt);
+TL_DEF TL_STATUS_CODE tl_readline(char *buffer, size_t buffer_size,
+                                  const char *prompt);
 /**
  * Predefine input for `tl_readline()`.
  */
@@ -184,22 +185,22 @@ TL_DEF void tl_setline(const char *str);
 /**
  * Read a character without waiting and modify `tl_last_control`.
  */
-TL_DEF int tl_getc(char *char_buffer, size_t char_buffer_size,
-                   const char *prompt);
+TL_DEF TL_STATUS_CODE tl_getc(char *char_buffer, size_t char_buffer_size,
+                              const char *prompt);
 /**
  * Load history from a file.
  *
  * Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
  * failures.
  */
-TL_DEF int tl_history_load(const char *file_path);
+TL_DEF TL_STATUS_CODE tl_history_load(const char *file_path);
 /**
  * Dump history to a file, overwriting it.
  *
  * Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
  * failures.
  */
-TL_DEF int tl_history_dump(const char *file_path);
+TL_DEF TL_STATUS_CODE tl_history_dump(const char *file_path);
 /**
  * Returns the number of UTF-8 characters.
  *
@@ -212,12 +213,12 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
  *
  * *buffer should be the buffer used in tl_readline().
  */
-TL_DEF int tl_emit_newlines(const char *buffer);
+TL_DEF TL_STATUS_CODE tl_emit_newlines(const char *buffer);
 /**
  * Sets a new title for the terminal. Returns -1 and does nothing if stdout is
  * not a tty or amount of bytes written.
  */
-TL_DEF int tl_set_title(const char *title);
+TL_DEF TL_STATUS_CODE tl_set_title(const char *title);
 
 #if !defined TL_MANUAL_TAB_COMPLETION
 /**
@@ -639,7 +640,7 @@ itl_exit_raw_mode_impl(void)
 #endif /* ITL_POSIX */
 }
 
-TL_DEF int
+TL_DEF TL_STATUS_CODE
 tl_enter_raw_mode(void)
 {
   ITL_TRY(!itl_global_entered_raw_mode, return TL_SUCCESS);
@@ -657,7 +658,7 @@ tl_enter_raw_mode(void)
   return TL_SUCCESS;
 }
 
-TL_DEF int
+TL_DEF TL_STATUS_CODE
 tl_exit_raw_mode(void)
 {
   ITL_TRY(itl_global_entered_raw_mode, return TL_SUCCESS);
@@ -1596,24 +1597,11 @@ itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 #define itl_tty_status_report(buffer)                                          \
   itl_char_buf_append_cstr(buffer, "\x1b[6n")
 
-#define ITL_GOTO_END()                                                         \
-  do {                                                                         \
-    ret = -errno;                                                              \
-    goto end;                                                                  \
-  } while (0)
-
-#define ITL_GOTO_END_FILE_BAD()                                                \
-  do {                                                                         \
-    itl_global_history_free();                                                 \
-    itl_global_history_file_is_bad = true;                                     \
-    ITL_GOTO_END();                                                            \
-  } while (0)
-
 /* If this is true, do not overwrite file on `history_dump_to_file()` */
 ITL_DEF ITL_THREAD_LOCAL bool itl_global_history_file_is_bad = false;
 
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
-ITL_DEF int
+ITL_DEF TL_STATUS_CODE
 itl_global_history_load_from_file(const char *path)
 {
   ITL_FILE file;
@@ -1621,7 +1609,8 @@ itl_global_history_load_from_file(const char *path)
 
   itl_string_t   *str = itl_string_alloc();
   itl_char_buf_t *cb = itl_char_buf_alloc();
-  int             ch = 0, read_amount = 0, ret = TL_SUCCESS;
+  int             ch = 0, read_amount = 0;
+  TL_STATUS_CODE  ret = TL_SUCCESS;
   size_t          pos = 0, line = 1;
 
   /* Shut up the compiler :3c */
@@ -1640,7 +1629,8 @@ itl_global_history_load_from_file(const char *path)
     if (errno != ENOENT) {
       itl_global_history_file_is_bad = true;
     }
-    ITL_GOTO_END();
+    ret = TL_ERROR;
+    goto end;
   }
 
   is_eof = false;
@@ -1654,7 +1644,10 @@ itl_global_history_load_from_file(const char *path)
       is_eof = (read_amount == 0);
 #endif
       if (!is_eof) {
-        ITL_GOTO_END_FILE_BAD();
+        itl_global_history_free();
+        itl_global_history_file_is_bad = true;
+        ret = TL_ERROR;
+        goto end;
       }
     } else if (ch == '\r') {
       /* TODO: Multiline support for history. */
@@ -1667,8 +1660,12 @@ itl_global_history_load_from_file(const char *path)
         itl_traceln(
             "incorrect calculated string size in history file at %zu:%zu\n",
             line, pos);
+
         errno = EINVAL;
-        ITL_GOTO_END_FILE_BAD();
+        itl_global_history_free();
+        itl_global_history_file_is_bad = true;
+        ret = TL_ERROR;
+        goto end;
       }
       itl_global_history_append(str);
       itl_traceln("loaded history entry: %.*s\n", (int) cb->size, cb->data);
@@ -1679,8 +1676,12 @@ itl_global_history_load_from_file(const char *path)
     } else if (iscntrl(ch) && !isspace(ch)) {
       itl_traceln("non-text byte '%X' detected in history file at %zu:%zu\n",
                   (uint8_t) ch, line, pos);
+
       errno = EINVAL;
-      ITL_GOTO_END_FILE_BAD();
+      itl_global_history_free();
+      itl_global_history_file_is_bad = true;
+      ret = TL_ERROR;
+      goto end;
     } else {
       itl_char_buf_append_byte(cb, (uint8_t) ch);
     }
@@ -1697,19 +1698,19 @@ end:
 }
 
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
-ITL_DEF int
+ITL_DEF TL_STATUS_CODE
 itl_global_history_dump_to_file(const char *path)
 {
   ITL_FILE            file;
   itl_char_buf_t     *buffer = NULL;
   itl_history_item_t *item = NULL, *next_item = NULL;
-
-  int ret = TL_SUCCESS;
+  TL_STATUS_CODE      ret = TL_SUCCESS;
 
   TL_ASSERT(itl_global_is_active && "Dump history before calling tl_exit()!");
 
   if (itl_global_history_file_is_bad) {
-    return -EINVAL;
+    errno = EINVAL;
+    return TL_ERROR;
   }
 
   buffer = itl_char_buf_alloc();
@@ -1718,7 +1719,8 @@ itl_global_history_dump_to_file(const char *path)
   if (itl_file_is_bad(file)) {
     itl_traceln("could not open history file for dump (%s): %s\n", path,
                 strerror(errno));
-    ITL_GOTO_END();
+    ret = TL_ERROR;
+    goto end;
   }
 
   item = itl_global_history_first;
@@ -1736,7 +1738,8 @@ itl_global_history_dump_to_file(const char *path)
       if (itl_write(file, buffer->data, buffer->size) == -1 ||
           itl_write(file, "\n", 1) == -1)
       {
-        ITL_GOTO_END();
+        ret = TL_ERROR;
+        goto end;
       }
     }
     itl_char_buf_clear(buffer);
@@ -2568,7 +2571,7 @@ itl_le_complete(itl_le_t *le)
 }
 #endif /* !TL_MANUAL_TAB_COMPLETION */
 
-ITL_DEF int
+ITL_DEF TL_STATUS_CODE
 itl_le_key_handle(itl_le_t *le, int esc)
 {
   size_t i, steps;
@@ -2634,7 +2637,8 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_LEFT: {
     if (le->cursor_position > 0 && le->cursor_position <= le->line->length) {
       if (esc & TL_MOD_CTRL) {
-        cursor_was_on_space = itl_le_cursor_is_on_space(le);
+        cursor_was_on_space = itl_le_cursor_is_on_space(le) ||
+                              (le->cursor_position == le->line->length);
         steps = itl_le_steps_to_token(le, true);
         if (steps > 0) {
           itl_le_move_left(le, steps - 1);
@@ -2742,7 +2746,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
   return TL_SUCCESS;
 }
 
-TL_DEF int
+TL_DEF TL_STATUS_CODE
 tl_init(void)
 {
   TL_ASSERT(!(TL_HISTORY_MAX_SIZE & (TL_HISTORY_MAX_SIZE - 1)) &&
@@ -2766,7 +2770,7 @@ tl_init(void)
   return TL_SUCCESS;
 }
 
-TL_DEF int
+TL_DEF TL_STATUS_CODE
 tl_exit(void)
 {
   TL_ASSERT(itl_global_is_active && "tl_init() should be called");
@@ -2790,12 +2794,14 @@ tl_exit(void)
   return TL_SUCCESS;
 }
 
-TL_DEF int
+TL_DEF TL_STATUS_CODE
 tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 {
   itl_le_t le;
   uint8_t  input_byte;
-  int      input_type, code;
+  int      input_type;
+
+  TL_STATUS_CODE code;
 
   TL_ASSERT(itl_global_is_active && "tl_init() should be called");
   TL_ASSERT(
@@ -2855,7 +2861,7 @@ tl_setline(const char *str)
   itl_string_from_cstr(&itl_global_line_buffer, str);
 }
 
-TL_DEF int
+TL_DEF TL_STATUS_CODE
 tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
 {
   itl_le_t le;
@@ -2896,13 +2902,13 @@ tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
   return TL_SUCCESS;
 }
 
-TL_DEF int
+TL_DEF TL_STATUS_CODE
 tl_history_load(const char *file_path)
 {
   return itl_global_history_load_from_file(file_path);
 }
 
-TL_DEF int
+TL_DEF TL_STATUS_CODE
 tl_history_dump(const char *file_path)
 {
   return itl_global_history_dump_to_file(file_path);
@@ -2921,7 +2927,7 @@ tl_utf8_strlen(const char *utf8_str)
   return len;
 }
 
-TL_DEF int
+TL_DEF TL_STATUS_CODE
 tl_emit_newlines(const char *char_buffer)
 {
   size_t cols, i, newlines_to_emit;
@@ -2932,19 +2938,20 @@ tl_emit_newlines(const char *char_buffer)
                      itl_global_tty_prev_wrap_row + 1;
 
   for (i = 0; i < newlines_to_emit; ++i) {
-    itl_write(ITL_STDOUT, "\n", 1);
+    ITL_TRY(itl_write(ITL_STDOUT, "\n", 1) != -1, return TL_ERROR);
   }
 
   return TL_SUCCESS;
 }
 
-TL_DEF int
+TL_DEF TL_STATUS_CODE
 tl_set_title(const char *title)
 {
   if (isatty(ITL_STDOUT)) {
-    return (int) (itl_write(ITL_STDOUT, "\x1b]0;", 4) +
-                  itl_write(ITL_STDOUT, title, strlen(title)) +
-                  itl_write(ITL_STDOUT, "\x07", 1));
+    ITL_TRY(itl_write(ITL_STDOUT, "\x1b]0;", 4) != -1, return TL_ERROR);
+    ITL_TRY(itl_write(ITL_STDOUT, title, strlen(title)) != -1, return TL_ERROR);
+    ITL_TRY(itl_write(ITL_STDOUT, "\x07", 1) != -1, return TL_ERROR);
+    return TL_SUCCESS;
   }
   return TL_ERROR;
 }
