@@ -5,7 +5,7 @@
 
 #define BUFFER_SIZE 128
 
-#define test_printf(...)                                                       \
+#define TEST_PRINTF(...)                                                       \
   do {                                                                         \
     fputs(__func__, stdout);                                                   \
     printf(": "__VA_ARGS__);                                                   \
@@ -52,22 +52,22 @@ test_string_from_cstr(void)
   for (i = 0; i < countof(tests); ++i) {
     test = tests[i];
 
-    itl_string_from_cstr(str, test.original);
+    ITL_STRING_FROM_CSTR(str, test.original);
     itl_string_to_cstr(str, out_buffer, BUFFER_SIZE);
 
     result = strcmp(out_buffer, test.original);
 
     if (result != 0 || str->length != test.length || str->size != test.size) {
-      test_printf("Result %zu: '%s', should be: '%s'. Length: %zu/%zu, "
+      TEST_PRINTF("Result %zu: '%s', should be: '%s'. Length: %zu/%zu, "
                   "size: %zu/%zu\n",
                   i, out_buffer, test.original, str->length, test.length,
                   str->size, test.size);
-      itl_string_free(str);
+      ITL_STRING_FREE(str);
       return false;
     }
   }
 
-  itl_string_free(str);
+  ITL_STRING_FREE(str);
 
   return true;
 }
@@ -110,20 +110,20 @@ test_string_shift(void)
     test = tests[i];
     shift = settings[i];
 
-    itl_string_from_cstr(str, test.original);
+    ITL_STRING_FROM_CSTR(str, test.original);
     itl_string_shift(str, shift.pos, shift.count, shift.backwards);
     itl_string_to_cstr(str, out_buffer, BUFFER_SIZE);
 
     result = strcmp(out_buffer, test.should_be);
     if (result != 0) {
-      test_printf("Result %zu: '%s', should be: '%s'\n", i, out_buffer,
+      TEST_PRINTF("Result %zu: '%s', should be: '%s'\n", i, out_buffer,
                   test.should_be);
-      itl_string_free(str);
+      ITL_STRING_FREE(str);
       return false;
     }
   }
 
-  itl_string_free(str);
+  ITL_STRING_FREE(str);
 
   return true;
 }
@@ -163,20 +163,20 @@ test_string_erase(void)
     test = tests[i];
     erase = settings[i];
 
-    itl_string_from_cstr(str, test.original);
+    ITL_STRING_FROM_CSTR(str, test.original);
     itl_string_erase(str, erase.pos, erase.count, erase.backwards);
     itl_string_to_cstr(str, out_buffer, BUFFER_SIZE);
 
     result = strcmp(out_buffer, test.should_be);
     if (result != 0) {
-      test_printf("Result %zu: '%s', should be: '%s'\n", i, out_buffer,
+      TEST_PRINTF("Result %zu: '%s', should be: '%s'\n", i, out_buffer,
                   test.should_be);
-      itl_string_free(str);
+      ITL_STRING_FREE(str);
       return false;
     }
   }
 
-  itl_string_free(str);
+  ITL_STRING_FREE(str);
 
   return true;
 }
@@ -207,20 +207,20 @@ test_string_insert(void)
     test = tests[i];
     pos = positions[i];
 
-    itl_string_from_cstr(str, test.original);
+    ITL_STRING_FROM_CSTR(str, test.original);
     itl_string_insert(str, pos, A);
     itl_string_to_cstr(str, out_buffer, BUFFER_SIZE);
 
     result = strcmp(out_buffer, test.should_be);
     if (result != 0) {
-      test_printf("Result %zu: '%s', should be: '%s'\n", i, out_buffer,
+      TEST_PRINTF("Result %zu: '%s', should be: '%s'\n", i, out_buffer,
                   test.should_be);
-      itl_string_free(str);
+      ITL_STRING_FREE(str);
       return false;
     }
   }
 
-  itl_string_free(str);
+  ITL_STRING_FREE(str);
 
   return true;
 }
@@ -260,17 +260,17 @@ test_string_split(void)
   for (i = 0; i < countof(tests); ++i) {
     cstr = tests[i];
 
-    itl_string_from_cstr(str, cstr);
+    ITL_STRING_FROM_CSTR(str, cstr);
     split = itl_string_split(str, ' ');
 
     for (j = 0; j < SPLIT_POSITION_COUNT; ++j) {
       pos = positions[i][j];
       offset = split->offsets[j];
       if (offset->start != pos.start || offset->end != pos.end) {
-        test_printf("Result %zu: '%s', split %zu: start %zu/%zu, end "
+        TEST_PRINTF("Result %zu: '%s', split %zu: start %zu/%zu, end "
                     "%zu/%zu\n",
                     i, cstr, j, offset->start, pos.start, offset->end, pos.end);
-        itl_string_free(str);
+        ITL_STRING_FREE(str);
         itl_split_free(split);
         return false;
       }
@@ -279,7 +279,7 @@ test_string_split(void)
     itl_split_free(split);
   }
 
-  itl_string_free(str);
+  ITL_STRING_FREE(str);
 
   return true;
 }
@@ -292,10 +292,10 @@ test_char_buf(void)
 
   const char *should_be = "привет, мир help me3912033312 ЛОЛ";
 
-  itl_string_from_cstr(str, "привет, ");
+  ITL_STRING_FROM_CSTR(str, "привет, ");
   itl_char_buf_append_string(cb, str);
   itl_char_buf_append_cstr(cb, "мир ");
-  itl_string_from_cstr(str, "help");
+  ITL_STRING_FROM_CSTR(str, "help");
   itl_char_buf_append_string(cb, str);
   itl_char_buf_append_byte(cb, ' ');
   itl_char_buf_append_byte(cb, 'm');
@@ -310,15 +310,15 @@ test_char_buf(void)
   cb->data[cb->size] = '\0';
 
   if (cb->size != strlen(should_be) || strcmp(should_be, cb->data) != 0) {
-    test_printf("Result: '%s', should be: '%s', len: %zu/%zu\n", cb->data,
+    TEST_PRINTF("Result: '%s', should be: '%s', len: %zu/%zu\n", cb->data,
                 should_be, cb->size, strlen(should_be));
-    itl_string_free(str);
-    itl_char_buf_free(cb);
+    ITL_STRING_FREE(str);
+    ITL_CHAR_BUF_FREE(cb);
     return false;
   }
 
-  itl_string_free(str);
-  itl_char_buf_free(cb);
+  ITL_STRING_FREE(str);
+  ITL_CHAR_BUF_FREE(cb);
 
   return true;
 }
@@ -334,7 +334,7 @@ test_parse_size(void)
   for (i = 0, offset = 0; i < countof(should_be); ++i) {
     diff = itl_parse_size(test_string + offset, &result);
     if (result != should_be[i]) {
-      test_printf("Result: '%zu', should be: '%zu', diff: %zu, "
+      TEST_PRINTF("Result: '%zu', should be: '%zu', diff: %zu, "
                   "offset %zu\n",
                   result, should_be[i], diff, offset);
       return false;
