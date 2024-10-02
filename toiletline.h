@@ -209,6 +209,11 @@ TL_DEF TL_STATUS_CODE tl_history_dump(const char *file_path);
  */
 TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
 /**
+ * Same as above, except it stops after reading `byte_count` bytes from the
+ * string.
+ */
+TL_DEF size_t tl_utf8_strlen_n(const char *utf8_str, size_t byte_count);
+/**
  * Emit newlines after getting the input.
  *
  * *buffer should be the buffer used in tl_readline().
@@ -275,6 +280,8 @@ TL_DEF void tl_completion_delete_all(void);
 #define STDIN_FILENO  0
 #define STDOUT_FILENO 1
 
+#define ITL_ISATTY _isatty
+
 #if !defined TL_USE_STDIO
 #define ITL_STDIN  0
 #define ITL_STDOUT 1
@@ -301,7 +308,7 @@ TL_DEF void tl_completion_delete_all(void);
  */
 #define ITL_STRING_MAX_LEN 8191
 
-#define ITL_TTY_IS_TTY() _isatty(STDIN_FILENO)
+#define ITL_TTY_IS_TTY() ITL_ISATTY(STDIN_FILENO)
 
 #elif defined ITL_POSIX
 #if !defined _DEFAULT_SOURCE
@@ -329,6 +336,8 @@ TL_DEF void tl_completion_delete_all(void);
 #define ITL_STDERR 2
 #define ITL_FILE   int
 
+#define ITL_ISATTY isatty
+
 #define ITL_FILE_OPEN_FOR_READ(path) open(path, O_RDONLY)
 #define ITL_FILE_OPEN_FOR_WRITE(path)                                          \
   open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR)
@@ -342,7 +351,7 @@ TL_DEF void tl_completion_delete_all(void);
 /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
 #define ITL_STRING_MAX_LEN 4095
 
-#define ITL_TTY_IS_TTY() isatty(STDIN_FILENO)
+#define ITL_TTY_IS_TTY() ITL_ISATTY(STDIN_FILENO)
 #endif /* ITL_POSIX */
 
 #if defined TL_DEBUG || defined TL_USE_STDIO || defined TL_SEE_BYTES
@@ -2927,8 +2936,14 @@ tl_history_dump(const char *file_path)
 TL_DEF size_t
 tl_utf8_strlen(const char *utf8_str)
 {
+  return tl_utf8_strlen_n(utf8_str, strlen(utf8_str));
+}
+
+TL_DEF size_t
+tl_utf8_strlen_n(const char *utf8_str, size_t byte_count)
+{
   size_t len = 0;
-  while (*utf8_str) {
+  while (*utf8_str && byte_count--) {
     if ((*utf8_str & 0xC0) != 0x80) {
       len += 1;
     }
@@ -2957,7 +2972,7 @@ tl_emit_newlines(const char *char_buffer)
 TL_DEF TL_STATUS_CODE
 tl_set_title(const char *title)
 {
-  if (isatty(ITL_STDOUT)) {
+  if (ITL_ISATTY(ITL_STDOUT)) {
     ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b]0;", 4) != -1, return TL_ERROR);
     ITL_TRY(ITL_WRITE(ITL_STDOUT, title, strlen(title)) != -1, return TL_ERROR);
     ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x07", 1) != -1, return TL_ERROR);

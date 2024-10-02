@@ -345,6 +345,32 @@ test_parse_size(void)
   return true;
 }
 
+static bool
+test_utf8_strlen(void)
+{
+  size_t i;
+
+  const char  *input[] = {"привет", "world", "你好世界", "hel№lo"};
+  const size_t should_be[] = {6, 5, 4, 6};
+  const size_t should_be_chopped[] = {2, 3, 1, 3};
+
+  for (i = 0; i < countof(should_be); ++i) {
+    size_t length = tl_utf8_strlen(input[i]);
+    size_t length_chopped = tl_utf8_strlen_n(input[i], 3);
+    if (length != should_be[i]) {
+      TEST_PRINTF("Length: '%zu', should be: '%zu', string: '%s'\n",
+                  length, should_be[i], input[i]);
+      return false;
+    } else if (length_chopped != should_be_chopped[i]) {
+      TEST_PRINTF("Chopped length: '%zu', should be: '%zu', string: '%s'\n",
+                  length_chopped, should_be_chopped[i], input[i]);
+      return false;
+    }
+  }
+
+  return true;
+}
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -366,7 +392,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_string_insert),
                                    DEFINE_TEST_CASE(test_string_split),
                                    DEFINE_TEST_CASE(test_char_buf),
-                                   DEFINE_TEST_CASE(test_parse_size)};
+                                   DEFINE_TEST_CASE(test_parse_size),
+                                   DEFINE_TEST_CASE(test_utf8_strlen)};
 
 int
 main(void)

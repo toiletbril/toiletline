@@ -222,7 +222,10 @@ Get the amount of characters in a UTF-8 string.
 Since number of bytes can be bigger than amount of characters, regular
 `strlen()` will not work, and will only return the number of bytes before \0.
 
-Returns `TL_SUCCESS` or `TL_ERROR` on errors.
+
+size_t tl_utf8_strlen_n(const char *utf8_str, size_t byte_count);
+-----------------------------------------------------------------
+Same as above, except it stops after reading `byte_count` bytes from the string.
 
 
 TL_STATUS_CODE tl_emit_newlines(const char *buffer);
