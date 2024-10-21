@@ -223,7 +223,7 @@ Since number of bytes can be bigger than amount of characters, regular
 `strlen()` will not work, and will only return the number of bytes before \0.
 
 
-size_t tl_utf8_strlen_n(const char *utf8_str, size_t byte_count);
+size_t tl_utf8_strnlen(const char *utf8_str, size_t byte_count);
 -----------------------------------------------------------------
 Same as above, except it stops after reading `byte_count` bytes from the string.
 

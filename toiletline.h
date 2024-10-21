@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.6.4
+ *  toiletline 0.6.5
  *  Small single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -212,7 +212,7 @@ TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
  * Same as above, except it stops after reading `byte_count` bytes from the
  * string.
  */
-TL_DEF size_t tl_utf8_strlen_n(const char *utf8_str, size_t byte_count);
+TL_DEF size_t tl_utf8_strnlen(const char *utf8_str, size_t byte_count);
 /**
  * Emit newlines after getting the input.
  *
@@ -495,11 +495,11 @@ itl_unreachable_impl(const char *file, int line, const char *message)
 #define ITL_TRACELN(...) fprintf(stderr, "\n[TRACE] " __VA_ARGS__)
 #else /* TL_DEBUG */
 #if defined ITL_C89
-ITL_DEF void
+ITL_DEF inline void
 itl_do_nothing()
 {}
 #define ITL_TRACELN(...) itl_do_nothing()
-#else /* ITL_C89 */
+#else                    /* ITL_C89 */
 #define ITL_TRACELN(...) /* nothing */
 #endif
 #endif
@@ -523,16 +523,15 @@ itl_do_nothing()
     }                                                                          \
   } while (0)
 
-ITL_DEF ITL_THREAD_LOCAL bool itl_global_is_active = false;
-ITL_DEF ITL_THREAD_LOCAL bool itl_global_entered_raw_mode = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_active = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_entered_raw_mode = false;
 #if defined ITL_WIN32
-ITL_DEF ITL_THREAD_LOCAL DWORD itl_global_original_tty_in_mode = 0;
-ITL_DEF ITL_THREAD_LOCAL DWORD itl_global_original_tty_out_mode = 0;
-ITL_DEF ITL_THREAD_LOCAL UINT  itl_global_original_tty_cp = 0;
-ITL_DEF ITL_THREAD_LOCAL int   itl_global_original_mode = 0;
+ITL_DEF ITL_THREAD_LOCAL DWORD itl_g_original_tty_in_mode = 0;
+ITL_DEF ITL_THREAD_LOCAL DWORD itl_g_original_tty_out_mode = 0;
+ITL_DEF ITL_THREAD_LOCAL UINT  itl_g_original_tty_cp = 0;
+ITL_DEF ITL_THREAD_LOCAL int   itl_g_original_mode = 0;
 #elif defined ITL_POSIX
-ITL_DEF ITL_THREAD_LOCAL struct termios itl_global_original_tty_mode =
-    ITL_ZERO_INIT;
+ITL_DEF ITL_THREAD_LOCAL struct termios itl_g_original_tty_mode = ITL_ZERO_INIT;
 #endif /* ITL_POSIX */
 
 ITL_DEF bool
@@ -553,10 +552,10 @@ itl_enter_raw_mode_impl(void)
   ITL_TRY(GetConsoleMode(stdin_handle, &tty_in_mode), return false);
 
   /* TODO: Look at this later. */
-  itl_global_original_tty_in_mode = tty_in_mode;
+  itl_g_original_tty_in_mode = tty_in_mode;
   tty_in_mode = (DWORD) 0;
 
-  itl_global_original_tty_out_mode = tty_out_mode;
+  itl_g_original_tty_out_mode = tty_out_mode;
 #if !defined ITL_NO_WIN_ESCAPES
   tty_out_mode = (DWORD) ENABLE_PROCESSED_INPUT |
                  ENABLE_VIRTUAL_TERMINAL_PROCESSING |
@@ -571,18 +570,18 @@ itl_enter_raw_mode_impl(void)
   codepage = GetConsoleCP();
   ITL_TRY(codepage != 0, return false);
 
-  itl_global_original_tty_cp = codepage;
+  itl_g_original_tty_cp = codepage;
   ITL_TRY(SetConsoleCP(CP_UTF8), return false);
 
   mode = _setmode(STDIN_FILENO, _O_BINARY);
   ITL_TRY(mode != -1, return false);
 
-  itl_global_original_mode = mode;
+  itl_g_original_mode = mode;
 #elif defined ITL_POSIX
   struct termios term;
   ITL_TRY(tcgetattr(STDIN_FILENO, &term) == 0, return false);
 
-  itl_global_original_tty_mode = term;
+  itl_g_original_tty_mode = term;
   cfmakeraw(&term);
   term.c_oflag = OPOST | ONLCR;
 
@@ -604,36 +603,31 @@ itl_exit_raw_mode_impl(void)
   stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
   ITL_TRY(stdout_handle != INVALID_HANDLE_VALUE, something_failed = true);
 
-  if (stdin_handle != INVALID_HANDLE_VALUE &&
-      itl_global_original_tty_in_mode != 0)
-  {
-    ITL_TRY(SetConsoleMode(stdin_handle, itl_global_original_tty_in_mode),
+  if (stdin_handle != INVALID_HANDLE_VALUE && itl_g_original_tty_in_mode != 0) {
+    ITL_TRY(SetConsoleMode(stdin_handle, itl_g_original_tty_in_mode),
             something_failed = true);
   }
-  if (stdout_handle != INVALID_HANDLE_VALUE &&
-      itl_global_original_tty_out_mode != 0)
+  if (stdout_handle != INVALID_HANDLE_VALUE && itl_g_original_tty_out_mode != 0)
   {
-    ITL_TRY(SetConsoleMode(stdout_handle, itl_global_original_tty_out_mode),
+    ITL_TRY(SetConsoleMode(stdout_handle, itl_g_original_tty_out_mode),
             something_failed = true);
   }
-  if (itl_global_original_tty_cp != 0) {
-    ITL_TRY(SetConsoleCP(itl_global_original_tty_cp), something_failed = true);
+  if (itl_g_original_tty_cp != 0) {
+    ITL_TRY(SetConsoleCP(itl_g_original_tty_cp), something_failed = true);
   }
-  if (itl_global_original_mode != 0) {
-    ITL_TRY(_setmode(STDIN_FILENO, itl_global_original_mode) != -1,
+  if (itl_g_original_mode != 0) {
+    ITL_TRY(_setmode(STDIN_FILENO, itl_g_original_mode) != -1,
             something_failed = true);
   }
 
   return !something_failed;
 #elif defined ITL_POSIX
-  struct termios zeroed_termios;
-  memset(&zeroed_termios, 0, sizeof(struct termios));
+  struct termios zeroed_termios = ITL_ZERO_INIT;
 
-  if (memcmp(&itl_global_original_tty_mode, &zeroed_termios,
+  if (memcmp(&itl_g_original_tty_mode, &zeroed_termios,
              sizeof(struct termios)) != 0)
   {
-    ITL_TRY(tcsetattr(STDIN_FILENO, TCSAFLUSH, &itl_global_original_tty_mode) ==
-                0,
+    ITL_TRY(tcsetattr(STDIN_FILENO, TCSAFLUSH, &itl_g_original_tty_mode) == 0,
             return false);
   }
 
@@ -644,7 +638,7 @@ itl_exit_raw_mode_impl(void)
 TL_DEF TL_STATUS_CODE
 tl_enter_raw_mode(void)
 {
-  ITL_TRY(!itl_global_entered_raw_mode, return TL_SUCCESS);
+  ITL_TRY(!itl_g_entered_raw_mode, return TL_SUCCESS);
 
   ITL_TRY(ITL_TTY_IS_TTY(), return TL_ERROR);
 
@@ -654,7 +648,7 @@ tl_enter_raw_mode(void)
     return TL_ERROR;
   });
 
-  itl_global_entered_raw_mode = true;
+  itl_g_entered_raw_mode = true;
 
   return TL_SUCCESS;
 }
@@ -662,18 +656,18 @@ tl_enter_raw_mode(void)
 TL_DEF TL_STATUS_CODE
 tl_exit_raw_mode(void)
 {
-  ITL_TRY(itl_global_entered_raw_mode, return TL_SUCCESS);
+  ITL_TRY(itl_g_entered_raw_mode, return TL_SUCCESS);
 
   ITL_TRY(ITL_TTY_IS_TTY(), return TL_ERROR);
   ITL_TRY(itl_exit_raw_mode_impl(), return TL_ERROR);
 
-  itl_global_entered_raw_mode = false;
+  itl_g_entered_raw_mode = false;
 
   return TL_SUCCESS;
 }
 
 ITL_DEF bool
-ITL_READ_byte(uint8_t *buffer)
+ITL_READ_BYTE(uint8_t *buffer)
 {
   int byte = ITL_READ_byte_raw();
 #if defined ITL_POSIX
@@ -685,7 +679,7 @@ ITL_READ_byte(uint8_t *buffer)
   return true;
 }
 
-#define ITL_TRY_READ_BYTE(buffer, expr) ITL_TRY(ITL_READ_byte(buffer), expr)
+#define ITL_TRY_READ_BYTE(buffer, expr) ITL_TRY(ITL_READ_BYTE(buffer), expr)
 
 #if defined ITL_SUSPEND
 #if defined ITL_POSIX
@@ -714,7 +708,9 @@ itl_raise_suspend(void)
 #endif
 #endif /* ITL_SUSPEND */
 
-ITL_DEF ITL_THREAD_LOCAL size_t itl_global_alloc_count = 0;
+ITL_DEF bool itl_g_tty_changed_size = true;
+
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_alloc_count = 0;
 
 ITL_DEF void *
 itl_malloc(size_t size)
@@ -724,7 +720,7 @@ itl_malloc(size_t size)
   TL_ASSERT(size > 0);
 
   allocated = TL_MALLOC(size);
-  itl_global_alloc_count += 1;
+  itl_g_alloc_count += 1;
 
 #if !defined TL_NO_ABORT
   ITL_TRY(allocated != NULL, TL_ABORT());
@@ -742,7 +738,7 @@ itl_realloc(void *block, size_t size)
 
   if (block == NULL) {
     allocated = TL_MALLOC(size);
-    itl_global_alloc_count += 1;
+    itl_g_alloc_count += 1;
   } else {
     allocated = TL_REALLOC(block, size);
   }
@@ -760,12 +756,12 @@ itl_realloc(void *block, size_t size)
     TL_ASSERT((ptr) != NULL);                                                  \
     memset(ptr, 0x7F, sizeof(*ptr));                                           \
     TL_FREE(ptr);                                                              \
-    itl_global_alloc_count -= 1;                                               \
+    itl_g_alloc_count -= 1;                                                    \
   } while (0)
 #else /* TL_DEBUG */
 #define ITL_FREE(ptr)                                                          \
   do {                                                                         \
-    itl_global_alloc_count -= 1;                                               \
+    itl_g_alloc_count -= 1;                                                    \
     TL_FREE(ptr);                                                              \
   } while (0)
 #endif
@@ -1093,12 +1089,13 @@ itl_string_insert(itl_string_t *str, size_t position, itl_utf8_t ch)
 #define ITL_LF_LEN 1
 #endif /* ITL_POSIX */
 
-ITL_DEF bool
+ITL_DEF TL_STATUS_CODE
 itl_string_to_cstr(const itl_string_t *str, char *cstr, size_t cstr_size)
 {
   size_t i, j, k;
 
   for (i = 0, k = 0; i < str->length; ++i) {
+    /* FIXME: This sometimes explodes. */
     if (k + 1 >= cstr_size || cstr_size - k - 1 < str->chars[i].size) {
       break;
     }
@@ -1109,10 +1106,10 @@ itl_string_to_cstr(const itl_string_t *str, char *cstr, size_t cstr_size)
   cstr[k] = '\0';
 
   if (k != str->size) {
-    return false;
+    return TL_ERROR_SIZE;
   }
 
-  return true;
+  return TL_SUCCESS;
 }
 
 ITL_DEF bool
@@ -1157,11 +1154,11 @@ struct itl_history_item
   itl_history_item_t *prev;
 };
 
-ITL_DEF ITL_THREAD_LOCAL itl_history_item_t *itl_global_history_last = NULL;
-ITL_DEF ITL_THREAD_LOCAL itl_history_item_t *itl_global_history_first = NULL;
-ITL_DEF ITL_THREAD_LOCAL size_t              itl_global_history_length = 0;
+ITL_DEF ITL_THREAD_LOCAL itl_history_item_t *itl_g_history_last = NULL;
+ITL_DEF ITL_THREAD_LOCAL itl_history_item_t *itl_g_history_first = NULL;
+ITL_DEF ITL_THREAD_LOCAL size_t              itl_g_history_length = 0;
 
-ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_global_line_buffer = ITL_ZERO_INIT;
+ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_g_line_buffer = ITL_ZERO_INIT;
 
 typedef struct itl_le itl_le_t;
 
@@ -1181,6 +1178,8 @@ struct itl_le
 
   const char *prompt;
   size_t      prompt_size;
+
+  bool should_refresh_text;
 };
 
 ITL_DEF itl_history_item_t *
@@ -1205,11 +1204,11 @@ itl_history_item_alloc(const itl_string_t *str)
   } while (0)
 
 ITL_DEF void
-itl_global_history_free(void)
+itl_g_history_free(void)
 {
   itl_history_item_t *item, *prev_item;
 
-  if ((item = itl_global_history_last) == NULL) {
+  if ((item = itl_g_history_last) == NULL) {
     return;
   }
 
@@ -1222,71 +1221,68 @@ itl_global_history_free(void)
     item = prev_item;
   }
 
-  itl_global_history_length = 0;
+  itl_g_history_length = 0;
 
-  itl_global_history_last = NULL;
-  itl_global_history_first = NULL;
+  itl_g_history_last = NULL;
+  itl_g_history_first = NULL;
 }
 
 ITL_DEF bool
-itl_global_history_append(const itl_string_t *str)
+itl_g_history_append(const itl_string_t *str)
 {
   /* If history size was exceeded, release the last item first */
-  if (itl_global_history_length >= TL_HISTORY_MAX_SIZE) {
-    if (itl_global_history_first) {
-      itl_history_item_t *next_item = itl_global_history_first->next;
-      ITL_HISTORY_ITEM_FREE(itl_global_history_first);
+  if (itl_g_history_length >= TL_HISTORY_MAX_SIZE) {
+    if (itl_g_history_first) {
+      itl_history_item_t *next_item = itl_g_history_first->next;
+      ITL_HISTORY_ITEM_FREE(itl_g_history_first);
 
-      itl_global_history_first = next_item;
+      itl_g_history_first = next_item;
 
-      if (itl_global_history_first) {
-        itl_global_history_first->prev = NULL;
+      if (itl_g_history_first) {
+        itl_g_history_first->prev = NULL;
       }
 
-      itl_global_history_length -= 1;
+      itl_g_history_length -= 1;
     }
   }
 
-  if (itl_global_history_last == NULL) {
-    itl_global_history_last = itl_history_item_alloc(str);
-    itl_global_history_first = itl_global_history_last;
+  if (itl_g_history_last == NULL) {
+    itl_g_history_last = itl_history_item_alloc(str);
+    itl_g_history_first = itl_g_history_last;
   } else {
     itl_history_item_t *item;
 
     /* Do not append the same string */
-    if (itl_string_equal(itl_global_history_last->str, str)) {
+    if (itl_string_equal(itl_g_history_last->str, str)) {
       return false;
     }
 
     item = itl_history_item_alloc(str);
-    item->prev = itl_global_history_last;
-    itl_global_history_last->next = item;
-    itl_global_history_last = item;
+    item->prev = itl_g_history_last;
+    itl_g_history_last->next = item;
+    itl_g_history_last = item;
   }
 
-  itl_global_history_length += 1;
+  itl_g_history_length += 1;
 
   return true;
 }
 
-ITL_DEF itl_le_t
-itl_le_new(itl_string_t *line_buf, char *out_buf, size_t out_size,
-           const char *prompt)
+ITL_DEF void
+itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
+            size_t out_size, const char *prompt)
 {
-  itl_le_t le = ITL_ZERO_INIT;
-
   /* clang-format off */
-  le.line                  = line_buf;
-  le.cursor_position       = line_buf->length;
-  le.appended_to_history   = false;
-  le.history_selected_item = NULL;
-  le.out_buf               = out_buf;
-  le.out_size              = out_size;
-  le.prompt                = prompt;
-  le.prompt_size           = (prompt != NULL) ? strlen(prompt) : 0;
+  le->line                  = line_buf;
+  le->cursor_position       = line_buf->length;
+  le->appended_to_history   = false;
+  le->history_selected_item = NULL;
+  le->out_buf               = out_buf;
+  le->out_size              = out_size;
+  le->prompt                = prompt;
+  le->prompt_size           = (prompt != NULL) ? strlen(prompt) : 0;
+  le->should_refresh_text   = true;
   /* clang-format on */
-
-  return le;
 }
 
 ITL_DEF void
@@ -1386,7 +1382,6 @@ itl_string_steps_to_token(const itl_string_t *str, size_t position,
     case ITL_TOKEN_SPACE: should_break = !ITL_CHAR_IS_SPACE(b); break;
     default: ITL_UNREACHABLE();
     }
-
     if (should_break) {
       break;
     }
@@ -1427,9 +1422,9 @@ itl_le_clear_line(itl_le_t *le)
 }
 
 ITL_DEF void
-itl_global_history_get_prev(itl_le_t *le)
+itl_g_history_get_prev(itl_le_t *le)
 {
-  if (itl_global_history_last == NULL) {
+  if (itl_g_history_last == NULL) {
     return;
   }
 
@@ -1438,7 +1433,7 @@ itl_global_history_get_prev(itl_le_t *le)
       le->history_selected_item = le->history_selected_item->prev;
     }
   } else {
-    le->history_selected_item = itl_global_history_last;
+    le->history_selected_item = itl_g_history_last;
   }
 
   TL_ASSERT(le->history_selected_item);
@@ -1449,7 +1444,7 @@ itl_global_history_get_prev(itl_le_t *le)
 }
 
 ITL_DEF void
-itl_global_history_get_next(itl_le_t *le)
+itl_g_history_get_next(itl_le_t *le)
 {
   if (le->history_selected_item && le->history_selected_item->next) {
     le->history_selected_item = le->history_selected_item->next;
@@ -1542,7 +1537,7 @@ itl_char_buf_append_size_t(itl_char_buf_t *cb, size_t n)
   cb->size = new_size;
 }
 
-ITL_DEF void
+ITL_DEF TL_STATUS_CODE
 itl_char_buf_append_string(itl_char_buf_t *cb, const itl_string_t *str)
 {
   char *data;
@@ -1550,9 +1545,13 @@ itl_char_buf_append_string(itl_char_buf_t *cb, const itl_string_t *str)
   while (cb->capacity < cb->size + str->size) {
     itl_char_buf_extend(cb);
   }
+
   data = cb->data + (cb->size * sizeof(char));
-  itl_string_to_cstr(str, data, str->size + 1);
+  ITL_TRY(itl_string_to_cstr(str, data, str->size + 1) == TL_SUCCESS,
+          return TL_ERROR_SIZE);
   cb->size += str->size; /* Ignore null at the end */
+
+  return TL_SUCCESS;
 }
 
 ITL_DEF void
@@ -1617,11 +1616,11 @@ itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
   itl_char_buf_append_cstr(buffer, "\x1b[6n")
 
 /* If this is true, do not overwrite file on `history_dump_to_file()` */
-ITL_DEF ITL_THREAD_LOCAL bool itl_global_history_file_is_bad = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_file_is_bad = false;
 
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF TL_STATUS_CODE
-itl_global_history_load_from_file(const char *path)
+itl_history_load_from_file(const char *path)
 {
   ITL_FILE file;
   bool     is_eof = false;
@@ -1636,8 +1635,8 @@ itl_global_history_load_from_file(const char *path)
   (void) pos;
   (void) line;
 
-  itl_global_history_free();
-  itl_global_history_file_is_bad = false;
+  itl_g_history_free();
+  itl_g_history_file_is_bad = false;
 
   file = ITL_FILE_OPEN_FOR_READ(path);
   if (ITL_FILE_IS_BAD(file)) {
@@ -1646,7 +1645,7 @@ itl_global_history_load_from_file(const char *path)
     /* Do not mark file as bad if it does not exist. `dump_to_file` will
        create it. */
     if (errno != ENOENT) {
-      itl_global_history_file_is_bad = true;
+      itl_g_history_file_is_bad = true;
     }
     ret = TL_ERROR;
     goto end;
@@ -1663,8 +1662,8 @@ itl_global_history_load_from_file(const char *path)
       is_eof = (read_amount == 0);
 #endif
       if (!is_eof) {
-        itl_global_history_free();
-        itl_global_history_file_is_bad = true;
+        itl_g_history_free();
+        itl_g_history_file_is_bad = true;
         ret = TL_ERROR;
         goto end;
       }
@@ -1681,12 +1680,12 @@ itl_global_history_load_from_file(const char *path)
             line, pos);
 
         errno = EINVAL;
-        itl_global_history_free();
-        itl_global_history_file_is_bad = true;
+        itl_g_history_free();
+        itl_g_history_file_is_bad = true;
         ret = TL_ERROR;
         goto end;
       }
-      itl_global_history_append(str);
+      itl_g_history_append(str);
       ITL_TRACELN("loaded history entry: %.*s\n", (int) cb->size, cb->data);
       ITL_CHAR_BUF_CLEAR(cb);
       pos = 0;
@@ -1697,8 +1696,8 @@ itl_global_history_load_from_file(const char *path)
                   (uint8_t) ch, line, pos);
 
       errno = EINVAL;
-      itl_global_history_free();
-      itl_global_history_file_is_bad = true;
+      itl_g_history_free();
+      itl_g_history_file_is_bad = true;
       ret = TL_ERROR;
       goto end;
     } else {
@@ -1718,16 +1717,16 @@ end:
 
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF TL_STATUS_CODE
-itl_global_history_dump_to_file(const char *path)
+itl_history_dump_to_file(const char *path)
 {
   ITL_FILE            file;
   itl_char_buf_t     *buffer = NULL;
   itl_history_item_t *item = NULL, *next_item = NULL;
   TL_STATUS_CODE      ret = TL_SUCCESS;
 
-  TL_ASSERT(itl_global_is_active && "Dump history before calling tl_exit()!");
+  TL_ASSERT(itl_g_is_active && "Dump history before calling tl_exit()!");
 
-  if (itl_global_history_file_is_bad) {
+  if (itl_g_history_file_is_bad) {
     errno = EINVAL;
     return TL_ERROR;
   }
@@ -1742,7 +1741,7 @@ itl_global_history_dump_to_file(const char *path)
     goto end;
   }
 
-  item = itl_global_history_first;
+  item = itl_g_history_first;
   if (item == NULL) {
     goto end;
   }
@@ -1752,7 +1751,10 @@ itl_global_history_dump_to_file(const char *path)
   }
   while (item) {
     next_item = item->next;
-    itl_char_buf_append_string(buffer, item->str);
+    ITL_TRY(itl_char_buf_append_string(buffer, item->str) == TL_SUCCESS, {
+      ret = TL_ERROR_SIZE;
+      goto end;
+    });
     if (item->str->length > 1) {
       if (ITL_WRITE(file, buffer->data, buffer->size) == -1 ||
           ITL_WRITE(file, "\n", 1) == -1)
@@ -1949,8 +1951,8 @@ itl_esc_parse(uint8_t byte)
 #endif /* ITL_POSIX */
 }
 
-ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_global_char_buffer = ITL_ZERO_INIT;
-ITL_DEF ITL_THREAD_LOCAL bool           itl_global_tty_is_dumb = true;
+ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_char_buffer = ITL_ZERO_INIT;
+ITL_DEF ITL_THREAD_LOCAL bool           itl_g_tty_is_dumb = true;
 
 /* *le, *rows, *cols can be NULL. */
 ITL_DEF bool
@@ -1969,14 +1971,14 @@ itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows, size_t *cols)
   struct winsize window;
 #endif
 
-  if (itl_global_tty_is_dumb) {
+  if (itl_g_tty_is_dumb) {
     if ((emacs_buf = getenv("COLUMNS")) == NULL) {
-      itl_global_tty_is_dumb = false;
+      itl_g_tty_is_dumb = false;
       goto next;
     }
     itl_parse_size(emacs_buf, &temp_cols);
     if ((emacs_buf = getenv("LINES")) == NULL) {
-      itl_global_tty_is_dumb = false;
+      itl_g_tty_is_dumb = false;
       goto next;
     }
     itl_parse_size(emacs_buf, &temp_rows);
@@ -1990,7 +1992,7 @@ itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows, size_t *cols)
 next:
 #if defined ITL_VT_SIZE
 
-  b = &itl_global_char_buffer;
+  b = &itl_g_char_buffer;
   itl_tty_move_forward(b, 999);
   itl_tty_status_report(b);
   itl_char_buf_dump(b);
@@ -2059,16 +2061,20 @@ next:
   return false;
 }
 
-ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_lines = 1;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_global_tty_prev_wrap_row = 1;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_line_prev_rows = 1;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_line_prev_cursor_rows = 1;
+
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_rows = 1;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_cols = 1;
 
 /* NOTE: Hottest function in the library. */
 ITL_DEF bool
 itl_le_tty_refresh(itl_le_t *le)
 {
   size_t i, j, rows, cols;
-  size_t current_col, current_lines, dirty_lines;
-  size_t wrap_cursor_col, wrap_cursor_row;
+  size_t current_cols, row_amount, dirty_lines;
+  size_t cursor_column, cursor_rows;
+  size_t extra_rows_to_delete;
 
   /* Write everything into a buffer, then dump it all at once */
   itl_char_buf_t *b;
@@ -2078,75 +2084,101 @@ itl_le_tty_refresh(itl_le_t *le)
   TL_ASSERT(le->line->size >= le->line->length);
   TL_ASSERT(le->line->length <= ITL_STRING_MAX_LEN);
 
-  ITL_TRY(itl_tty_get_size(le, &rows, &cols), {
-    /* Could not get terminal size */
-    rows = 24;
-    cols = 80;
-  });
+  extra_rows_to_delete = 0;
 
-  current_lines = (le->line->length + le->prompt_size) / ITL_MAX(cols, 1) + 1;
+  if (itl_g_tty_changed_size) {
+    ITL_TRY(itl_tty_get_size(le, &rows, &cols), {
+      /* Could not get terminal size? */
+      rows = 24;
+      cols = 80;
+    });
+  } else {
+    rows = itl_g_tty_prev_rows;
+    cols = itl_g_tty_prev_cols;
+  }
 
-  wrap_cursor_col =
+  row_amount = (le->line->length + le->prompt_size) / ITL_MAX(cols, 1) + 1;
+
+  cursor_column =
       (le->cursor_position + le->prompt_size) % ITL_MAX(cols, 1) + 1;
-  wrap_cursor_row =
-      (le->cursor_position + le->prompt_size) / ITL_MAX(cols, 1) + 1;
+  cursor_rows = (le->cursor_position + le->prompt_size) / ITL_MAX(cols, 1) + 1;
 
-  ITL_TRACELN("wrow: %zu, prev: %zu, col: %zu, curp: %zu\n", wrap_cursor_row,
-              itl_global_tty_prev_wrap_row, wrap_cursor_col,
-              le->cursor_position);
+  extra_rows_to_delete = (itl_g_tty_changed_size && rows < itl_g_tty_prev_rows)
+                             ? cursor_rows - 2
+                             : 0;
 
-  b = &itl_global_char_buffer;
+  ITL_TRACELN("sr: %d, er: %zu, wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
+              le->should_refresh_text, extra_rows_to_delete, cursor_rows,
+              itl_g_line_prev_rows, cursor_column, le->cursor_position);
+
+  (void) extra_rows_to_delete;
+
+  b = &itl_g_char_buffer;
   ITL_TTY_HIDE_CURSOR(b);
 
-  /* Move appropriate amount of lines back, while clearing previous output */
-  for (i = 0; i < itl_global_tty_prev_lines; ++i) {
-    ITL_TTY_CLEAR_WHOLE_LINE(b);
-    if (i < itl_global_tty_prev_wrap_row - 1) {
-      ITL_TTY_MOVE_UP(b, 1);
-    }
-  }
-
-  if (le->prompt) {
-    itl_char_buf_append_cstr(b, le->prompt);
-  }
-
-  /* Print current contents of the line editor */
-  for (i = 0; i < le->line->length; ++i) {
-    for (j = 0; j < le->line->chars[i].size; ++j) {
-      itl_char_buf_append_byte(b, le->line->chars[i].bytes[j]);
-    }
-
-    /* If line is full, wrap */
-    current_col = (le->prompt_size + i) % ITL_MAX(cols, 1);
-    if (current_col == cols - 1) {
-      itl_char_buf_append_cstr(b, ITL_LF);
-    }
-  }
-
-  /* If current amount of lines is less than previous amount of lines, then
-     input was cleared by kill line or such. Clear each dirty line, then go
-     back up */
-  if (current_lines < itl_global_tty_prev_lines) {
-    dirty_lines = itl_global_tty_prev_lines - current_lines;
-    for (i = 0; i < dirty_lines; ++i) {
-      ITL_TTY_MOVE_DOWN(b, 1);
+  if (le->should_refresh_text) {
+    /* Move appropriate amount of lines back, while clearing previous output */
+    for (i = 0; i < itl_g_line_prev_rows + extra_rows_to_delete; ++i) {
       ITL_TTY_CLEAR_WHOLE_LINE(b);
+      if (i < itl_g_line_prev_cursor_rows + extra_rows_to_delete - 1) {
+        ITL_TTY_MOVE_UP(b, 1);
+      }
     }
-    ITL_TTY_MOVE_UP(b, dirty_lines);
+
+    if (le->prompt) {
+      itl_char_buf_append_cstr(b, le->prompt);
+    }
+
+    /* Print current contents of the line editor */
+    for (i = 0; i < le->line->length; ++i) {
+      for (j = 0; j < le->line->chars[i].size; ++j) {
+        itl_char_buf_append_byte(b, le->line->chars[i].bytes[j]);
+      }
+
+      /* If line is full, wrap */
+      current_cols = (le->prompt_size + i) % ITL_MAX(cols, 1);
+      if (current_cols == cols - 1) {
+        itl_char_buf_append_cstr(b, ITL_LF);
+      }
+    }
+
+    /* If current amount of lines is less than previous amount of lines, then
+       input was cleared by kill line or such. Clear each dirty line, then go
+       back up */
+    if (row_amount < itl_g_line_prev_rows) {
+      dirty_lines = itl_g_line_prev_rows - row_amount;
+      for (i = 0; i < dirty_lines; ++i) {
+        ITL_TTY_MOVE_DOWN(b, 1);
+        ITL_TTY_CLEAR_WHOLE_LINE(b);
+      }
+      ITL_TTY_MOVE_UP(b, dirty_lines);
+    } else {
+      /* Otherwise clear to the end of line */
+      ITL_TTY_CLEAR_TO_END(b);
+    }
+
+    /* Move cursor to appropriate row and column. If row didn't change, stay on
+       the same line */
+    if (cursor_rows < row_amount) {
+      ITL_TTY_MOVE_UP(b, row_amount - cursor_rows);
+    }
   } else {
-    /* Otherwise clear to the end of line */
-    ITL_TTY_CLEAR_TO_END(b);
+    if (cursor_rows < itl_g_line_prev_cursor_rows) {
+      ITL_TTY_MOVE_UP(b, itl_g_line_prev_cursor_rows - cursor_rows);
+    } else if (cursor_rows > itl_g_line_prev_cursor_rows) {
+      ITL_TTY_MOVE_DOWN(b, cursor_rows - itl_g_line_prev_cursor_rows);
+    }
   }
 
-  /* Move cursor to appropriate row and column. If row didn't change, stay on
-     the same line */
-  if (wrap_cursor_row < current_lines) {
-    ITL_TTY_MOVE_UP(b, current_lines - wrap_cursor_row);
-  }
-  ITL_TTY_MOVE_TO_COLUMN(b, wrap_cursor_col);
+  ITL_TTY_MOVE_TO_COLUMN(b, cursor_column);
 
-  itl_global_tty_prev_lines = current_lines;
-  itl_global_tty_prev_wrap_row = wrap_cursor_row;
+  itl_g_line_prev_rows = row_amount;
+  itl_g_line_prev_cursor_rows = cursor_rows;
+
+  itl_g_tty_prev_rows = rows;
+  itl_g_tty_prev_cols = cols;
+
+  itl_g_tty_changed_size = false;
 
   ITL_TTY_SHOW_CURSOR(b);
 
@@ -2156,12 +2188,26 @@ itl_le_tty_refresh(itl_le_t *le)
   return true;
 }
 
-ITL_DEF ITL_THREAD_LOCAL int itl_global_last_control = TL_KEY_UNKN;
+ITL_DEF ITL_THREAD_LOCAL itl_le_t itl_g_le = ITL_ZERO_INIT;
+
+#if defined ITL_POSIX
+ITL_DEF void
+itl_handle_sigwinch(int signal_number)
+{
+  if (signal_number == SIGWINCH) {
+    itl_g_tty_changed_size = true;
+  }
+  itl_g_le.should_refresh_text = true;
+  itl_le_tty_refresh(&itl_g_le);
+}
+#endif
+
+ITL_DEF ITL_THREAD_LOCAL int itl_g_last_control = TL_KEY_UNKN;
 
 TL_DEF int *
 itl__last_control_location(void)
 {
-  return &itl_global_last_control;
+  return &itl_g_last_control;
 }
 
 #if !defined TL_MANUAL_TAB_COMPLETION
@@ -2207,7 +2253,7 @@ struct itl_completion
   itl_completion_t *child;
 };
 
-ITL_DEF ITL_THREAD_LOCAL itl_completion_t *itl_global_completion_root = NULL;
+ITL_DEF ITL_THREAD_LOCAL itl_completion_t *itl_g_completion_root = NULL;
 
 ITL_DEF itl_completion_t *
 itl_completion_alloc(void)
@@ -2256,8 +2302,7 @@ itl_completion_free_all(itl_completion_t *completion)
   }
 }
 
-#define ITL_GLOBAL_COMPLETION_FREE()                                           \
-  itl_completion_free_all(itl_global_completion_root)
+#define itl_g_COMPLETION_FREE() itl_completion_free_all(itl_g_completion_root)
 
 typedef struct itl_offset itl_offset_t;
 
@@ -2440,20 +2485,21 @@ itl_completion_list_append(itl_completion_list_t *list,
 /* Minimum word width */
 #define ITL_COMPLETIONS_MARGIN 12
 
-ITL_DEF void
+ITL_DEF TL_STATUS_CODE
 itl_completion_list_dump(itl_completion_list_t *list)
 {
   itl_string_t          *str;
   size_t                 i, count = 0;
   itl_completion_list_t *next;
 
-  itl_char_buf_t *buffer = itl_char_buf_alloc();
-  itl_char_buf_append_cstr(buffer, ITL_LF);
+  itl_char_buf_t *b = itl_char_buf_alloc();
+  itl_char_buf_append_cstr(b, ITL_LF);
 
   while (true) {
     next = list->next;
     str = list->completion->str;
-    itl_char_buf_append_string(buffer, str);
+    ITL_TRY(itl_char_buf_append_string(b, str) == TL_SUCCESS,
+            return TL_ERROR_SIZE);
     count += 1;
     list = next;
     if (list == NULL) {
@@ -2461,19 +2507,21 @@ itl_completion_list_dump(itl_completion_list_t *list)
     }
     if (count < ITL_COMPLETIONS_ON_SINGLE_LINE) {
       for (i = str->length; i < ITL_COMPLETIONS_MARGIN - 2; ++i) {
-        itl_char_buf_append_byte(buffer, ' ');
+        itl_char_buf_append_byte(b, ' ');
       }
-      itl_char_buf_append_cstr(buffer, "  ");
+      itl_char_buf_append_cstr(b, "  ");
     } else {
-      itl_char_buf_append_cstr(buffer, ITL_LF);
+      itl_char_buf_append_cstr(b, ITL_LF);
       count = 0;
     }
   }
 
-  itl_char_buf_append_cstr(buffer, ITL_LF);
-  ITL_CHAR_BUF_DUMP(buffer);
+  itl_char_buf_append_cstr(b, ITL_LF);
+  ITL_CHAR_BUF_DUMP(b);
 
-  ITL_CHAR_BUF_FREE(buffer);
+  ITL_CHAR_BUF_FREE(b);
+
+  return TL_SUCCESS;
 }
 
 /* Split the string by spaces. If a split fully matches, look at it's children.
@@ -2495,7 +2543,7 @@ itl_string_complete(itl_string_t *str)
   bool went_into_child = false;
 
   itl_split_t      *split = itl_string_split(str, ' ');
-  itl_completion_t *completion = itl_global_completion_root->child;
+  itl_completion_t *completion = itl_g_completion_root->child;
 
   for (i = 0; i < split->size; ++i) {
     longest_prefix = 0;
@@ -2595,14 +2643,18 @@ itl_le_key_handle(itl_le_t *le, int esc)
   /* Remember the last control sequence. */
   tl_last_control = esc;
 
+  /* Refresh text by default, avoid if we are only moving the cursor. */
+  le->should_refresh_text = true;
+
   switch (esc & TL_MASK_KEY) {
   case TL_KEY_TAB: {
 #if !defined TL_MANUAL_TAB_COMPLETION
-    if (itl_global_completion_root != NULL) {
+    if (itl_g_completion_root != NULL) {
       itl_le_complete(le);
     }
 #else /* !TL_MANUAL_TAB_COMPLETION */
-    ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
+    ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
+                TL_SUCCESS,
             return TL_ERROR_SIZE);
     return TL_PRESSED_TAB;
 #endif
@@ -2614,26 +2666,26 @@ itl_le_key_handle(itl_le_t *le, int esc)
     if (!le->appended_to_history) {
       prev_line = itl_string_alloc();
       itl_string_copy(prev_line, le->line);
-      itl_global_history_get_prev(le);
+      itl_g_history_get_prev(le);
       /* Avoid appending same strings or empty strings */
       if (!itl_string_equal(le->line, prev_line) && prev_line->length > 0) {
-        itl_global_history_append(prev_line);
+        itl_g_history_append(prev_line);
       }
       ITL_STRING_FREE(prev_line);
       le->appended_to_history = true;
-    } else if (itl_global_history_last != NULL &&
-               itl_global_history_last == le->history_selected_item)
+    } else if (itl_g_history_last != NULL &&
+               itl_g_history_last == le->history_selected_item)
     {
       /* If some string was already appended, just update it */
-      itl_string_copy(itl_global_history_last->str, le->line);
-      itl_global_history_get_prev(le);
+      itl_string_copy(itl_g_history_last->str, le->line);
+      itl_g_history_get_prev(le);
     } else {
-      itl_global_history_get_prev(le);
+      itl_g_history_get_prev(le);
     }
   } break;
 
   case TL_KEY_DOWN: {
-    itl_global_history_get_next(le);
+    itl_g_history_get_next(le);
   } break;
 
   case TL_KEY_RIGHT: {
@@ -2649,6 +2701,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
         itl_le_move_right(le, 1);
       }
     }
+    le->should_refresh_text = false;
   } break;
   case TL_KEY_LEFT: {
     size_t steps;
@@ -2668,19 +2721,23 @@ itl_le_key_handle(itl_le_t *le, int esc)
         itl_le_move_left(le, 1);
       }
     }
+    le->should_refresh_text = false;
   } break;
 
   case TL_KEY_END: {
     itl_le_move_right(le, le->line->length - le->cursor_position);
+    le->should_refresh_text = false;
   } break;
 
   case TL_KEY_HOME: {
     itl_le_move_left(le, le->cursor_position);
+    le->should_refresh_text = false;
   } break;
   case TL_KEY_ENTER: {
-    ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size),
+    ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
+                TL_SUCCESS,
             return TL_ERROR_SIZE);
-    itl_global_history_append(le->line);
+    itl_g_history_append(le->line);
     return TL_PRESSED_ENTER;
   } break;
 
@@ -2719,7 +2776,9 @@ itl_le_key_handle(itl_le_t *le, int esc)
 #if defined ITL_SUSPEND
     itl_raise_suspend();
 #else
-    itl_string_to_cstr(le->line, le->out_buf, le->out_size);
+    ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
+                TL_SUCCESS,
+            {});
     return TL_PRESSED_SUSPEND;
 #endif /* ITL_SUSPEND */
   } break;
@@ -2728,36 +2787,40 @@ itl_le_key_handle(itl_le_t *le, int esc)
     if (le->line->length > 0) {
       ITL_LE_ERASE_FORWARD(le, 1);
     } else {
-      itl_string_to_cstr(le->line, le->out_buf, le->out_size);
+      ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
+                  TL_SUCCESS,
+              {});
       return TL_PRESSED_EOF;
     }
   } break;
 
   case TL_KEY_INTERRUPT: {
-    itl_string_to_cstr(le->line, le->out_buf, le->out_size);
+    ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
+                TL_SUCCESS,
+            {});
     return TL_PRESSED_INTERRUPT;
   } break;
 
   case TL_KEY_CLEAR: {
-    itl_char_buf_t *buffer = &itl_global_char_buffer;
-    ITL_TTY_GOTO_HOME(buffer);
-    ITL_TTY_ERASE_SCREEN(buffer);
-    ITL_CHAR_BUF_DUMP(buffer);
-    ITL_CHAR_BUF_CLEAR(buffer);
+    itl_char_buf_t *b = &itl_g_char_buffer;
+    ITL_TTY_GOTO_HOME(b);
+    ITL_TTY_ERASE_SCREEN(b);
+    ITL_CHAR_BUF_DUMP(b);
+    ITL_CHAR_BUF_CLEAR(b);
   } break;
 
   case TL_KEY_HISTORY_END: {
     size_t i;
-    for (i = 0; i < itl_global_history_length; ++i) {
-      itl_global_history_get_next(le);
+    for (i = 0; i < itl_g_history_length; ++i) {
+      itl_g_history_get_next(le);
     }
-    itl_global_history_get_prev(le);
+    itl_g_history_get_prev(le);
   } break;
 
   case TL_KEY_HISTORY_BEGINNING: {
     size_t i;
-    for (i = 0; i < itl_global_history_length; ++i) {
-      itl_global_history_get_prev(le);
+    for (i = 0; i < itl_g_history_length; ++i) {
+      itl_g_history_get_prev(le);
     }
   } break;
   }
@@ -2772,19 +2835,23 @@ tl_init(void)
             "History size must be a power of 2");
   TL_ASSERT(TL_HISTORY_MAX_SIZE >= 0 && "History size must be positive");
 
-  if (itl_global_is_active) {
+  if (itl_g_is_active) {
     return TL_SUCCESS;
   }
 
-  if (!itl_global_entered_raw_mode) {
+#if defined ITL_POSIX
+  signal(SIGWINCH, itl_handle_sigwinch);
+#endif
+
+  if (!itl_g_entered_raw_mode) {
     ITL_TRY(ITL_TTY_IS_TTY(), return TL_ERROR);
     ITL_TRY(tl_enter_raw_mode() == TL_SUCCESS, return TL_ERROR);
   }
 
-  itl_string_init(&itl_global_line_buffer);
-  itl_char_buf_init(&itl_global_char_buffer);
+  itl_string_init(&itl_g_line_buffer);
+  itl_char_buf_init(&itl_g_char_buffer);
 
-  itl_global_is_active = true;
+  itl_g_is_active = true;
 
   return TL_SUCCESS;
 }
@@ -2792,23 +2859,23 @@ tl_init(void)
 TL_DEF TL_STATUS_CODE
 tl_exit(void)
 {
-  TL_ASSERT(itl_global_is_active && "tl_init() should be called");
+  TL_ASSERT(itl_g_is_active && "tl_init() should be called");
 
-  itl_global_history_free();
+  itl_g_history_free();
 #if !defined TL_MANUAL_TAB_COMPLETION
-  ITL_GLOBAL_COMPLETION_FREE();
+  itl_g_COMPLETION_FREE();
 #endif /* !TL_MANUAL_TAB_COMPLETION */
-  ITL_FREE(itl_global_line_buffer.chars);
-  ITL_FREE(itl_global_char_buffer.data);
+  ITL_FREE(itl_g_line_buffer.chars);
+  ITL_FREE(itl_g_char_buffer.data);
 
-  ITL_TRACELN("Exited, alloc count: %zu\n", itl_global_alloc_count);
-  TL_ASSERT(itl_global_alloc_count == 0);
+  ITL_TRACELN("Exited, alloc count: %zu\n", itl_g_alloc_count);
+  TL_ASSERT(itl_g_alloc_count == 0);
 
-  if (itl_global_entered_raw_mode) {
+  if (itl_g_entered_raw_mode) {
     ITL_TRY(tl_exit_raw_mode() == TL_SUCCESS, return TL_ERROR);
   }
 
-  itl_global_is_active = false;
+  itl_g_is_active = false;
 
   return TL_SUCCESS;
 }
@@ -2816,13 +2883,13 @@ tl_exit(void)
 TL_DEF TL_STATUS_CODE
 tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 {
-  itl_le_t le;
-  uint8_t  input_byte;
-  int      input_type;
+  itl_le_t *le = &itl_g_le;
+  uint8_t   input_byte;
+  int       input_type;
 
   TL_STATUS_CODE code;
 
-  TL_ASSERT(itl_global_is_active && "tl_init() should be called");
+  TL_ASSERT(itl_g_is_active && "tl_init() should be called");
   TL_ASSERT(
       buffer_size > 1 &&
       "Size should be enough at least for one byte and a null terminator");
@@ -2831,12 +2898,12 @@ tl_readline(char *buffer, size_t buffer_size, const char *prompt)
       "Size should be less than platform's allowed maximum string length");
   TL_ASSERT(buffer != NULL);
 
-  le = itl_le_new(&itl_global_line_buffer, buffer, buffer_size, prompt);
+  itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
 
   /* Avoid clearing lines that don't belong to us. */
-  itl_global_tty_prev_lines = 1;
-  itl_global_tty_prev_wrap_row = 1;
-  itl_le_tty_refresh(&le);
+  itl_g_line_prev_rows = 1;
+  itl_g_line_prev_cursor_rows = 1;
+  itl_le_tty_refresh(le);
 
   while (true) {
     ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
@@ -2855,18 +2922,19 @@ tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 
     input_type = itl_esc_parse(input_byte);
     if (input_type != TL_KEY_CHAR) {
-      code = itl_le_key_handle(&le, input_type);
+      code = itl_le_key_handle(le, input_type);
       if (code != TL_SUCCESS) {
-        itl_le_clear_line(&le);
+        itl_le_clear_line(le);
         return code;
       }
     } else {
-      itl_le_insert(&le, itl_utf8_parse(input_byte));
+      itl_le_insert(le, itl_utf8_parse(input_byte));
+      le->should_refresh_text = true;
     }
 
-    ITL_TRACELN("strlen: %zu, hist: %zu\n", le.line->length,
-                (size_t) le.history_selected_item);
-    itl_le_tty_refresh(&le);
+    ITL_TRACELN("strlen: %zu, hist: %zu\n", le->line->length,
+                (size_t) le->history_selected_item);
+    itl_le_tty_refresh(le);
   }
 
   ITL_UNREACHABLE();
@@ -2875,19 +2943,19 @@ tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 TL_DEF void
 tl_setline(const char *str)
 {
-  TL_ASSERT(itl_global_is_active && "tl_init() should be called");
-  itl_string_shrink(&itl_global_line_buffer);
-  ITL_STRING_FROM_CSTR(&itl_global_line_buffer, str);
+  TL_ASSERT(itl_g_is_active && "tl_init() should be called");
+  itl_string_shrink(&itl_g_line_buffer);
+  ITL_STRING_FROM_CSTR(&itl_g_line_buffer, str);
 }
 
 TL_DEF TL_STATUS_CODE
 tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
 {
-  itl_le_t le;
-  uint8_t  input_byte = 0;
-  int      input_type = TL_KEY_UNKN;
+  itl_le_t *le = &itl_g_le;
+  uint8_t   input_byte = 0;
+  int       input_type = TL_KEY_UNKN;
 
-  TL_ASSERT(itl_global_is_active && "tl_init() should be called");
+  TL_ASSERT(itl_g_is_active && "tl_init() should be called");
   TL_ASSERT(
       char_buffer_size > 1 &&
       "Size should be enough at least for one byte and a null terminator");
@@ -2896,15 +2964,14 @@ tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
             "terminator.");
   TL_ASSERT(char_buffer != NULL);
 
-  le = itl_le_new(&itl_global_line_buffer, char_buffer, char_buffer_size,
-                  prompt);
+  itl_le_init(le, &itl_g_line_buffer, char_buffer, char_buffer_size, prompt);
 
   /* Avoid overriding buffer if tl_setline was used */
-  if (itl_global_line_buffer.length != 0) {
-    itl_string_clear(&itl_global_line_buffer);
+  if (itl_g_line_buffer.length != 0) {
+    itl_string_clear(&itl_g_line_buffer);
   }
 
-  itl_le_tty_refresh(&le);
+  itl_le_tty_refresh(le);
   ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
 
   input_type = itl_esc_parse(input_byte);
@@ -2913,10 +2980,13 @@ tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
     return TL_PRESSED_CONTROL_SEQUENCE;
   }
 
-  itl_le_insert(&le, itl_utf8_parse(input_byte));
-  itl_le_tty_refresh(&le);
-  itl_string_to_cstr(le.line, char_buffer, char_buffer_size);
-  itl_le_clear_line(&le);
+  itl_le_insert(le, itl_utf8_parse(input_byte));
+  le->should_refresh_text = true;
+  itl_le_tty_refresh(le);
+  ITL_TRY(itl_string_to_cstr(le->line, char_buffer, char_buffer_size) ==
+              TL_SUCCESS,
+          return TL_ERROR_SIZE);
+  itl_le_clear_line(le);
 
   return TL_SUCCESS;
 }
@@ -2924,26 +2994,33 @@ tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
 TL_DEF TL_STATUS_CODE
 tl_history_load(const char *file_path)
 {
-  return itl_global_history_load_from_file(file_path);
+  return itl_history_load_from_file(file_path);
 }
 
 TL_DEF TL_STATUS_CODE
 tl_history_dump(const char *file_path)
 {
-  return itl_global_history_dump_to_file(file_path);
+  return itl_history_dump_to_file(file_path);
 }
 
 TL_DEF size_t
 tl_utf8_strlen(const char *utf8_str)
 {
-  return tl_utf8_strlen_n(utf8_str, strlen(utf8_str));
+  size_t len = 0;
+  while (*utf8_str != '\0') {
+    if ((*utf8_str & 0xC0) != 0x80) {
+      len += 1;
+    }
+    utf8_str += 1;
+  }
+  return len;
 }
 
 TL_DEF size_t
-tl_utf8_strlen_n(const char *utf8_str, size_t byte_count)
+tl_utf8_strnlen(const char *utf8_str, size_t byte_count)
 {
   size_t len = 0;
-  while (*utf8_str && byte_count--) {
+  while (*utf8_str != '\0' && byte_count-- > 0) {
     if ((*utf8_str & 0xC0) != 0x80) {
       len += 1;
     }
@@ -2960,7 +3037,7 @@ tl_emit_newlines(const char *char_buffer)
   ITL_TRY(itl_tty_get_size(NULL, NULL, &cols), return TL_ERROR);
 
   newlines_to_emit = (tl_utf8_strlen(char_buffer) / cols + 1) -
-                     itl_global_tty_prev_wrap_row + 1;
+                     itl_g_line_prev_cursor_rows + 1;
 
   for (i = 0; i < newlines_to_emit; ++i) {
     ITL_TRY(ITL_WRITE(ITL_STDOUT, "\n", 1) != -1, return TL_ERROR);
@@ -2990,10 +3067,10 @@ tl_completion_add(void *prefix, const char *label)
   ITL_STRING_FROM_CSTR(str, label);
 
   if (prefix == NULL) {
-    if (itl_global_completion_root == NULL) {
-      itl_global_completion_root = itl_completion_alloc();
+    if (itl_g_completion_root == NULL) {
+      itl_g_completion_root = itl_completion_alloc();
     }
-    prefix = itl_global_completion_root;
+    prefix = itl_g_completion_root;
   }
 
   return itl_completion_append((itl_completion_t *) prefix, str);
@@ -3030,10 +3107,10 @@ tl_completion_delete_children(void *completion)
 TL_DEF void
 tl_completion_delete_all(void)
 {
-  if (itl_global_completion_root != NULL) {
-    itl_completion_free_all(itl_global_completion_root->child);
-    ITL_COMPLETION_FREE(itl_global_completion_root);
-    itl_global_completion_root = NULL;
+  if (itl_g_completion_root != NULL) {
+    itl_completion_free_all(itl_g_completion_root->child);
+    ITL_COMPLETION_FREE(itl_g_completion_root);
+    itl_g_completion_root = NULL;
   }
 }
 #endif /* !TL_MANUAL_TAB_COMPLETION */

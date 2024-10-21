@@ -356,7 +356,7 @@ test_utf8_strlen(void)
 
   for (i = 0; i < countof(should_be); ++i) {
     size_t length = tl_utf8_strlen(input[i]);
-    size_t length_chopped = tl_utf8_strlen_n(input[i], 3);
+    size_t length_chopped = tl_utf8_strnlen(input[i], 3);
     if (length != should_be[i]) {
       TEST_PRINTF("Length: '%zu', should be: '%zu', string: '%s'\n",
                   length, should_be[i], input[i]);
