@@ -2061,9 +2061,13 @@ next:
   return false;
 }
 
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_line_prev_rows = 1;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_line_prev_cursor_rows = 1;
+/* Line editor's contents during previous refresh() call. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_rows = 1;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_rows = 1;
 
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_length = 0;
+
+/* $COLUMNS and $LINES, same as above. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_rows = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_cols = 1;
 
@@ -2071,9 +2075,9 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_cols = 1;
 ITL_DEF bool
 itl_le_tty_refresh(itl_le_t *le)
 {
-  size_t i, j, rows, cols;
-  size_t current_cols, row_amount, dirty_lines;
-  size_t cursor_column, cursor_rows;
+  size_t i, j, tty_rows, tty_cols;
+  size_t current_cols, le_row_amount, dirty_lines;
+  size_t le_cursor_column, le_cursor_rows;
   size_t extra_rows_to_delete;
 
   /* Write everything into a buffer, then dump it all at once */
@@ -2084,43 +2088,43 @@ itl_le_tty_refresh(itl_le_t *le)
   TL_ASSERT(le->line->size >= le->line->length);
   TL_ASSERT(le->line->length <= ITL_STRING_MAX_LEN);
 
+  /* FIXME: Properly refresh on size change. */
   extra_rows_to_delete = 0;
 
   if (itl_g_tty_changed_size) {
-    ITL_TRY(itl_tty_get_size(le, &rows, &cols), {
+    ITL_TRY(itl_tty_get_size(le, &tty_rows, &tty_cols), {
       /* Could not get terminal size? */
-      rows = 24;
-      cols = 80;
+      tty_rows = 24;
+      tty_cols = 80;
     });
   } else {
-    rows = itl_g_tty_prev_rows;
-    cols = itl_g_tty_prev_cols;
+    tty_rows = itl_g_tty_prev_rows;
+    tty_cols = itl_g_tty_prev_cols;
   }
 
-  row_amount = (le->line->length + le->prompt_size) / ITL_MAX(cols, 1) + 1;
+  le_row_amount =
+      (le->line->length + le->prompt_size) / ITL_MAX(tty_cols, 1) + 1;
 
-  cursor_column =
-      (le->cursor_position + le->prompt_size) % ITL_MAX(cols, 1) + 1;
-  cursor_rows = (le->cursor_position + le->prompt_size) / ITL_MAX(cols, 1) + 1;
-
-  extra_rows_to_delete = (itl_g_tty_changed_size && rows < itl_g_tty_prev_rows)
-                             ? cursor_rows - 2
-                             : 0;
+  le_cursor_column =
+      (le->cursor_position + le->prompt_size) % ITL_MAX(tty_cols, 1) + 1;
+  le_cursor_rows =
+      (le->cursor_position + le->prompt_size) / ITL_MAX(tty_cols, 1) + 1;
 
   ITL_TRACELN("sr: %d, er: %zu, wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
               le->should_refresh_text, extra_rows_to_delete, cursor_rows,
               itl_g_line_prev_rows, cursor_column, le->cursor_position);
 
-  (void) extra_rows_to_delete;
-
   b = &itl_g_char_buffer;
   ITL_TTY_HIDE_CURSOR(b);
 
+  /* FIXME: Fix refreshing artifacts after killing more than one line or
+   * resizing the terminal. */
+
   if (le->should_refresh_text) {
     /* Move appropriate amount of lines back, while clearing previous output */
-    for (i = 0; i < itl_g_line_prev_rows + extra_rows_to_delete; ++i) {
+    for (i = 0; i < itl_g_le_prev_rows + extra_rows_to_delete; ++i) {
       ITL_TTY_CLEAR_WHOLE_LINE(b);
-      if (i < itl_g_line_prev_cursor_rows + extra_rows_to_delete - 1) {
+      if (i < itl_g_le_prev_cursor_rows + extra_rows_to_delete - 1) {
         ITL_TTY_MOVE_UP(b, 1);
       }
     }
@@ -2136,8 +2140,8 @@ itl_le_tty_refresh(itl_le_t *le)
       }
 
       /* If line is full, wrap */
-      current_cols = (le->prompt_size + i) % ITL_MAX(cols, 1);
-      if (current_cols == cols - 1) {
+      current_cols = (le->prompt_size + i) % ITL_MAX(tty_cols, 1);
+      if (current_cols == tty_cols - 1) {
         itl_char_buf_append_cstr(b, ITL_LF);
       }
     }
@@ -2145,8 +2149,8 @@ itl_le_tty_refresh(itl_le_t *le)
     /* If current amount of lines is less than previous amount of lines, then
        input was cleared by kill line or such. Clear each dirty line, then go
        back up */
-    if (row_amount < itl_g_line_prev_rows) {
-      dirty_lines = itl_g_line_prev_rows - row_amount;
+    if (le_row_amount < itl_g_le_prev_rows) {
+      dirty_lines = itl_g_le_prev_rows - le_row_amount;
       for (i = 0; i < dirty_lines; ++i) {
         ITL_TTY_MOVE_DOWN(b, 1);
         ITL_TTY_CLEAR_WHOLE_LINE(b);
@@ -2159,24 +2163,25 @@ itl_le_tty_refresh(itl_le_t *le)
 
     /* Move cursor to appropriate row and column. If row didn't change, stay on
        the same line */
-    if (cursor_rows < row_amount) {
-      ITL_TTY_MOVE_UP(b, row_amount - cursor_rows);
+    if (le_cursor_rows < le_row_amount) {
+      ITL_TTY_MOVE_UP(b, le_row_amount - le_cursor_rows);
     }
   } else {
-    if (cursor_rows < itl_g_line_prev_cursor_rows) {
-      ITL_TTY_MOVE_UP(b, itl_g_line_prev_cursor_rows - cursor_rows);
-    } else if (cursor_rows > itl_g_line_prev_cursor_rows) {
-      ITL_TTY_MOVE_DOWN(b, cursor_rows - itl_g_line_prev_cursor_rows);
+    if (le_cursor_rows < itl_g_le_prev_cursor_rows) {
+      ITL_TTY_MOVE_UP(b, itl_g_le_prev_cursor_rows - le_cursor_rows);
+    } else if (le_cursor_rows > itl_g_le_prev_cursor_rows) {
+      ITL_TTY_MOVE_DOWN(b, le_cursor_rows - itl_g_le_prev_cursor_rows);
     }
   }
 
-  ITL_TTY_MOVE_TO_COLUMN(b, cursor_column);
+  ITL_TTY_MOVE_TO_COLUMN(b, le_cursor_column);
 
-  itl_g_line_prev_rows = row_amount;
-  itl_g_line_prev_cursor_rows = cursor_rows;
+  itl_g_le_prev_rows = le_row_amount;
+  itl_g_le_prev_cursor_rows = le_cursor_rows;
+  itl_g_le_prev_length = le->line->length + le->prompt_size;
 
-  itl_g_tty_prev_rows = rows;
-  itl_g_tty_prev_cols = cols;
+  itl_g_tty_prev_rows = tty_rows;
+  itl_g_tty_prev_cols = tty_cols;
 
   itl_g_tty_changed_size = false;
 
@@ -2198,7 +2203,6 @@ itl_handle_sigwinch(int signal_number)
     itl_g_tty_changed_size = true;
   }
   itl_g_le.should_refresh_text = true;
-  itl_le_tty_refresh(&itl_g_le);
 }
 #endif
 
@@ -2901,12 +2905,19 @@ tl_readline(char *buffer, size_t buffer_size, const char *prompt)
   itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
 
   /* Avoid clearing lines that don't belong to us. */
-  itl_g_line_prev_rows = 1;
-  itl_g_line_prev_cursor_rows = 1;
+  itl_g_le_prev_rows = 1;
+  itl_g_le_prev_cursor_rows = 1;
   itl_le_tty_refresh(le);
 
   while (true) {
     ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
+
+#if defined ITL_POSIX
+    /* A refresh may be pending due to SIGWINCH. */
+    if (itl_g_tty_changed_size) {
+      itl_le_tty_refresh(le);
+    }
+#endif /* ITL_POSIX */
 
 #if defined TL_SEE_BYTES
     if (input_byte == 3) return -69; /* ctrl c */
@@ -3037,7 +3048,7 @@ tl_emit_newlines(const char *char_buffer)
   ITL_TRY(itl_tty_get_size(NULL, NULL, &cols), return TL_ERROR);
 
   newlines_to_emit = (tl_utf8_strlen(char_buffer) / cols + 1) -
-                     itl_g_line_prev_cursor_rows + 1;
+                     itl_g_le_prev_cursor_rows + 1;
 
   for (i = 0; i < newlines_to_emit; ++i) {
     ITL_TRY(ITL_WRITE(ITL_STDOUT, "\n", 1) != -1, return TL_ERROR);
@@ -3130,6 +3141,5 @@ tl_completion_delete_all(void)
  *  - History search.
  *  - Replace macros with enums.
  *  - Support multiple lines simultaneously.
- *  - Fix refresh artifacts if killing more than one row with Ctrl-U.
  *  - Use Windows' console API instead of terminal sequences on Windows.
  */
