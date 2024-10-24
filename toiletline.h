@@ -771,11 +771,11 @@ typedef struct itl_utf8 itl_utf8_t;
 struct itl_utf8
 {
   uint8_t bytes[4];
-  size_t  size;
+  uint8_t size;
 };
 
 ITL_DEF itl_utf8_t
-itl_utf8_new(const uint8_t *bytes, size_t size)
+itl_utf8_new(const uint8_t *bytes, uint8_t size)
 {
   itl_utf8_t ch;
 
@@ -803,7 +803,7 @@ itl_utf8_equal(itl_utf8_t ch1, itl_utf8_t ch2)
   return true;
 }
 
-ITL_DEF size_t
+ITL_DEF uint8_t
 itl_utf8_width(int byte)
 {
   if ((byte & 0x80) == 0)
@@ -829,7 +829,7 @@ ITL_DEF const itl_utf8_t itl_replacement_character = {
 ITL_DEF itl_utf8_t
 itl_utf8_parse(uint8_t first_byte)
 {
-  size_t  i, size;
+  uint8_t i, size;
   uint8_t bytes[4];
 
   if ((size = itl_utf8_width(first_byte)) == 0) { /* invalid character */
@@ -838,7 +838,9 @@ itl_utf8_parse(uint8_t first_byte)
   }
 
   bytes[0] = first_byte;
-  for (i = 1; i < size; ++i) { /* consequent bytes */
+
+  /* Consequent bytes. */
+  for (i = 1; i < size; ++i) {
     ITL_TRY_READ_BYTE(&bytes[i], return itl_replacement_character);
   }
 
@@ -1115,7 +1117,8 @@ itl_string_to_cstr(const itl_string_t *str, char *cstr, size_t cstr_size)
 ITL_DEF bool
 itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
 {
-  size_t i, j, k, rune_width;
+  size_t  i, j, k;
+  uint8_t rune_width;
 
   for (i = 0, k = 0; k < size; ++i) {
     while (str->capacity < i + 1) {
@@ -1126,6 +1129,7 @@ itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
     if (rune_width == 0) {
       return false; /* Something went wrong. */
     }
+
     str->chars[i].size = rune_width;
 
     for (j = 0; j < rune_width && k < size; ++j, ++k) {
@@ -3047,8 +3051,8 @@ tl_emit_newlines(const char *char_buffer)
 
   ITL_TRY(itl_tty_get_size(NULL, NULL, &cols), return TL_ERROR);
 
-  newlines_to_emit = (tl_utf8_strlen(char_buffer) / cols + 1) -
-                     itl_g_le_prev_cursor_rows + 1;
+  newlines_to_emit =
+      (tl_utf8_strlen(char_buffer) / cols + 1) - itl_g_le_prev_cursor_rows + 1;
 
   for (i = 0; i < newlines_to_emit; ++i) {
     ITL_TRY(ITL_WRITE(ITL_STDOUT, "\n", 1) != -1, return TL_ERROR);
