@@ -444,9 +444,9 @@ typedef unsigned char bool;
 #include <stdlib.h>
 #include <string.h>
 
-#if defined ITL_SUSPEND
+#if defined ITL_POSIX || defined ITL_SUSPEND
 #include <signal.h>
-#endif /* ITL_SUSPEND */
+#endif
 
 #if defined _MSC_VER
 #include <intrin.h>
