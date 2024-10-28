@@ -852,7 +852,7 @@ itl_utf8_parse(uint8_t first_byte)
   }
 
 #if defined TL_DEBUG
-  ITL_TRACELN("utf8 char size: %zu\n", size);
+  ITL_TRACELN("utf8 char size: %u\n", size);
   ITL_TRACELN("utf8 char bytes: '");
 
   for (i = 0; i < size; ++i) {
@@ -1182,8 +1182,6 @@ struct itl_le
 
   const char *prompt;
   size_t      prompt_size;
-
-  bool should_refresh_text;
 };
 
 ITL_DEF itl_history_item_t *
@@ -1285,7 +1283,6 @@ itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
   le->out_size              = out_size;
   le->prompt                = prompt;
   le->prompt_size           = (prompt != NULL) ? strlen(prompt) : 0;
-  le->should_refresh_text   = true;
   /* clang-format on */
 }
 
@@ -2065,6 +2062,8 @@ next:
   return false;
 }
 
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_should_refresh_text = true;
+
 /* Line editor's contents during previous refresh() call. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_rows = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_rows = 1;
@@ -2115,8 +2114,8 @@ itl_le_tty_refresh(itl_le_t *le)
       (le->cursor_position + le->prompt_size) / ITL_MAX(tty_cols, 1) + 1;
 
   ITL_TRACELN("sr: %d, er: %zu, wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
-              le->should_refresh_text, extra_rows_to_delete, cursor_rows,
-              itl_g_line_prev_rows, cursor_column, le->cursor_position);
+              itl_g_tty_should_refresh_text, extra_rows_to_delete, le_cursor_rows,
+              itl_g_le_prev_rows, le_cursor_column, le->cursor_position);
 
   b = &itl_g_char_buffer;
   ITL_TTY_HIDE_CURSOR(b);
@@ -2124,7 +2123,7 @@ itl_le_tty_refresh(itl_le_t *le)
   /* FIXME: Fix refreshing artifacts after killing more than one line or
    * resizing the terminal. */
 
-  if (le->should_refresh_text) {
+  if (itl_g_tty_should_refresh_text) {
     /* Move appropriate amount of lines back, while clearing previous output */
     for (i = 0; i < itl_g_le_prev_rows + extra_rows_to_delete; ++i) {
       ITL_TTY_CLEAR_WHOLE_LINE(b);
@@ -2187,8 +2186,12 @@ itl_le_tty_refresh(itl_le_t *le)
   itl_g_tty_prev_rows = tty_rows;
   itl_g_tty_prev_cols = tty_cols;
 
+#if defined ITL_POSIX
   itl_g_tty_changed_size = false;
-
+#else
+  /* Windows does not present anything useful and is a bad OS. */
+  itl_g_tty_changed_size = true;
+#endif
   ITL_TTY_SHOW_CURSOR(b);
 
   ITL_CHAR_BUF_DUMP(b);
@@ -2203,10 +2206,11 @@ ITL_DEF ITL_THREAD_LOCAL itl_le_t itl_g_le = ITL_ZERO_INIT;
 ITL_DEF void
 itl_handle_sigwinch(int signal_number)
 {
-  if (signal_number == SIGWINCH) {
-    itl_g_tty_changed_size = true;
+  if (signal_number != SIGWINCH) {
+    return;
   }
-  itl_g_le.should_refresh_text = true;
+  itl_g_tty_changed_size = true;
+  itl_g_tty_should_refresh_text = true;
 }
 #endif
 
@@ -2652,7 +2656,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
   tl_last_control = esc;
 
   /* Refresh text by default, avoid if we are only moving the cursor. */
-  le->should_refresh_text = true;
+  itl_g_tty_should_refresh_text = true;
 
   switch (esc & TL_MASK_KEY) {
   case TL_KEY_TAB: {
@@ -2709,7 +2713,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
         itl_le_move_right(le, 1);
       }
     }
-    le->should_refresh_text = false;
+    itl_g_tty_should_refresh_text = false;
   } break;
   case TL_KEY_LEFT: {
     size_t steps;
@@ -2729,17 +2733,17 @@ itl_le_key_handle(itl_le_t *le, int esc)
         itl_le_move_left(le, 1);
       }
     }
-    le->should_refresh_text = false;
+    itl_g_tty_should_refresh_text = false;
   } break;
 
   case TL_KEY_END: {
     itl_le_move_right(le, le->line->length - le->cursor_position);
-    le->should_refresh_text = false;
+    itl_g_tty_should_refresh_text = false;
   } break;
 
   case TL_KEY_HOME: {
     itl_le_move_left(le, le->cursor_position);
-    le->should_refresh_text = false;
+    itl_g_tty_should_refresh_text = false;
   } break;
   case TL_KEY_ENTER: {
     ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
@@ -2944,7 +2948,7 @@ tl_readline(char *buffer, size_t buffer_size, const char *prompt)
       }
     } else {
       itl_le_insert(le, itl_utf8_parse(input_byte));
-      le->should_refresh_text = true;
+      itl_g_tty_should_refresh_text = true;
     }
 
     ITL_TRACELN("strlen: %zu, hist: %zu\n", le->line->length,
@@ -2996,7 +3000,7 @@ tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
   }
 
   itl_le_insert(le, itl_utf8_parse(input_byte));
-  le->should_refresh_text = true;
+  itl_g_tty_should_refresh_text = true;
   itl_le_tty_refresh(le);
   ITL_TRY(itl_string_to_cstr(le->line, char_buffer, char_buffer_size) ==
               TL_SUCCESS,
