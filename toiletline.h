@@ -1619,6 +1619,16 @@ itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 /* If this is true, do not overwrite file on `history_dump_to_file()` */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_file_is_bad = false;
 
+#define ITL_HISTORY_FILE_EXPLOSION()                                           \
+  do {                                                                         \
+    itl_g_history_free();                                                      \
+    itl_g_history_file_is_bad = true;                                          \
+    ret = TL_ERROR;                                                            \
+    goto end;                                                                  \
+  } while (0)
+
+#define ITL_HISTORY_FILE_BUFFER_SIZE (1024 * 2)
+
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF TL_STATUS_CODE
 itl_history_load_from_file(const char *path)
@@ -1626,14 +1636,15 @@ itl_history_load_from_file(const char *path)
   ITL_FILE file;
   bool     is_eof = false;
 
+  char file_buffer[ITL_HISTORY_FILE_BUFFER_SIZE];
+
   itl_string_t   *str = itl_string_alloc();
   itl_char_buf_t *cb = itl_char_buf_alloc();
-  int             ch = 0, read_amount = 0;
-  TL_STATUS_CODE  ret = TL_SUCCESS;
-  size_t          pos = 0, line = 1;
 
-  /* Shut up the compiler :3c */
-  (void) pos;
+  int            read_amount = 0;
+  TL_STATUS_CODE ret = TL_SUCCESS;
+
+  size_t line = 1;
   (void) line;
 
   itl_g_history_free();
@@ -1653,56 +1664,70 @@ itl_history_load_from_file(const char *path)
   }
 
   is_eof = false;
+
   while (!is_eof) {
-    read_amount = (int) ITL_READ(file, &ch, 1);
-    pos++;
-    if (read_amount != 1) {
+    size_t file_buffer_pos = 0;
+
+    size_t pos = 0;
+    (void) pos;
+
+    read_amount =
+        (int) ITL_READ(file, file_buffer, ITL_HISTORY_FILE_BUFFER_SIZE);
+
+    if (read_amount <= 0) {
 #if defined TL_USE_STDIO
       is_eof = feof(file);
 #else /* TL_USE_STDIO */
       is_eof = (read_amount == 0);
 #endif
       if (!is_eof) {
-        itl_g_history_free();
-        itl_g_history_file_is_bad = true;
-        ret = TL_ERROR;
-        goto end;
+        ITL_HISTORY_FILE_EXPLOSION();
       }
-    } else if (ch == '\r') {
-      /* TODO: Multiline support for history. */
-      continue;
-    } else if (ch == '\n') {
-      /* TODO: Here long lines are silently truncated. */
-      if (!itl_string_from_bytes(str, cb->data,
-                                 ITL_MIN(cb->size, ITL_STRING_MAX_LEN)))
-      {
-        ITL_TRACELN(
-            "incorrect calculated string size in history file at %zu:%zu\n",
-            line, pos);
+
+      break;
+    }
+
+    TL_ASSERT(read_amount > 0);
+
+    while (file_buffer_pos < (size_t) read_amount) {
+      int ch = file_buffer[file_buffer_pos];
+
+      if (ch == '\r') {
+        /* TODO: Multiline support for history. */
+        continue;
+      } else if (ch == '\n') {
+        /* TODO: Here long lines are silently truncated. */
+        if (!itl_string_from_bytes(str, cb->data,
+                                   ITL_MIN(cb->size, ITL_STRING_MAX_LEN)))
+        {
+          ITL_TRACELN("incorrect calculated string size in history file "
+                      "at %zu:%zu\n",
+                      line, pos);
+
+          errno = EINVAL;
+          ITL_HISTORY_FILE_EXPLOSION();
+        }
+
+        itl_g_history_append(str);
+        ITL_TRACELN("loaded history entry: %.*s\n", (int) cb->size, cb->data);
+        ITL_CHAR_BUF_CLEAR(cb);
+
+        pos = 0;
+
+        line++;
+        /* Loaded a binary file on accident? */
+      } else if (iscntrl(ch) && !isspace(ch)) {
+        ITL_TRACELN("non-text byte '%X' detected in history file at %zu:%zu\n",
+                    (uint8_t) ch, line, pos);
 
         errno = EINVAL;
-        itl_g_history_free();
-        itl_g_history_file_is_bad = true;
-        ret = TL_ERROR;
-        goto end;
+        ITL_HISTORY_FILE_EXPLOSION();
+      } else {
+        itl_char_buf_append_byte(cb, (uint8_t) ch);
       }
-      itl_g_history_append(str);
-      ITL_TRACELN("loaded history entry: %.*s\n", (int) cb->size, cb->data);
-      ITL_CHAR_BUF_CLEAR(cb);
-      pos = 0;
-      line++;
-      /* Loaded a binary file on accident? */
-    } else if (iscntrl(ch) && !isspace(ch)) {
-      ITL_TRACELN("non-text byte '%X' detected in history file at %zu:%zu\n",
-                  (uint8_t) ch, line, pos);
 
-      errno = EINVAL;
-      itl_g_history_free();
-      itl_g_history_file_is_bad = true;
-      ret = TL_ERROR;
-      goto end;
-    } else {
-      itl_char_buf_append_byte(cb, (uint8_t) ch);
+      file_buffer_pos++;
+      pos++;
     }
   }
 
@@ -2114,8 +2139,9 @@ itl_le_tty_refresh(itl_le_t *le)
       (le->cursor_position + le->prompt_size) / ITL_MAX(tty_cols, 1) + 1;
 
   ITL_TRACELN("sr: %d, er: %zu, wrow: %zu, prev: %zu, col: %zu, curp: %zu\n",
-              itl_g_tty_should_refresh_text, extra_rows_to_delete, le_cursor_rows,
-              itl_g_le_prev_rows, le_cursor_column, le->cursor_position);
+              itl_g_tty_should_refresh_text, extra_rows_to_delete,
+              le_cursor_rows, itl_g_le_prev_rows, le_cursor_column,
+              le->cursor_position);
 
   b = &itl_g_char_buffer;
   ITL_TTY_HIDE_CURSOR(b);
@@ -2124,7 +2150,8 @@ itl_le_tty_refresh(itl_le_t *le)
    * resizing the terminal. */
 
   if (itl_g_tty_should_refresh_text) {
-    /* Move appropriate amount of lines back, while clearing previous output */
+    /* Move appropriate amount of lines back, while clearing previous output
+     */
     for (i = 0; i < itl_g_le_prev_rows + extra_rows_to_delete; ++i) {
       ITL_TTY_CLEAR_WHOLE_LINE(b);
       if (i < itl_g_le_prev_cursor_rows + extra_rows_to_delete - 1) {
@@ -2149,9 +2176,9 @@ itl_le_tty_refresh(itl_le_t *le)
       }
     }
 
-    /* If current amount of lines is less than previous amount of lines, then
-       input was cleared by kill line or such. Clear each dirty line, then go
-       back up */
+    /* If current amount of lines is less than previous amount of lines,
+       then input was cleared by kill line or such. Clear each dirty line,
+       then go back up */
     if (le_row_amount < itl_g_le_prev_rows) {
       dirty_lines = itl_g_le_prev_rows - le_row_amount;
       for (i = 0; i < dirty_lines; ++i) {
@@ -2164,8 +2191,8 @@ itl_le_tty_refresh(itl_le_t *le)
       ITL_TTY_CLEAR_TO_END(b);
     }
 
-    /* Move cursor to appropriate row and column. If row didn't change, stay on
-       the same line */
+    /* Move cursor to appropriate row and column. If row didn't change, stay
+       on the same line */
     if (le_cursor_rows < le_row_amount) {
       ITL_TTY_MOVE_UP(b, le_row_amount - le_cursor_rows);
     }
@@ -2601,12 +2628,13 @@ itl_string_complete(itl_string_t *str)
     /* Dump completion list only if there are more than 2 completions
        with the same prefix, or the string is empty, otherwise
        autocomplete */
-    if (completion_list) {
+    if (completion_list != NULL) {
       if (completion_count > 1 || offset_difference == 0) {
         TL_ASSERT(completion_list != NULL);
         goto end;
       } else {
         itl_completion_list_free(completion_list);
+        completion_list = NULL;
       }
     }
     if (longest_prefix != 0) {
