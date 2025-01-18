@@ -2314,7 +2314,7 @@ itl_completion_free_all(itl_completion_t *completion)
   }
 }
 
-#define itl_g_COMPLETION_FREE() itl_completion_free_all(itl_g_completion_root)
+#define ITL_G_COMPLETION_FREE() itl_completion_free_all(itl_g_completion_root)
 
 typedef struct itl_offset itl_offset_t;
 
@@ -2603,8 +2603,8 @@ itl_string_complete(itl_string_t *str)
        autocomplete */
     if (completion_list) {
       if (completion_count > 1 || offset_difference == 0) {
-        itl_split_free(split);
-        return completion_list;
+        TL_ASSERT(completion_list != NULL);
+        goto end;
       } else {
         itl_completion_list_free(completion_list);
       }
@@ -2613,8 +2613,8 @@ itl_string_complete(itl_string_t *str)
       TL_ASSERT(possible_completion);
       itl_string_append_completion(str, possible_completion, longest_prefix);
       itl_string_insert(str, str->length, itl_space);
-      itl_split_free(split);
-      return NULL;
+      TL_ASSERT(completion_list == NULL);
+      goto end;
     }
     /* Insert a space if a completion fully matches but there is no space
        after the word */
@@ -2622,13 +2622,14 @@ itl_string_complete(itl_string_t *str)
       if (!itl_utf8_equal(str->chars[str->length - 1], itl_space)) {
         itl_string_insert(str, str->length, itl_space);
       }
-      itl_split_free(split);
-      return NULL;
+      TL_ASSERT(completion_list == NULL);
+      goto end;
     }
   }
 
+end:
   itl_split_free(split);
-  return NULL;
+  return completion_list;
 }
 
 ITL_DEF bool
@@ -2875,7 +2876,7 @@ tl_exit(void)
 
   itl_g_history_free();
 #if !defined TL_MANUAL_TAB_COMPLETION
-  itl_g_COMPLETION_FREE();
+  ITL_G_COMPLETION_FREE();
 #endif /* !TL_MANUAL_TAB_COMPLETION */
   ITL_FREE(itl_g_line_buffer.chars);
   ITL_FREE(itl_g_char_buffer.data);
