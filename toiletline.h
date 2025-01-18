@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.6.5
+ *  toiletline 0.7.0
  *  Small single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -148,14 +148,10 @@ typedef enum
 #define TL_MASK_KEY 0x00FFFFFF
 #define TL_MASK_MOD 0xFF000000
 
-/* This is a helper and is not meant to be used directly. Use `tl_last_control`
- * instead. */
-TL_DEF int *itl__last_control_location(void);
-
 /**
  * Last pressed control sequence.
  */
-#define tl_last_control (*itl__last_control_location())
+TL_DEF int tl_last_control_sequence(void);
 /**
  * Initialize toiletline and put terminal in raw mode.
  */
@@ -176,17 +172,18 @@ TL_DEF TL_STATUS_CODE tl_exit_raw_mode(void);
 /**
  * Read input into the buffer.
  */
-TL_DEF TL_STATUS_CODE tl_readline(char *buffer, size_t buffer_size,
-                                  const char *prompt);
+TL_DEF TL_STATUS_CODE tl_get_input(char *buffer, size_t buffer_size,
+                                   const char *prompt);
 /**
  * Predefine input for `tl_readline()`.
  */
-TL_DEF void tl_setline(const char *str);
+TL_DEF void tl_set_predefined_input(const char *str);
 /**
- * Read a character without waiting and modify `tl_last_control`.
+ * Read a character without waiting and modify `tl_last_control_sequence`.
  */
-TL_DEF TL_STATUS_CODE tl_getc(char *char_buffer, size_t char_buffer_size,
-                              const char *prompt);
+TL_DEF TL_STATUS_CODE tl_get_character(char *char_buffer,
+                                       size_t char_buffer_size,
+                                       const char *prompt);
 /**
  * Load history from a file.
  *
@@ -224,36 +221,6 @@ TL_DEF TL_STATUS_CODE tl_emit_newlines(const char *buffer);
  * not a tty or amount of bytes written.
  */
 TL_DEF TL_STATUS_CODE tl_set_title(const char *title);
-
-#if !defined TL_MANUAL_TAB_COMPLETION
-/**
- * Add a tab completion.
- *
- * Returns an opaque pointer that points to the added completion. Use it as
- * `*prefix` parameter to add further completions. If `*prefix` is NULL, adds a
- * root completion.
- */
-TL_DEF void *tl_completion_add(void *prefix, const char *label);
-/**
- *  Change a tab completion to `*label` using pointer returned from
- * `tl_add_completion()`.
- */
-TL_DEF void tl_completion_change(void *completion, const char *label);
-/**
- * Delete a tab completion and it's children using the address of the pointer
- * returned from `tl_add_completion()`. Sets *completion to NULL.
- */
-TL_DEF void tl_completion_delete(void **completion);
-/**
- * Delete a tab completion's children using pointer returned from
- * `tl_add_completion()`.
- */
-TL_DEF void tl_completion_delete_children(void *completion);
-/**
- * Delete all tab completions.
- */
-TL_DEF void tl_completion_delete_all(void);
-#endif /* !TL_MANUAL_TAB_COMPLETION */
 
 #endif /* TOILETLINE_H_ */ /* End of header file */
 
@@ -388,10 +355,10 @@ itl_write_impl(FILE *f, const void *buf, size_t size)
 
 #if defined ITL_WIN32
 /* Windows can't read arrow keys otherwise */
-#define ITL_READ_byte_raw _getch
+#define ITL_READ_BYTE_RAW _getch
 #else /* ITL_WIN32 */
 ITL_DEF int
-ITL_READ_byte_raw(void)
+ITL_READ_BYTE_RAW(void)
 {
   int buf[1];
   return (ITL_READ(ITL_STDIN, buf, 1) != 1) ? -1 : *buf;
@@ -528,8 +495,8 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_entered_raw_mode = false;
 #if defined ITL_WIN32
 ITL_DEF ITL_THREAD_LOCAL DWORD itl_g_original_tty_in_mode = 0;
 ITL_DEF ITL_THREAD_LOCAL DWORD itl_g_original_tty_out_mode = 0;
-ITL_DEF ITL_THREAD_LOCAL UINT  itl_g_original_tty_cp = 0;
-ITL_DEF ITL_THREAD_LOCAL int   itl_g_original_mode = 0;
+ITL_DEF ITL_THREAD_LOCAL UINT itl_g_original_tty_cp = 0;
+ITL_DEF ITL_THREAD_LOCAL int itl_g_original_mode = 0;
 #elif defined ITL_POSIX
 ITL_DEF ITL_THREAD_LOCAL struct termios itl_g_original_tty_mode = ITL_ZERO_INIT;
 #endif /* ITL_POSIX */
@@ -538,9 +505,9 @@ ITL_DEF bool
 itl_enter_raw_mode_impl(void)
 {
 #if defined ITL_WIN32
-  int    mode = 0;
-  UINT   codepage = 0;
-  DWORD  tty_in_mode = 0, tty_out_mode = 0;
+  int mode = 0;
+  UINT codepage = 0;
+  DWORD tty_in_mode = 0, tty_out_mode = 0;
   HANDLE stdin_handle = NULL, stdout_handle = NULL;
 
   stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
@@ -594,7 +561,7 @@ ITL_DEF bool
 itl_exit_raw_mode_impl(void)
 {
 #if defined ITL_WIN32
-  bool   something_failed = false;
+  bool something_failed = false;
   HANDLE stdin_handle = NULL, stdout_handle = NULL;
 
   stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
@@ -669,7 +636,7 @@ tl_exit_raw_mode(void)
 ITL_DEF bool
 ITL_READ_BYTE(uint8_t *buffer)
 {
-  int byte = ITL_READ_byte_raw();
+  int byte = ITL_READ_BYTE_RAW();
 #if defined ITL_POSIX
   /* Catch `read()` errors. `_getch()` on Windows does not have error
      returns */
@@ -873,9 +840,9 @@ typedef struct itl_string itl_string_t;
 struct itl_string
 {
   itl_utf8_t *chars;
-  size_t      length;   /* N of chars in the string */
-  size_t      size;     /* N of bytes in all chars, size >= length */
-  size_t      capacity; /* N of chars this string can store */
+  size_t length;   /* N of chars in the string */
+  size_t size;     /* N of bytes in all chars, size >= length */
+  size_t capacity; /* N of chars this string can store */
 };
 
 ITL_DEF void
@@ -1117,7 +1084,7 @@ itl_string_to_cstr(const itl_string_t *str, char *cstr, size_t cstr_size)
 ITL_DEF bool
 itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
 {
-  size_t  i, j, k;
+  size_t i, j, k;
   uint8_t rune_width;
 
   for (i = 0, k = 0; k < size; ++i) {
@@ -1153,14 +1120,14 @@ typedef struct itl_history_item itl_history_item_t;
 
 struct itl_history_item
 {
-  itl_string_t       *str;
+  itl_string_t *str;
   itl_history_item_t *next;
   itl_history_item_t *prev;
 };
 
 ITL_DEF ITL_THREAD_LOCAL itl_history_item_t *itl_g_history_last = NULL;
 ITL_DEF ITL_THREAD_LOCAL itl_history_item_t *itl_g_history_first = NULL;
-ITL_DEF ITL_THREAD_LOCAL size_t              itl_g_history_length = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_length = 0;
 
 ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_g_line_buffer = ITL_ZERO_INIT;
 
@@ -1171,17 +1138,17 @@ struct itl_le
 {
   /* Contents of the line */
   itl_string_t *line;
-  size_t        cursor_position;
+  size_t cursor_position;
 
   /* Whether unsubmitted line was already appended to history */
-  bool                appended_to_history;
+  bool appended_to_history;
   itl_history_item_t *history_selected_item;
 
-  char  *out_buf;
+  char *out_buf;
   size_t out_size;
 
   const char *prompt;
-  size_t      prompt_size;
+  size_t prompt_size;
 };
 
 ITL_DEF itl_history_item_t *
@@ -1352,8 +1319,8 @@ itl_string_steps_to_token(const itl_string_t *str, size_t position,
                           bool backwards)
 {
   uint8_t b;
-  bool    should_break = false;
-  size_t  i = position, steps = 0;
+  bool should_break = false;
+  size_t i = position, steps = 0;
 
   ITL_TOKEN_KIND token_kind;
 
@@ -1461,7 +1428,7 @@ typedef struct itl_char_buf itl_char_buf_t;
 
 struct itl_char_buf
 {
-  char  *data;
+  char *data;
   size_t size;
   size_t capacity;
 };
@@ -1634,14 +1601,14 @@ ITL_DEF TL_STATUS_CODE
 itl_history_load_from_file(const char *path)
 {
   ITL_FILE file;
-  bool     is_eof = false;
+  bool is_eof = false;
 
   char file_buffer[ITL_HISTORY_FILE_BUFFER_SIZE];
 
-  itl_string_t   *str = itl_string_alloc();
+  itl_string_t *str = itl_string_alloc();
   itl_char_buf_t *cb = itl_char_buf_alloc();
 
-  int            read_amount = 0;
+  int read_amount = 0;
   TL_STATUS_CODE ret = TL_SUCCESS;
 
   size_t line = 1;
@@ -1745,10 +1712,10 @@ end:
 ITL_DEF TL_STATUS_CODE
 itl_history_dump_to_file(const char *path)
 {
-  ITL_FILE            file;
-  itl_char_buf_t     *buffer = NULL;
+  ITL_FILE file;
+  itl_char_buf_t *buffer = NULL;
   itl_history_item_t *item = NULL, *next_item = NULL;
-  TL_STATUS_CODE      ret = TL_SUCCESS;
+  TL_STATUS_CODE ret = TL_SUCCESS;
 
   TL_ASSERT(itl_g_is_active && "Dump history before calling tl_exit()!");
 
@@ -1824,7 +1791,7 @@ itl_parse_size(const char *cstr, size_t *result)
 ITL_DEF int
 itl_esc_parse_posix(uint8_t byte)
 {
-  int  event = 0;
+  int event = 0;
   bool read_mod = false;
 
   if (byte == 27) { /* esc */
@@ -1978,18 +1945,18 @@ itl_esc_parse(uint8_t byte)
 }
 
 ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_char_buffer = ITL_ZERO_INIT;
-ITL_DEF ITL_THREAD_LOCAL bool           itl_g_tty_is_dumb = true;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_is_dumb = true;
 
 /* *le, *rows, *cols can be NULL. */
 ITL_DEF bool
 itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows, size_t *cols)
 {
   size_t temp_rows, temp_cols;
-  char  *emacs_buf = NULL;
+  char *emacs_buf = NULL;
 #if defined ITL_VT_SIZE
-  bool            correct_response;
-  size_t          i, parse_diff;
-  char            size_buf[32], *first;
+  bool correct_response;
+  size_t i, parse_diff;
+  char size_buf[32], *first;
   itl_char_buf_t *b;
 #elif defined ITL_WIN32
   CONSOLE_SCREEN_BUFFER_INFO buffer_info;
@@ -2243,462 +2210,27 @@ itl_handle_sigwinch(int signal_number)
 
 ITL_DEF ITL_THREAD_LOCAL int itl_g_last_control = TL_KEY_UNKN;
 
-TL_DEF int *
-itl__last_control_location(void)
+TL_DEF int
+tl_last_control_sequence(void)
 {
-  return &itl_g_last_control;
+  return itl_g_last_control;
 }
-
-#if !defined TL_MANUAL_TAB_COMPLETION
-ITL_DEF void
-itl_string_append_completion(itl_string_t *dst, const itl_string_t *src,
-                             size_t prefix_length)
-{
-  size_t i, j;
-  size_t new_len = dst->length + src->length - prefix_length;
-
-  while (dst->capacity < new_len + 1) {
-    itl_string_extend(dst);
-  }
-
-  i = dst->length;
-  /* Insert a space before new word, if there is no matching prefix */
-  if (prefix_length == 0 && !itl_utf8_equal(dst->chars[i - 1], itl_space)) {
-    dst->chars[i++] = itl_space;
-    dst->length += 1;
-  }
-  /* Append missing chars */
-  for (j = prefix_length; j <= new_len; ++i, ++j) {
-    dst->chars[i] = src->chars[j];
-  }
-
-  dst->length = new_len;
-  itl_string_recalc_size(dst);
-}
-
-typedef struct itl_completion itl_completion_t;
-
-/* For example, Git completions in this structure:
-   ... -- checkout -- branch -- status   <- siblings of root
-             |          |
-            ...       master -- staging  <- children of `branch` completion,
-                     /      \      |        siblings of `master`
-                  HEAD      ...   ...
-*/
-struct itl_completion
-{
-  itl_string_t     *str;
-  itl_completion_t *sibling;
-  itl_completion_t *child;
-};
-
-ITL_DEF ITL_THREAD_LOCAL itl_completion_t *itl_g_completion_root = NULL;
-
-ITL_DEF itl_completion_t *
-itl_completion_alloc(void)
-{
-  itl_completion_t *completion =
-      (itl_completion_t *) itl_malloc(sizeof(itl_completion_t));
-
-  completion->str = NULL;
-  completion->child = NULL;
-  completion->sibling = NULL;
-
-  return completion;
-}
-
-/* Takes ownership of *str */
-ITL_DEF itl_completion_t *
-itl_completion_append(itl_completion_t *completion, itl_string_t *str)
-{
-  itl_completion_t *new_child;
-
-  new_child = itl_completion_alloc();
-  new_child->str = str;
-
-  new_child->sibling = completion->child;
-  completion->child = new_child;
-
-  return new_child;
-}
-
-#define ITL_COMPLETION_FREE(completion)                                        \
-  do {                                                                         \
-    if ((completion)->str != NULL) {                                           \
-      ITL_STRING_FREE((completion)->str);                                      \
-    }                                                                          \
-    ITL_FREE(completion);                                                      \
-  } while (0)
-
-/* Recursively free all completions connected to current one */
-ITL_DEF void
-itl_completion_free_all(itl_completion_t *completion)
-{
-  if (completion) {
-    itl_completion_free_all(completion->child);
-    itl_completion_free_all(completion->sibling);
-    ITL_COMPLETION_FREE(completion);
-  }
-}
-
-#define ITL_G_COMPLETION_FREE() itl_completion_free_all(itl_g_completion_root)
-
-typedef struct itl_offset itl_offset_t;
-
-struct itl_offset
-{
-  size_t start;
-  size_t end;
-};
-
-ITL_DEF itl_offset_t *
-itl_offset_alloc(void)
-{
-  itl_offset_t *offset = (itl_offset_t *) itl_malloc(sizeof(itl_offset_t));
-
-  offset->start = 0;
-  offset->end = 0;
-
-  return offset;
-}
-
-#define ITL_OFFSET_FREE(offset) ITL_FREE(offset)
-
-typedef struct itl_split itl_split_t;
-
-#define ITL_SPLIT_INIT_CAPACITY              4
-#define ITL_SPLIT_REALLOC_CAPACITY(old_size) ((old_size) << 1)
-
-struct itl_split
-{
-  itl_offset_t **offsets;
-  size_t         size;
-  size_t         capacity;
-};
-
-ITL_DEF itl_split_t *
-itl_split_alloc(void)
-{
-  size_t i;
-
-  itl_split_t *split = (itl_split_t *) itl_malloc(sizeof(itl_split_t));
-  split->offsets = (itl_offset_t **) itl_malloc(sizeof(itl_offset_t) *
-                                                ITL_SPLIT_INIT_CAPACITY);
-
-  split->capacity = ITL_SPLIT_INIT_CAPACITY;
-  split->size = 0;
-
-  for (i = 0; i < split->capacity; ++i) {
-    split->offsets[i] = itl_offset_alloc();
-  }
-
-  return split;
-}
-
-ITL_DEF void
-itl_split_free(itl_split_t *split)
-{
-  size_t i;
-  for (i = 0; i < split->capacity; ++i) {
-    ITL_OFFSET_FREE(split->offsets[i]);
-  }
-  ITL_FREE(split->offsets);
-  ITL_FREE(split);
-}
-
-ITL_DEF void
-itl_split_extend(itl_split_t *split)
-{
-  itl_offset_t **new_offsets;
-  size_t         i, old_capacity = split->capacity;
-
-  split->capacity = ITL_SPLIT_REALLOC_CAPACITY(split->capacity);
-  new_offsets =
-      (itl_offset_t **) itl_malloc(sizeof(itl_split_t *) * split->capacity);
-
-  for (i = 0; i < split->capacity; ++i) {
-    new_offsets[i] = itl_offset_alloc();
-    if (i < old_capacity) {
-      memcpy(new_offsets[i], split->offsets[i], sizeof(itl_offset_t));
-      ITL_OFFSET_FREE(split->offsets[i]);
-    }
-  }
-  ITL_FREE(split->offsets);
-  split->offsets = new_offsets;
-}
-
-ITL_DEF void
-itl_split_append(itl_split_t *split, size_t start, size_t end)
-{
-  itl_offset_t *offset;
-
-  while (split->capacity < split->size + 1) {
-    itl_split_extend(split);
-  }
-  offset = split->offsets[split->size];
-
-  offset->start = start;
-  offset->end = end;
-
-  split->size += 1;
-}
-
-ITL_DEF itl_split_t *
-itl_string_split(const itl_string_t *str, char delimiter)
-{
-  size_t     i, j;
-  itl_utf8_t ch;
-
-  bool         is_prev_delim = false;
-  itl_split_t *split = itl_split_alloc();
-
-  for (i = 0, j = 0; i < str->length; ++i) {
-    ch = str->chars[i];
-    if (ch.bytes[0] == (uint8_t) delimiter) {
-      /* Skip characters, if there is multiple delimiters in a row */
-      if (!is_prev_delim) {
-        itl_split_append(split, j, i);
-        is_prev_delim = true;
-        j = i + 1;
-      } else {
-        j += 1;
-      }
-    } else {
-      is_prev_delim = false;
-    }
-  }
-  if (j <= i) {
-    itl_split_append(split, j, i);
-  }
-
-  return split;
-}
-
-typedef struct itl_completion_list itl_completion_list_t;
-
-struct itl_completion_list
-{
-  itl_completion_t      *completion;
-  itl_completion_list_t *next;
-};
-
-ITL_DEF itl_completion_list_t *
-itl_completion_list_alloc(void)
-{
-  itl_completion_list_t *list =
-      (itl_completion_list_t *) itl_malloc(sizeof(itl_completion_list_t));
-
-  list->completion = NULL;
-  list->next = NULL;
-
-  return list;
-}
-
-ITL_DEF void
-itl_completion_list_free(itl_completion_list_t *list)
-{
-  itl_completion_list_t *next;
-  while (list) {
-    next = list->next;
-    ITL_FREE(list);
-    list = next;
-  }
-}
-
-ITL_DEF void
-itl_completion_list_append(itl_completion_list_t *list,
-                           itl_completion_t      *completion)
-{
-  if (list->completion == NULL) {
-    list->completion = completion;
-    return;
-  }
-  while (list->next) {
-    list = list->next;
-  }
-  list->next = itl_completion_list_alloc();
-  list->next->completion = completion;
-}
-
-#define ITL_COMPLETIONS_ON_SINGLE_LINE 5
-/* Minimum word width */
-#define ITL_COMPLETIONS_MARGIN 12
-
-ITL_DEF TL_STATUS_CODE
-itl_completion_list_dump(itl_completion_list_t *list)
-{
-  itl_string_t          *str;
-  size_t                 i, count = 0;
-  itl_completion_list_t *next;
-
-  itl_char_buf_t *b = itl_char_buf_alloc();
-  itl_char_buf_append_cstr(b, ITL_LF);
-
-  while (true) {
-    next = list->next;
-    str = list->completion->str;
-    ITL_TRY(itl_char_buf_append_string(b, str) == TL_SUCCESS,
-            return TL_ERROR_SIZE);
-    count += 1;
-    list = next;
-    if (list == NULL) {
-      break;
-    }
-    if (count < ITL_COMPLETIONS_ON_SINGLE_LINE) {
-      for (i = str->length; i < ITL_COMPLETIONS_MARGIN - 2; ++i) {
-        itl_char_buf_append_byte(b, ' ');
-      }
-      itl_char_buf_append_cstr(b, "  ");
-    } else {
-      itl_char_buf_append_cstr(b, ITL_LF);
-      count = 0;
-    }
-  }
-
-  itl_char_buf_append_cstr(b, ITL_LF);
-  ITL_CHAR_BUF_DUMP(b);
-
-  ITL_CHAR_BUF_FREE(b);
-
-  return TL_SUCCESS;
-}
-
-/* Split the string by spaces. If a split fully matches, look at it's children.
-   If none of the children fully match, rank them by longest common prefix,
-   complete the string, and return NULL. If more than one have the same longest
-   common prefix, or current split is empty, return a list of possible
-   matches. Otherwise, return NULL too. */
-ITL_DEF itl_completion_list_t *
-itl_string_complete(itl_string_t *str)
-{
-  itl_offset_t *offset;
-  size_t        offset_difference;
-  itl_string_t *possible_completion;
-  size_t        i, prefix_length, longest_prefix;
-
-  size_t                 completion_count = 0;
-  itl_completion_list_t *completion_list = NULL;
-
-  bool went_into_child = false;
-
-  itl_split_t      *split = itl_string_split(str, ' ');
-  itl_completion_t *completion = itl_g_completion_root->child;
-
-  for (i = 0; i < split->size; ++i) {
-    longest_prefix = 0;
-    possible_completion = NULL;
-    offset = split->offsets[i];
-    offset_difference = offset->end - offset->start;
-
-    while (completion) {
-      prefix_length = itl_string_prefix_with_offset(
-          str, offset->start, offset->end, completion->str);
-
-      /* If completion fully matches, it's just a prefix. Advance to the
-         next split offset, and check prefix's children. */
-      if (prefix_length == completion->str->length &&
-          prefix_length == offset_difference)
-      {
-        completion = completion->child;
-        went_into_child = true;
-        break;
-        /* If offset difference is the prefix, it must be a new longest
-           prefix. If offset difference is 0, the string is empty. */
-      } else if (prefix_length == offset_difference || offset_difference == 0) {
-        if (longest_prefix < prefix_length) {
-          longest_prefix = prefix_length;
-          possible_completion = completion->str;
-        }
-        /* If this prefix is the longest, add this match to completion
-           list. If there is more than one match of this kind, dump them
-           instead of appending to the string. If offset difference is
-           0, the string is empty, add it should add all completions. */
-        if (longest_prefix == prefix_length || offset_difference == 0) {
-          if (completion_list == NULL) {
-            completion_list = itl_completion_list_alloc();
-          }
-          itl_completion_list_append(completion_list, completion);
-          completion_count += 1;
-        }
-      }
-      /* If prefix didn't fully match, advance to completion's sibling */
-      completion = completion->sibling;
-      went_into_child = false;
-    }
-    /* Dump completion list only if there are more than 2 completions
-       with the same prefix, or the string is empty, otherwise
-       autocomplete */
-    if (completion_list != NULL) {
-      if (completion_count > 1 || offset_difference == 0) {
-        TL_ASSERT(completion_list != NULL);
-        goto end;
-      } else {
-        itl_completion_list_free(completion_list);
-        completion_list = NULL;
-      }
-    }
-    if (longest_prefix != 0) {
-      TL_ASSERT(possible_completion);
-      itl_string_append_completion(str, possible_completion, longest_prefix);
-      itl_string_insert(str, str->length, itl_space);
-      TL_ASSERT(completion_list == NULL);
-      goto end;
-    }
-    /* Insert a space if a completion fully matches but there is no space
-       after the word */
-    if (went_into_child && completion == NULL) {
-      if (!itl_utf8_equal(str->chars[str->length - 1], itl_space)) {
-        itl_string_insert(str, str->length, itl_space);
-      }
-      TL_ASSERT(completion_list == NULL);
-      goto end;
-    }
-  }
-
-end:
-  itl_split_free(split);
-  return completion_list;
-}
-
-ITL_DEF bool
-itl_le_complete(itl_le_t *le)
-{
-  size_t                 old_len = le->line->length;
-  itl_completion_list_t *list = itl_string_complete(le->line);
-
-  if (list) {
-    itl_completion_list_dump(list);
-    itl_completion_list_free(list);
-  } else if (old_len != le->line->length) {
-    le->cursor_position = le->line->length;
-    return true;
-  }
-
-  return false;
-}
-#endif /* !TL_MANUAL_TAB_COMPLETION */
 
 ITL_DEF TL_STATUS_CODE
 itl_le_key_handle(itl_le_t *le, int esc)
 {
   /* Remember the last control sequence. */
-  tl_last_control = esc;
+  itl_g_last_control = esc;
 
   /* Refresh text by default, avoid if we are only moving the cursor. */
   itl_g_tty_should_refresh_text = true;
 
   switch (esc & TL_MASK_KEY) {
   case TL_KEY_TAB: {
-#if !defined TL_MANUAL_TAB_COMPLETION
-    if (itl_g_completion_root != NULL) {
-      itl_le_complete(le);
-    }
-#else /* !TL_MANUAL_TAB_COMPLETION */
     ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
                 TL_SUCCESS,
             return TL_ERROR_SIZE);
     return TL_PRESSED_TAB;
-#endif
   } break;
 
   case TL_KEY_UP: {
@@ -2746,7 +2278,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
   } break;
   case TL_KEY_LEFT: {
     size_t steps;
-    bool   cursor_was_on_space;
+    bool cursor_was_on_space;
     if (le->cursor_position > 0 && le->cursor_position <= le->line->length) {
       if (esc & TL_MOD_CTRL) {
         cursor_was_on_space = ITL_LE_CURSOR_IS_ON_SPACE(le) ||
@@ -2903,9 +2435,6 @@ tl_exit(void)
   TL_ASSERT(itl_g_is_active && "tl_init() should be called");
 
   itl_g_history_free();
-#if !defined TL_MANUAL_TAB_COMPLETION
-  ITL_G_COMPLETION_FREE();
-#endif /* !TL_MANUAL_TAB_COMPLETION */
   ITL_FREE(itl_g_line_buffer.chars);
   ITL_FREE(itl_g_char_buffer.data);
 
@@ -2922,11 +2451,11 @@ tl_exit(void)
 }
 
 TL_DEF TL_STATUS_CODE
-tl_readline(char *buffer, size_t buffer_size, const char *prompt)
+tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
 {
   itl_le_t *le = &itl_g_le;
-  uint8_t   input_byte;
-  int       input_type;
+  uint8_t input_byte;
+  int input_type;
 
   TL_STATUS_CODE code;
 
@@ -2989,7 +2518,7 @@ tl_readline(char *buffer, size_t buffer_size, const char *prompt)
 }
 
 TL_DEF void
-tl_setline(const char *str)
+tl_set_predefined_input(const char *str)
 {
   TL_ASSERT(itl_g_is_active && "tl_init() should be called");
   itl_string_shrink(&itl_g_line_buffer);
@@ -2997,11 +2526,11 @@ tl_setline(const char *str)
 }
 
 TL_DEF TL_STATUS_CODE
-tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
+tl_get_character(char *char_buffer, size_t char_buffer_size, const char *prompt)
 {
   itl_le_t *le = &itl_g_le;
-  uint8_t   input_byte = 0;
-  int       input_type = TL_KEY_UNKN;
+  uint8_t input_byte = 0;
+  int input_type = TL_KEY_UNKN;
 
   TL_ASSERT(itl_g_is_active && "tl_init() should be called");
   TL_ASSERT(
@@ -3024,7 +2553,7 @@ tl_getc(char *char_buffer, size_t char_buffer_size, const char *prompt)
 
   input_type = itl_esc_parse(input_byte);
   if (input_type != TL_KEY_CHAR) {
-    tl_last_control = input_type;
+    itl_g_last_control = input_type;
     return TL_PRESSED_CONTROL_SEQUENCE;
   }
 
@@ -3105,63 +2634,6 @@ tl_set_title(const char *title)
   }
   return TL_ERROR;
 }
-
-#if !defined TL_MANUAL_TAB_COMPLETION
-TL_DEF void *
-tl_completion_add(void *prefix, const char *label)
-{
-  itl_string_t *str = itl_string_alloc();
-
-  ITL_STRING_FROM_CSTR(str, label);
-
-  if (prefix == NULL) {
-    if (itl_g_completion_root == NULL) {
-      itl_g_completion_root = itl_completion_alloc();
-    }
-    prefix = itl_g_completion_root;
-  }
-
-  return itl_completion_append((itl_completion_t *) prefix, str);
-}
-
-TL_DEF void
-tl_completion_change(void *completion, const char *label)
-{
-  itl_completion_t *completion_node = (itl_completion_t *) completion;
-  ITL_STRING_FROM_CSTR(completion_node->str, label);
-}
-
-TL_DEF void
-tl_completion_delete(void **completion)
-{
-  itl_completion_t **completion_node = (itl_completion_t **) completion;
-  if (completion_node != NULL && *completion_node != NULL) {
-    itl_completion_free_all((*completion_node)->child);
-    ITL_COMPLETION_FREE(*completion_node);
-    *completion_node = NULL;
-  }
-}
-
-TL_DEF void
-tl_completion_delete_children(void *completion)
-{
-  itl_completion_t *completion_node = (itl_completion_t *) completion;
-  if (completion_node != NULL) {
-    itl_completion_free_all(completion_node->child);
-    completion_node->child = NULL;
-  }
-}
-
-TL_DEF void
-tl_completion_delete_all(void)
-{
-  if (itl_g_completion_root != NULL) {
-    itl_completion_free_all(itl_g_completion_root->child);
-    ITL_COMPLETION_FREE(itl_g_completion_root);
-    itl_g_completion_root = NULL;
-  }
-}
-#endif /* !TL_MANUAL_TAB_COMPLETION */
 
 #if defined ITL_WIN32_DISABLED_WARNINGS
 #undef _CRT_SECURE_NO_WARNINGS

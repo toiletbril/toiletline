@@ -25,7 +25,6 @@ Current features
 * Emacs controls;
 * Rich configuration;
 * Persistent history;
-* Optional autocompletion.
 
 
 Notes on usage
@@ -48,11 +47,6 @@ macro.
 
 * TL_USE_STDIO can be defined to use <stdio.h> functions instead of raw
   `read()`, `open()` and etc.
-* TL_MANUAL_TAB_COMPLETION -- when defined, completion API will be disabled.
-  Pressing Tab key in `tl_readline()` will now return TL_PRESSED_TAB and not
-  append anything to history. Buffer contents will represent current state of
-  the line, which can be used to implement own completion, along with
-  `tl_setline()`.
 * TL_HISTORY_MAX_SIZE configures maximum history size;
 * TL_NO_SUSPEND prevents Ctrl-Z from sending `SIGTSTP` to the terminal. Note
   that Windows does not have this signal, and if this macro is not defined,
@@ -145,9 +139,9 @@ Restore the terminal state without doing anything else.
 Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
 
-TL_STATUS_CODE tl_readline(char *line_buffer, size_t size, const char *prompt);
+TL_STATUS_CODE tl_get_input(char *line_buffer, size_t size, const char *prompt);
 -------------------------------------------------------------------------------
-Read a line.
+Get input from user.
 
 To support multi-byte characters and null at the end, size needs to be at least
 2 or more. Submitted input will be written to `*line_buffer` as a
@@ -172,13 +166,13 @@ Returns:
 * `TL_ERROR` on errors.
 
 
-void tl_setline(const char *str);
+void tl_set_predefined_input(const char *str);
 ---------------------------------
-Predefine input for `tl_readline()`. Does not work for `tl_getc()`.
+Predefine input for `tl_get_input()`. Does not work for `tl_getc()`.
 
 
-TL_STATUS_CODE tl_getc(char *char_buffer, size_t size, const char *prompt);
----------------------------------------------------------------------------
+TL_STATUS_CODE tl_get_character(char *char_buffer, size_t size, const char *prompt);
+------------------------------------------------------------------------------------
 Read a character without waiting and modify `tl_last_control`.
 
 Returns:
