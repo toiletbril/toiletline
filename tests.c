@@ -233,57 +233,6 @@ struct split_test_case
   size_t end;
 };
 
-#define SPLIT_POSITION_COUNT 3
-
-static bool
-test_string_split(void)
-{
-  size_t              i, j;
-  const char         *cstr;
-  itl_split_t        *split;
-  split_test_case_t   pos;
-  const itl_offset_t *offset;
-
-  itl_string_t *str = itl_string_alloc();
-
-  const char *tests[] = {
-      /* original */
-      "hello world sailor",
-      "привет как дела",
-  };
-  const split_test_case_t positions[][SPLIT_POSITION_COUNT] = {
-  /*  {{start, end }, ... } */
-      {{0, 5}, {6, 11}, {12, 18}},
-      {{0, 6}, {7, 10}, {11, 15}}
-  };
-
-  for (i = 0; i < countof(tests); ++i) {
-    cstr = tests[i];
-
-    ITL_STRING_FROM_CSTR(str, cstr);
-    split = itl_string_split(str, ' ');
-
-    for (j = 0; j < SPLIT_POSITION_COUNT; ++j) {
-      pos = positions[i][j];
-      offset = split->offsets[j];
-      if (offset->start != pos.start || offset->end != pos.end) {
-        TEST_PRINTF("Result %zu: '%s', split %zu: start %zu/%zu, end "
-                    "%zu/%zu\n",
-                    i, cstr, j, offset->start, pos.start, offset->end, pos.end);
-        ITL_STRING_FREE(str);
-        itl_split_free(split);
-        return false;
-      }
-    }
-
-    itl_split_free(split);
-  }
-
-  ITL_STRING_FREE(str);
-
-  return true;
-}
-
 static bool
 test_char_buf(void)
 {
@@ -390,7 +339,6 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_string_shift),
                                    DEFINE_TEST_CASE(test_string_erase),
                                    DEFINE_TEST_CASE(test_string_insert),
-                                   DEFINE_TEST_CASE(test_string_split),
                                    DEFINE_TEST_CASE(test_char_buf),
                                    DEFINE_TEST_CASE(test_parse_size),
                                    DEFINE_TEST_CASE(test_utf8_strlen)};

@@ -25,16 +25,16 @@ main(void)
   while (code >= 0) {
     fflush(stdout);
 
-    code = tl_getc(char_buffer, CHAR_BUF_SIZE, "> ");
+    code = tl_get_character(char_buffer, CHAR_BUF_SIZE, "> ");
 
-    if (tl_last_control == TL_KEY_INTERRUPT) {
+    if (tl_last_control_sequence() == TL_KEY_INTERRUPT) {
       printf("Interrupted.\n");
       break;
     }
 
     if (code == TL_PRESSED_CONTROL_SEQUENCE) {
       printf("Received control sequence. tl_last_control: %X\n",
-             tl_last_control);
+             tl_last_control_sequence());
     } else {
       size_t j, size = strlen(char_buffer);
 

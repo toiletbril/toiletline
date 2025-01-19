@@ -10,9 +10,6 @@
 int
 main(void)
 {
-  void *what_completion, *smth_completion;
-  void *first_completion, *second_completion;
-
   int  i = 0, code = 0;
   char line_buffer[LINE_BUF_SIZE] = {0};
 
@@ -28,35 +25,18 @@ main(void)
          "character support.\n");
 #endif
 
-  /* Tab completions are a tree structure:
-       first   ---    what  ---  wow  ---  привет
-         |           /    \
-       second  something  other
-         |         /
-       third     else
-  */
-  first_completion = tl_completion_add(NULL, "first");
-  second_completion = tl_completion_add(first_completion, "second");
-  tl_completion_add(second_completion, "third");
-  what_completion = tl_completion_add(NULL, "what");
-  tl_completion_add(what_completion, "other");
-  smth_completion = tl_completion_add(what_completion, "something");
-  tl_completion_add(smth_completion, "else");
-  tl_completion_add(NULL, "wow");
-  tl_completion_add(NULL, "привет");
-
   tl_history_load(HISTORY_FILE);
 
   while (code >= 0) {
     fflush(stdout);
 
     switch (i) {
-    case 0: tl_setline("erase me :3c"); break;
-    case 1: tl_setline("я снова тут!"); break;
-    case 2: tl_setline("leaving soon..."); break;
+    case 0: tl_set_predefined_input("erase me :3c"); break;
+    case 1: tl_set_predefined_input("я снова тут!"); break;
+    case 2: tl_set_predefined_input("leaving soon..."); break;
     }
 
-    code = tl_readline(line_buffer, LINE_BUF_SIZE, "$ ");
+    code = tl_get_input(line_buffer, LINE_BUF_SIZE, "$ ");
     tl_emit_newlines(line_buffer);
 
     if (code == TL_PRESSED_INTERRUPT || code == TL_PRESSED_EOF) {
