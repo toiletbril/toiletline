@@ -1596,6 +1596,7 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_file_is_bad = false;
 
 #define ITL_HISTORY_FILE_BUFFER_SIZE (1024 * 2)
 
+/* TODO: this eats memory. */
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
 ITL_DEF TL_STATUS_CODE
 itl_history_load_from_file(const char *path)
