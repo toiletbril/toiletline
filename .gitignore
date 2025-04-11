@@ -1,6 +1,6 @@
 .vscode/
 temp/
-example_getc
+example_character
 example
 tests
 example_history.txt

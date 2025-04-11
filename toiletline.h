@@ -1,5 +1,5 @@
 /*
- *  toiletline 0.7.0
+ *  toiletline 0.8.0
  *  Small single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -104,7 +104,7 @@ typedef enum
   TL_ERROR = -1,
   TL_ERROR_SIZE = -2,
   TL_ERROR_ALLOC = -3,
-} TL_STATUS_CODE;
+} tl_status_code;
 
 /**
  * Control sequences.
@@ -139,7 +139,7 @@ typedef enum
   TL_KEY_SUSPEND,
   TL_KEY_EOF,
   TL_KEY_INTERRUPT
-} TL_KEY_KIND;
+} tl_key_kind;
 
 #define TL_MOD_CTRL  (1 << 24)
 #define TL_MOD_SHIFT (1 << 25)
@@ -155,24 +155,24 @@ TL_DEF int tl_last_control_sequence(void);
 /**
  * Initialize toiletline and put terminal in raw mode.
  */
-TL_DEF TL_STATUS_CODE tl_init(void);
+TL_DEF tl_status_code tl_init(void);
 /**
  * Put the terminal into raw mode without doing anything else.
  */
-TL_DEF TL_STATUS_CODE tl_enter_raw_mode(void);
+TL_DEF tl_status_code tl_enter_raw_mode(void);
 /**
  * Exit toiletline, restore terminal state, delete all completions, and free
  * internal memory.
  */
-TL_DEF TL_STATUS_CODE tl_exit(void);
+TL_DEF tl_status_code tl_exit(void);
 /**
  * Restore the terminal state without doing anything else.
  */
-TL_DEF TL_STATUS_CODE tl_exit_raw_mode(void);
+TL_DEF tl_status_code tl_exit_raw_mode(void);
 /**
  * Read input into the buffer.
  */
-TL_DEF TL_STATUS_CODE tl_get_input(char *buffer, size_t buffer_size,
+TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
                                    const char *prompt);
 /**
  * Predefine input for `tl_readline()`.
@@ -181,7 +181,7 @@ TL_DEF void tl_set_predefined_input(const char *str);
 /**
  * Read a character without waiting and modify `tl_last_control_sequence`.
  */
-TL_DEF TL_STATUS_CODE tl_get_character(char *char_buffer,
+TL_DEF tl_status_code tl_get_character(char *char_buffer,
                                        size_t char_buffer_size,
                                        const char *prompt);
 /**
@@ -190,14 +190,14 @@ TL_DEF TL_STATUS_CODE tl_get_character(char *char_buffer,
  * Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
  * failures.
  */
-TL_DEF TL_STATUS_CODE tl_history_load(const char *file_path);
+TL_DEF tl_status_code tl_history_load(const char *file_path);
 /**
  * Dump history to a file, overwriting it.
  *
  * Returns `TL_SUCCESS`, `-EINVAL` if file is invalid or `-errno` on other
  * failures.
  */
-TL_DEF TL_STATUS_CODE tl_history_dump(const char *file_path);
+TL_DEF tl_status_code tl_history_dump(const char *file_path);
 /**
  * Returns the number of UTF-8 characters.
  *
@@ -215,12 +215,12 @@ TL_DEF size_t tl_utf8_strnlen(const char *utf8_str, size_t byte_count);
  *
  * *buffer should be the buffer used in tl_readline().
  */
-TL_DEF TL_STATUS_CODE tl_emit_newlines(const char *buffer);
+TL_DEF tl_status_code tl_emit_newlines(const char *buffer);
 /**
  * Sets a new title for the terminal. Returns -1 and does nothing if stdout is
  * not a tty or amount of bytes written.
  */
-TL_DEF TL_STATUS_CODE tl_set_title(const char *title);
+TL_DEF tl_status_code tl_set_title(const char *title);
 
 #endif /* TOILETLINE_H_ */ /* End of header file */
 
@@ -360,8 +360,16 @@ itl_write_impl(FILE *f, const void *buf, size_t size)
 ITL_DEF int
 ITL_READ_BYTE_RAW(void)
 {
+#if !defined ITL_INJECT_KLEE
   int buf[1];
   return (ITL_READ(ITL_STDIN, buf, 1) != 1) ? -1 : *buf;
+#else
+  static size_t i = 0;
+  if (i >= ITL_KLEE_BUFFER_SIZE - 1) {
+    return -1;
+  }
+  return ITL_KLEE_BUFFER[i++];
+#endif
 }
 #endif
 
@@ -602,7 +610,7 @@ itl_exit_raw_mode_impl(void)
 #endif /* ITL_POSIX */
 }
 
-TL_DEF TL_STATUS_CODE
+TL_DEF tl_status_code
 tl_enter_raw_mode(void)
 {
   ITL_TRY(!itl_g_entered_raw_mode, return TL_SUCCESS);
@@ -620,7 +628,7 @@ tl_enter_raw_mode(void)
   return TL_SUCCESS;
 }
 
-TL_DEF TL_STATUS_CODE
+TL_DEF tl_status_code
 tl_exit_raw_mode(void)
 {
   ITL_TRY(itl_g_entered_raw_mode, return TL_SUCCESS);
@@ -660,9 +668,11 @@ itl_handle_sigcont(int signal_number)
 ITL_DEF void
 itl_raise_suspend(void)
 {
+#if !defined ITL_INJECT_KLEE
   tl_exit_raw_mode();
   signal(SIGCONT, itl_handle_sigcont);
   raise(SIGTSTP);
+#endif
 }
 
 #else /* ITL_POSIX */
@@ -1058,7 +1068,7 @@ itl_string_insert(itl_string_t *str, size_t position, itl_utf8_t ch)
 #define ITL_LF_LEN 1
 #endif /* ITL_POSIX */
 
-ITL_DEF TL_STATUS_CODE
+ITL_DEF tl_status_code
 itl_string_to_cstr(const itl_string_t *str, char *cstr, size_t cstr_size)
 {
   size_t i, j, k;
@@ -1311,7 +1321,7 @@ typedef enum
   ITL_TOKEN_DELIM = 0,
   ITL_TOKEN_WORD = 1,
   ITL_TOKEN_SPACE = 2,
-} ITL_TOKEN_KIND;
+} itl_token_kind;
 
 /* Returns amount of steps required to reach next/previos token */
 ITL_DEF size_t
@@ -1322,7 +1332,7 @@ itl_string_steps_to_token(const itl_string_t *str, size_t position,
   bool should_break = false;
   size_t i = position, steps = 0;
 
-  ITL_TOKEN_KIND token_kind;
+  itl_token_kind token_kind;
 
   if (backwards && i > 0) {
     steps += 1;
@@ -1505,7 +1515,7 @@ itl_char_buf_append_size_t(itl_char_buf_t *cb, size_t n)
   cb->size = new_size;
 }
 
-ITL_DEF TL_STATUS_CODE
+ITL_DEF tl_status_code
 itl_char_buf_append_string(itl_char_buf_t *cb, const itl_string_t *str)
 {
   char *data;
@@ -1598,7 +1608,7 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_file_is_bad = false;
 
 /* TODO: this eats memory. */
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
-ITL_DEF TL_STATUS_CODE
+ITL_DEF tl_status_code
 itl_history_load_from_file(const char *path)
 {
   ITL_FILE file;
@@ -1610,7 +1620,7 @@ itl_history_load_from_file(const char *path)
   itl_char_buf_t *cb = itl_char_buf_alloc();
 
   int read_amount = 0;
-  TL_STATUS_CODE ret = TL_SUCCESS;
+  tl_status_code ret = TL_SUCCESS;
 
   size_t line = 1;
   (void) line;
@@ -1710,13 +1720,13 @@ end:
 }
 
 /* Returns TL_SUCCESS, -EINVAL on invalid file, or -errno on other errors */
-ITL_DEF TL_STATUS_CODE
+ITL_DEF tl_status_code
 itl_history_dump_to_file(const char *path)
 {
   ITL_FILE file;
   itl_char_buf_t *buffer = NULL;
   itl_history_item_t *item = NULL, *next_item = NULL;
-  TL_STATUS_CODE ret = TL_SUCCESS;
+  tl_status_code ret = TL_SUCCESS;
 
   TL_ASSERT(itl_g_is_active && "Dump history before calling tl_exit()!");
 
@@ -2217,7 +2227,7 @@ tl_last_control_sequence(void)
   return itl_g_last_control;
 }
 
-ITL_DEF TL_STATUS_CODE
+ITL_DEF tl_status_code
 itl_le_key_handle(itl_le_t *le, int esc)
 {
   /* Remember the last control sequence. */
@@ -2402,7 +2412,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
   return TL_SUCCESS;
 }
 
-TL_DEF TL_STATUS_CODE
+TL_DEF tl_status_code
 tl_init(void)
 {
   TL_ASSERT(!(TL_HISTORY_MAX_SIZE & (TL_HISTORY_MAX_SIZE - 1)) &&
@@ -2430,7 +2440,7 @@ tl_init(void)
   return TL_SUCCESS;
 }
 
-TL_DEF TL_STATUS_CODE
+TL_DEF tl_status_code
 tl_exit(void)
 {
   TL_ASSERT(itl_g_is_active && "tl_init() should be called");
@@ -2451,14 +2461,14 @@ tl_exit(void)
   return TL_SUCCESS;
 }
 
-TL_DEF TL_STATUS_CODE
+TL_DEF tl_status_code
 tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
 {
   itl_le_t *le = &itl_g_le;
   uint8_t input_byte;
   int input_type;
 
-  TL_STATUS_CODE code;
+  tl_status_code code;
 
   TL_ASSERT(itl_g_is_active && "tl_init() should be called");
   TL_ASSERT(
@@ -2526,7 +2536,7 @@ tl_set_predefined_input(const char *str)
   ITL_STRING_FROM_CSTR(&itl_g_line_buffer, str);
 }
 
-TL_DEF TL_STATUS_CODE
+TL_DEF tl_status_code
 tl_get_character(char *char_buffer, size_t char_buffer_size, const char *prompt)
 {
   itl_le_t *le = &itl_g_le;
@@ -2569,13 +2579,13 @@ tl_get_character(char *char_buffer, size_t char_buffer_size, const char *prompt)
   return TL_SUCCESS;
 }
 
-TL_DEF TL_STATUS_CODE
+TL_DEF tl_status_code
 tl_history_load(const char *file_path)
 {
   return itl_history_load_from_file(file_path);
 }
 
-TL_DEF TL_STATUS_CODE
+TL_DEF tl_status_code
 tl_history_dump(const char *file_path)
 {
   return itl_history_dump_to_file(file_path);
@@ -2607,7 +2617,7 @@ tl_utf8_strnlen(const char *utf8_str, size_t byte_count)
   return len;
 }
 
-TL_DEF TL_STATUS_CODE
+TL_DEF tl_status_code
 tl_emit_newlines(const char *char_buffer)
 {
   size_t cols, i, newlines_to_emit;
@@ -2624,7 +2634,7 @@ tl_emit_newlines(const char *char_buffer)
   return TL_SUCCESS;
 }
 
-TL_DEF TL_STATUS_CODE
+TL_DEF tl_status_code
 tl_set_title(const char *title)
 {
   if (ITL_ISATTY(ITL_STDOUT)) {
@@ -2648,8 +2658,8 @@ tl_set_title(const char *title)
 
 /*
  * TODO (not soon):
+ *  - Add flags to tl_get_input().
  *  - History search.
- *  - Replace macros with enums.
  *  - Support multiple lines simultaneously.
  *  - Use Windows' console API instead of terminal sequences on Windows.
  */

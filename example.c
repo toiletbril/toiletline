@@ -30,13 +30,20 @@ main(void)
   while (code >= 0) {
     fflush(stdout);
 
-    switch (i) {
+    switch (i++) {
     case 0: tl_set_predefined_input("erase me :3c"); break;
     case 1: tl_set_predefined_input("я снова тут!"); break;
     case 2: tl_set_predefined_input("leaving soon..."); break;
     }
 
-    code = tl_get_input(line_buffer, LINE_BUF_SIZE, "$ ");
+    /* This thing ignores TAB presses. Ugly, I know. */
+    do {
+      if (*line_buffer != 0) {
+        tl_set_predefined_input(line_buffer);
+      }
+      code = tl_get_input(line_buffer, LINE_BUF_SIZE, "+ ");
+    } while (code == TL_PRESSED_TAB);
+
     tl_emit_newlines(line_buffer);
 
     if (code == TL_PRESSED_INTERRUPT || code == TL_PRESSED_EOF) {
@@ -47,10 +54,7 @@ main(void)
     printf("Received string: '%s' of length %zu, of size %zu\n", line_buffer,
            tl_utf8_strlen(line_buffer), strlen(line_buffer));
 
-    if (i++ >= MAX_MESSAGES) {
-      printf("Reached %d messages, exiting!\n", MAX_MESSAGES);
-      break;
-    }
+    memset(line_buffer, 0, LINE_BUF_SIZE);
   }
 
   if (code < 0) {

@@ -10,7 +10,7 @@
 int
 main(void)
 {
-  int  i = 0, code = 0;
+  int  code = 0;
   char char_buffer[CHAR_BUF_SIZE] = {0};
 
   if (tl_init() != TL_SUCCESS) {
@@ -26,6 +26,7 @@ main(void)
     fflush(stdout);
 
     code = tl_get_character(char_buffer, CHAR_BUF_SIZE, "> ");
+    tl_emit_newlines(char_buffer);
 
     if (tl_last_control_sequence() == TL_KEY_INTERRUPT) {
       printf("Interrupted.\n");
@@ -45,11 +46,6 @@ main(void)
         printf(" %d", (uint8_t) char_buffer[j]);
       }
       fputc('\n', stdout);
-    }
-
-    if (i++ >= MAX_CHARS) {
-      printf("Read %d characters, exiting!\n", MAX_CHARS);
-      break;
     }
   }
 

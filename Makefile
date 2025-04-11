@@ -27,10 +27,10 @@ else
 endif
 
 examples: CFLAGS += -O0
-examples: example example_getc
+examples: example example_character
 
 examples_debug: CFLAGS += -DTL_DEBUG -O0
-examples_debug: example example_getc
+examples_debug: example example_character
 
 see_bytes: CFLAGS += -DTL_SEE_BYTES
 see_bytes: example
@@ -40,7 +40,7 @@ ifeq ($(OS),Windows_NT)
 	ITEMS_TO_REMOVE = ./*.exe ./*.raddbg ./*.pdb ./*.exp ./*.lib ./*.ilk \
 					  ./example_history.txt
 else
-	ITEMS_TO_REMOVE = ./example_getc ./example ./tests ./example_history.txt
+	ITEMS_TO_REMOVE = ./example_character ./example ./tests ./example_history.txt
 endif
 
 clean:

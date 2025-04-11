@@ -160,9 +160,6 @@ Returns:
 * TL_PRESSED_INTERRUPT on Ctrl-C;
 * TL_PRESSED_EOF on Ctrl-D when there is no characters on the line;
 * TL_PRESSED_SUSPEND on Ctrl-Z.
-#if defined TL_MANUAL_TAB_COMPLETION
-* TL_PRESSED_TAB
-#endif /* TL_MANUAL_TAB_COMPLETION */
 * `TL_ERROR` on errors.
 
 
@@ -237,46 +234,6 @@ Sets a new title for the terminal. Returns `TL_ERROR` and does nothing if stdout
 is not a tty.
 
 Returns `TL_SUCCESS` or `TL_ERROR` on other errors.
-
-
-#if !defined TL_MANUAL_TAB_COMPLETION
-
-void *tl_completion_add(void *prefix, const char *label);
----------------------------------------------------------
-Add a tab completion.
-
-Returns an opaque pointer that points to the added completion. Use it as
-`*prefix` parameter to add further completions. If `*prefix` is `NULL`, adds a
-root completion.
-
-
-void tl_completion_change(void *completion, const char *label);
----------------------------------------------------------------
-Change a tab completion to `*label` using pointer returned from
-`tl_add_completion()`.
-
-
-void tl_completion_delete(void **completion);
----------------------------------------------
-Delete a tab completion and it's children using the address of the pointer
-returned from `tl_add_completion()`. Sets *completion to NULL.
-
-
-void tl_completion_delete_children(void *completion);
------------------------------------------------------
-Delete a tab completion's children using pointer returned from
-`tl_add_completion()`.
-
-
-void tl_completion_delete_all(void);
-------------------------------------
-Delete all tab completions.
-
-
-If this API does not satisfy your needs, take a look at
-TL_MANUAL_TAB_COMPLETION.
-
-#endif /* !TL_MANUAL_TAB_COMPLETION */
 
 
 Examples
