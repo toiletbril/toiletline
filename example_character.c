@@ -18,7 +18,7 @@ main(void)
     return 1;
   }
 
-  printf("Welcome to tl_getc example!\n"
+  printf("Welcome to the tl_get_character example!\n"
          "Try to press keys while holding Control or Alt.\n"
          "You can also use non-latin keyboard layout.\n");
 

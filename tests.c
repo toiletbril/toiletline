@@ -320,6 +320,190 @@ test_utf8_strlen(void)
   return true;
 }
 
+static bool
+test_char_width(void)
+{
+  itl_utf8_t ascii = itl_utf8_new((uint8_t[4]){0x41}, 1);
+  itl_utf8_t cjk = itl_utf8_new((uint8_t[4]){0xE4, 0xBD, 0xA0}, 3);
+  itl_utf8_t combining = itl_utf8_new((uint8_t[4]){0xCC, 0x81}, 2);
+  itl_utf8_t emoji = itl_utf8_new((uint8_t[4]){0xF0, 0x9F, 0x98, 0x80}, 4);
+
+  if (itl_char_width(ascii) != 1 || itl_char_width(cjk) != 2 ||
+      itl_char_width(combining) != 0 || itl_char_width(emoji) != 2)
+  {
+    TEST_PRINTF("widths: ascii %zu cjk %zu comb %zu emoji %zu\n",
+                itl_char_width(ascii), itl_char_width(cjk),
+                itl_char_width(combining), itl_char_width(emoji));
+    return false;
+  }
+  return true;
+}
+
+static bool
+test_metrics(void)
+{
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_le_metrics_t m;
+
+  itl_string_t *line = itl_string_alloc();
+
+  le.line = line;
+
+  /* An empty buffer is a single row. */
+  le.prompt_width = 0;
+  le.cursor_position = 0;
+  m = itl_le_compute_metrics(&le, 80);
+  if (m.total_rows != 1 || m.cursor_row != 0 || m.cursor_col != 0) {
+    TEST_PRINTF("empty: rows %zu crow %zu ccol %zu\n", m.total_rows,
+                m.cursor_row, m.cursor_col);
+    ITL_STRING_FREE(line);
+    return false;
+  }
+
+  /* An embedded newline makes a second row. */
+  ITL_STRING_FROM_CSTR(line, "ab\ncd");
+  le.cursor_position = line->length;
+  m = itl_le_compute_metrics(&le, 80);
+  if (m.total_rows != 2 || m.cursor_row != 1 || m.cursor_col != 2) {
+    TEST_PRINTF("newline: rows %zu crow %zu ccol %zu\n", m.total_rows,
+                m.cursor_row, m.cursor_col);
+    ITL_STRING_FREE(line);
+    return false;
+  }
+
+  /* Continuation rows are padded by the prompt width. */
+  le.prompt_width = 3;
+  m = itl_le_compute_metrics(&le, 80);
+  if (m.total_rows != 2 || m.cursor_row != 1 || m.cursor_col != 5) {
+    TEST_PRINTF("padded: rows %zu crow %zu ccol %zu\n", m.total_rows,
+                m.cursor_row, m.cursor_col);
+    ITL_STRING_FREE(line);
+    return false;
+  }
+
+  /* A soft wrap with padding wraps to the indent column. */
+  ITL_STRING_FROM_CSTR(line, "abcde");
+  le.prompt_width = 2;
+  le.cursor_position = line->length;
+  m = itl_le_compute_metrics(&le, 5);
+  if (m.total_rows != 2 || m.cursor_row != 1 || m.cursor_col != 4) {
+    TEST_PRINTF("wrapped: rows %zu crow %zu ccol %zu\n", m.total_rows,
+                m.cursor_row, m.cursor_col);
+    ITL_STRING_FREE(line);
+    return false;
+  }
+
+  ITL_STRING_FREE(line);
+  return true;
+}
+
+static bool
+test_find_substring(void)
+{
+  bool ok = true;
+
+  itl_string_t *hay = itl_string_alloc();
+  itl_string_t *needle = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(hay, "hello world");
+
+  ITL_STRING_FROM_CSTR(needle, "o wo");
+  if (!itl_string_find_substring(hay, needle)) {
+    ok = false;
+  }
+  ITL_STRING_FROM_CSTR(needle, "world");
+  if (!itl_string_find_substring(hay, needle)) {
+    ok = false;
+  }
+  ITL_STRING_FROM_CSTR(needle, "xyz");
+  if (itl_string_find_substring(hay, needle)) {
+    ok = false;
+  }
+  ITL_STRING_FROM_CSTR(needle, "");
+  if (!itl_string_find_substring(hay, needle)) {
+    ok = false;
+  }
+
+  if (!ok) {
+    TEST_PRINTF("substring match mismatch\n");
+  }
+
+  ITL_STRING_FREE(hay);
+  ITL_STRING_FREE(needle);
+  return ok;
+}
+
+static bool
+test_join_continuations(void)
+{
+  char out[64];
+
+  itl_string_t *s = itl_string_alloc();
+
+  const char with_continuation[] = {'a', 'b', 0x5C, 0x0A, 'c', 'd'};
+  const char plain_newline[] = {'a', 0x0A, 'b'};
+
+  itl_string_from_bytes(s, with_continuation, sizeof with_continuation);
+  itl_string_join_continuations(s);
+  itl_string_to_cstr(s, out, sizeof out);
+  if (strcmp(out, "abcd") != 0) {
+    TEST_PRINTF("joined: '%s', should be 'abcd'\n", out);
+    ITL_STRING_FREE(s);
+    return false;
+  }
+
+  itl_string_from_bytes(s, plain_newline, sizeof plain_newline);
+  itl_string_join_continuations(s);
+  itl_string_to_cstr(s, out, sizeof out);
+  if (!(out[0] == 'a' && out[1] == 0x0A && out[2] == 'b' && out[3] == '\0')) {
+    TEST_PRINTF("plain newline was not preserved, length %zu\n", s->length);
+    ITL_STRING_FREE(s);
+    return false;
+  }
+
+  ITL_STRING_FREE(s);
+  return true;
+}
+
+static bool
+test_history_multiline_file(void)
+{
+  bool ok = true;
+
+  itl_string_t *entry = itl_string_alloc();
+
+  const char multiline[] = {'l', 's', 0x0A, 'p', 'w', 'd'};
+
+  itl_g_is_active = true;
+
+  itl_string_from_bytes(entry, multiline, sizeof multiline);
+  itl_g_history_append(entry);
+
+  if (tl_history_dump("/tmp/tl_test_history.txt") != TL_SUCCESS) {
+    TEST_PRINTF("dump failed\n");
+    ok = false;
+  }
+
+  itl_g_history_free();
+
+  if (tl_history_load("/tmp/tl_test_history.txt") != TL_SUCCESS) {
+    TEST_PRINTF("load failed\n");
+    ok = false;
+  }
+
+  if (ok && (itl_g_history_last == NULL ||
+             !itl_string_equal(itl_g_history_last->str, entry)))
+  {
+    TEST_PRINTF("multiline entry did not survive the roundtrip\n");
+    ok = false;
+  }
+
+  itl_g_history_free();
+  ITL_STRING_FREE(entry);
+  itl_g_is_active = false;
+  return ok;
+}
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -341,7 +525,12 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_string_insert),
                                    DEFINE_TEST_CASE(test_char_buf),
                                    DEFINE_TEST_CASE(test_parse_size),
-                                   DEFINE_TEST_CASE(test_utf8_strlen)};
+                                   DEFINE_TEST_CASE(test_utf8_strlen),
+                                   DEFINE_TEST_CASE(test_char_width),
+                                   DEFINE_TEST_CASE(test_metrics),
+                                   DEFINE_TEST_CASE(test_find_substring),
+                                   DEFINE_TEST_CASE(test_join_continuations),
+                                   DEFINE_TEST_CASE(test_history_multiline_file)};
 
 int
 main(void)

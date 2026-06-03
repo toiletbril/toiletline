@@ -18,8 +18,8 @@ main(void)
     return 1;
   }
 
-  printf("Welcome to tl_readline example!\nUse up and down arrows to view "
-         "history.\n");
+  printf("Welcome to the tl_get_input example!\nUse up and down arrows to view "
+         "history. Press Ctrl-R to search it.\n");
 #if defined _WIN32
   printf("NOTE: On Windows, UTF-8 feature is required for multibyte "
          "character support.\n");

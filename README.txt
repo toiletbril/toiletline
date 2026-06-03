@@ -21,7 +21,11 @@ Current features
 ----------------
 * MIT License;
 * UTF-8 support;
+* Wide character (CJK and emoji) width handling;
 * Line wrapping;
+* Multiline editing;
+* Reverse history search;
+* Bracketed paste;
 * Emacs controls;
 * Rich configuration;
 * Persistent history;
@@ -38,6 +42,30 @@ object file (`-c` flag in gcc/clang) and link your program against it.
 
 Assume that every function is thread-unsafe until stated otherwise. UI probably
 shouldn't be modified my multiple threads anyway.
+
+
+Keys and editing
+----------------
+Most Emacs style motions work, including Ctrl-A and Ctrl-E for the start and end
+of a line, Ctrl-K and Ctrl-U to kill text, and the arrow keys with Ctrl held for
+word motion.
+
+Ctrl-R starts a reverse incremental history search. The first line shows the
+typed term, the second line shows the current match, and the third line shows
+the available actions. Enter accepts the match, pressing Ctrl-R again steps to an
+older match, and Ctrl-G or Esc cancels.
+
+A line can span several rows. Alt-Enter inserts a newline and keeps editing. A
+backslash at the end of a line followed by Enter also continues onto a new row,
+fish style, without drawing a second prompt. When the line is submitted each
+backslash that is followed by a newline is removed together with that newline, so
+the two rows are joined like a POSIX shell. Newlines that come from Alt-Enter or
+a paste stay in the returned string. Continuation rows are padded so their text
+lines up under the first row.
+
+Pasted text is read through bracketed paste when the terminal supports it, so the
+newlines inside a paste are inserted instead of submitting the line. A timing
+fallback covers terminals that do not support bracketed paste.
 
 
 Configuration macros
@@ -60,7 +88,7 @@ macro.
   allocation;
 * TL_ABORT sets function that will be called on a failed allocation;
 * TL_NO_ABORT disables checks for failed memory allocations;
-* TL_SEE_BYTES forces tl_readline() to output terminal codes of pressed keys
+* TL_SEE_BYTES forces tl_get_input() to output terminal codes of pressed keys
   instead of processing and echoing them. This is useful for debugging.
 * TL_DEBUG can be defined to output various debug information at runtime.
 
@@ -68,12 +96,12 @@ macro.
 Definitions
 -----------
 Some functions return their status. Errors are always below 0. All statuses are
-defined in the TL_STATUS_CODE enum. Each function's return code is documented
+defined in the tl_status_code enum. Each function's return code is documented
 here.
 
 
-int tl_last_control;
---------------------
+int tl_last_control_sequence(void);
+-----------------------------------
 Last pressed control sequence.
 
 Related values:
@@ -110,21 +138,21 @@ Possible key values:
 * TL_KEY_INTERRUPT (Ctrl-C).
 
 
-TL_STATUS_CODE tl_init(void);
+tl_status_code tl_init(void);
 -----------------------------
 Initialize toiletline and put terminal in raw mode.
 
 Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
 
-TL_STATUS_CODE tl_enter_raw_mode(void);
+tl_status_code tl_enter_raw_mode(void);
 ---------------------------------------
 Put the terminal into raw mode without doing anything else.
 
 Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
 
-TL_STATUS_CODE tl_exit(void);
+tl_status_code tl_exit(void);
 -----------------------------
 Exit toiletline, restore terminal state, delete all completions, and free
 internal memory.
@@ -132,14 +160,14 @@ internal memory.
 Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
 
-TL_STATUS_CODE tl_exit_raw_mode(void);
+tl_status_code tl_exit_raw_mode(void);
 --------------------------------------
 Restore the terminal state without doing anything else.
 
 Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
 
-TL_STATUS_CODE tl_get_input(char *line_buffer, size_t size, const char *prompt);
+tl_status_code tl_get_input(char *line_buffer, size_t size, const char *prompt);
 -------------------------------------------------------------------------------
 Get input from user.
 
@@ -148,9 +176,8 @@ To support multi-byte characters and null at the end, size needs to be at least
 null-terminated string. After the size is exhausted, character inputs will be
 ignored.
 
-Beware of characters like `\t` (Tab) and such, as they may break cursor
-position. Althrough they are considered as a single character, they occupy more
-than one space.
+The submitted string can contain embedded newlines from multiline editing or a
+paste, so the buffer is not always a single line.
 
 All control sequences except Enter, EOF, and Interrupt will be handled
 internally.
@@ -165,21 +192,21 @@ Returns:
 
 void tl_set_predefined_input(const char *str);
 ---------------------------------
-Predefine input for `tl_get_input()`. Does not work for `tl_getc()`.
+Predefine input for `tl_get_input()`. Does not work for `tl_get_character()`.
 
 
-TL_STATUS_CODE tl_get_character(char *char_buffer, size_t size, const char *prompt);
+tl_status_code tl_get_character(char *char_buffer, size_t size, const char *prompt);
 ------------------------------------------------------------------------------------
-Read a character without waiting and modify `tl_last_control`.
+Read a character without waiting and modify `tl_last_control_sequence`.
 
 Returns:
 * TL_SUCCESS on a character;
-* TL_PRESSED_CONTROL_SEQUENCE on a control sequence (`tl_last_control` to check
-  which one).
+* TL_PRESSED_CONTROL_SEQUENCE on a control sequence (`tl_last_control_sequence`
+  to check which one).
 * `TL_ERROR` on errors.
 
 
-TL_STATUS_CODE tl_history_load(const char *file_path);
+tl_status_code tl_history_load(const char *file_path);
 ------------------------------------------------------
 Load history from a file.
 
@@ -195,7 +222,7 @@ Returns:
   values on other failures.
 
 
-TL_STATUS_CODE tl_history_dump(const char *file_path);
+tl_status_code tl_history_dump(const char *file_path);
 ------------------------------------------------------
 Dump history to a file, overwriting it. Should be called before tl_exit()!
 
@@ -219,16 +246,16 @@ size_t tl_utf8_strnlen(const char *utf8_str, size_t byte_count);
 Same as above, except it stops after reading `byte_count` bytes from the string.
 
 
-TL_STATUS_CODE tl_emit_newlines(const char *buffer);
+tl_status_code tl_emit_newlines(const char *buffer);
 ----------------------------------------------------
 Emit newlines after getting the input.
 
-*buffer should be the buffer used in tl_readline().
+*buffer should be the buffer used in tl_get_input().
 
 Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
 
-TL_STATUS_CODE tl_set_title(const char *title);
+tl_status_code tl_set_title(const char *title);
 -----------------------------------------------
 Sets a new title for the terminal. Returns `TL_ERROR` and does nothing if stdout
 is not a tty.
@@ -238,4 +265,4 @@ Returns `TL_SUCCESS` or `TL_ERROR` on other errors.
 
 Examples
 --------
-For example usage, take a look at `example.c` and `example_getc.c`
+For example usage, take a look at `example.c` and `example_character.c`
