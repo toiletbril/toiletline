@@ -470,29 +470,41 @@ test_history_multiline_file(void)
 {
   bool ok = true;
 
+  const char *path = "/tmp/tl_test_history.txt";
+
   itl_string_t *entry = itl_string_alloc();
+  itl_string_t *got = itl_string_alloc();
 
   const char multiline[] = {'l', 's', 0x0A, 'p', 'w', 'd'};
 
   itl_g_is_active = true;
 
-  itl_string_from_bytes(entry, multiline, sizeof multiline);
-  itl_g_history_append(entry);
+  /* Start from a clean file so the append count is deterministic. */
+  remove(path);
 
-  if (tl_history_dump("/tmp/tl_test_history.txt") != TL_SUCCESS) {
-    TEST_PRINTF("dump failed\n");
+  itl_string_from_bytes(entry, multiline, sizeof multiline);
+
+  /* A missing file is fine here, the load still records the store path. */
+  tl_history_load(path);
+
+  if (!itl_history_append_to_file(entry)) {
+    TEST_PRINTF("append failed\n");
     ok = false;
   }
 
-  itl_g_history_free();
-
-  if (tl_history_load("/tmp/tl_test_history.txt") != TL_SUCCESS) {
+  /* Reload from disk to prove the entry was persisted to the file. */
+  if (tl_history_load(path) != TL_SUCCESS) {
     TEST_PRINTF("load failed\n");
     ok = false;
   }
 
-  if (ok && (itl_g_history_last == NULL ||
-             !itl_string_equal(itl_g_history_last->str, entry)))
+  if (ok && itl_g_history_count != 1) {
+    TEST_PRINTF("expected one entry, got %zu\n", itl_g_history_count);
+    ok = false;
+  }
+
+  if (ok && (!itl_history_read_entry(itl_history_index_to_offset(0), got) ||
+             !itl_string_equal(got, entry)))
   {
     TEST_PRINTF("multiline entry did not survive the roundtrip\n");
     ok = false;
@@ -500,6 +512,351 @@ test_history_multiline_file(void)
 
   itl_g_history_free();
   ITL_STRING_FREE(entry);
+  ITL_STRING_FREE(got);
+  itl_g_is_active = false;
+  return ok;
+}
+
+/* Appends one command to the active history file, returning whether it was
+   actually written. */
+static bool
+hist_append_cstr(const char *command)
+{
+  itl_string_t *str = itl_string_alloc();
+  bool was_written;
+
+  ITL_STRING_FROM_CSTR(str, command);
+  was_written = itl_history_append_to_file(str);
+  ITL_STRING_FREE(str);
+
+  return was_written;
+}
+
+/* Reads the navigable entry at index and compares it to expected. */
+static bool
+hist_entry_is(size_t index, const char *expected)
+{
+  itl_string_t *got = itl_string_alloc();
+  itl_string_t *want = itl_string_alloc();
+  bool is_equal;
+
+  ITL_STRING_FROM_CSTR(want, expected);
+  is_equal = itl_history_read_entry(itl_history_index_to_offset(index), got) &&
+             itl_string_equal(got, want);
+
+  ITL_STRING_FREE(got);
+  ITL_STRING_FREE(want);
+
+  return is_equal;
+}
+
+static bool
+test_history_ring_cap(void)
+{
+  const char *path = "/tmp/tl_test_ring.txt";
+  bool   ok = true;
+  size_t total = (size_t) TL_HISTORY_MAX_SIZE + 44;
+  size_t i;
+  char   line[32];
+  char   expected[32];
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+
+  /* Append more than the ring holds so the oldest entries are evicted. */
+  for (i = 0; i < total; ++i) {
+    sprintf(line, "cmd %zu", i);
+    if (!hist_append_cstr(line)) {
+      TEST_PRINTF("append %zu failed\n", i);
+      ok = false;
+      break;
+    }
+  }
+
+  if (ok) {
+    tl_history_load(path);
+    if (itl_g_history_count != TL_HISTORY_MAX_SIZE) {
+      TEST_PRINTF("count %zu, expected %d after eviction\n",
+                  itl_g_history_count, TL_HISTORY_MAX_SIZE);
+      ok = false;
+    }
+  }
+
+  /* The oldest surviving entry is the one total - MAX commands in. */
+  sprintf(expected, "cmd %zu", total - (size_t) TL_HISTORY_MAX_SIZE);
+  if (ok && !hist_entry_is(0, expected)) {
+    TEST_PRINTF("oldest surviving entry is wrong\n");
+    ok = false;
+  }
+  sprintf(expected, "cmd %zu", total - 1);
+  if (ok && !hist_entry_is(itl_g_history_count - 1, expected)) {
+    TEST_PRINTF("newest entry is wrong\n");
+    ok = false;
+  }
+
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
+static bool
+test_history_dedup(void)
+{
+  const char *path = "/tmp/tl_test_dedup.txt";
+  bool ok = true;
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+
+  hist_append_cstr("make test");
+  hist_append_cstr("make test"); /* Consecutive duplicate, must be skipped. */
+  if (itl_g_history_count != 1) {
+    TEST_PRINTF("duplicate not skipped, count %zu\n", itl_g_history_count);
+    ok = false;
+  }
+
+  hist_append_cstr("make run");
+  if (ok && itl_g_history_count != 2) {
+    TEST_PRINTF("distinct entry not added, count %zu\n", itl_g_history_count);
+    ok = false;
+  }
+
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
+static bool
+test_history_unterminated_line(void)
+{
+  const char *path = "/tmp/tl_test_unterminated.txt";
+  bool  ok = true;
+  FILE *f;
+
+  itl_g_is_active = true;
+  remove(path);
+
+  /* A file whose last line lacks a terminating newline, as a crash or a hand
+     edit could leave it. */
+  f = fopen(path, "wb");
+  if (f == NULL) {
+    TEST_PRINTF("could not create file\n");
+    itl_g_is_active = false;
+    return false;
+  }
+  fputs("ls", f);
+  fclose(f);
+
+  tl_history_load(path);
+  hist_append_cstr("pwd");
+  tl_history_load(path);
+
+  if (itl_g_history_count != 2) {
+    TEST_PRINTF("expected 2 entries, got %zu\n", itl_g_history_count);
+    ok = false;
+  }
+  if (ok && (!hist_entry_is(0, "ls") || !hist_entry_is(1, "pwd"))) {
+    TEST_PRINTF("append glued onto the unterminated line\n");
+    ok = false;
+  }
+
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
+static bool
+test_history_search(void)
+{
+  const char *path = "/tmp/tl_test_search.txt";
+  bool ok = true;
+
+  itl_string_t *query = itl_string_alloc();
+  itl_string_t *scratch = itl_string_alloc();
+  size_t        match;
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+
+  hist_append_cstr("git status");
+  hist_append_cstr("git commit");
+  hist_append_cstr("make test");
+
+  /* Searching backward from the newest finds "git commit" at index 1. */
+  ITL_STRING_FROM_CSTR(query, "git");
+  match = itl_history_find_match(query, itl_g_history_count - 1, scratch);
+  if (match != 1) {
+    TEST_PRINTF("expected match at index 1, got %zu\n", match);
+    ok = false;
+  }
+
+  /* The next older match is "git status" at index 0. */
+  if (ok) {
+    match = itl_history_find_match(query, match - 1, scratch);
+    if (match != 0) {
+      TEST_PRINTF("expected older match at index 0, got %zu\n", match);
+      ok = false;
+    }
+  }
+
+  /* Searching forward from the oldest finds "git status" at index 0, and the
+     next forward step finds "git commit" at index 1, the mirror of the
+     backward walk. */
+  if (ok) {
+    ITL_STRING_FROM_CSTR(query, "git");
+    match = itl_history_find_match_forward(query, 0, scratch);
+    if (match != 0) {
+      TEST_PRINTF("expected forward match at index 0, got %zu\n", match);
+      ok = false;
+    }
+  }
+  if (ok) {
+    match = itl_history_find_match_forward(query, match + 1, scratch);
+    if (match != 1) {
+      TEST_PRINTF("expected newer forward match at index 1, got %zu\n", match);
+      ok = false;
+    }
+  }
+
+  /* A query that matches nothing returns the sentinel either way. */
+  if (ok) {
+    ITL_STRING_FROM_CSTR(query, "zzz");
+    match = itl_history_find_match(query, itl_g_history_count - 1, scratch);
+    if (match != ITL_HISTORY_NONE) {
+      TEST_PRINTF("no match should return the sentinel, got %zu\n", match);
+      ok = false;
+    }
+  }
+  if (ok) {
+    match = itl_history_find_match_forward(query, 0, scratch);
+    if (match != ITL_HISTORY_NONE) {
+      TEST_PRINTF("no forward match should return the sentinel, got %zu\n",
+                  match);
+      ok = false;
+    }
+  }
+
+  remove(path);
+  ITL_STRING_FREE(query);
+  ITL_STRING_FREE(scratch);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
+static bool
+test_history_short_entry_skipped(void)
+{
+  const char *path = "/tmp/tl_test_short.txt";
+  bool ok = true;
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+
+  /* Entries of length one or zero are not persisted, matching the dumper. */
+  if (hist_append_cstr("q") || hist_append_cstr("")) {
+    TEST_PRINTF("a short entry was appended\n");
+    ok = false;
+  }
+  if (ok && itl_g_history_count != 0) {
+    TEST_PRINTF("count %zu, expected 0\n", itl_g_history_count);
+    ok = false;
+  }
+
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
+static bool
+test_history_alloc_balance(void)
+{
+  const char *path = "/tmp/tl_test_alloc.txt";
+  bool   ok = true;
+  size_t before;
+
+  itl_string_t *query;
+  itl_string_t *scratch;
+
+  itl_g_is_active = true;
+  remove(path);
+  before = itl_g_alloc_count;
+
+  /* Exercise load, append, read, and search, then release everything and check
+     that the allocation count returns to where it started. */
+  tl_history_load(path);
+  hist_append_cstr("alpha one");
+  hist_append_cstr("beta two");
+  hist_append_cstr("alpha three");
+
+  query = itl_string_alloc();
+  scratch = itl_string_alloc();
+  ITL_STRING_FROM_CSTR(query, "alpha");
+  (void) itl_history_find_match(query, itl_g_history_count - 1, scratch);
+  ITL_STRING_FREE(query);
+  ITL_STRING_FREE(scratch);
+
+  itl_g_history_free();
+
+  if (itl_g_alloc_count != before) {
+    TEST_PRINTF("alloc count %zu, expected %zu, a history path leaked\n",
+                itl_g_alloc_count, before);
+    ok = false;
+  }
+
+  remove(path);
+  itl_g_is_active = false;
+  return ok;
+}
+
+static bool
+test_history_concurrent_merge(void)
+{
+  const char *path = "/tmp/tl_test_merge.txt";
+  bool  ok = true;
+  FILE *other;
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+
+  hist_append_cstr("first one");
+
+  /* Simulate another session appending straight to the file. */
+  other = fopen(path, "ab");
+  if (other == NULL) {
+    TEST_PRINTF("could not open the file as another session\n");
+    itl_g_is_active = false;
+    return false;
+  }
+  fputs("second two\n", other);
+  fclose(other);
+
+  /* Our next append must merge in the other session's entry before writing. */
+  hist_append_cstr("third three");
+
+  if (itl_g_history_count != 3) {
+    TEST_PRINTF("expected 3 merged entries, got %zu\n", itl_g_history_count);
+    ok = false;
+  }
+  if (ok &&
+      (!hist_entry_is(0, "first one") || !hist_entry_is(1, "second two") ||
+       !hist_entry_is(2, "third three")))
+  {
+    TEST_PRINTF("merged entries are out of order or wrong\n");
+    ok = false;
+  }
+
+  remove(path);
+  itl_g_history_free();
   itl_g_is_active = false;
   return ok;
 }
@@ -530,7 +887,14 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_metrics),
                                    DEFINE_TEST_CASE(test_find_substring),
                                    DEFINE_TEST_CASE(test_join_continuations),
-                                   DEFINE_TEST_CASE(test_history_multiline_file)};
+                                   DEFINE_TEST_CASE(test_history_multiline_file),
+                                   DEFINE_TEST_CASE(test_history_ring_cap),
+                                   DEFINE_TEST_CASE(test_history_dedup),
+                                   DEFINE_TEST_CASE(test_history_unterminated_line),
+                                   DEFINE_TEST_CASE(test_history_search),
+                                   DEFINE_TEST_CASE(test_history_short_entry_skipped),
+                                   DEFINE_TEST_CASE(test_history_alloc_balance),
+                                   DEFINE_TEST_CASE(test_history_concurrent_merge)};
 
 int
 main(void)
