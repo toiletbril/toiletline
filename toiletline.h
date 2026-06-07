@@ -228,6 +228,40 @@ TL_DEF tl_status_code tl_emit_newlines(const char *buffer);
  */
 TL_DEF tl_status_code tl_set_title(const char *title);
 
+/**
+ * The result a completion callback fills. The host owns the storage the
+ * pointers refer to and must keep it valid until the next callback call, since
+ * toiletline reads it right after the call returns and does not free it.
+ *
+ * candidates points at an array of count C-strings, each a full replacement for
+ * the token the cursor sits on. token_start is the byte offset in the buffer
+ * where that token begins, so toiletline replaces the span from token_start to
+ * the cursor. longest_common_prefix is the longest prefix every candidate
+ * shares, inserted on the first TAB.
+ */
+typedef struct tl_completion
+{
+  const char *const *candidates;
+  size_t count;
+  const char *longest_common_prefix;
+  size_t token_start;
+} tl_completion;
+
+/**
+ * The completion callback. The host receives the current buffer, its cursor byte
+ * offset, and a result to fill. It returns nonzero when it filled the result and
+ * zero when it has nothing to offer.
+ */
+typedef int (*tl_complete_fn)(const char *buffer, size_t cursor,
+                              tl_completion *out);
+
+/**
+ * Register the completion callback, or NULL to disable completion. Only the
+ * interactive host registers one, so a non-interactive run pays nothing and the
+ * TAB key keeps its old behavior of returning TL_PRESSED_TAB.
+ */
+TL_DEF void tl_set_complete_callback(tl_complete_fn callback);
+
 #endif /* TOILETLINE_H_ */ /* End of header file */
 
 #if defined TOILETLINE_IMPLEMENTATION
@@ -2692,6 +2726,12 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_should_refresh_text = true;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_total_rows = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_row = 1;
 
+/* The ghost suggestion drawn dimmed after the cursor, and its byte length. The
+   refresh reads them, so they are declared before it. The top completion fills
+   them as the user types and Right or End accepts them. */
+ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost[ITL_STRING_MAX_LEN] = {0};
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len = 0;
+
 /* $COLUMNS and $LINES, same as above. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_rows = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_cols = 1;
@@ -3006,6 +3046,22 @@ itl_le_tty_refresh(itl_le_t *le)
     }
     ITL_TTY_CLEAR_TO_END(b);
 
+    /* Draw the ghost suggestion dimmed after the line. It is shown only when the
+       cursor sits at the very end of the buffer and the suggestion fits on the
+       current row without wrapping, so it never pushes a line break and the
+       cursor restore below lands on the real caret. The ghost text is ASCII
+       here, so its byte length is its column width. A second clear erases a
+       longer ghost left from a previous frame, then the cursor is parked back on
+       the real caret column. */
+    if (itl_g_ghost_len > 0 && le->cursor_position == le->line->length &&
+        col + itl_g_ghost_len < cols)
+    {
+      itl_char_buf_append_cstr(b, "\x1b[90m");
+      itl_char_buf_append_cstr(b, itl_g_ghost);
+      itl_char_buf_append_cstr(b, "\x1b[0m");
+      ITL_TTY_CLEAR_TO_END(b);
+    }
+
     /* Move from the end of the rendered text up to the cursor's row. */
     move_up = (m.total_rows - 1) - m.cursor_row;
     if (move_up > 0) {
@@ -3067,6 +3123,223 @@ tl_last_control_sequence(void)
   return itl_g_last_control;
 }
 
+/* The host completion callback, or NULL when completion is disabled. Only the
+   interactive host registers one. */
+ITL_DEF ITL_THREAD_LOCAL tl_complete_fn itl_g_complete_callback = NULL;
+
+TL_DEF void
+tl_set_complete_callback(tl_complete_fn callback)
+{
+  itl_g_complete_callback = callback;
+}
+
+/* Insert a UTF-8 C-string at the cursor, one decoded character at a time, so the
+   line editor's character model stays intact. Returns false when the line buffer
+   would overflow, leaving the part that fit in place. */
+ITL_DEF bool
+itl_le_insert_cstr(itl_le_t *le, const char *text)
+{
+  size_t i = 0;
+  while (text[i] != '\0') {
+    uint8_t first = (uint8_t) text[i];
+    uint8_t width = itl_utf8_width(first);
+    itl_utf8_t ch;
+    uint8_t k;
+
+    if (width < 1) {
+      width = 1;
+    }
+    ch.bytes[0] = first;
+    ch.size = 1;
+    for (k = 1; k < width && text[i + k] != '\0'; ++k) {
+      ch.bytes[k] = (uint8_t) text[i + k];
+      ch.size += 1;
+    }
+    if (!itl_le_insert(le, ch)) {
+      return false;
+    }
+    i += ch.size;
+  }
+  return true;
+}
+
+/* Clear the recorded ghost text, so the next refresh draws none. */
+ITL_DEF void
+itl_ghost_clear(void)
+{
+  itl_g_ghost_len = 0;
+  itl_g_ghost[0] = '\0';
+}
+
+/* Ask the host for the top completion of the current line and remember it as the
+   ghost suffix when it extends the token under the cursor. The ghost is the part
+   of the longest common prefix that sits past what the user already typed, so it
+   only ever appends. It is shown only when the cursor is at the end of the line,
+   so it never splits the buffer. */
+ITL_DEF void
+itl_ghost_update(itl_le_t *le)
+{
+  char line_cstr[ITL_STRING_MAX_LEN];
+  tl_completion result;
+
+  itl_ghost_clear();
+
+  if (itl_g_complete_callback == NULL) {
+    return;
+  }
+  /* A ghost past the end of a multiline or mid-line cursor would corrupt the
+     redraw, so it is offered only at the very end of the line. */
+  if (le->cursor_position != le->line->length) {
+    return;
+  }
+  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS) {
+    return;
+  }
+  /* An empty line has no token to extend. */
+  if (line_cstr[0] == '\0') {
+    return;
+  }
+
+  if (!itl_g_complete_callback(line_cstr, strlen(line_cstr), &result)) {
+    return;
+  }
+  if (result.count == 0 || result.longest_common_prefix == NULL) {
+    return;
+  }
+
+  {
+    /* The token under the cursor is the bytes from token_start to the end of the
+       line. The ghost is the completion's common prefix minus that token, so it
+       is the suffix the user has not typed yet. */
+    size_t typed_len = strlen(line_cstr) - result.token_start;
+    size_t lcp_len = strlen(result.longest_common_prefix);
+    if (lcp_len <= typed_len) {
+      return;
+    }
+    {
+      size_t suffix_len = lcp_len - typed_len;
+      if (suffix_len >= sizeof(itl_g_ghost)) {
+        return;
+      }
+      memcpy(itl_g_ghost, result.longest_common_prefix + typed_len, suffix_len);
+      itl_g_ghost[suffix_len] = '\0';
+      itl_g_ghost_len = suffix_len;
+    }
+  }
+}
+
+/* Print the candidate list below the input in columns, then leave the cursor on
+   a fresh line so the next refresh redraws the prompt and line beneath the list.
+   The previous-render row counts are reset so the refresh treats the spot below
+   the list as untouched ground and does not clear the list it just printed. */
+ITL_DEF void
+itl_completion_print_list(const tl_completion *result)
+{
+  itl_char_buf_t *b = &itl_g_char_buffer;
+  size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
+  size_t longest = 0;
+  size_t i, column_width, columns, column;
+
+  /* Move below the whole input block, the same accounting tl_emit_newlines
+     uses, so the list never lands on top of the line. */
+  size_t move_down = itl_g_le_prev_total_rows - (itl_g_le_prev_cursor_row - 1);
+
+  ITL_CHAR_BUF_CLEAR(b);
+  ITL_TTY_SHOW_CURSOR(b);
+  for (i = 0; i < move_down; ++i) {
+    itl_char_buf_append_cstr(b, ITL_LF);
+  }
+
+  for (i = 0; i < result->count; ++i) {
+    size_t len = strlen(result->candidates[i]);
+    if (len > longest) {
+      longest = len;
+    }
+  }
+
+  /* Two spaces between columns, at least one column even when a name is wider
+     than the terminal. */
+  column_width = longest + 2;
+  columns = column_width >= tty_cols ? 1 : tty_cols / column_width;
+  if (columns < 1) {
+    columns = 1;
+  }
+
+  column = 0;
+  for (i = 0; i < result->count; ++i) {
+    const char *name = result->candidates[i];
+    size_t len = strlen(name);
+    size_t pad;
+
+    itl_char_buf_append_cstr(b, name);
+    column += 1;
+    if (column >= columns || i + 1 == result->count) {
+      itl_char_buf_append_cstr(b, ITL_LF);
+      column = 0;
+    } else {
+      for (pad = len; pad < column_width; ++pad) {
+        itl_char_buf_append_byte(b, ' ');
+      }
+    }
+  }
+
+  ITL_CHAR_BUF_DUMP(b);
+  ITL_CHAR_BUF_CLEAR(b);
+
+  /* The line is redrawn fresh below the list, so forget the old block. */
+  itl_g_le_prev_total_rows = 1;
+  itl_g_le_prev_cursor_row = 1;
+  itl_g_tty_should_refresh_text = true;
+}
+
+/* Handle the TAB key when a completion callback is registered. Insert the
+   longest common prefix that extends the token, and when several candidates
+   remain and the prefix did not grow, print them below the prompt. Returns true
+   when it handled the key, false when the host should fall back to the default
+   TAB behavior. */
+ITL_DEF bool
+itl_completion_handle_tab(itl_le_t *le)
+{
+  char line_cstr[ITL_STRING_MAX_LEN];
+  tl_completion result;
+  size_t typed_len, lcp_len;
+
+  if (itl_g_complete_callback == NULL) {
+    return false;
+  }
+  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS) {
+    return false;
+  }
+  if (!itl_g_complete_callback(line_cstr, le->cursor_position, &result)) {
+    return false;
+  }
+  if (result.count == 0) {
+    return false;
+  }
+
+  itl_ghost_clear();
+
+  typed_len = le->cursor_position - result.token_start;
+  lcp_len = result.longest_common_prefix != NULL
+                ? strlen(result.longest_common_prefix)
+                : 0;
+
+  /* Insert the part of the common prefix the user has not typed yet, which
+     grows the token toward the candidates. */
+  if (lcp_len > typed_len) {
+    itl_le_insert_cstr(le, result.longest_common_prefix + typed_len);
+    itl_g_tty_should_refresh_text = true;
+    return true;
+  }
+
+  /* The prefix did not grow, so a second TAB lists the candidates when more than
+     one remains. A single candidate with nothing left to insert needs no list. */
+  if (result.count > 1) {
+    itl_completion_print_list(&result);
+  }
+  return true;
+}
+
 ITL_DEF tl_status_code
 itl_le_key_handle(itl_le_t *le, int esc)
 {
@@ -3080,6 +3353,12 @@ itl_le_key_handle(itl_le_t *le, int esc)
 
   switch (esc & TL_MASK_KEY) {
   case TL_KEY_TAB: {
+    /* A registered completion callback handles TAB in place, inserting the
+       common prefix or listing the candidates. With no callback, TAB keeps its
+       old contract of returning to the host. */
+    if (itl_completion_handle_tab(le)) {
+      return TL_SUCCESS;
+    }
     ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
                 TL_SUCCESS,
             return TL_ERROR_SIZE);
@@ -3128,6 +3407,16 @@ itl_le_key_handle(itl_le_t *le, int esc)
 
   case TL_KEY_RIGHT: {
     bool cursor_was_on_space;
+    /* At the end of the line, a Right with ghost text accepts the suggestion by
+       inserting it, rather than moving the cursor nowhere. */
+    if (le->cursor_position == le->line->length && itl_g_ghost_len > 0 &&
+        !(esc & TL_MOD_CTRL))
+    {
+      itl_le_insert_cstr(le, itl_g_ghost);
+      itl_ghost_clear();
+      itl_g_tty_should_refresh_text = true;
+      break;
+    }
     if (le->cursor_position < le->line->length) {
       if (esc & TL_MOD_CTRL) {
         cursor_was_on_space = ITL_LE_CURSOR_IS_ON_SPACE(le);
@@ -3164,6 +3453,14 @@ itl_le_key_handle(itl_le_t *le, int esc)
 
   case TL_KEY_END: {
     size_t line_end = itl_le_logical_line_end(le);
+    /* At the end of the line, End accepts the ghost suggestion the same way
+       Right does. */
+    if (le->cursor_position == le->line->length && itl_g_ghost_len > 0) {
+      itl_le_insert_cstr(le, itl_g_ghost);
+      itl_ghost_clear();
+      itl_g_tty_should_refresh_text = true;
+      break;
+    }
     itl_le_move_right(le, line_end - le->cursor_position);
     itl_g_tty_should_refresh_text = false;
   } break;
@@ -3736,6 +4033,10 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
 
   itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
 
+  /* A new line starts with no ghost, since the previous line's suggestion does
+     not carry over, and predefined input is shown as the user's own text. */
+  itl_ghost_clear();
+
   /* Avoid clearing lines that don't belong to us. */
   itl_g_le_prev_total_rows = 1;
   itl_g_le_prev_cursor_row = 1;
@@ -3784,6 +4085,8 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
 
     input_type = itl_esc_parse(input_byte);
     if ((input_type & TL_MASK_KEY) == TL_KEY_PASTE_BEGIN) {
+      /* A paste replaces the token wholesale, so the stale ghost is dropped. */
+      itl_ghost_clear();
       itl_le_read_paste(le);
       itl_g_tty_should_refresh_text = true;
     } else if ((input_type & TL_MASK_KEY) == TL_KEY_HISTORY_SEARCH ||
@@ -3805,14 +4108,31 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
         }
       }
     } else if (input_type != TL_KEY_CHAR) {
+      /* Any non-character key edits or moves, so the stale ghost is dropped
+         before the key runs. Tab and the arrow keys that accept the ghost manage
+         it themselves inside the handler. */
+      bool is_tab = (input_type & TL_MASK_KEY) == TL_KEY_TAB;
+      bool accepts_ghost =
+          ((input_type & TL_MASK_KEY) == TL_KEY_RIGHT ||
+           (input_type & TL_MASK_KEY) == TL_KEY_END) &&
+          le->cursor_position == le->line->length && itl_g_ghost_len > 0;
+      if (!is_tab && !accepts_ghost) {
+        itl_ghost_clear();
+      }
       code = itl_le_key_handle(le, input_type);
       if (code != TL_SUCCESS) {
         itl_le_clear_line(le);
         return code;
       }
+      /* After tab grew the line, offer a fresh ghost for the new token. */
+      if (is_tab) {
+        itl_ghost_update(le);
+      }
     } else {
       itl_le_insert(le, itl_utf8_parse(input_byte));
       itl_g_tty_should_refresh_text = true;
+      /* Recompute the ghost for the token the new character extended. */
+      itl_ghost_update(le);
     }
 
     ITL_TRACELN("strlen: %zu, hist index: %zu\n", le->line->length,
