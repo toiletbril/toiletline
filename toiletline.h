@@ -234,10 +234,13 @@ TL_DEF tl_status_code tl_set_title(const char *title);
  * toiletline reads it right after the call returns and does not free it.
  *
  * candidates points at an array of count C-strings, each a full replacement for
- * the token the cursor sits on. token_start is the byte offset in the buffer
- * where that token begins, so toiletline replaces the span from token_start to
- * the cursor. longest_common_prefix is the longest prefix every candidate
- * shares, inserted on the first TAB.
+ * the whole token the cursor sits on. token_start and token_end are codepoint
+ * indices into the line, in the same unit as the cursor, and bound the token
+ * span toiletline replaces. The host passes a byte cursor to the callback and
+ * converts the byte offsets it computes back to codepoint indices here, so the
+ * editor stays in codepoints and a multibyte glyph never shifts the span.
+ * longest_common_prefix is the longest prefix every candidate shares, inserted
+ * on the first TAB.
  */
 typedef struct tl_completion
 {
@@ -245,6 +248,7 @@ typedef struct tl_completion
   size_t count;
   const char *longest_common_prefix;
   size_t token_start;
+  size_t token_end;
 } tl_completion;
 
 /**
@@ -3200,7 +3204,10 @@ itl_ghost_update(itl_le_t *le)
     return;
   }
 
-  if (!itl_g_complete_callback(line_cstr, strlen(line_cstr), &result)) {
+  /* The cursor passed to the callback is a codepoint index, the unit toiletline
+     edits in, and it equals the line length here since the ghost only fires at
+     the end of the line. */
+  if (!itl_g_complete_callback(line_cstr, le->line->length, &result)) {
     return;
   }
   if (result.count == 0 || result.longest_common_prefix == NULL) {
@@ -3208,20 +3215,39 @@ itl_ghost_update(itl_le_t *le)
   }
 
   {
-    /* The token under the cursor is the bytes from token_start to the end of the
-       line. The ghost is the completion's common prefix minus that token, so it
-       is the suffix the user has not typed yet. */
-    size_t typed_len = strlen(line_cstr) - result.token_start;
-    size_t lcp_len = strlen(result.longest_common_prefix);
+    /* The token under the cursor runs from token_start to the end of the line,
+       so its length in codepoints is the line length minus the start. The ghost
+       is the part of the common prefix past that typed length, the suffix the
+       user has not typed yet. token_start is a codepoint index, so the prefix is
+       measured in codepoints and then walked to its byte offset. */
+    size_t typed_len = le->line->length - result.token_start;
+    size_t lcp_len = tl_utf8_strlen(result.longest_common_prefix);
     if (lcp_len <= typed_len) {
       return;
     }
     {
-      size_t suffix_len = lcp_len - typed_len;
+      /* Skip the typed codepoints to find where the untyped byte suffix begins,
+         since the prefix bytes the user already typed are not part of the
+         ghost. */
+      const char *lcp = result.longest_common_prefix;
+      size_t skip_offset = 0;
+      size_t skipped = 0;
+      while (skipped < typed_len && lcp[skip_offset] != '\0') {
+        if ((lcp[skip_offset] & 0xC0) != 0x80) {
+          skipped += 1;
+        }
+        skip_offset += 1;
+      }
+      /* A continuation byte that belongs to the last skipped codepoint must not
+         start the suffix, so advance past the whole codepoint. */
+      while (lcp[skip_offset] != '\0' && (lcp[skip_offset] & 0xC0) == 0x80) {
+        skip_offset += 1;
+      }
+      size_t suffix_len = strlen(lcp + skip_offset);
       if (suffix_len >= sizeof(itl_g_ghost)) {
         return;
       }
-      memcpy(itl_g_ghost, result.longest_common_prefix + typed_len, suffix_len);
+      memcpy(itl_g_ghost, lcp + skip_offset, suffix_len);
       itl_g_ghost[suffix_len] = '\0';
       itl_g_ghost_len = suffix_len;
     }
@@ -3292,17 +3318,33 @@ itl_completion_print_list(const tl_completion *result)
   itl_g_tty_should_refresh_text = true;
 }
 
-/* Handle the TAB key when a completion callback is registered. Insert the
-   longest common prefix that extends the token, and when several candidates
-   remain and the prefix did not grow, print them below the prompt. Returns true
-   when it handled the key, false when the host should fall back to the default
-   TAB behavior. */
+/* Replace the whole token span [token_start, token_end) with text, in codepoint
+   units, leaving the cursor at the end of the inserted text. The span is erased
+   first so a mid-word cursor does not keep the bytes to its right, then the
+   replacement is inserted at the token start. */
+ITL_DEF void
+itl_completion_replace_token(itl_le_t *le, const tl_completion *result,
+                             const char *text)
+{
+  size_t token_len = result->token_end - result->token_start;
+
+  le->cursor_position = result->token_start;
+  ITL_LE_ERASE_FORWARD(le, token_len);
+  itl_le_insert_cstr(le, text);
+}
+
+/* Handle the TAB key when a completion callback is registered. Replace the whole
+   token under the cursor with the longest common prefix when that prefix extends
+   the token, and when several candidates remain and the prefix did not grow,
+   print them below the prompt. A single candidate replaces the token outright,
+   since it is the one full replacement. Returns true when it handled the key,
+   false when the host should fall back to the default TAB behavior. */
 ITL_DEF bool
 itl_completion_handle_tab(itl_le_t *le)
 {
   char line_cstr[ITL_STRING_MAX_LEN];
   tl_completion result;
-  size_t typed_len, lcp_len;
+  size_t token_len, lcp_len;
 
   if (itl_g_complete_callback == NULL) {
     return false;
@@ -3319,24 +3361,30 @@ itl_completion_handle_tab(itl_le_t *le)
 
   itl_ghost_clear();
 
-  typed_len = le->cursor_position - result.token_start;
-  lcp_len = result.longest_common_prefix != NULL
-                ? strlen(result.longest_common_prefix)
-                : 0;
-
-  /* Insert the part of the common prefix the user has not typed yet, which
-     grows the token toward the candidates. */
-  if (lcp_len > typed_len) {
-    itl_le_insert_cstr(le, result.longest_common_prefix + typed_len);
+  /* A lone candidate is the full replacement for the token, so it goes in even
+     when it is no longer than what the user typed, which covers a glob token
+     that resolves to a single match. */
+  if (result.count == 1) {
+    itl_completion_replace_token(le, &result, result.candidates[0]);
     itl_g_tty_should_refresh_text = true;
     return true;
   }
 
-  /* The prefix did not grow, so a second TAB lists the candidates when more than
-     one remains. A single candidate with nothing left to insert needs no list. */
-  if (result.count > 1) {
-    itl_completion_print_list(&result);
+  token_len = result.token_end - result.token_start;
+  lcp_len = result.longest_common_prefix != NULL
+                ? tl_utf8_strlen(result.longest_common_prefix)
+                : 0;
+
+  /* Replace the token with the common prefix when that prefix is longer than the
+     token, which grows the token toward the candidates. */
+  if (lcp_len > token_len) {
+    itl_completion_replace_token(le, &result, result.longest_common_prefix);
+    itl_g_tty_should_refresh_text = true;
+    return true;
   }
+
+  /* The prefix did not grow the token, so a second TAB lists the candidates. */
+  itl_completion_print_list(&result);
   return true;
 }
 
