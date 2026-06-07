@@ -266,6 +266,36 @@ typedef int (*tl_complete_fn)(const char *buffer, size_t cursor,
  */
 TL_DEF void tl_set_complete_callback(tl_complete_fn callback);
 
+/**
+ * The first-word highlight result. token_start and token_end are codepoint
+ * indices bounding the first word the renderer should color, the same codepoint
+ * unit the editor edits in. should_color is nonzero when that span should be
+ * drawn in the highlight color, zero to leave the whole line in the default
+ * color.
+ */
+typedef struct tl_highlight
+{
+  size_t token_start;
+  size_t token_end;
+  int should_color;
+} tl_highlight;
+
+/**
+ * The highlight callback. The host receives the current buffer and a result to
+ * fill with the first word's codepoint span and whether to color it. It returns
+ * nonzero when it filled the result and zero when the line should stay plain.
+ * The renderer emits a zero-width SGR escape before token_start and a reset
+ * after token_end, so the span is colored without shifting the cursor column.
+ */
+typedef int (*tl_highlight_fn)(const char *buffer, tl_highlight *out);
+
+/**
+ * Register the highlight callback, or NULL to disable highlighting. Only the
+ * interactive host registers one, so a non-interactive run pays nothing and the
+ * line is drawn without any SGR escape.
+ */
+TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback);
+
 #endif /* TOILETLINE_H_ */ /* End of header file */
 
 #if defined TOILETLINE_IMPLEMENTATION
@@ -1117,6 +1147,23 @@ itl_cstr_display_width(const char *cstr)
   }
 
   while (cstr[i] != '\0') {
+    /* An ANSI escape sequence such as a color code occupies no terminal
+       columns, so skip it whole. A colored prompt would otherwise push the
+       caret right by the length of its escape bytes. */
+    if ((uint8_t) cstr[i] == 0x1b) {
+      i += 1;
+      if (cstr[i] == '[') {
+        i += 1;
+        while (cstr[i] != '\0' && (cstr[i] < 0x40 || cstr[i] > 0x7e)) {
+          i += 1;
+        }
+        if (cstr[i] != '\0') {
+          i += 1;
+        }
+      }
+      continue;
+    }
+
     uint8_t rune_width = itl_utf8_width((uint8_t) cstr[i]);
     itl_utf8_t ch;
     uint8_t j;
@@ -2736,6 +2783,17 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_row = 1;
 ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len = 0;
 
+/* The host highlight callback, or NULL when highlighting is disabled. Only the
+   interactive host registers one. The refresh reads it, so it is declared
+   before the refresh. */
+ITL_DEF ITL_THREAD_LOCAL tl_highlight_fn itl_g_highlight_callback = NULL;
+
+/* The highlight color drawn around the first word when the host marks it for
+   coloring, light red so an unresolvable command stands out. The reset clears
+   it, matching the ghost text's own reset. */
+#define ITL_HIGHLIGHT_SGR   "\x1b[91m"
+#define ITL_HIGHLIGHT_RESET "\x1b[0m"
+
 /* $COLUMNS and $LINES, same as above. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_rows = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_cols = 1;
@@ -3016,12 +3074,46 @@ itl_le_tty_refresh(itl_le_t *le)
       itl_char_buf_append_cstr(b, le->prompt);
     }
 
+    /* Ask the host which codepoint span of the first word to color. The escapes
+       are emitted between codepoints in the loop below, so they carry zero
+       column width and the metrics pass that placed the cursor never sees them,
+       the same zero-width handling the ghost text relies on. The span is
+       ignored unless should_color is set and the bounds sit within the line. */
+    bool has_highlight = false;
+    size_t highlight_start = 0;
+    size_t highlight_end = 0;
+    if (itl_g_highlight_callback != NULL) {
+      char highlight_cstr[ITL_STRING_MAX_LEN];
+      if (itl_string_to_cstr(le->line, highlight_cstr,
+                             sizeof(highlight_cstr)) == TL_SUCCESS)
+      {
+        tl_highlight hl;
+        hl.token_start = 0;
+        hl.token_end = 0;
+        hl.should_color = 0;
+        if (itl_g_highlight_callback(highlight_cstr, &hl) && hl.should_color &&
+            hl.token_start < hl.token_end && hl.token_end <= le->line->length)
+        {
+          has_highlight = true;
+          highlight_start = hl.token_start;
+          highlight_end = hl.token_end;
+        }
+      }
+    }
+
     /* Emit the buffer, reproducing the metrics column accounting so our own
        line breaks stay in sync with the terminal. Continuation rows are padded
        so their text lines up under the first row. */
     col = indent;
     for (i = 0; i < le->line->length; ++i) {
       itl_utf8_t ch = le->line->chars[i];
+
+      if (has_highlight && i == highlight_end) {
+        itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+      }
+      if (has_highlight && i == highlight_start) {
+        itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_SGR);
+      }
 
       if (ITL_LE_IS_NEWLINE(ch)) {
         itl_char_buf_append_cstr(b, ITL_LF);
@@ -3047,6 +3139,11 @@ itl_le_tty_refresh(itl_le_t *le)
           col = indent;
         }
       }
+    }
+    /* The first word can run to the end of the line, so its reset is emitted
+       here when the in-loop boundary never came up. */
+    if (has_highlight && highlight_end == le->line->length) {
+      itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
     }
     ITL_TTY_CLEAR_TO_END(b);
 
@@ -3135,6 +3232,12 @@ TL_DEF void
 tl_set_complete_callback(tl_complete_fn callback)
 {
   itl_g_complete_callback = callback;
+}
+
+TL_DEF void
+tl_set_highlight_callback(tl_highlight_fn callback)
+{
+  itl_g_highlight_callback = callback;
 }
 
 /* Insert a UTF-8 C-string at the cursor, one decoded character at a time, so the
