@@ -263,6 +263,30 @@ is not a tty.
 Returns `TL_SUCCESS` or `TL_ERROR` on other errors.
 
 
+void tl_set_complete_callback(tl_complete_fn callback);
+------------------------------------------------------
+Registers the completion callback the editor calls on `Tab` and while building
+the ghost suggestion. The callback receives the current line and the cursor
+position in bytes and fills a `tl_completion` with the candidates, their count,
+the longest common prefix, and the token span to replace. Pass `NULL` to turn
+completion off, which is the default.
+
+
+void tl_set_highlight_callback(tl_highlight_fn callback);
+--------------------------------------------------------
+Registers the syntax-highlight callback the editor calls before each redraw. The
+callback receives the current line and fills a `tl_highlight` with the colored
+spans, each one a start and end in codepoints and an SGR escape. Pass `NULL` to
+turn highlighting off, which is the default.
+
+
+void tl_set_ghost_enabled(int enabled);
+---------------------------------------
+Turns the dimmed ghost suggestion shown ahead of the cursor on or off. It is on
+by default. When it is off neither the completion callback nor the history fills
+it, so a host that wants no inline hint passes 0.
+
+
 Examples
 --------
 For example usage, take a look at `example.c` and `example_character.c`

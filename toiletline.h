@@ -257,7 +257,7 @@ typedef struct tl_completion
  * result and zero when it has nothing to offer.
  */
 typedef int (*tl_complete_fn)(const char *buffer, size_t cursor,
-                              tl_completion *out);
+                              tl_completion *out, int for_listing);
 
 /**
  * Register the completion callback, or NULL to disable completion. Only the
@@ -265,6 +265,12 @@ typedef int (*tl_complete_fn)(const char *buffer, size_t cursor,
  * TAB key keeps its old behavior of returning TL_PRESSED_TAB.
  */
 TL_DEF void tl_set_complete_callback(tl_complete_fn callback);
+
+/*
+ * Enables or disables the dimmed ghost suggestion shown ahead of the cursor.
+ * Enabled by default. When disabled neither completion nor history fills it.
+ */
+TL_DEF void tl_set_ghost_enabled(int enabled);
 
 /**
  * One colored span of the line. start and end are codepoint indices, the same
@@ -3212,6 +3218,16 @@ TL_DEF void tl_set_complete_callback(tl_complete_fn callback)
   itl_g_complete_callback = callback;
 }
 
+/* Whether the dimmed ghost suggestion is offered at all. A host that wants no
+   inline hint, such as one started with a no-completion flag, turns it off so
+   neither the completion nor the history source fills it. */
+ITL_DEF ITL_THREAD_LOCAL int itl_g_ghost_enabled = 1;
+
+TL_DEF void tl_set_ghost_enabled(int enabled)
+{
+  itl_g_ghost_enabled = enabled;
+}
+
 TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback)
 {
   itl_g_highlight_callback = callback;
@@ -3268,7 +3284,7 @@ ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr)
   /* The cursor passed to the callback is a codepoint index, the unit toiletline
      edits in, and it equals the line length here since the ghost only fires at
      the end of the line. */
-  if (!itl_g_complete_callback(line_cstr, le->line->length, &result)) {
+  if (!itl_g_complete_callback(line_cstr, le->line->length, &result, 0)) {
     return;
   }
   if (result.count == 0 || result.longest_common_prefix == NULL) {
@@ -3395,6 +3411,11 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
 
   itl_ghost_clear();
 
+  /* The host turned the ghost off, so no source fills it. */
+  if (!itl_g_ghost_enabled) {
+    return;
+  }
+
   /* A ghost past the end of a multiline or mid-line cursor would corrupt the
      redraw, so it is offered only at the very end of the line. */
   if (le->cursor_position != le->line->length) {
@@ -3513,7 +3534,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
   {
     return false;
   }
-  if (!itl_g_complete_callback(line_cstr, le->cursor_position, &result)) {
+  if (!itl_g_complete_callback(line_cstr, le->cursor_position, &result, 1)) {
     return false;
   }
   if (result.count == 0) {
@@ -4430,7 +4451,11 @@ TL_DEF size_t tl_utf8_strnlen(const char *utf8_str, size_t byte_count)
 {
   size_t len = 0;
   while (*utf8_str != '\0' && byte_count-- > 0) {
-    if ((*utf8_str & 0xC0) != 0x80) {
+    /* The byte is read as unsigned before the mask, since a signed char sign
+       extends a continuation byte such as 0x8E and a codegen that keeps the
+       comparison narrow then misreads it as a lead byte, which miscounts a
+       multibyte string. */
+    if (((unsigned char) *utf8_str & 0xC0) != 0x80) {
       len += 1;
     }
     utf8_str += 1;
