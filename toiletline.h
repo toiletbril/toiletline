@@ -3434,6 +3434,20 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
   if (itl_g_ghost_len == 0) {
     itl_ghost_fill_from_history(line_cstr);
   }
+
+  /* A multiline suggestion drawn on the current line would push the caret onto
+     the next row and leave the column accounting off when the suggestion is
+     accepted, so the ghost is clipped to its first line. */
+  {
+    char *newline = (char *)memchr(itl_g_ghost, '\n', itl_g_ghost_len);
+    if (newline != NULL) {
+      *newline = '\0';
+      itl_g_ghost_len = (size_t)(newline - itl_g_ghost);
+      if (itl_g_ghost_len == 0) {
+        itl_ghost_clear();
+      }
+    }
+  }
 }
 
 /* Print the candidate list below the input in columns, then leave the cursor on
