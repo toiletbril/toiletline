@@ -2796,6 +2796,10 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_row = 1;
 ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len = 0;
 
+/* The history autosuggestion scans at most this many recent entries per
+   keystroke, so a long history does not slow the interactive prompt. */
+#define ITL_GHOST_HISTORY_SCAN_MAX 100
+
 /* The host highlight callback, or NULL when highlighting is disabled. Only the
    interactive host registers one. The refresh reads it, so it is declared
    before the refresh. */
@@ -3396,11 +3400,18 @@ itl_ghost_fill_from_history(const char *line_cstr)
 
   /* Newest first, so the most recent matching command wins. The index walk runs
      from the highest navigable index, which is the most recent entry, down to
-     the oldest. */
+     the oldest. The scan is bounded to a recent window so a full history does
+     not cost an unbounded run of reads on every keystroke. */
+  size_t scanned = 0;
   for (index = itl_g_history_count; index-- > 0;) {
     char entry_cstr[ITL_STRING_MAX_LEN];
     size_t offset = itl_history_index_to_offset(index);
     size_t entry_len;
+
+    if (scanned >= ITL_GHOST_HISTORY_SCAN_MAX) {
+      break;
+    }
+    scanned += 1;
 
     if (!itl_history_read_entry_fd(file, offset, entry)) {
       continue;
