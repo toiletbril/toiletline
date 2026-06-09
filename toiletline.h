@@ -1962,7 +1962,7 @@ itl_g_history_get_next(itl_le_t *le)
   }
 }
 
-#define ITL_CHAR_BUFFER_INIT_SIZE 32
+#define ITL_CHAR_BUFFER_INIT_SIZE 256
 
 typedef struct itl_char_buf itl_char_buf_t;
 
@@ -2007,16 +2007,17 @@ itl_char_buf_extend(itl_char_buf_t *cb)
 ITL_DEF void
 itl_char_buf_append_cstr(itl_char_buf_t *cb, const char *cstr)
 {
-  size_t new_size, j;
+  /* The length is measured once and the buffer grown once, so a multi-byte
+     escape sequence copies in one memcpy rather than a per-byte capacity check.
+   */
+  size_t len = strlen(cstr);
 
-  for (new_size = cb->size, j = 0; cstr[j] != '\0'; ++j, ++new_size) {
-    while (cb->capacity <= new_size) {
-      itl_char_buf_extend(cb);
-    }
-    cb->data[new_size] = cstr[j];
+  while (cb->capacity < cb->size + len) {
+    itl_char_buf_extend(cb);
   }
 
-  cb->size = new_size;
+  memcpy(cb->data + cb->size, cstr, len);
+  cb->size += len;
 }
 
 ITL_DEF void
@@ -2076,10 +2077,14 @@ itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 ITL_DEF void
 itl_char_buf_append_spaces(itl_char_buf_t *cb, size_t count)
 {
-  size_t i;
-  for (i = 0; i < count; ++i) {
-    itl_char_buf_append_byte(cb, ' ');
+  /* The padding for a wrapped continuation row grows the buffer once and fills
+     with one memset rather than a per-space capacity check. */
+  while (cb->capacity < cb->size + count) {
+    itl_char_buf_extend(cb);
   }
+
+  memset(cb->data + cb->size, ' ', count);
+  cb->size += count;
 }
 
 /* Appends a string with each newline written as backslash n and each backslash
