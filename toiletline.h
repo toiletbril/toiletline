@@ -252,9 +252,9 @@ typedef struct tl_completion
 } tl_completion;
 
 /**
- * The completion callback. The host receives the current buffer, its cursor byte
- * offset, and a result to fill. It returns nonzero when it filled the result and
- * zero when it has nothing to offer.
+ * The completion callback. The host receives the current buffer, its cursor
+ * byte offset, and a result to fill. It returns nonzero when it filled the
+ * result and zero when it has nothing to offer.
  */
 typedef int (*tl_complete_fn)(const char *buffer, size_t cursor,
                               tl_completion *out);
@@ -282,9 +282,9 @@ typedef struct tl_highlight_span
 
 /**
  * The highlight result. The editor provides spans, an array of capacity slots,
- * and the host fills the first count of them. The spans must be sorted by start,
- * must not overlap, and must stay within the line, so the renderer can open and
- * close them in one left-to-right pass.
+ * and the host fills the first count of them. The spans must be sorted by
+ * start, must not overlap, and must stay within the line, so the renderer can
+ * open and close them in one left-to-right pass.
  */
 typedef struct tl_highlight
 {
@@ -450,8 +450,7 @@ TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback);
 #define ITL_FILE_SEEK_END(file)                                                \
   (fseek(file, 0L, SEEK_END) == 0 ? ftell(file) : -1L)
 
-ITL_DEF int
-itl_write_impl(FILE *f, const void *buf, size_t size)
+ITL_DEF int itl_write_impl(FILE *f, const void *buf, size_t size)
 {
   /* Return the byte count, matching write()/_write(), so callers can detect a
      short write rather than only a hard error. */
@@ -468,8 +467,7 @@ itl_write_impl(FILE *f, const void *buf, size_t size)
 /* Windows can't read arrow keys otherwise */
 #define ITL_READ_BYTE_RAW _getch
 #else /* ITL_WIN32 */
-ITL_DEF int
-ITL_READ_BYTE_RAW(void)
+ITL_DEF int ITL_READ_BYTE_RAW(void)
 {
 #if !defined ITL_INJECT_KLEE
   int buf[1];
@@ -565,8 +563,8 @@ typedef unsigned char bool;
 #endif
 
 #if defined TL_DEBUG
-ITL_NO_RETURN ITL_DEF void
-itl_unreachable_impl(const char *file, int line, const char *message)
+ITL_NO_RETURN ITL_DEF void itl_unreachable_impl(const char *file, int line,
+                                                const char *message)
 {
   fprintf(stderr, "%s:%d: %s\n", file, line, message);
   fflush(stderr);
@@ -582,9 +580,7 @@ itl_unreachable_impl(const char *file, int line, const char *message)
 #define ITL_TRACELN(...) fprintf(stderr, "\n[TRACE] " __VA_ARGS__)
 #else /* TL_DEBUG */
 #if defined ITL_C89
-ITL_DEF inline void
-itl_do_nothing()
-{}
+ITL_DEF inline void itl_do_nothing() {}
 #define ITL_TRACELN(...) itl_do_nothing()
 #else                    /* ITL_C89 */
 #define ITL_TRACELN(...) /* nothing */
@@ -621,8 +617,7 @@ ITL_DEF ITL_THREAD_LOCAL int itl_g_original_mode = 0;
 ITL_DEF ITL_THREAD_LOCAL struct termios itl_g_original_tty_mode = ITL_ZERO_INIT;
 #endif /* ITL_POSIX */
 
-ITL_DEF bool
-itl_enter_raw_mode_impl(void)
+ITL_DEF bool itl_enter_raw_mode_impl(void)
 {
 #if defined ITL_WIN32
   int mode = 0;
@@ -684,8 +679,7 @@ itl_enter_raw_mode_impl(void)
   return true;
 }
 
-ITL_DEF bool
-itl_exit_raw_mode_impl(void)
+ITL_DEF bool itl_exit_raw_mode_impl(void)
 {
 #if defined ITL_WIN32
   bool something_failed = false;
@@ -729,8 +723,7 @@ itl_exit_raw_mode_impl(void)
 #endif /* ITL_POSIX */
 }
 
-TL_DEF tl_status_code
-tl_enter_raw_mode(void)
+TL_DEF tl_status_code tl_enter_raw_mode(void)
 {
   ITL_TRY(!itl_g_entered_raw_mode, return TL_SUCCESS);
 
@@ -753,8 +746,7 @@ tl_enter_raw_mode(void)
   return TL_SUCCESS;
 }
 
-TL_DEF tl_status_code
-tl_exit_raw_mode(void)
+TL_DEF tl_status_code tl_exit_raw_mode(void)
 {
   ITL_TRY(itl_g_entered_raw_mode, return TL_SUCCESS);
 
@@ -773,14 +765,9 @@ tl_exit_raw_mode(void)
 /* Holds at most one byte pushed back by `itl_unread_byte`, or -1 when empty. */
 ITL_DEF ITL_THREAD_LOCAL int itl_g_pushback_byte = -1;
 
-ITL_DEF void
-itl_unread_byte(uint8_t byte)
-{
-  itl_g_pushback_byte = (int) byte;
-}
+ITL_DEF void itl_unread_byte(uint8_t byte) { itl_g_pushback_byte = (int) byte; }
 
-ITL_DEF bool
-ITL_READ_BYTE(uint8_t *buffer)
+ITL_DEF bool ITL_READ_BYTE(uint8_t *buffer)
 {
   int byte;
   if (itl_g_pushback_byte != -1) {
@@ -809,8 +796,7 @@ ITL_READ_BYTE(uint8_t *buffer)
 /* Returns true when a byte is already available without blocking. Used as a
    fallback for terminals that do not support bracketed paste, where a pasted
    newline otherwise looks like a submit. */
-ITL_DEF bool
-itl_input_is_pending(void)
+ITL_DEF bool itl_input_is_pending(void)
 {
   if (itl_g_pushback_byte != -1) {
     return true;
@@ -834,8 +820,7 @@ itl_input_is_pending(void)
 /* Blocks until input arrives or a signal interrupts the wait. A delivered
    SIGWINCH wakes this so the caller can redraw the line as the window resizes
    instead of waiting for the next keystroke. */
-ITL_DEF void
-itl_wait_for_input(void)
+ITL_DEF void itl_wait_for_input(void)
 {
   struct pollfd pfd;
   pfd.fd = STDIN_FILENO;
@@ -854,8 +839,7 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_first_render = true;
 
 #if defined ITL_SUSPEND
 #if defined ITL_POSIX
-ITL_DEF void
-itl_raise_suspend(void)
+ITL_DEF void itl_raise_suspend(void)
 {
 #if !defined ITL_INJECT_KLEE
   /* Leave raw mode, stop, and resume here when continued. raise() returns only
@@ -869,8 +853,7 @@ itl_raise_suspend(void)
 }
 
 #else /* ITL_POSIX */
-ITL_NO_RETURN ITL_DEF void
-itl_raise_suspend(void)
+ITL_NO_RETURN ITL_DEF void itl_raise_suspend(void)
 {
   tl_exit();
   exit(0);
@@ -880,8 +863,7 @@ itl_raise_suspend(void)
 
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_alloc_count = 0;
 
-ITL_DEF void *
-itl_malloc(size_t size)
+ITL_DEF void *itl_malloc(size_t size)
 {
   void *allocated;
 
@@ -897,8 +879,7 @@ itl_malloc(size_t size)
   return allocated;
 }
 
-ITL_DEF void *
-itl_realloc(void *block, size_t size)
+ITL_DEF void *itl_realloc(void *block, size_t size)
 {
   void *allocated;
 
@@ -942,8 +923,7 @@ struct itl_utf8
   uint8_t size;
 };
 
-ITL_DEF itl_utf8_t
-itl_utf8_new(const uint8_t *bytes, uint8_t size)
+ITL_DEF itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t size)
 {
   itl_utf8_t ch;
 
@@ -957,8 +937,7 @@ itl_utf8_new(const uint8_t *bytes, uint8_t size)
 
 #define ITL_UTF8_COPY(dst, src) memcpy(dst, src, sizeof(itl_utf8_t))
 
-ITL_DEF bool
-itl_utf8_equal(itl_utf8_t ch1, itl_utf8_t ch2)
+ITL_DEF bool itl_utf8_equal(itl_utf8_t ch1, itl_utf8_t ch2)
 {
   TL_ASSERT(ch1.size <= 4 && ch2.size <= 4);
 
@@ -971,8 +950,7 @@ itl_utf8_equal(itl_utf8_t ch1, itl_utf8_t ch2)
   return true;
 }
 
-ITL_DEF uint8_t
-itl_utf8_width(int byte)
+ITL_DEF uint8_t itl_utf8_width(int byte)
 {
   if ((byte & 0x80) == 0)
     return 1;
@@ -999,8 +977,7 @@ ITL_DEF const itl_utf8_t itl_newline_char = {{0x0A}, 1};
 #define ITL_LE_IS_NEWLINE(ch)   ((ch).size == 1 && (ch).bytes[0] == 0x0A)
 #define ITL_LE_IS_BACKSLASH(ch) ((ch).size == 1 && (ch).bytes[0] == 0x5C)
 
-ITL_DEF itl_utf8_t
-itl_utf8_parse(uint8_t first_byte)
+ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
 {
   uint8_t i, size;
   uint8_t bytes[4];
@@ -1088,8 +1065,8 @@ ITL_DEF const itl_cp_interval_t itl_wide_intervals[] = {
     {0x20000, 0x3FFFD},
 };
 
-ITL_DEF bool
-itl_cp_in_table(uint32_t cp, const itl_cp_interval_t *table, size_t count)
+ITL_DEF bool itl_cp_in_table(uint32_t cp, const itl_cp_interval_t *table,
+                             size_t count)
 {
   size_t low = 0, high = count;
 
@@ -1106,8 +1083,7 @@ itl_cp_in_table(uint32_t cp, const itl_cp_interval_t *table, size_t count)
   return false;
 }
 
-ITL_DEF uint32_t
-itl_utf8_codepoint(itl_utf8_t ch)
+ITL_DEF uint32_t itl_utf8_codepoint(itl_utf8_t ch)
 {
   switch (ch.size) {
   case 1: return ch.bytes[0];
@@ -1126,8 +1102,7 @@ itl_utf8_codepoint(itl_utf8_t ch)
 /* Returns the terminal column width of a character, which is 0, 1, or 2. Tab is
    counted as a single column. A newline is handled by the renderer, not here.
  */
-ITL_DEF size_t
-itl_char_width(itl_utf8_t ch)
+ITL_DEF size_t itl_char_width(itl_utf8_t ch)
 {
   uint32_t cp = itl_utf8_codepoint(ch);
 
@@ -1150,8 +1125,7 @@ itl_char_width(itl_utf8_t ch)
 }
 
 /* Sums the terminal column width of a null-terminated UTF-8 string. */
-ITL_DEF size_t
-itl_cstr_display_width(const char *cstr)
+ITL_DEF size_t itl_cstr_display_width(const char *cstr)
 {
   size_t width = 0, i = 0;
 
@@ -1162,7 +1136,8 @@ itl_cstr_display_width(const char *cstr)
   while (cstr[i] != '\0') {
     /* An ANSI escape sequence such as a color code or a window-title set
        occupies no terminal columns, so skip it whole. A prompt that carries one
-       would otherwise push the caret right by the length of its escape bytes. */
+       would otherwise push the caret right by the length of its escape bytes.
+     */
     if ((uint8_t) cstr[i] == 0x1b) {
       i += 1;
       if (cstr[i] == '[') {
@@ -1180,7 +1155,8 @@ itl_cstr_display_width(const char *cstr)
            is skipped or the title text would be counted as caret columns. */
         i += 1;
         while (cstr[i] != '\0' && (uint8_t) cstr[i] != 0x07 &&
-               !((uint8_t) cstr[i] == 0x1b && cstr[i + 1] == '\\')) {
+               !((uint8_t) cstr[i] == 0x1b && cstr[i + 1] == '\\'))
+        {
           i += 1;
         }
         if ((uint8_t) cstr[i] == 0x1b && cstr[i + 1] == '\\') {
@@ -1227,8 +1203,7 @@ struct itl_string
   size_t capacity; /* N of chars this string can store */
 };
 
-ITL_DEF void
-itl_string_init(itl_string_t *str)
+ITL_DEF void itl_string_init(itl_string_t *str)
 {
   str->length = 0;
   str->size = 0;
@@ -1237,16 +1212,14 @@ itl_string_init(itl_string_t *str)
   str->chars = (itl_utf8_t *) itl_malloc(str->capacity * sizeof(itl_utf8_t));
 }
 
-ITL_DEF itl_string_t *
-itl_string_alloc(void)
+ITL_DEF itl_string_t *itl_string_alloc(void)
 {
   itl_string_t *ptr = (itl_string_t *) itl_malloc(sizeof(itl_string_t));
   itl_string_init(ptr);
   return ptr;
 }
 
-ITL_DEF void
-itl_string_extend(itl_string_t *str)
+ITL_DEF void itl_string_extend(itl_string_t *str)
 {
   str->capacity = ITL_STRING_REALLOC_CAPACITY(str->capacity);
   str->chars = (itl_utf8_t *) itl_realloc(str->chars,
@@ -1254,9 +1227,9 @@ itl_string_extend(itl_string_t *str)
 }
 
 /* Returns length of the matching prefix */
-ITL_DEF size_t
-itl_string_prefix_with_offset(const itl_string_t *str1, size_t start,
-                              size_t end, const itl_string_t *str2)
+ITL_DEF size_t itl_string_prefix_with_offset(const itl_string_t *str1,
+                                             size_t start, size_t end,
+                                             const itl_string_t *str2)
 {
   size_t i, k, actual_end = ITL_MIN(end, str1->length);
 
@@ -1270,8 +1243,8 @@ itl_string_prefix_with_offset(const itl_string_t *str1, size_t start,
   return k;
 }
 
-ITL_DEF bool
-itl_string_equal(const itl_string_t *str1, const itl_string_t *str2)
+ITL_DEF bool itl_string_equal(const itl_string_t *str1,
+                              const itl_string_t *str2)
 {
   if (str1->size != str2->size) {
     return false;
@@ -1283,8 +1256,7 @@ itl_string_equal(const itl_string_t *str1, const itl_string_t *str2)
          str1->length;
 }
 
-ITL_DEF void
-itl_string_copy(itl_string_t *dst, const itl_string_t *src)
+ITL_DEF void itl_string_copy(itl_string_t *dst, const itl_string_t *src)
 {
   size_t i;
 
@@ -1302,8 +1274,7 @@ itl_string_copy(itl_string_t *dst, const itl_string_t *src)
   dst->size = src->size;
 }
 
-ITL_DEF void
-itl_string_recalc_size(itl_string_t *str)
+ITL_DEF void itl_string_recalc_size(itl_string_t *str)
 {
   size_t i;
   str->size = 0;
@@ -1318,8 +1289,7 @@ itl_string_recalc_size(itl_string_t *str)
 }
 
 /* Shrinks string to capacity of ITL_STRING_INIT_SIZE */
-ITL_DEF void
-itl_string_shrink(itl_string_t *str)
+ITL_DEF void itl_string_shrink(itl_string_t *str)
 {
   str->capacity = ITL_STRING_INIT_SIZE;
   str->chars = (itl_utf8_t *) itl_realloc(str->chars,
@@ -1332,8 +1302,7 @@ itl_string_shrink(itl_string_t *str)
   itl_string_recalc_size(str);
 }
 
-ITL_DEF void
-itl_string_clear(itl_string_t *str)
+ITL_DEF void itl_string_clear(itl_string_t *str)
 {
   str->size = 0;
   str->length = 0;
@@ -1342,9 +1311,8 @@ itl_string_clear(itl_string_t *str)
 
 /* Shifts all characters after `position`. When shifting forward, character on
    `position` is duplicated `shift_by` times. Does not recalculate the size */
-ITL_DEF void
-itl_string_shift(itl_string_t *str, size_t position, size_t shift_by,
-                 bool backwards)
+ITL_DEF void itl_string_shift(itl_string_t *str, size_t position,
+                              size_t shift_by, bool backwards)
 {
   size_t i;
 
@@ -1376,9 +1344,8 @@ itl_string_shift(itl_string_t *str, size_t position, size_t shift_by,
   }
 }
 
-ITL_DEF void
-itl_string_erase(itl_string_t *str, size_t position, size_t count,
-                 bool backwards)
+ITL_DEF void itl_string_erase(itl_string_t *str, size_t position, size_t count,
+                              bool backwards)
 {
   ITL_TRACELN("string_erase: pos: %zu, count: %zu, backwards: %d, len %zu\n",
               position, count, backwards, str->length);
@@ -1406,8 +1373,8 @@ itl_string_erase(itl_string_t *str, size_t position, size_t count,
   itl_string_recalc_size(str);
 }
 
-ITL_DEF void
-itl_string_insert(itl_string_t *str, size_t position, itl_utf8_t ch)
+ITL_DEF void itl_string_insert(itl_string_t *str, size_t position,
+                               itl_utf8_t ch)
 {
   TL_ASSERT(ch.size > 0);
   TL_ASSERT(ch.size <= 4);
@@ -1428,8 +1395,7 @@ itl_string_insert(itl_string_t *str, size_t position, itl_utf8_t ch)
 
 /* Removes every backslash that is immediately followed by a newline, together
    with that newline, joining the two physical lines like a POSIX shell. */
-ITL_DEF void
-itl_string_join_continuations(itl_string_t *str)
+ITL_DEF void itl_string_join_continuations(itl_string_t *str)
 {
   size_t read_index, write_index = 0;
 
@@ -1450,8 +1416,8 @@ itl_string_join_continuations(itl_string_t *str)
 }
 
 /* Returns true when needle occurs as a contiguous run of characters in str. */
-ITL_DEF bool
-itl_string_find_substring(const itl_string_t *str, const itl_string_t *needle)
+ITL_DEF bool itl_string_find_substring(const itl_string_t *str,
+                                       const itl_string_t *needle)
 {
   size_t i, j;
 
@@ -1490,8 +1456,8 @@ itl_string_find_substring(const itl_string_t *str, const itl_string_t *needle)
 #define ITL_LF_LEN 1
 #endif /* ITL_POSIX */
 
-ITL_DEF tl_status_code
-itl_string_to_cstr(const itl_string_t *str, char *cstr, size_t cstr_size)
+ITL_DEF tl_status_code itl_string_to_cstr(const itl_string_t *str, char *cstr,
+                                          size_t cstr_size)
 {
   size_t i, j, k;
 
@@ -1518,8 +1484,8 @@ itl_string_to_cstr(const itl_string_t *str, char *cstr, size_t cstr_size)
   return TL_SUCCESS;
 }
 
-ITL_DEF bool
-itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
+ITL_DEF bool itl_string_from_bytes(itl_string_t *str, const char *data,
+                                   size_t size)
 {
   size_t i, j, k;
   uint8_t rune_width;
@@ -1609,8 +1575,7 @@ struct itl_le
 
 /* Releases the in-memory history state. Entries themselves live in the file, so
    only the path, the draft, and the offset ring counters are reset. */
-ITL_DEF void
-itl_g_history_free(void)
+ITL_DEF void itl_g_history_free(void)
 {
   if (itl_g_history_path != NULL) {
     ITL_FREE(itl_g_history_path);
@@ -1629,8 +1594,7 @@ itl_g_history_free(void)
 
 /* Maps a navigable entry index, where zero is the oldest, onto its byte offset
    in the history file through the ring. */
-ITL_DEF size_t
-itl_history_index_to_offset(size_t index)
+ITL_DEF size_t itl_history_index_to_offset(size_t index)
 {
   TL_ASSERT(index < itl_g_history_count);
   return itl_g_history_offsets[(itl_g_history_head + index) %
@@ -1642,8 +1606,8 @@ itl_history_index_to_offset(size_t index)
    and a doubled backslash into one backslash. The decoded length is capped at
    ITL_STRING_MAX_LEN so one huge command cannot grow the read. Returns false
    when the file cannot be read. */
-ITL_DEF bool
-itl_history_read_entry_fd(ITL_FILE file, size_t offset, itl_string_t *out)
+ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
+                                       itl_string_t *out)
 {
   char chunk[ITL_HISTORY_FILE_BUFFER_SIZE];
   char decoded[ITL_STRING_MAX_LEN];
@@ -1714,8 +1678,7 @@ itl_history_read_entry_fd(ITL_FILE file, size_t offset, itl_string_t *out)
 /* Opens the history file, reads one entry, and closes it. Callers that read
    many entries in a loop should open once and use itl_history_read_entry_fd
    instead. Returns false when the file cannot be opened or read. */
-ITL_DEF bool
-itl_history_read_entry(size_t offset, itl_string_t *out)
+ITL_DEF bool itl_history_read_entry(size_t offset, itl_string_t *out)
 {
   ITL_FILE file;
   bool ok;
@@ -1737,9 +1700,8 @@ itl_history_read_entry(size_t offset, itl_string_t *out)
   return ok;
 }
 
-ITL_DEF void
-itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
-            size_t out_size, const char *prompt)
+ITL_DEF void itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
+                         size_t out_size, const char *prompt)
 {
   /* clang-format off */
   le->line                   = line_buf;
@@ -1758,8 +1720,7 @@ itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
   itl_g_tty_first_render = true;
 }
 
-ITL_DEF void
-itl_le_move_right(itl_le_t *le, size_t steps)
+ITL_DEF void itl_le_move_right(itl_le_t *le, size_t steps)
 {
   if (le->cursor_position + steps >= le->line->length) {
     le->cursor_position = le->line->length;
@@ -1768,8 +1729,7 @@ itl_le_move_right(itl_le_t *le, size_t steps)
   }
 }
 
-ITL_DEF void
-itl_le_move_left(itl_le_t *le, size_t steps)
+ITL_DEF void itl_le_move_left(itl_le_t *le, size_t steps)
 {
   if (steps <= le->cursor_position) {
     le->cursor_position -= steps;
@@ -1778,8 +1738,7 @@ itl_le_move_left(itl_le_t *le, size_t steps)
   }
 }
 
-ITL_DEF void
-itl_le_erase(itl_le_t *le, size_t count, bool backwards)
+ITL_DEF void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
 {
   if (count == 0) {
     return;
@@ -1797,8 +1756,7 @@ itl_le_erase(itl_le_t *le, size_t count, bool backwards)
 #define ITL_LE_ERASE_BACKWARD(le, count) itl_le_erase(le, count, true)
 
 /* Inserts character at cursor position */
-ITL_DEF bool
-itl_le_insert(itl_le_t *le, itl_utf8_t ch)
+ITL_DEF bool itl_le_insert(itl_le_t *le, itl_utf8_t ch)
 {
   ITL_TRY(le->line->size + ch.size < le->out_size, return false);
 
@@ -1819,9 +1777,8 @@ typedef enum
 } itl_token_kind;
 
 /* Returns amount of steps required to reach next/previos token */
-ITL_DEF size_t
-itl_string_steps_to_token(const itl_string_t *str, size_t position,
-                          bool backwards)
+ITL_DEF size_t itl_string_steps_to_token(const itl_string_t *str,
+                                         size_t position, bool backwards)
 {
   uint8_t b;
   bool should_break = false;
@@ -1894,8 +1851,7 @@ itl_string_steps_to_token(const itl_string_t *str, size_t position,
 #define ITL_LE_CURSOR_IS_ON_SPACE(le)                                          \
   ITL_CHAR_IS_SPACE((le)->line->chars[(le)->cursor_position].bytes[0])
 
-ITL_DEF void
-itl_le_clear_line(itl_le_t *le)
+ITL_DEF void itl_le_clear_line(itl_le_t *le)
 {
   itl_string_clear(le->line);
   le->cursor_position = 0;
@@ -1903,8 +1859,7 @@ itl_le_clear_line(itl_le_t *le)
 
 /* Saves the edited draft line the first time navigation leaves it, so stepping
    back past the newest entry can restore what the user was typing. */
-ITL_DEF void
-itl_history_save_draft(itl_le_t *le)
+ITL_DEF void itl_history_save_draft(itl_le_t *le)
 {
   if (le->history_selected_index != ITL_HISTORY_NONE) {
     return;
@@ -1916,8 +1871,7 @@ itl_history_save_draft(itl_le_t *le)
 }
 
 /* Restores the saved draft line and returns the editor to the draft state. */
-ITL_DEF void
-itl_history_restore_draft(itl_le_t *le)
+ITL_DEF void itl_history_restore_draft(itl_le_t *le)
 {
   itl_le_clear_line(le);
   if (itl_g_history_draft != NULL) {
@@ -1929,8 +1883,7 @@ itl_history_restore_draft(itl_le_t *le)
 
 /* Replaces the editor line with the currently selected history entry, read from
    the file on demand. */
-ITL_DEF void
-itl_history_show_selected(itl_le_t *le)
+ITL_DEF void itl_history_show_selected(itl_le_t *le)
 {
   size_t offset = itl_history_index_to_offset(le->history_selected_index);
 
@@ -1944,8 +1897,7 @@ itl_history_show_selected(itl_le_t *le)
   }
 }
 
-ITL_DEF void
-itl_g_history_get_prev(itl_le_t *le)
+ITL_DEF void itl_g_history_get_prev(itl_le_t *le)
 {
   if (itl_g_history_count == 0) {
     return;
@@ -1964,8 +1916,7 @@ itl_g_history_get_prev(itl_le_t *le)
   itl_history_show_selected(le);
 }
 
-ITL_DEF void
-itl_g_history_get_next(itl_le_t *le)
+ITL_DEF void itl_g_history_get_next(itl_le_t *le)
 {
   if (le->history_selected_index == ITL_HISTORY_NONE) {
     return;
@@ -1991,16 +1942,14 @@ struct itl_char_buf
   size_t capacity;
 };
 
-ITL_DEF void
-itl_char_buf_init(itl_char_buf_t *cb)
+ITL_DEF void itl_char_buf_init(itl_char_buf_t *cb)
 {
   cb->size = 0;
   cb->capacity = ITL_CHAR_BUFFER_INIT_SIZE;
   cb->data = (char *) itl_malloc(sizeof(char) * cb->capacity);
 }
 
-ITL_DEF itl_char_buf_t *
-itl_char_buf_alloc(void)
+ITL_DEF itl_char_buf_t *itl_char_buf_alloc(void)
 {
   itl_char_buf_t *cb = (itl_char_buf_t *) itl_malloc(sizeof(itl_char_buf_t));
   itl_char_buf_init(cb);
@@ -2015,15 +1964,13 @@ itl_char_buf_alloc(void)
 
 #define ITL_CHAR_BUF_REALLOC_CAPACITY(old_capacity) (old_capacity * 2)
 
-ITL_DEF void
-itl_char_buf_extend(itl_char_buf_t *cb)
+ITL_DEF void itl_char_buf_extend(itl_char_buf_t *cb)
 {
   cb->capacity = ITL_CHAR_BUF_REALLOC_CAPACITY(cb->capacity);
   cb->data = (char *) itl_realloc(cb->data, cb->capacity);
 }
 
-ITL_DEF void
-itl_char_buf_append_cstr(itl_char_buf_t *cb, const char *cstr)
+ITL_DEF void itl_char_buf_append_cstr(itl_char_buf_t *cb, const char *cstr)
 {
   /* The length is measured once and the buffer grown once, so a multi-byte
      escape sequence copies in one memcpy rather than a per-byte capacity check.
@@ -2038,8 +1985,7 @@ itl_char_buf_append_cstr(itl_char_buf_t *cb, const char *cstr)
   cb->size += len;
 }
 
-ITL_DEF void
-itl_char_buf_append_size_t(itl_char_buf_t *cb, size_t n)
+ITL_DEF void itl_char_buf_append_size_t(itl_char_buf_t *cb, size_t n)
 {
   size_t new_size, i;
   size_t data_len = 0, data_copy = n;
@@ -2064,8 +2010,8 @@ itl_char_buf_append_size_t(itl_char_buf_t *cb, size_t n)
   cb->size = new_size;
 }
 
-ITL_DEF tl_status_code
-itl_char_buf_append_string(itl_char_buf_t *cb, const itl_string_t *str)
+ITL_DEF tl_status_code itl_char_buf_append_string(itl_char_buf_t *cb,
+                                                  const itl_string_t *str)
 {
   char *data;
 
@@ -2081,8 +2027,7 @@ itl_char_buf_append_string(itl_char_buf_t *cb, const itl_string_t *str)
   return TL_SUCCESS;
 }
 
-ITL_DEF void
-itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
+ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 {
   while (cb->capacity < cb->size + 1) {
     itl_char_buf_extend(cb);
@@ -2092,8 +2037,7 @@ itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
   cb->size += 1;
 }
 
-ITL_DEF void
-itl_char_buf_append_spaces(itl_char_buf_t *cb, size_t count)
+ITL_DEF void itl_char_buf_append_spaces(itl_char_buf_t *cb, size_t count)
 {
   /* The padding for a wrapped continuation row grows the buffer once and fills
      with one memset rather than a per-space capacity check. */
@@ -2107,8 +2051,8 @@ itl_char_buf_append_spaces(itl_char_buf_t *cb, size_t count)
 
 /* Appends a string with each newline written as backslash n and each backslash
    doubled, so a multiline entry survives the newline-delimited history file. */
-ITL_DEF void
-itl_char_buf_append_string_escaped(itl_char_buf_t *cb, const itl_string_t *str)
+ITL_DEF void itl_char_buf_append_string_escaped(itl_char_buf_t *cb,
+                                                const itl_string_t *str)
 {
   size_t i, j;
 
@@ -2193,8 +2137,7 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_file_is_bad = false;
 
 /* Records the byte offset of one entry in the ring, evicting the oldest when
    the ring is full so only the most recent TL_HISTORY_MAX_SIZE remain. */
-ITL_DEF void
-itl_history_push_offset(size_t offset)
+ITL_DEF void itl_history_push_offset(size_t offset)
 {
   if (itl_g_history_count < TL_HISTORY_MAX_SIZE) {
     itl_g_history_offsets[(itl_g_history_head + itl_g_history_count) %
@@ -2210,8 +2153,7 @@ itl_history_push_offset(size_t offset)
    file size, and the trailing-newline flag. Returns false on a read error or a
    non-text byte. Touches neither the path nor the draft, so it is safe to call
    mid-session to pick up entries that other sessions appended. */
-ITL_DEF bool
-itl_history_scan_fd(ITL_FILE file)
+ITL_DEF bool itl_history_scan_fd(ITL_FILE file)
 {
   char file_buffer[ITL_HISTORY_FILE_BUFFER_SIZE];
   bool escape_pending = false;
@@ -2291,8 +2233,7 @@ itl_history_scan_fd(ITL_FILE file)
    file once and keeps only the byte offset of each entry, capped to the most
    recent TL_HISTORY_MAX_SIZE, so it never holds entry text and a large history
    file stays cheap to load. */
-ITL_DEF tl_status_code
-itl_history_load_from_file(const char *path)
+ITL_DEF tl_status_code itl_history_load_from_file(const char *path)
 {
   ITL_FILE file;
   size_t path_len;
@@ -2335,8 +2276,7 @@ itl_history_load_from_file(const char *path)
    Consecutive duplicates and entries of length one or zero are skipped, which
    matches what the dumper persisted. Returns true on a successful write.
    Returns false when the entry is skipped or the write fails. */
-ITL_DEF bool
-itl_history_append_to_file(const itl_string_t *str)
+ITL_DEF bool itl_history_append_to_file(const itl_string_t *str)
 {
   ITL_FILE read_file;
   ITL_FILE append_file;
@@ -2439,8 +2379,7 @@ itl_history_append_to_file(const itl_string_t *str)
    active store there is nothing to do. A different path receives a byte copy of
    the store so the public contract still writes the history somewhere. Returns
    TL_SUCCESS or TL_ERROR, sets errno on failure. */
-ITL_DEF tl_status_code
-itl_history_dump_to_file(const char *path)
+ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
 {
   ITL_FILE in_file;
   ITL_FILE out_file;
@@ -2493,8 +2432,7 @@ itl_history_dump_to_file(const char *path)
   return ret;
 }
 
-ITL_DEF size_t
-itl_parse_size(const char *cstr, size_t *result)
+ITL_DEF size_t itl_parse_size(const char *cstr, size_t *result)
 {
   size_t i, number;
 
@@ -2512,8 +2450,7 @@ itl_parse_size(const char *cstr, size_t *result)
 }
 
 #ifdef ITL_POSIX
-ITL_DEF int
-itl_esc_parse_posix(uint8_t byte)
+ITL_DEF int itl_esc_parse_posix(uint8_t byte)
 {
   int event = 0;
   bool read_mod = false;
@@ -2620,8 +2557,7 @@ itl_esc_parse_posix(uint8_t byte)
 #endif /* ITL_POSIX */
 
 #ifdef ITL_WIN32
-ITL_DEF int
-itl_esc_parse_win32(uint8_t byte)
+ITL_DEF int itl_esc_parse_win32(uint8_t byte)
 {
   int event = 0;
 
@@ -2656,8 +2592,7 @@ itl_esc_parse_win32(uint8_t byte)
 }
 #endif /* ITL_WIN32 */
 
-ITL_DEF int
-itl_esc_parse(uint8_t byte)
+ITL_DEF int itl_esc_parse(uint8_t byte)
 {
   /* plain bytes */
   switch (byte) {
@@ -2701,8 +2636,8 @@ ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_char_buffer = ITL_ZERO_INIT;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_is_dumb = true;
 
 /* *le, *rows, *cols can be NULL. */
-ITL_DEF bool
-itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows, size_t *cols)
+ITL_DEF bool itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows,
+                              size_t *cols)
 {
   size_t temp_rows, temp_cols;
   char *emacs_buf = NULL;
@@ -2844,8 +2779,7 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_cols = 1;
 /* The console has no SIGWINCH, so a resize is found by polling the size and
    comparing it to the previous render. Best effort, used to redraw the line
    live as the window changes. */
-ITL_DEF bool
-itl_win_console_resized(void)
+ITL_DEF bool itl_win_console_resized(void)
 {
   size_t rows = 0, cols = 0;
   if (!itl_tty_get_size(NULL, &rows, &cols)) {
@@ -2875,8 +2809,8 @@ struct itl_le_metrics
    first row, per-character display width, soft wrapping at tty_cols, a wide
    glyph that would straddle the right edge wrapping early, and embedded
    newlines. Both the renderer and the cursor metrics share this one pass. */
-ITL_DEF itl_le_metrics_t
-itl_le_compute_metrics(const itl_le_t *le, size_t tty_cols)
+ITL_DEF itl_le_metrics_t itl_le_compute_metrics(const itl_le_t *le,
+                                                size_t tty_cols)
 {
   itl_le_metrics_t m = ITL_ZERO_INIT;
   size_t cols = ITL_MAX(tty_cols, 1);
@@ -2922,9 +2856,8 @@ itl_le_compute_metrics(const itl_le_t *le, size_t tty_cols)
    returns how many reflowed rows sit above the caret, so the renderer can step
    the cursor, which the terminal left on the caret's reflowed row, up to the
    true top of the block before clearing. */
-ITL_DEF size_t
-itl_le_reflow_rows_above_caret(const itl_le_t *le, size_t old_cols,
-                               size_t new_cols)
+ITL_DEF size_t itl_le_reflow_rows_above_caret(const itl_le_t *le,
+                                              size_t old_cols, size_t new_cols)
 {
   size_t ocols = ITL_MAX(old_cols, 1);
   size_t ncols = ITL_MAX(new_cols, 1);
@@ -2964,9 +2897,8 @@ itl_le_reflow_rows_above_caret(const itl_le_t *le, size_t old_cols,
 
 /* Returns the character index whose caret lands on target_row at or before
    goal_column. Used by visual up and down movement. */
-ITL_DEF size_t
-itl_le_index_at_visual(const itl_le_t *le, size_t tty_cols, size_t target_row,
-                       size_t goal_column)
+ITL_DEF size_t itl_le_index_at_visual(const itl_le_t *le, size_t tty_cols,
+                                      size_t target_row, size_t goal_column)
 {
   size_t cols = ITL_MAX(tty_cols, 1);
   size_t indent = ITL_LE_INDENT(le, cols);
@@ -3013,8 +2945,7 @@ itl_le_index_at_visual(const itl_le_t *le, size_t tty_cols, size_t target_row,
 
 /* Returns the index of the first character of the logical line the cursor is
    on, where logical lines are split by newline characters. */
-ITL_DEF size_t
-itl_le_logical_line_start(const itl_le_t *le)
+ITL_DEF size_t itl_le_logical_line_start(const itl_le_t *le)
 {
   size_t p = le->cursor_position;
   while (p > 0 && !ITL_LE_IS_NEWLINE(le->line->chars[p - 1])) {
@@ -3025,8 +2956,7 @@ itl_le_logical_line_start(const itl_le_t *le)
 
 /* Returns the index one past the last character of the cursor's logical line.
  */
-ITL_DEF size_t
-itl_le_logical_line_end(const itl_le_t *le)
+ITL_DEF size_t itl_le_logical_line_end(const itl_le_t *le)
 {
   size_t q = le->cursor_position;
   while (q < le->line->length && !ITL_LE_IS_NEWLINE(le->line->chars[q])) {
@@ -3036,8 +2966,7 @@ itl_le_logical_line_end(const itl_le_t *le)
 }
 
 /* NOTE: Hottest function in the library. */
-ITL_DEF bool
-itl_le_tty_refresh(itl_le_t *le)
+ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 {
   size_t i, j, tty_rows, tty_cols, cols, indent;
   size_t col, move_up;
@@ -3120,8 +3049,8 @@ itl_le_tty_refresh(itl_le_t *le)
        emitted between codepoints in the loop below, so they carry zero column
        width and the metrics pass that placed the cursor never sees them, the
        same zero-width handling the ghost text relies on. The host returns spans
-       sorted by start and non-overlapping, so one left-to-right cursor opens and
-       closes them. Out-of-bounds or empty spans are dropped here. */
+       sorted by start and non-overlapping, so one left-to-right cursor opens
+       and closes them. Out-of-bounds or empty spans are dropped here. */
     tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
     size_t span_count = 0;
     if (itl_g_highlight_callback != NULL) {
@@ -3137,7 +3066,8 @@ itl_le_tty_refresh(itl_le_t *le)
           size_t s;
           for (s = 0; s < hl.count && s < ITL_HIGHLIGHT_MAX_SPANS; ++s) {
             if (itl_spans[s].start < itl_spans[s].end &&
-                itl_spans[s].end <= le->line->length && itl_spans[s].sgr != NULL)
+                itl_spans[s].end <= le->line->length &&
+                itl_spans[s].sgr != NULL)
             {
               itl_spans[span_count++] = itl_spans[s];
             }
@@ -3161,8 +3091,7 @@ itl_le_tty_refresh(itl_le_t *le)
         itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
         in_span = false;
       }
-      if (!in_span && next_span < span_count &&
-          i == itl_spans[next_span].start)
+      if (!in_span && next_span < span_count && i == itl_spans[next_span].start)
       {
         itl_char_buf_append_cstr(b, itl_spans[next_span].sgr);
         in_span = true;
@@ -3202,13 +3131,13 @@ itl_le_tty_refresh(itl_le_t *le)
     }
     ITL_TTY_CLEAR_TO_END(b);
 
-    /* Draw the ghost suggestion dimmed after the line. It is shown only when the
-       cursor sits at the very end of the buffer and the suggestion fits on the
-       current row without wrapping, so it never pushes a line break and the
+    /* Draw the ghost suggestion dimmed after the line. It is shown only when
+       the cursor sits at the very end of the buffer and the suggestion fits on
+       the current row without wrapping, so it never pushes a line break and the
        cursor restore below lands on the real caret. The ghost text is ASCII
        here, so its byte length is its column width. A second clear erases a
-       longer ghost left from a previous frame, then the cursor is parked back on
-       the real caret column. */
+       longer ghost left from a previous frame, then the cursor is parked back
+       on the real caret column. */
     if (itl_g_ghost_len > 0 && le->cursor_position == le->line->length &&
         col + itl_g_ghost_len < cols)
     {
@@ -3260,8 +3189,7 @@ itl_le_tty_refresh(itl_le_t *le)
 ITL_DEF ITL_THREAD_LOCAL itl_le_t itl_g_le = ITL_ZERO_INIT;
 
 #if defined ITL_POSIX
-ITL_DEF void
-itl_handle_sigwinch(int signal_number)
+ITL_DEF void itl_handle_sigwinch(int signal_number)
 {
   if (signal_number != SIGWINCH) {
     return;
@@ -3273,33 +3201,26 @@ itl_handle_sigwinch(int signal_number)
 
 ITL_DEF ITL_THREAD_LOCAL int itl_g_last_control = TL_KEY_UNKN;
 
-TL_DEF int
-tl_last_control_sequence(void)
-{
-  return itl_g_last_control;
-}
+TL_DEF int tl_last_control_sequence(void) { return itl_g_last_control; }
 
 /* The host completion callback, or NULL when completion is disabled. Only the
    interactive host registers one. */
 ITL_DEF ITL_THREAD_LOCAL tl_complete_fn itl_g_complete_callback = NULL;
 
-TL_DEF void
-tl_set_complete_callback(tl_complete_fn callback)
+TL_DEF void tl_set_complete_callback(tl_complete_fn callback)
 {
   itl_g_complete_callback = callback;
 }
 
-TL_DEF void
-tl_set_highlight_callback(tl_highlight_fn callback)
+TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback)
 {
   itl_g_highlight_callback = callback;
 }
 
-/* Insert a UTF-8 C-string at the cursor, one decoded character at a time, so the
-   line editor's character model stays intact. Returns false when the line buffer
-   would overflow, leaving the part that fit in place. */
-ITL_DEF bool
-itl_le_insert_cstr(itl_le_t *le, const char *text)
+/* Insert a UTF-8 C-string at the cursor, one decoded character at a time, so
+   the line editor's character model stays intact. Returns false when the line
+   buffer would overflow, leaving the part that fit in place. */
+ITL_DEF bool itl_le_insert_cstr(itl_le_t *le, const char *text)
 {
   size_t i = 0;
   while (text[i] != '\0') {
@@ -3326,8 +3247,7 @@ itl_le_insert_cstr(itl_le_t *le, const char *text)
 }
 
 /* Clear the recorded ghost text, so the next refresh draws none. */
-ITL_DEF void
-itl_ghost_clear(void)
+ITL_DEF void itl_ghost_clear(void)
 {
   itl_g_ghost_len = 0;
   itl_g_ghost[0] = '\0';
@@ -3335,10 +3255,10 @@ itl_ghost_clear(void)
 
 /* Ask the host for the top completion of the current line and fill the ghost
    suffix when the longest common prefix extends the token under the cursor. The
-   ghost is the part of the common prefix past what the user already typed, so it
-   only ever appends. Leaves the ghost cleared when completion offers nothing. */
-ITL_DEF void
-itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr)
+   ghost is the part of the common prefix past what the user already typed, so
+   it only ever appends. Leaves the ghost cleared when completion offers
+   nothing. */
+ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr)
 {
   tl_completion result;
 
@@ -3359,8 +3279,8 @@ itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr)
     /* The token under the cursor runs from token_start to the end of the line,
        so its length in codepoints is the line length minus the start. The ghost
        is the part of the common prefix past that typed length, the suffix the
-       user has not typed yet. token_start is a codepoint index, so the prefix is
-       measured in codepoints and then walked to its byte offset. */
+       user has not typed yet. token_start is a codepoint index, so the prefix
+       is measured in codepoints and then walked to its byte offset. */
     size_t typed_len = le->line->length - result.token_start;
     size_t lcp_len = tl_utf8_strlen(result.longest_common_prefix);
     if (lcp_len <= typed_len) {
@@ -3399,8 +3319,7 @@ itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr)
    autosuggests. The most recent history entry that begins with the whole typed
    line supplies the rest of that line as a dimmed suggestion. Leaves the ghost
    cleared when no entry matches. */
-ITL_DEF void
-itl_ghost_fill_from_history(const char *line_cstr)
+ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
 {
   size_t line_byte_len = strlen(line_cstr);
   ITL_FILE file;
@@ -3439,7 +3358,8 @@ itl_ghost_fill_from_history(const char *line_cstr)
     if (!itl_history_read_entry_fd(file, offset, entry)) {
       continue;
     }
-    if (itl_string_to_cstr(entry, entry_cstr, sizeof(entry_cstr)) != TL_SUCCESS) {
+    if (itl_string_to_cstr(entry, entry_cstr, sizeof(entry_cstr)) != TL_SUCCESS)
+    {
       continue;
     }
     entry_len = strlen(entry_cstr);
@@ -3469,8 +3389,7 @@ itl_ghost_fill_from_history(const char *line_cstr)
    longest common prefix is tried first, then a history match. It is shown only
    when the cursor sits at the very end of the line, so it never splits the
    buffer. */
-ITL_DEF void
-itl_ghost_update(itl_le_t *le)
+ITL_DEF void itl_ghost_update(itl_le_t *le)
 {
   char line_cstr[ITL_STRING_MAX_LEN];
 
@@ -3481,7 +3400,8 @@ itl_ghost_update(itl_le_t *le)
   if (le->cursor_position != le->line->length) {
     return;
   }
-  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS) {
+  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS)
+  {
     return;
   }
   /* An empty line has nothing to extend. */
@@ -3496,11 +3416,11 @@ itl_ghost_update(itl_le_t *le)
 }
 
 /* Print the candidate list below the input in columns, then leave the cursor on
-   a fresh line so the next refresh redraws the prompt and line beneath the list.
-   The previous-render row counts are reset so the refresh treats the spot below
-   the list as untouched ground and does not clear the list it just printed. */
-ITL_DEF void
-itl_completion_print_list(const tl_completion *result)
+   a fresh line so the next refresh redraws the prompt and line beneath the
+   list. The previous-render row counts are reset so the refresh treats the spot
+   below the list as untouched ground and does not clear the list it just
+   printed. */
+ITL_DEF void itl_completion_print_list(const tl_completion *result)
 {
   itl_char_buf_t *b = &itl_g_char_buffer;
   size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
@@ -3563,9 +3483,9 @@ itl_completion_print_list(const tl_completion *result)
    units, leaving the cursor at the end of the inserted text. The span is erased
    first so a mid-word cursor does not keep the bytes to its right, then the
    replacement is inserted at the token start. */
-ITL_DEF void
-itl_completion_replace_token(itl_le_t *le, const tl_completion *result,
-                             const char *text)
+ITL_DEF void itl_completion_replace_token(itl_le_t *le,
+                                          const tl_completion *result,
+                                          const char *text)
 {
   size_t token_len = result->token_end - result->token_start;
 
@@ -3574,14 +3494,13 @@ itl_completion_replace_token(itl_le_t *le, const tl_completion *result,
   itl_le_insert_cstr(le, text);
 }
 
-/* Handle the TAB key when a completion callback is registered. Replace the whole
-   token under the cursor with the longest common prefix when that prefix extends
-   the token, and when several candidates remain and the prefix did not grow,
-   print them below the prompt. A single candidate replaces the token outright,
-   since it is the one full replacement. Returns true when it handled the key,
-   false when the host should fall back to the default TAB behavior. */
-ITL_DEF bool
-itl_completion_handle_tab(itl_le_t *le)
+/* Handle the TAB key when a completion callback is registered. Replace the
+   whole token under the cursor with the longest common prefix when that prefix
+   extends the token, and when several candidates remain and the prefix did not
+   grow, print them below the prompt. A single candidate replaces the token
+   outright, since it is the one full replacement. Returns true when it handled
+   the key, false when the host should fall back to the default TAB behavior. */
+ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
 {
   char line_cstr[ITL_STRING_MAX_LEN];
   tl_completion result;
@@ -3590,7 +3509,8 @@ itl_completion_handle_tab(itl_le_t *le)
   if (itl_g_complete_callback == NULL) {
     return false;
   }
-  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS) {
+  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS)
+  {
     return false;
   }
   if (!itl_g_complete_callback(line_cstr, le->cursor_position, &result)) {
@@ -3616,8 +3536,8 @@ itl_completion_handle_tab(itl_le_t *le)
                 ? tl_utf8_strlen(result.longest_common_prefix)
                 : 0;
 
-  /* Replace the token with the common prefix when that prefix is longer than the
-     token, which grows the token toward the candidates. */
+  /* Replace the token with the common prefix when that prefix is longer than
+     the token, which grows the token toward the candidates. */
   if (lcp_len > token_len) {
     itl_completion_replace_token(le, &result, result.longest_common_prefix);
     itl_g_tty_should_refresh_text = true;
@@ -3629,8 +3549,7 @@ itl_completion_handle_tab(itl_le_t *le)
   return true;
 }
 
-ITL_DEF tl_status_code
-itl_le_key_handle(itl_le_t *le, int esc)
+ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
 {
   int prev_control = itl_g_last_control;
 
@@ -3899,8 +3818,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
 /* Inserts one byte of pasted content, turning newlines into newline chars,
    dropping carriage returns and other control bytes, and assembling a UTF-8
    sequence from a lead byte. */
-ITL_DEF void
-itl_le_paste_insert_byte(itl_le_t *le, uint8_t byte)
+ITL_DEF void itl_le_paste_insert_byte(itl_le_t *le, uint8_t byte)
 {
   if (byte == '\r') {
     return; /* The following '\n' produces the break. */
@@ -3920,8 +3838,7 @@ itl_le_paste_insert_byte(itl_le_t *le, uint8_t byte)
    bytes instead of `itl_utf8_parse`, so a truncated sequence right before the
    terminator cannot swallow the terminator's ESC and hang. The terminator bytes
    are all ASCII, so they never collide with UTF-8 continuation bytes. */
-ITL_DEF void
-itl_le_read_paste(itl_le_t *le)
+ITL_DEF void itl_le_read_paste(itl_le_t *le)
 {
   static const char end_sequence[] = {0x1B, '[', '2', '0', '1', '~'};
   size_t match = 0;
@@ -3992,8 +3909,7 @@ itl_le_read_paste(itl_le_t *le)
   }
 }
 
-TL_DEF tl_status_code
-tl_init(void)
+TL_DEF tl_status_code tl_init(void)
 {
   TL_ASSERT(!(TL_HISTORY_MAX_SIZE & (TL_HISTORY_MAX_SIZE - 1)) &&
             "History size must be a power of 2");
@@ -4020,8 +3936,7 @@ tl_init(void)
   return TL_SUCCESS;
 }
 
-TL_DEF tl_status_code
-tl_exit(void)
+TL_DEF tl_status_code tl_exit(void)
 {
   TL_ASSERT(itl_g_is_active && "tl_init() should be called");
 
@@ -4044,9 +3959,8 @@ tl_exit(void)
 /* Walks history backward from start_index toward older entries, reading each
    one from the file into scratch, returning the index of the first that
    contains query as a substring or ITL_HISTORY_NONE when none match. */
-ITL_DEF size_t
-itl_history_find_match(const itl_string_t *query, size_t start_index,
-                       itl_string_t *scratch)
+ITL_DEF size_t itl_history_find_match(const itl_string_t *query,
+                                      size_t start_index, itl_string_t *scratch)
 {
   ITL_FILE file;
   size_t i;
@@ -4086,9 +4000,9 @@ itl_history_find_match(const itl_string_t *query, size_t start_index,
 /* Walks history forward from start_index toward newer entries, returning the
    index of the first that contains query as a substring or ITL_HISTORY_NONE
    when none match. The mirror of itl_history_find_match. */
-ITL_DEF size_t
-itl_history_find_match_forward(const itl_string_t *query, size_t start_index,
-                               itl_string_t *scratch)
+ITL_DEF size_t itl_history_find_match_forward(const itl_string_t *query,
+                                              size_t start_index,
+                                              itl_string_t *scratch)
 {
   ITL_FILE file;
   size_t i;
@@ -4130,8 +4044,7 @@ itl_history_find_match_forward(const itl_string_t *query, size_t start_index,
    editor's prompt and line. Returns the control key that ended the search so
    the caller can re-dispatch it, or TL_KEY_UNKN when the search was cancelled
    or accepted with no further action. */
-ITL_DEF int
-itl_history_search(itl_le_t *le)
+ITL_DEF int itl_history_search(itl_le_t *le)
 {
   itl_string_t *original = itl_string_alloc();
   itl_string_t *query = itl_string_alloc();
@@ -4187,9 +4100,9 @@ itl_history_search(itl_le_t *le)
     }
 
     itl_char_buf_append_cstr(status, "\n");
-    itl_char_buf_append_cstr(status,
-                             "enter to accept, ctrl-r/ctrl-f to search back and "
-                             "forward, ctrl-g to cancel");
+    itl_char_buf_append_cstr(
+        status, "enter to accept, ctrl-r/ctrl-f to search back and "
+                "forward, ctrl-g to cancel");
 
     itl_string_from_bytes(display, status->data, status->size);
 
@@ -4302,8 +4215,8 @@ itl_history_search(itl_le_t *le)
   return result;
 }
 
-TL_DEF tl_status_code
-tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
+TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
+                                   const char *prompt)
 {
   itl_le_t *le = &itl_g_le;
   uint8_t input_byte;
@@ -4379,7 +4292,8 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
       itl_le_read_paste(le);
       itl_g_tty_should_refresh_text = true;
     } else if ((input_type & TL_MASK_KEY) == TL_KEY_HISTORY_SEARCH ||
-               input_byte == 6) {
+               input_byte == 6)
+    {
       /* Ctrl-R and Ctrl-F both enable incremental search. Ctrl-F is caught by
          its raw byte so the right arrow, which also parses to TL_KEY_RIGHT,
          still moves the cursor. Once in search, ctrl-f and ctrl-r steer it
@@ -4398,22 +4312,23 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
       }
     } else if (input_type != TL_KEY_CHAR) {
       /* Any non-character key edits or moves, so the stale ghost is dropped
-         before the key runs. Tab and the arrow keys that accept the ghost manage
-         it themselves inside the handler. */
+         before the key runs. Tab and the arrow keys that accept the ghost
+         manage it themselves inside the handler. */
       bool is_tab = (input_type & TL_MASK_KEY) == TL_KEY_TAB;
-      bool accepts_ghost =
-          ((input_type & TL_MASK_KEY) == TL_KEY_RIGHT ||
-           (input_type & TL_MASK_KEY) == TL_KEY_END) &&
-          le->cursor_position == le->line->length && itl_g_ghost_len > 0;
+      bool accepts_ghost = ((input_type & TL_MASK_KEY) == TL_KEY_RIGHT ||
+                            (input_type & TL_MASK_KEY) == TL_KEY_END) &&
+                           le->cursor_position == le->line->length &&
+                           itl_g_ghost_len > 0;
       if (!is_tab && !accepts_ghost) {
         itl_ghost_clear();
       }
       code = itl_le_key_handle(le, input_type);
       if (code != TL_SUCCESS) {
         /* A terminating key such as Enter leaves the loop before the refresh at
-           the bottom runs, so the dimmed ghost drawn on the previous frame stays
-           on screen. The ghost was already cleared above, so one forced text
-           refresh redraws the line without it before the line is handed back. */
+           the bottom runs, so the dimmed ghost drawn on the previous frame
+           stays on screen. The ghost was already cleared above, so one forced
+           text refresh redraws the line without it before the line is handed
+           back. */
         itl_g_tty_should_refresh_text = true;
         itl_le_tty_refresh(le);
         itl_le_clear_line(le);
@@ -4438,16 +4353,16 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
   ITL_UNREACHABLE();
 }
 
-TL_DEF void
-tl_set_predefined_input(const char *str)
+TL_DEF void tl_set_predefined_input(const char *str)
 {
   TL_ASSERT(itl_g_is_active && "tl_init() should be called");
   itl_string_shrink(&itl_g_line_buffer);
   ITL_STRING_FROM_CSTR(&itl_g_line_buffer, str);
 }
 
-TL_DEF tl_status_code
-tl_get_character(char *char_buffer, size_t char_buffer_size, const char *prompt)
+TL_DEF tl_status_code tl_get_character(char *char_buffer,
+                                       size_t char_buffer_size,
+                                       const char *prompt)
 {
   itl_le_t *le = &itl_g_le;
   uint8_t input_byte = 0;
@@ -4489,20 +4404,17 @@ tl_get_character(char *char_buffer, size_t char_buffer_size, const char *prompt)
   return TL_SUCCESS;
 }
 
-TL_DEF tl_status_code
-tl_history_load(const char *file_path)
+TL_DEF tl_status_code tl_history_load(const char *file_path)
 {
   return itl_history_load_from_file(file_path);
 }
 
-TL_DEF tl_status_code
-tl_history_dump(const char *file_path)
+TL_DEF tl_status_code tl_history_dump(const char *file_path)
 {
   return itl_history_dump_to_file(file_path);
 }
 
-TL_DEF size_t
-tl_utf8_strlen(const char *utf8_str)
+TL_DEF size_t tl_utf8_strlen(const char *utf8_str)
 {
   size_t len = 0;
   while (*utf8_str != '\0') {
@@ -4514,8 +4426,7 @@ tl_utf8_strlen(const char *utf8_str)
   return len;
 }
 
-TL_DEF size_t
-tl_utf8_strnlen(const char *utf8_str, size_t byte_count)
+TL_DEF size_t tl_utf8_strnlen(const char *utf8_str, size_t byte_count)
 {
   size_t len = 0;
   while (*utf8_str != '\0' && byte_count-- > 0) {
@@ -4527,8 +4438,7 @@ tl_utf8_strnlen(const char *utf8_str, size_t byte_count)
   return len;
 }
 
-TL_DEF tl_status_code
-tl_emit_newlines(const char *char_buffer)
+TL_DEF tl_status_code tl_emit_newlines(const char *char_buffer)
 {
   size_t i, newlines_to_emit;
 
@@ -4546,8 +4456,7 @@ tl_emit_newlines(const char *char_buffer)
   return TL_SUCCESS;
 }
 
-TL_DEF tl_status_code
-tl_set_title(const char *title)
+TL_DEF tl_status_code tl_set_title(const char *title)
 {
   if (ITL_ISATTY(STDOUT_FILENO)) {
     ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b]0;", 4) != -1, return TL_ERROR);
