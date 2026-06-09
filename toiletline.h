@@ -267,25 +267,38 @@ typedef int (*tl_complete_fn)(const char *buffer, size_t cursor,
 TL_DEF void tl_set_complete_callback(tl_complete_fn callback);
 
 /**
- * The first-word highlight result. token_start and token_end are codepoint
- * indices bounding the first word the renderer should color, the same codepoint
- * unit the editor edits in. should_color is nonzero when that span should be
- * drawn in the highlight color, zero to leave the whole line in the default
- * color.
+ * One colored span of the line. start and end are codepoint indices, the same
+ * codepoint unit the editor edits in, with start inclusive and end exclusive.
+ * sgr is the SGR escape that opens the span, such as "\x1b[32m", owned by the
+ * host and stable for the duration of the callback and the render that follows.
+ * The renderer closes every span with a reset.
+ */
+typedef struct tl_highlight_span
+{
+  size_t start;
+  size_t end;
+  const char *sgr;
+} tl_highlight_span;
+
+/**
+ * The highlight result. The editor provides spans, an array of capacity slots,
+ * and the host fills the first count of them. The spans must be sorted by start,
+ * must not overlap, and must stay within the line, so the renderer can open and
+ * close them in one left-to-right pass.
  */
 typedef struct tl_highlight
 {
-  size_t token_start;
-  size_t token_end;
-  int should_color;
+  tl_highlight_span *spans;
+  size_t count;
+  size_t capacity;
 } tl_highlight;
 
 /**
  * The highlight callback. The host receives the current buffer and a result to
- * fill with the first word's codepoint span and whether to color it. It returns
- * nonzero when it filled the result and zero when the line should stay plain.
- * The renderer emits a zero-width SGR escape before token_start and a reset
- * after token_end, so the span is colored without shifting the cursor column.
+ * fill with colored spans. It returns nonzero when it filled one or more spans
+ * and zero when the line should stay plain. The renderer emits each span's SGR
+ * escape before its start and a reset after its end, between codepoints, so the
+ * coloring carries zero column width and never shifts the cursor.
  */
 typedef int (*tl_highlight_fn)(const char *buffer, tl_highlight *out);
 
@@ -2788,11 +2801,13 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len = 0;
    before the refresh. */
 ITL_DEF ITL_THREAD_LOCAL tl_highlight_fn itl_g_highlight_callback = NULL;
 
-/* The highlight color drawn around the first word when the host marks it for
-   coloring, light red so an unresolvable command stands out. The reset clears
-   it, matching the ghost text's own reset. */
-#define ITL_HIGHLIGHT_SGR   "\x1b[91m"
+/* The reset that closes every colored span, matching the ghost text's own
+   reset. Each span carries its own opening SGR from the host. */
 #define ITL_HIGHLIGHT_RESET "\x1b[0m"
+
+/* The most spans one line carries. A span per token on a normal line stays well
+   under this, and the host stops filling at capacity. */
+#define ITL_HIGHLIGHT_MAX_SPANS 256
 
 /* $COLUMNS and $LINES, same as above. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_rows = 1;
@@ -3074,45 +3089,58 @@ itl_le_tty_refresh(itl_le_t *le)
       itl_char_buf_append_cstr(b, le->prompt);
     }
 
-    /* Ask the host which codepoint span of the first word to color. The escapes
-       are emitted between codepoints in the loop below, so they carry zero
-       column width and the metrics pass that placed the cursor never sees them,
-       the same zero-width handling the ghost text relies on. The span is
-       ignored unless should_color is set and the bounds sit within the line. */
-    bool has_highlight = false;
-    size_t highlight_start = 0;
-    size_t highlight_end = 0;
+    /* Ask the host which codepoint spans of the line to color. The escapes are
+       emitted between codepoints in the loop below, so they carry zero column
+       width and the metrics pass that placed the cursor never sees them, the
+       same zero-width handling the ghost text relies on. The host returns spans
+       sorted by start and non-overlapping, so one left-to-right cursor opens and
+       closes them. Out-of-bounds or empty spans are dropped here. */
+    tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
+    size_t span_count = 0;
     if (itl_g_highlight_callback != NULL) {
       char highlight_cstr[ITL_STRING_MAX_LEN];
       if (itl_string_to_cstr(le->line, highlight_cstr,
                              sizeof(highlight_cstr)) == TL_SUCCESS)
       {
         tl_highlight hl;
-        hl.token_start = 0;
-        hl.token_end = 0;
-        hl.should_color = 0;
-        if (itl_g_highlight_callback(highlight_cstr, &hl) && hl.should_color &&
-            hl.token_start < hl.token_end && hl.token_end <= le->line->length)
-        {
-          has_highlight = true;
-          highlight_start = hl.token_start;
-          highlight_end = hl.token_end;
+        hl.spans = itl_spans;
+        hl.count = 0;
+        hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
+        if (itl_g_highlight_callback(highlight_cstr, &hl)) {
+          size_t s;
+          for (s = 0; s < hl.count && s < ITL_HIGHLIGHT_MAX_SPANS; ++s) {
+            if (itl_spans[s].start < itl_spans[s].end &&
+                itl_spans[s].end <= le->line->length && itl_spans[s].sgr != NULL)
+            {
+              itl_spans[span_count++] = itl_spans[s];
+            }
+          }
         }
       }
     }
 
     /* Emit the buffer, reproducing the metrics column accounting so our own
        line breaks stay in sync with the terminal. Continuation rows are padded
-       so their text lines up under the first row. */
+       so their text lines up under the first row. The span cursor closes a span
+       that ends at this codepoint, then opens the one that starts here. */
+    size_t next_span = 0;
+    bool in_span = false;
+    size_t open_end = 0;
     col = indent;
     for (i = 0; i < le->line->length; ++i) {
       itl_utf8_t ch = le->line->chars[i];
 
-      if (has_highlight && i == highlight_end) {
+      if (in_span && i == open_end) {
         itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+        in_span = false;
       }
-      if (has_highlight && i == highlight_start) {
-        itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_SGR);
+      if (!in_span && next_span < span_count &&
+          i == itl_spans[next_span].start)
+      {
+        itl_char_buf_append_cstr(b, itl_spans[next_span].sgr);
+        in_span = true;
+        open_end = itl_spans[next_span].end;
+        next_span++;
       }
 
       if (ITL_LE_IS_NEWLINE(ch)) {
@@ -3140,9 +3168,9 @@ itl_le_tty_refresh(itl_le_t *le)
         }
       }
     }
-    /* The first word can run to the end of the line, so its reset is emitted
-       here when the in-loop boundary never came up. */
-    if (has_highlight && highlight_end == le->line->length) {
+    /* A span that runs to the end of the line never hit its close in the loop,
+       so its reset is emitted here. */
+    if (in_span) {
       itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
     }
     ITL_TTY_CLEAR_TO_END(b);
