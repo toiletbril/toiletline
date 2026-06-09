@@ -3306,35 +3306,18 @@ itl_ghost_clear(void)
   itl_g_ghost[0] = '\0';
 }
 
-/* Ask the host for the top completion of the current line and remember it as the
-   ghost suffix when it extends the token under the cursor. The ghost is the part
-   of the longest common prefix that sits past what the user already typed, so it
-   only ever appends. It is shown only when the cursor is at the end of the line,
-   so it never splits the buffer. */
+/* Ask the host for the top completion of the current line and fill the ghost
+   suffix when the longest common prefix extends the token under the cursor. The
+   ghost is the part of the common prefix past what the user already typed, so it
+   only ever appends. Leaves the ghost cleared when completion offers nothing. */
 ITL_DEF void
-itl_ghost_update(itl_le_t *le)
+itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr)
 {
-  char line_cstr[ITL_STRING_MAX_LEN];
   tl_completion result;
-
-  itl_ghost_clear();
 
   if (itl_g_complete_callback == NULL) {
     return;
   }
-  /* A ghost past the end of a multiline or mid-line cursor would corrupt the
-     redraw, so it is offered only at the very end of the line. */
-  if (le->cursor_position != le->line->length) {
-    return;
-  }
-  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS) {
-    return;
-  }
-  /* An empty line has no token to extend. */
-  if (line_cstr[0] == '\0') {
-    return;
-  }
-
   /* The cursor passed to the callback is a codepoint index, the unit toiletline
      edits in, and it equals the line length here since the ghost only fires at
      the end of the line. */
@@ -3382,6 +3365,99 @@ itl_ghost_update(itl_le_t *le)
       itl_g_ghost[suffix_len] = '\0';
       itl_g_ghost_len = suffix_len;
     }
+  }
+}
+
+/* Fill the ghost from history when completion offered none, the way fish
+   autosuggests. The most recent history entry that begins with the whole typed
+   line supplies the rest of that line as a dimmed suggestion. Leaves the ghost
+   cleared when no entry matches. */
+ITL_DEF void
+itl_ghost_fill_from_history(const char *line_cstr)
+{
+  size_t line_byte_len = strlen(line_cstr);
+  ITL_FILE file;
+  itl_string_t *entry;
+  size_t index;
+
+  if (itl_g_history_path == NULL || itl_g_history_count == 0) {
+    return;
+  }
+
+  file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
+  if (ITL_FILE_IS_BAD(file)) {
+    return;
+  }
+  entry = itl_string_alloc();
+  if (entry == NULL) {
+    ITL_FILE_CLOSE(file);
+    return;
+  }
+
+  /* Newest first, so the most recent matching command wins. The index walk runs
+     from the highest navigable index, which is the most recent entry, down to
+     the oldest. */
+  for (index = itl_g_history_count; index-- > 0;) {
+    char entry_cstr[ITL_STRING_MAX_LEN];
+    size_t offset = itl_history_index_to_offset(index);
+    size_t entry_len;
+
+    if (!itl_history_read_entry_fd(file, offset, entry)) {
+      continue;
+    }
+    if (itl_string_to_cstr(entry, entry_cstr, sizeof(entry_cstr)) != TL_SUCCESS) {
+      continue;
+    }
+    entry_len = strlen(entry_cstr);
+    if (entry_len <= line_byte_len) {
+      continue;
+    }
+    if (memcmp(entry_cstr, line_cstr, line_byte_len) != 0) {
+      continue;
+    }
+    {
+      size_t suffix_len = entry_len - line_byte_len;
+      if (suffix_len >= sizeof(itl_g_ghost)) {
+        continue;
+      }
+      memcpy(itl_g_ghost, entry_cstr + line_byte_len, suffix_len);
+      itl_g_ghost[suffix_len] = '\0';
+      itl_g_ghost_len = suffix_len;
+      break;
+    }
+  }
+
+  ITL_STRING_FREE(entry);
+  ITL_FILE_CLOSE(file);
+}
+
+/* Update the dimmed ghost suggestion shown after the cursor. The completion's
+   longest common prefix is tried first, then a history match. It is shown only
+   when the cursor sits at the very end of the line, so it never splits the
+   buffer. */
+ITL_DEF void
+itl_ghost_update(itl_le_t *le)
+{
+  char line_cstr[ITL_STRING_MAX_LEN];
+
+  itl_ghost_clear();
+
+  /* A ghost past the end of a multiline or mid-line cursor would corrupt the
+     redraw, so it is offered only at the very end of the line. */
+  if (le->cursor_position != le->line->length) {
+    return;
+  }
+  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS) {
+    return;
+  }
+  /* An empty line has nothing to extend. */
+  if (line_cstr[0] == '\0') {
+    return;
+  }
+
+  itl_ghost_fill_from_completion(le, line_cstr);
+  if (itl_g_ghost_len == 0) {
+    itl_ghost_fill_from_history(line_cstr);
   }
 }
 
