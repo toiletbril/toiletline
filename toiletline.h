@@ -1160,12 +1160,13 @@ itl_cstr_display_width(const char *cstr)
   }
 
   while (cstr[i] != '\0') {
-    /* An ANSI escape sequence such as a color code occupies no terminal
-       columns, so skip it whole. A colored prompt would otherwise push the
-       caret right by the length of its escape bytes. */
+    /* An ANSI escape sequence such as a color code or a window-title set
+       occupies no terminal columns, so skip it whole. A prompt that carries one
+       would otherwise push the caret right by the length of its escape bytes. */
     if ((uint8_t) cstr[i] == 0x1b) {
       i += 1;
       if (cstr[i] == '[') {
+        /* A CSI sequence runs until a byte in the final range. */
         i += 1;
         while (cstr[i] != '\0' && (cstr[i] < 0x40 || cstr[i] > 0x7e)) {
           i += 1;
@@ -1173,6 +1174,23 @@ itl_cstr_display_width(const char *cstr)
         if (cstr[i] != '\0') {
           i += 1;
         }
+      } else if (cstr[i] == ']') {
+        /* An OSC sequence such as a title set runs until a BEL or a string
+           terminator, ESC backslash. Its body is non-printing, so the whole run
+           is skipped or the title text would be counted as caret columns. */
+        i += 1;
+        while (cstr[i] != '\0' && (uint8_t) cstr[i] != 0x07 &&
+               !((uint8_t) cstr[i] == 0x1b && cstr[i + 1] == '\\')) {
+          i += 1;
+        }
+        if ((uint8_t) cstr[i] == 0x1b && cstr[i + 1] == '\\') {
+          i += 2;
+        } else if (cstr[i] != '\0') {
+          i += 1;
+        }
+      } else if (cstr[i] != '\0') {
+        /* A two-byte escape such as a charset select, ESC then one byte. */
+        i += 1;
       }
       continue;
     }
@@ -4392,6 +4410,12 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
       }
       code = itl_le_key_handle(le, input_type);
       if (code != TL_SUCCESS) {
+        /* A terminating key such as Enter leaves the loop before the refresh at
+           the bottom runs, so the dimmed ghost drawn on the previous frame stays
+           on screen. The ghost was already cleared above, so one forced text
+           refresh redraws the line without it before the line is handed back. */
+        itl_g_tty_should_refresh_text = true;
+        itl_le_tty_refresh(le);
         itl_le_clear_line(le);
         return code;
       }
