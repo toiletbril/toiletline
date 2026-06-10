@@ -1542,6 +1542,21 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_head = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_file_size = 0;
 
+/* The ghost suggestion scans the history file on every keystroke, so its read
+   handle is kept open across keystrokes rather than reopened each time. The
+   handle is invalidated whenever the file is appended to, reloaded, or rewritten,
+   so a stale handle never serves an outdated scan. */
+ITL_DEF ITL_THREAD_LOCAL ITL_FILE itl_g_history_read_fd;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_read_fd_open = false;
+
+ITL_DEF void itl_history_read_fd_invalidate(void)
+{
+  if (itl_g_history_read_fd_open) {
+    ITL_FILE_CLOSE(itl_g_history_read_fd);
+    itl_g_history_read_fd_open = false;
+  }
+}
+
 /* False when the loaded file's last line lacked a terminating newline, so the
    next append writes a separator first instead of gluing onto that line. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_ends_with_newline = true;
@@ -1583,6 +1598,7 @@ struct itl_le
    only the path, the draft, and the offset ring counters are reset. */
 ITL_DEF void itl_g_history_free(void)
 {
+  itl_history_read_fd_invalidate();
   if (itl_g_history_path != NULL) {
     ITL_FREE(itl_g_history_path);
     itl_g_history_path = NULL;
@@ -2145,6 +2161,9 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_file_is_bad = false;
    the ring is full so only the most recent TL_HISTORY_MAX_SIZE remain. */
 ITL_DEF void itl_history_push_offset(size_t offset)
 {
+  /* The file grew or was rescanned, so the cached read handle is dropped and the
+     next ghost scan reopens it against the current content. */
+  itl_history_read_fd_invalidate();
   if (itl_g_history_count < TL_HISTORY_MAX_SIZE) {
     itl_g_history_offsets[(itl_g_history_head + itl_g_history_count) %
                           TL_HISTORY_MAX_SIZE] = offset;
@@ -2392,6 +2411,10 @@ ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
   char buffer[ITL_HISTORY_FILE_BUFFER_SIZE];
   int read_amount;
   tl_status_code ret = TL_SUCCESS;
+
+  /* The file is about to be rewritten, so the cached ghost read handle is
+     dropped and reopened against the new content on the next scan. */
+  itl_history_read_fd_invalidate();
 
   TL_ASSERT(itl_g_is_active && "Dump history before calling tl_exit()!");
 
@@ -3405,13 +3428,19 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
     return;
   }
 
-  file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
-  if (ITL_FILE_IS_BAD(file)) {
-    return;
+  /* The read handle is opened once and cached across keystrokes. It is closed by
+     itl_history_read_fd_invalidate when the file is appended to, reloaded, or
+     rewritten, so it is never stale here. */
+  if (!itl_g_history_read_fd_open) {
+    itl_g_history_read_fd = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
+    if (ITL_FILE_IS_BAD(itl_g_history_read_fd)) {
+      return;
+    }
+    itl_g_history_read_fd_open = true;
   }
+  file = itl_g_history_read_fd;
   entry = itl_string_alloc();
   if (entry == NULL) {
-    ITL_FILE_CLOSE(file);
     return;
   }
 
@@ -3457,7 +3486,7 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
   }
 
   ITL_STRING_FREE(entry);
-  ITL_FILE_CLOSE(file);
+  /* The read handle stays open and cached for the next keystroke. */
 }
 
 /* Update the dimmed ghost suggestion shown after the cursor. The completion's
