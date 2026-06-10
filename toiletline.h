@@ -2753,6 +2753,11 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_should_refresh_text = true;
 /* Line editor's visual extent during the previous refresh() call. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_total_rows = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_row = 1;
+/* The bytes of the line the previous text refresh drew, so a plain append at the
+   end of a single row can write only the new tail rather than reprinting the
+   whole row. The length is zero before the first text refresh. */
+ITL_DEF ITL_THREAD_LOCAL char itl_g_le_prev_render[ITL_STRING_MAX_LEN] = {0};
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_render_len = 0;
 
 /* The ghost suggestion drawn dimmed after the cursor, and its byte length. The
    refresh reads them, so they are declared before it. The top completion fills
@@ -3008,6 +3013,45 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   ITL_TRACELN("refresh: total %zu, crow %zu, ccol %zu, curp %zu\n",
               m.total_rows, m.cursor_row, m.cursor_col, le->cursor_position);
 
+  /* Fast path for a plain append at the end of a single unwrapped row with no
+     highlight and no ghost. The new line is the previous render plus a tail, so
+     only the appended bytes are written the way bash does, and the cursor the
+     previous frame parked at the row end advances over them. Any other edit, a
+     deletion, a mid-line insert, a wrap to a second row, a resize, the first
+     render, a colored frame, or a ghost suggestion fails a condition and falls
+     through to the full redraw below. The trailing clear erases a ghost a
+     previous frame may have drawn past the line. */
+  if (itl_g_tty_should_refresh_text && !is_resize && !itl_g_tty_first_render &&
+      itl_g_highlight_callback == NULL && itl_g_ghost_len == 0 &&
+      m.total_rows == 1 && m.cursor_row == 0 && itl_g_le_prev_total_rows == 1 &&
+      le->cursor_position == le->line->length)
+  {
+    char itl_cur_render[ITL_STRING_MAX_LEN];
+    if (itl_string_to_cstr(le->line, itl_cur_render, sizeof(itl_cur_render)) ==
+        TL_SUCCESS)
+    {
+      size_t cur_len = strlen(itl_cur_render);
+      if (cur_len > itl_g_le_prev_render_len &&
+          memcmp(itl_cur_render, itl_g_le_prev_render,
+                 itl_g_le_prev_render_len) == 0)
+      {
+        itl_char_buf_t *fb = &itl_g_char_buffer;
+        size_t k;
+        for (k = itl_g_le_prev_render_len; k < cur_len; ++k) {
+          itl_char_buf_append_byte(fb, (uint8_t)itl_cur_render[k]);
+        }
+        ITL_TTY_CLEAR_TO_END(fb);
+        memcpy(itl_g_le_prev_render, itl_cur_render, cur_len);
+        itl_g_le_prev_render_len = cur_len;
+        itl_g_le_prev_total_rows = 1;
+        itl_g_le_prev_cursor_row = 1;
+        ITL_CHAR_BUF_DUMP(fb);
+        ITL_CHAR_BUF_CLEAR(fb);
+        return true;
+      }
+    }
+  }
+
   b = &itl_g_char_buffer;
   ITL_TTY_HIDE_CURSOR(b);
   ITL_TTY_AUTOWRAP_OFF(b);
@@ -3172,6 +3216,21 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
   itl_g_le_prev_total_rows = m.total_rows;
   itl_g_le_prev_cursor_row = m.cursor_row + 1;
+
+  /* Remember the line this text refresh drew, so the next keystroke can take the
+     append fast path. A cursor-only refresh leaves the line untouched and keeps
+     the stored render. A failed conversion forces a full redraw next time. */
+  if (itl_g_tty_should_refresh_text) {
+    char itl_done_render[ITL_STRING_MAX_LEN];
+    if (itl_string_to_cstr(le->line, itl_done_render, sizeof(itl_done_render)) ==
+        TL_SUCCESS)
+    {
+      itl_g_le_prev_render_len = strlen(itl_done_render);
+      memcpy(itl_g_le_prev_render, itl_done_render, itl_g_le_prev_render_len);
+    } else {
+      itl_g_le_prev_render_len = 0;
+    }
+  }
 
   itl_g_tty_prev_rows = tty_rows;
   itl_g_tty_prev_cols = tty_cols;
