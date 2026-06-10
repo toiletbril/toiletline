@@ -2812,6 +2812,65 @@ ITL_DEF ITL_THREAD_LOCAL tl_highlight_fn itl_g_highlight_callback = NULL;
    under this, and the host stops filling at capacity. */
 #define ITL_HIGHLIGHT_MAX_SPANS 256
 
+/* The longest SGR escape a saved span keeps, including the terminator. A span
+   whose escape exceeds this cannot be compared across frames, so the append
+   fast path stays off until a full redraw saves a comparable set. */
+#define ITL_PREV_SPAN_SGR_MAX 24
+
+/* One highlight span of the previously rendered frame. The sgr bytes are an
+   owned copy, since the host's pointer is only stable for one render. */
+typedef struct itl_prev_span_t
+{
+  size_t start;
+  size_t end;
+  char sgr[ITL_PREV_SPAN_SGR_MAX];
+} itl_prev_span_t;
+
+/* The highlight spans the previous frame drew. The append fast path compares
+   the new frame's spans against these, since identical spans mean the colored
+   regions did not move and the appended tail is uncolored, so the earlier
+   bytes need no repaint. */
+ITL_DEF ITL_THREAD_LOCAL itl_prev_span_t
+    itl_g_le_prev_spans[ITL_HIGHLIGHT_MAX_SPANS];
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_span_count = 0;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_spans_usable = false;
+
+ITL_DEF void itl_le_save_prev_spans(const tl_highlight_span *spans,
+                                    size_t count)
+{
+  size_t s;
+  itl_g_le_prev_span_count = count;
+  itl_g_le_prev_spans_usable = true;
+  for (s = 0; s < count; ++s) {
+    size_t sgr_len = strlen(spans[s].sgr);
+    if (sgr_len >= ITL_PREV_SPAN_SGR_MAX) {
+      itl_g_le_prev_spans_usable = false;
+      return;
+    }
+    itl_g_le_prev_spans[s].start = spans[s].start;
+    itl_g_le_prev_spans[s].end = spans[s].end;
+    memcpy(itl_g_le_prev_spans[s].sgr, spans[s].sgr, sgr_len + 1);
+  }
+}
+
+ITL_DEF bool itl_le_prev_spans_equal(const tl_highlight_span *spans,
+                                     size_t count)
+{
+  size_t s;
+  if (!itl_g_le_prev_spans_usable || count != itl_g_le_prev_span_count) {
+    return false;
+  }
+  for (s = 0; s < count; ++s) {
+    if (spans[s].start != itl_g_le_prev_spans[s].start ||
+        spans[s].end != itl_g_le_prev_spans[s].end ||
+        strcmp(spans[s].sgr, itl_g_le_prev_spans[s].sgr) != 0)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 /* $COLUMNS and $LINES, same as above. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_rows = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_cols = 1;
@@ -3043,43 +3102,79 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   ITL_TRACELN("refresh: total %zu, crow %zu, ccol %zu, curp %zu\n",
               m.total_rows, m.cursor_row, m.cursor_col, le->cursor_position);
 
+  /* The new frame's text and its highlight spans are computed once here and
+     shared by the append fast path and the full redraw below, so the line is
+     serialized and the host callback runs at most once per refresh. The host
+     receives the line and fills colored codepoint spans, sorted by start and
+     non-overlapping, so one left-to-right cursor opens and closes them. The
+     escapes are emitted between codepoints, so they carry zero column width
+     and the metrics pass that placed the cursor never sees them, the same
+     zero-width handling the ghost text relies on. Out-of-bounds or empty spans
+     are dropped here. */
+  char itl_cur_render[ITL_STRING_MAX_LEN];
+  bool have_cur_render = false;
+  tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
+  size_t span_count = 0;
+  if (itl_g_tty_should_refresh_text) {
+    have_cur_render = itl_string_to_cstr(le->line, itl_cur_render,
+                                         sizeof(itl_cur_render)) == TL_SUCCESS;
+    if (have_cur_render && itl_g_highlight_callback != NULL) {
+      tl_highlight hl;
+      hl.spans = itl_spans;
+      hl.count = 0;
+      hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
+      if (itl_g_highlight_callback(itl_cur_render, &hl)) {
+        size_t s;
+        for (s = 0; s < hl.count && s < ITL_HIGHLIGHT_MAX_SPANS; ++s) {
+          if (itl_spans[s].start < itl_spans[s].end &&
+              itl_spans[s].end <= le->line->length &&
+              itl_spans[s].sgr != NULL)
+          {
+            itl_spans[span_count++] = itl_spans[s];
+          }
+        }
+      }
+    }
+  }
+
   /* Fast path for a plain append at the end of a single unwrapped row with no
-     highlight and no ghost. The new line is the previous render plus a tail, so
-     only the appended bytes are written the way bash does, and the cursor the
-     previous frame parked at the row end advances over them. Any other edit, a
-     deletion, a mid-line insert, a wrap to a second row, a resize, the first
-     render, a colored frame, or a ghost suggestion fails a condition and falls
+     ghost and no highlight movement. The new line is the previous render plus
+     a tail, so only the appended bytes are written the way bash does, and the
+     cursor the previous frame parked at the row end advances over them. A
+     colored frame takes this path too when its spans equal the previous
+     frame's spans exactly, since unmoved spans leave the painted bytes valid
+     and the appended tail uncolored. Any other edit, a deletion, a mid-line
+     insert, a wrap to a second row, a resize, the first render, a span that
+     moved or changed color, or a ghost suggestion fails a condition and falls
      through to the full redraw below. The trailing clear erases a ghost a
      previous frame may have drawn past the line. */
   if (itl_g_tty_should_refresh_text && !is_resize && !itl_g_tty_first_render &&
-      itl_g_highlight_callback == NULL && itl_g_ghost_len == 0 &&
+      have_cur_render && itl_g_ghost_len == 0 &&
       m.total_rows == 1 && m.cursor_row == 0 && itl_g_le_prev_total_rows == 1 &&
-      le->cursor_position == le->line->length && itl_g_le_prev_cursor_at_end)
+      le->cursor_position == le->line->length && itl_g_le_prev_cursor_at_end &&
+      itl_le_prev_spans_equal(itl_spans, span_count))
   {
-    char itl_cur_render[ITL_STRING_MAX_LEN];
-    if (itl_string_to_cstr(le->line, itl_cur_render, sizeof(itl_cur_render)) ==
-        TL_SUCCESS)
+    /* A successful itl_string_to_cstr wrote exactly the line's byte size, so
+       the length is read off the line rather than recounted with strlen. */
+    size_t cur_len = le->line->size;
+    if (cur_len > itl_g_le_prev_render_len &&
+        memcmp(itl_cur_render, itl_g_le_prev_render,
+               itl_g_le_prev_render_len) == 0)
     {
-      size_t cur_len = strlen(itl_cur_render);
-      if (cur_len > itl_g_le_prev_render_len &&
-          memcmp(itl_cur_render, itl_g_le_prev_render,
-                 itl_g_le_prev_render_len) == 0)
-      {
-        itl_char_buf_t *fb = &itl_g_char_buffer;
-        size_t k;
-        for (k = itl_g_le_prev_render_len; k < cur_len; ++k) {
-          itl_char_buf_append_byte(fb, (uint8_t)itl_cur_render[k]);
-        }
-        ITL_TTY_CLEAR_TO_END(fb);
-        memcpy(itl_g_le_prev_render, itl_cur_render, cur_len);
-        itl_g_le_prev_render_len = cur_len;
-        itl_g_le_prev_total_rows = 1;
-        itl_g_le_prev_cursor_row = 1;
-        itl_g_le_prev_cursor_at_end = true;
-        ITL_CHAR_BUF_DUMP(fb);
-        ITL_CHAR_BUF_CLEAR(fb);
-        return true;
+      itl_char_buf_t *fb = &itl_g_char_buffer;
+      size_t k;
+      for (k = itl_g_le_prev_render_len; k < cur_len; ++k) {
+        itl_char_buf_append_byte(fb, (uint8_t)itl_cur_render[k]);
       }
+      ITL_TTY_CLEAR_TO_END(fb);
+      memcpy(itl_g_le_prev_render, itl_cur_render, cur_len);
+      itl_g_le_prev_render_len = cur_len;
+      itl_g_le_prev_total_rows = 1;
+      itl_g_le_prev_cursor_row = 1;
+      itl_g_le_prev_cursor_at_end = true;
+      ITL_CHAR_BUF_DUMP(fb);
+      ITL_CHAR_BUF_CLEAR(fb);
+      return true;
     }
   }
 
@@ -3124,37 +3219,6 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
     if (le->prompt != NULL) {
       itl_char_buf_append_cstr(b, le->prompt);
-    }
-
-    /* Ask the host which codepoint spans of the line to color. The escapes are
-       emitted between codepoints in the loop below, so they carry zero column
-       width and the metrics pass that placed the cursor never sees them, the
-       same zero-width handling the ghost text relies on. The host returns spans
-       sorted by start and non-overlapping, so one left-to-right cursor opens
-       and closes them. Out-of-bounds or empty spans are dropped here. */
-    tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
-    size_t span_count = 0;
-    if (itl_g_highlight_callback != NULL) {
-      char highlight_cstr[ITL_STRING_MAX_LEN];
-      if (itl_string_to_cstr(le->line, highlight_cstr,
-                             sizeof(highlight_cstr)) == TL_SUCCESS)
-      {
-        tl_highlight hl;
-        hl.spans = itl_spans;
-        hl.count = 0;
-        hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
-        if (itl_g_highlight_callback(highlight_cstr, &hl)) {
-          size_t s;
-          for (s = 0; s < hl.count && s < ITL_HIGHLIGHT_MAX_SPANS; ++s) {
-            if (itl_spans[s].start < itl_spans[s].end &&
-                itl_spans[s].end <= le->line->length &&
-                itl_spans[s].sgr != NULL)
-            {
-              itl_spans[span_count++] = itl_spans[s];
-            }
-          }
-        }
-      }
     }
 
     /* Emit the buffer, reproducing the metrics column accounting so our own
@@ -3252,19 +3316,20 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
      sits at the append point. */
   itl_g_le_prev_cursor_at_end = (le->cursor_position == le->line->length);
 
-  /* Remember the line this text refresh drew, so the next keystroke can take the
-     append fast path. A cursor-only refresh leaves the line untouched and keeps
-     the stored render. A failed conversion forces a full redraw next time. */
+  /* Remember the line and the spans this text refresh drew, so the next
+     keystroke can take the append fast path. A cursor-only refresh leaves the
+     line untouched and keeps the stored render. A failed conversion forces a
+     full redraw next time. */
   if (itl_g_tty_should_refresh_text) {
-    char itl_done_render[ITL_STRING_MAX_LEN];
-    if (itl_string_to_cstr(le->line, itl_done_render, sizeof(itl_done_render)) ==
-        TL_SUCCESS)
-    {
-      itl_g_le_prev_render_len = strlen(itl_done_render);
-      memcpy(itl_g_le_prev_render, itl_done_render, itl_g_le_prev_render_len);
+    if (have_cur_render) {
+      /* A successful itl_string_to_cstr wrote exactly the line's byte size, so
+         the length is read off the line rather than recounted with strlen. */
+      itl_g_le_prev_render_len = le->line->size;
+      memcpy(itl_g_le_prev_render, itl_cur_render, itl_g_le_prev_render_len);
     } else {
       itl_g_le_prev_render_len = 0;
     }
+    itl_le_save_prev_spans(itl_spans, span_count);
   }
 
   itl_g_tty_prev_rows = tty_rows;
