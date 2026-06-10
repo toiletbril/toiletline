@@ -2781,6 +2781,13 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_row = 1;
    whole row. The length is zero before the first text refresh. */
 ITL_DEF ITL_THREAD_LOCAL char itl_g_le_prev_render[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_render_len = 0;
+/* Whether the previous refresh left the physical cursor at the end of the line.
+   The append fast path writes the tail at wherever the cursor sits, so it fires
+   only when the cursor was parked at the append point. A cursor-only move that
+   parks the caret mid-line clears this and forces the full redraw, so a later
+   prefix-sharing whole-line replacement such as a history recall cannot append
+   at the wrong column. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_cursor_at_end = false;
 
 /* The ghost suggestion drawn dimmed after the cursor, and its byte length. The
    refresh reads them, so they are declared before it. The top completion fills
@@ -3047,7 +3054,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   if (itl_g_tty_should_refresh_text && !is_resize && !itl_g_tty_first_render &&
       itl_g_highlight_callback == NULL && itl_g_ghost_len == 0 &&
       m.total_rows == 1 && m.cursor_row == 0 && itl_g_le_prev_total_rows == 1 &&
-      le->cursor_position == le->line->length)
+      le->cursor_position == le->line->length && itl_g_le_prev_cursor_at_end)
   {
     char itl_cur_render[ITL_STRING_MAX_LEN];
     if (itl_string_to_cstr(le->line, itl_cur_render, sizeof(itl_cur_render)) ==
@@ -3068,6 +3075,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         itl_g_le_prev_render_len = cur_len;
         itl_g_le_prev_total_rows = 1;
         itl_g_le_prev_cursor_row = 1;
+        itl_g_le_prev_cursor_at_end = true;
         ITL_CHAR_BUF_DUMP(fb);
         ITL_CHAR_BUF_CLEAR(fb);
         return true;
@@ -3239,6 +3247,10 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
   itl_g_le_prev_total_rows = m.total_rows;
   itl_g_le_prev_cursor_row = m.cursor_row + 1;
+  /* Record whether this frame, text or cursor-only, parked the caret at the line
+     end, so the append fast path on the next keystroke knows the physical cursor
+     sits at the append point. */
+  itl_g_le_prev_cursor_at_end = (le->cursor_position == le->line->length);
 
   /* Remember the line this text refresh drew, so the next keystroke can take the
      append fast path. A cursor-only refresh leaves the line untouched and keeps
