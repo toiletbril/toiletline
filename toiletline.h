@@ -4377,6 +4377,11 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
   /* Avoid clearing lines that don't belong to us. */
   itl_g_le_prev_total_rows = 1;
   itl_g_le_prev_cursor_row = 1;
+  /* The incremental-append fast path keys off the previous render, so its state
+     is reset with the row counts, otherwise the first refresh of this line could
+     compare against the previous command's render. */
+  itl_g_le_prev_render_len = 0;
+  itl_g_le_prev_cursor_at_end = false;
   itl_le_tty_refresh(le);
 
   while (true) {
@@ -4454,18 +4459,23 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
                             (input_type & TL_MASK_KEY) == TL_KEY_END) &&
                            le->cursor_position == le->line->length &&
                            itl_g_ghost_len > 0;
+      /* Whether a dimmed ghost is on screen before it is cleared below, so the
+         terminating-key path knows if a repaint is needed to erase it. */
+      bool ghost_was_on_screen = itl_g_ghost_len > 0;
       if (!is_tab && !accepts_ghost) {
         itl_ghost_clear();
       }
       code = itl_le_key_handle(le, input_type);
       if (code != TL_SUCCESS) {
         /* A terminating key such as Enter leaves the loop before the refresh at
-           the bottom runs, so the dimmed ghost drawn on the previous frame
-           stays on screen. The ghost was already cleared above, so one forced
-           text refresh redraws the line without it before the line is handed
-           back. */
-        itl_g_tty_should_refresh_text = true;
-        itl_le_tty_refresh(le);
+           the bottom runs. When a dimmed ghost was on screen it must be erased,
+           so one forced text refresh redraws the line without it. With no ghost
+           the line on screen is already correct, so the repaint is skipped,
+           which avoids a full-block flicker on a multiline submit. */
+        if (ghost_was_on_screen) {
+          itl_g_tty_should_refresh_text = true;
+          itl_le_tty_refresh(le);
+        }
         itl_le_clear_line(le);
         return code;
       }
