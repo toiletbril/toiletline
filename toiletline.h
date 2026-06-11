@@ -2887,6 +2887,48 @@ ITL_DEF bool itl_win_console_resized(void)
   }
   return (cols != itl_g_tty_prev_cols) || (rows != itl_g_tty_prev_rows);
 }
+
+#if !defined ITL_INJECT_KLEE
+/* Blocks on the console input handle until a keystroke is queued, the Windows
+   counterpart to the POSIX poll. The handle wakes the moment any record
+   arrives, so a keypress is served without the latency of a fixed sleep, while
+   the twenty millisecond timeout keeps polling the console size since a resize
+   raises no signal on Windows. A non-character record, a key release, a lone
+   modifier, a mouse move, or a resize, would keep the handle signaled and spin
+   the wait, so it is consumed here. A resize record marks the line for a
+   redraw the way SIGWINCH does. A real keystroke is left in the buffer for the
+   _getch reader, told apart by _kbhit. */
+ITL_DEF void itl_wait_for_input(void)
+{
+  HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
+  for (;;) {
+    if (itl_g_pushback_byte != -1 || _kbhit() != 0) {
+      return;
+    }
+    if (WaitForSingleObject(handle, 20) != WAIT_OBJECT_0) {
+      if (itl_win_console_resized()) {
+        itl_g_tty_changed_size = 1;
+      }
+      continue;
+    }
+    INPUT_RECORD record;
+    DWORD count = 0;
+    if (!PeekConsoleInput(handle, &record, 1, &count) || count == 0) {
+      continue;
+    }
+    if (record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown &&
+        _kbhit() != 0)
+    {
+      return;
+    }
+    if (ReadConsoleInput(handle, &record, 1, &count) && count > 0 &&
+        record.EventType == WINDOW_BUFFER_SIZE_EVENT)
+    {
+      itl_g_tty_changed_size = 1;
+    }
+  }
+}
+#endif /* !ITL_INJECT_KLEE */
 #endif /* ITL_WIN32 */
 
 typedef struct itl_le_metrics itl_le_metrics_t;
@@ -4463,16 +4505,19 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       }
       itl_wait_for_input();
     }
-#elif defined ITL_WIN32
-    /* The console has no resize signal, so poll its size while waiting for a
-       key and redraw live when it changes. Best effort. */
-    while (!itl_input_is_pending()) {
-      if (itl_win_console_resized()) {
-        itl_g_tty_changed_size = 1;
+#elif defined ITL_WIN32 && !defined ITL_INJECT_KLEE
+    /* The console raises no resize signal, so the wait blocks on the input
+       handle and polls the size on its timeout, redrawing live when it
+       changes, the same shape as the POSIX branch above. */
+    for (;;) {
+      if (itl_g_tty_changed_size) {
         itl_g_tty_should_refresh_text = true;
         itl_le_tty_refresh(le);
       }
-      Sleep(20);
+      if (itl_input_is_pending()) {
+        break;
+      }
+      itl_wait_for_input();
     }
 #endif /* ITL_POSIX && !ITL_INJECT_KLEE */
 
