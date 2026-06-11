@@ -272,6 +272,21 @@ TL_DEF void tl_set_complete_callback(tl_complete_fn callback);
  */
 TL_DEF void tl_set_ghost_enabled(int enabled);
 
+/*
+ * The ghost history validation callback. The host receives a history entry the
+ * ghost is about to suggest and returns nonzero to accept it. A zero return
+ * skips the entry and the scan continues with the next one, the way fish drops
+ * a suggestion whose command no longer exists. NULL accepts every entry.
+ */
+typedef int (*tl_ghost_validate_fn)(const char *entry);
+
+/*
+ * Register the ghost history validation callback, or NULL to accept every
+ * entry. Only the history source consults it, a completion-derived ghost is
+ * already validated by the completion engine.
+ */
+TL_DEF void tl_set_ghost_validate_callback(tl_ghost_validate_fn callback);
+
 /**
  * One colored span of the line. start and end are codepoint indices, the same
  * codepoint unit the editor edits in, with start inclusive and end exclusive.
@@ -3429,6 +3444,16 @@ TL_DEF void tl_set_ghost_enabled(int enabled)
   itl_g_ghost_enabled = enabled;
 }
 
+/* The host ghost validation callback, or NULL when every history entry is
+   acceptable. Consulted by the history scan only. */
+ITL_DEF ITL_THREAD_LOCAL tl_ghost_validate_fn itl_g_ghost_validate_callback =
+    NULL;
+
+TL_DEF void tl_set_ghost_validate_callback(tl_ghost_validate_fn callback)
+{
+  itl_g_ghost_validate_callback = callback;
+}
+
 TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback)
 {
   itl_g_highlight_callback = callback;
@@ -3590,6 +3615,14 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
       continue;
     }
     if (memcmp(entry_cstr, line_cstr, line_byte_len) != 0) {
+      continue;
+    }
+    /* The host vets the entry before it becomes the suggestion, so a command
+       that no longer resolves is skipped and the scan keeps looking, the way
+       fish validates its autosuggestions. */
+    if (itl_g_ghost_validate_callback != NULL &&
+        !itl_g_ghost_validate_callback(entry_cstr))
+    {
       continue;
     }
     {
