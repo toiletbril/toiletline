@@ -1146,15 +1146,23 @@ ITL_DEF size_t itl_char_width(itl_utf8_t ch)
 }
 
 /* Sums the terminal column width of a null-terminated UTF-8 string. */
-ITL_DEF size_t itl_cstr_display_width(const char *cstr)
+/* Walk the string accumulating display cells until stop_after cells are
+   consumed or the string ends, and report the byte offset the walk stopped
+   at through out_offset when it is non-null. The full-width measure and the
+   prompt clamp share this walk, so the escape skipping never diverges. */
+ITL_DEF size_t itl_cstr_width_walk(const char *cstr, size_t stop_after,
+                                   size_t *out_offset)
 {
   size_t width = 0, i = 0;
 
   if (cstr == NULL) {
+    if (out_offset != NULL) {
+      *out_offset = 0;
+    }
     return 0;
   }
 
-  while (cstr[i] != '\0') {
+  while (cstr[i] != '\0' && width < stop_after) {
     /* An ANSI escape sequence such as a color code or a window-title set
        occupies no terminal columns, so skip it whole. A prompt that carries one
        would otherwise push the caret right by the length of its escape bytes.
@@ -1208,7 +1216,51 @@ ITL_DEF size_t itl_cstr_display_width(const char *cstr)
     i += j;
   }
 
+  if (out_offset != NULL) {
+    *out_offset = i;
+  }
   return width;
+}
+
+ITL_DEF size_t itl_cstr_display_width(const char *cstr)
+{
+  return itl_cstr_width_walk(cstr, (size_t) -1, NULL);
+}
+
+#define ITL_PROMPT_ELLIPSIS       "..."
+#define ITL_PROMPT_ELLIPSIS_WIDTH 3
+/* The input cells a clamped prompt always leaves free on the first row. */
+#define ITL_PROMPT_MIN_INPUT_CELLS 8
+
+/* The byte offset prompt rendering starts from and the cells the rendered
+   prompt occupies, for the given terminal width. A prompt narrower than the
+   terminal renders whole from offset zero. A wider one renders as the
+   ellipsis marker and its own tail, the way fish shortens an oversized
+   prompt, so the cursor math never sees a prompt at or past the terminal
+   width and the first row keeps room for input. */
+ITL_DEF size_t itl_prompt_render_cut(const char *prompt, size_t prompt_width,
+                                     size_t cols, size_t *out_width)
+{
+  size_t budget, dropped, cut_offset;
+
+  if (prompt == NULL) {
+    *out_width = 0;
+    return 0;
+  }
+  if (prompt_width < cols) {
+    *out_width = prompt_width;
+    return 0;
+  }
+  if (cols <= ITL_PROMPT_ELLIPSIS_WIDTH + ITL_PROMPT_MIN_INPUT_CELLS) {
+    /* The terminal is too narrow for a useful tail, so the prompt renders as
+       nothing and the whole row belongs to the input. */
+    *out_width = 0;
+    return strlen(prompt);
+  }
+  budget = cols - ITL_PROMPT_ELLIPSIS_WIDTH - ITL_PROMPT_MIN_INPUT_CELLS;
+  dropped = itl_cstr_width_walk(prompt, prompt_width - budget, &cut_offset);
+  *out_width = ITL_PROMPT_ELLIPSIS_WIDTH + (prompt_width - dropped);
+  return cut_offset;
 }
 
 #define ITL_STRING_INIT_SIZE                      64
@@ -2958,8 +3010,17 @@ struct itl_le_metrics
 /* Columns each wrapped or continuation row is padded by so the text lines up
    under the first row. Falls back to no padding when the prompt fills the row.
  */
-#define ITL_LE_INDENT(le, cols)                                                \
-  ((le)->prompt_width < (cols) ? (le)->prompt_width : (size_t) 0)
+/* The cells the rendered prompt occupies at this width, the clamped width
+   once the prompt is at or past the terminal width, so the metrics, the
+   reflow, and the refresh all wrap the same way the render does. */
+ITL_DEF size_t itl_le_prompt_indent(const itl_le_t *le, size_t cols)
+{
+  size_t effective_width;
+  itl_prompt_render_cut(le->prompt, le->prompt_width, cols, &effective_width);
+  return effective_width;
+}
+
+#define ITL_LE_INDENT(le, cols) itl_le_prompt_indent((le), (cols))
 
 /* Walks the buffer once and computes the cursor's visual row and column plus
    the total number of visual rows. It accounts for the prompt width on the
@@ -3275,7 +3336,18 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     }
 
     if (le->prompt != NULL) {
-      itl_char_buf_append_cstr(b, le->prompt);
+      /* A prompt at or past the terminal width renders as the ellipsis
+         marker and its tail, the same cut the indent math uses, so the
+         render and the cursor accounting agree. */
+      size_t rendered_prompt_width;
+      size_t prompt_cut = itl_prompt_render_cut(
+          le->prompt, le->prompt_width, tty_cols, &rendered_prompt_width);
+      if (prompt_cut == 0) {
+        itl_char_buf_append_cstr(b, le->prompt);
+      } else if (rendered_prompt_width > 0) {
+        itl_char_buf_append_cstr(b, ITL_PROMPT_ELLIPSIS);
+        itl_char_buf_append_cstr(b, le->prompt + prompt_cut);
+      }
     }
 
     /* Emit the buffer, reproducing the metrics column accounting so our own
