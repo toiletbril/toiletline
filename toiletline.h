@@ -330,6 +330,21 @@ typedef int (*tl_highlight_fn)(const char *buffer, tl_highlight *out);
  */
 TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback);
 
+/**
+ * The wake hook the host registers for an out-of-band report such as a
+ * finished background job. The wait loop calls it with phase 0 to ask whether
+ * anything must print. On a nonzero answer the loop clears the current render
+ * block, calls phase 1 so the host writes its CRLF-ended rows, and re-renders
+ * the prompt and the line below them. The split keeps the editor ignorant of
+ * what the host reports and the host ignorant of the render-row geometry.
+ */
+typedef int (*tl_wake_fn)(int phase);
+
+/**
+ * Register the wake hook, or NULL to disable it.
+ */
+TL_DEF void tl_set_wake_callback(tl_wake_fn callback);
+
 #endif /* TOILETLINE_H_ */ /* End of header file */
 
 #if defined TOILETLINE_IMPLEMENTATION
@@ -2870,6 +2885,7 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len = 0;
    interactive host registers one. The refresh reads it, so it is declared
    before the refresh. */
 ITL_DEF ITL_THREAD_LOCAL tl_highlight_fn itl_g_highlight_callback = NULL;
+ITL_DEF ITL_THREAD_LOCAL tl_wake_fn itl_g_wake_callback = NULL;
 
 /* The reset that closes every colored span, matching the ghost text's own
    reset. Each span carries its own opening SGR from the host. */
@@ -3524,6 +3540,11 @@ ITL_DEF ITL_THREAD_LOCAL tl_ghost_validate_fn itl_g_ghost_validate_callback =
 TL_DEF void tl_set_ghost_validate_callback(tl_ghost_validate_fn callback)
 {
   itl_g_ghost_validate_callback = callback;
+}
+
+TL_DEF void tl_set_wake_callback(tl_wake_fn callback)
+{
+  itl_g_wake_callback = callback;
 }
 
 TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback)
@@ -4599,9 +4620,32 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
   while (true) {
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
     /* Block for input, but wake on SIGWINCH to redraw the line live as the
-       window resizes instead of waiting for the next keystroke. */
+       window resizes instead of waiting for the next keystroke. A SIGCHLD
+       wakes the poll the same way, and the wake hook lets the host print a
+       job report above the live prompt. */
     for (;;) {
       if (itl_g_tty_changed_size) {
+        itl_g_tty_should_refresh_text = true;
+        itl_le_tty_refresh(le);
+      }
+      if (itl_g_wake_callback != NULL && itl_g_wake_callback(0)) {
+        /* Clear the current render block the way the full refresh does, the
+           block top then everything below, so the host's rows land where
+           the prompt began and the fresh render follows them. */
+        itl_char_buf_t *wake_buf = &itl_g_char_buffer;
+        if (itl_g_le_prev_cursor_row > 1) {
+          ITL_TTY_MOVE_UP(wake_buf, itl_g_le_prev_cursor_row - 1);
+        }
+        ITL_TTY_MOVE_TO_COLUMN(wake_buf, 1);
+        ITL_TTY_CLEAR_BELOW(wake_buf);
+        ITL_CHAR_BUF_DUMP(wake_buf);
+        ITL_CHAR_BUF_CLEAR(wake_buf);
+        itl_g_wake_callback(1);
+        itl_g_tty_first_render = true;
+        itl_g_le_prev_total_rows = 1;
+        itl_g_le_prev_cursor_row = 1;
+        itl_g_le_prev_render_len = 0;
+        itl_g_le_prev_cursor_at_end = false;
         itl_g_tty_should_refresh_text = true;
         itl_le_tty_refresh(le);
       }
