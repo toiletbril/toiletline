@@ -710,7 +710,11 @@ ITL_DEF bool itl_enter_raw_mode_impl(void)
   cfmakeraw(&term);
   term.c_oflag = OPOST | ONLCR;
 
-  ITL_TRY(tcsetattr(STDIN_FILENO, TCSAFLUSH, &term) == 0, return false);
+  /* TCSADRAIN keeps the pty's queued input, so a command typed ahead while
+     the previous one ran, or sent by tmux before the shell finished
+     starting, is read at the prompt the way bash replays it. TCSAFLUSH
+     would discard that type-ahead. */
+  ITL_TRY(tcsetattr(STDIN_FILENO, TCSADRAIN, &term) == 0, return false);
 #endif /* ITL_POSIX */
   return true;
 }
@@ -751,7 +755,9 @@ ITL_DEF bool itl_exit_raw_mode_impl(void)
   if (memcmp(&itl_g_original_tty_mode, &zeroed_termios,
              sizeof(struct termios)) != 0)
   {
-    ITL_TRY(tcsetattr(STDIN_FILENO, TCSAFLUSH, &itl_g_original_tty_mode) == 0,
+    /* The same TCSADRAIN as the enter side, so bytes typed during the last
+       edit survive into the command about to read them. */
+    ITL_TRY(tcsetattr(STDIN_FILENO, TCSADRAIN, &itl_g_original_tty_mode) == 0,
             return false);
   }
 
@@ -798,10 +804,9 @@ TL_DEF tl_status_code tl_exit_raw_mode(void)
   return TL_SUCCESS;
 }
 
-/* Holds at most one byte pushed back by `itl_unread_byte`, or -1 when empty. */
+/* Holds at most one pushed-back byte, or -1 when empty. The read path drains
+   it before the descriptor and the pending probe counts it as input. */
 ITL_DEF ITL_THREAD_LOCAL int itl_g_pushback_byte = -1;
-
-ITL_DEF void itl_unread_byte(uint8_t byte) { itl_g_pushback_byte = (int) byte; }
 
 ITL_DEF bool ITL_READ_BYTE(uint8_t *buffer)
 {
@@ -829,9 +834,8 @@ ITL_DEF bool ITL_READ_BYTE(uint8_t *buffer)
 
 #define ITL_TRY_READ_BYTE(buffer, expr) ITL_TRY(ITL_READ_BYTE(buffer), expr)
 
-/* Returns true when a byte is already available without blocking. Used as a
-   fallback for terminals that do not support bracketed paste, where a pasted
-   newline otherwise looks like a submit. */
+/* Returns true when a byte is already available without blocking, so the
+   key wait loop skips its sleep when input is ready. */
 ITL_DEF bool itl_input_is_pending(void)
 {
   if (itl_g_pushback_byte != -1) {
@@ -4057,20 +4061,12 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     {
       insert_newline = true;
     }
-    /* Fallback for terminals without bracketed paste. A pasted newline is
-       followed by a burst of more bytes, while a single typed-ahead keystroke
-       is not. Peek one byte and only treat this as a paste when more input is
-       still queued behind it. The peeked byte is always put back. */
-    if (!insert_newline && itl_input_is_pending()) {
-      uint8_t peeked;
-      if (ITL_READ_BYTE(&peeked)) {
-        if (itl_input_is_pending()) {
-          insert_newline = true;
-        }
-        itl_unread_byte(peeked);
-      }
-    }
-
+    /* A bare newline always submits. Real pastes arrive inside the bracketed
+       paste markers requested at raw enter, and a terminal without them
+       degrades to one submit per pasted line, the same reading bash gives. A
+       pending-input heuristic here would instead merge typed-ahead commands,
+       tmux send-keys of "su user" then "cd dir", into one multiline buffer,
+       running the second line in the outer shell after the first returns. */
     if (insert_newline) {
       itl_le_insert(le, itl_newline_char);
       break;
