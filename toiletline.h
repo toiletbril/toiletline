@@ -2920,6 +2920,16 @@ ITL_DEF ITL_THREAD_LOCAL tl_wake_fn itl_g_wake_callback = NULL;
    reset. Each span carries its own opening SGR from the host. */
 #define ITL_HIGHLIGHT_RESET "\x1b[0m"
 
+/* The reverse-video pair the empty-completion flash wraps the input in, so a
+   TAB with no candidate blinks the line the way fish does instead of ringing
+   the bell. */
+#define ITL_FLASH_ON  "\x1b[7m"
+#define ITL_FLASH_OFF "\x1b[27m"
+
+/* True for one render after a TAB found no completion, so the input draws in
+   reverse video, then the next key clears it and redraws plain. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_flash_input = false;
+
 /* The most spans one line carries. A span per token on a normal line stays well
    under this, and the host stops filling at capacity. */
 #define ITL_HIGHLIGHT_MAX_SPANS 256
@@ -3407,6 +3417,10 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     bool in_span = false;
     size_t open_end = 0;
     col = indent;
+    /* The empty-completion flash inverts the whole input for one render. */
+    if (itl_g_flash_input) {
+      itl_char_buf_append_cstr(b, ITL_FLASH_ON);
+    }
     for (i = 0; i < le->line->length; ++i) {
       itl_utf8_t ch = le->line->chars[i];
 
@@ -3451,6 +3465,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
        so its reset is emitted here. */
     if (in_span) {
       itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+    }
+    if (itl_g_flash_input) {
+      itl_char_buf_append_cstr(b, ITL_FLASH_OFF);
     }
     ITL_TTY_CLEAR_TO_END(b);
 
@@ -3918,7 +3935,12 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
     return false;
   }
   if (result.count == 0) {
-    return false;
+    /* No candidate, so flash the input for one render rather than ringing the
+       bell or inserting a literal tab. The flag is handled, so the key does
+       not fall through to the host's tab. */
+    itl_g_flash_input = true;
+    itl_g_tty_should_refresh_text = true;
+    return true;
   }
 
   itl_ghost_clear();
@@ -3959,6 +3981,13 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
 
   /* Refresh text by default, avoid if we are only moving the cursor. */
   itl_g_tty_should_refresh_text = true;
+
+  /* A flash set by a previous empty TAB lasts one render, so any later key
+     clears it and the next refresh draws the input plain. A repeated TAB
+     re-arms it below. */
+  if (itl_g_flash_input && (esc & TL_MASK_KEY) != TL_KEY_TAB) {
+    itl_g_flash_input = false;
+  }
 
   switch (esc & TL_MASK_KEY) {
   case TL_KEY_TAB: {
