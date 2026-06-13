@@ -2425,6 +2425,12 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str)
   if (itl_g_history_path == NULL || itl_g_history_file_is_bad) {
     return false;
   }
+  /* A non-interactive run reading from a pipe or a file leaves the history
+     file untouched, so only a real terminal session records its commands the
+     way bash skips history off a tty. */
+  if (!ITL_TTY_IS_TTY()) {
+    return false;
+  }
   if (str->length <= 1) {
     return false;
   }
