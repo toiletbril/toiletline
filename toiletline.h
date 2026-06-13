@@ -2926,9 +2926,28 @@ ITL_DEF ITL_THREAD_LOCAL tl_wake_fn itl_g_wake_callback = NULL;
 #define ITL_FLASH_ON  "\x1b[7m"
 #define ITL_FLASH_OFF "\x1b[27m"
 
-/* True for one render after a TAB found no completion, so the input draws in
-   reverse video, then the next key clears it and redraws plain. */
+/* True while the empty-completion flash holds, so the input draws in reverse
+   video for the brief flash before it reverts. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_flash_input = false;
+
+/* The flash hold, matching fish's 100ms, long enough to perceive and short
+   enough not to feel like a stall on a deliberate TAB. */
+#define ITL_FLASH_HOLD_MS 100
+
+/* Sleep the flash hold without busy-waiting. A signal that cuts it short just
+   ends the flash early, which is harmless. */
+ITL_DEF void itl_flash_sleep(void)
+{
+#if defined ITL_POSIX
+  struct pollfd unused_fd;
+  unused_fd.fd = -1;
+  unused_fd.events = 0;
+  unused_fd.revents = 0;
+  poll(&unused_fd, 0, ITL_FLASH_HOLD_MS);
+#elif defined ITL_WIN32
+  Sleep(ITL_FLASH_HOLD_MS);
+#endif
+}
 
 /* The most spans one line carries. A span per token on a normal line stays well
    under this, and the host stops filling at capacity. */
@@ -3428,7 +3447,11 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
         in_span = false;
       }
-      if (!in_span && next_span < span_count && i == itl_spans[next_span].start)
+      /* The flash inverts the whole input, so the highlighter spans are held
+         back during it, their per-span resets would otherwise clear the
+         reverse video mid-line. */
+      if (!itl_g_flash_input && !in_span && next_span < span_count &&
+          i == itl_spans[next_span].start)
       {
         itl_char_buf_append_cstr(b, itl_spans[next_span].sgr);
         in_span = true;
@@ -3935,11 +3958,16 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
     return false;
   }
   if (result.count == 0) {
-    /* No candidate, so flash the input for one render rather than ringing the
-       bell or inserting a literal tab. The flag is handled, so the key does
-       not fall through to the host's tab. */
+    /* No candidate, so flash the input the way fish does rather than ringing
+       the bell or inserting a literal tab. The input draws inverted, holds
+       briefly so the eye catches it, then reverts. The key is handled, so it
+       never falls through to the host's tab. */
     itl_g_flash_input = true;
+    itl_le_tty_refresh(le);
+    itl_flash_sleep();
+    itl_g_flash_input = false;
     itl_g_tty_should_refresh_text = true;
+    itl_le_tty_refresh(le);
     return true;
   }
 
@@ -3981,13 +4009,6 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
 
   /* Refresh text by default, avoid if we are only moving the cursor. */
   itl_g_tty_should_refresh_text = true;
-
-  /* A flash set by a previous empty TAB lasts one render, so any later key
-     clears it and the next refresh draws the input plain. A repeated TAB
-     re-arms it below. */
-  if (itl_g_flash_input && (esc & TL_MASK_KEY) != TL_KEY_TAB) {
-    itl_g_flash_input = false;
-  }
 
   switch (esc & TL_MASK_KEY) {
   case TL_KEY_TAB: {
