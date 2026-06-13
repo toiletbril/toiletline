@@ -1246,6 +1246,30 @@ ITL_DEF size_t itl_cstr_display_width(const char *cstr)
   return itl_cstr_width_walk(cstr, (size_t) -1, NULL);
 }
 
+/* The display width of the prompt's last row and, through out_rows, the count
+   of newlines before it. A single-row prompt reports its whole width and
+   zero rows, so the caller's existing math is unchanged, while a multi-row
+   prompt reports only the trailing row the cursor sits after. */
+ITL_DEF size_t itl_prompt_last_row_width(const char *cstr, size_t *out_rows)
+{
+  size_t rows = 0;
+  const char *last_row = cstr;
+  const char *p;
+
+  if (cstr == NULL) {
+    if (out_rows != NULL) *out_rows = 0;
+    return 0;
+  }
+  for (p = cstr; *p != '\0'; ++p) {
+    if (*p == '\n') {
+      rows += 1;
+      last_row = p + 1;
+    }
+  }
+  if (out_rows != NULL) *out_rows = rows;
+  return itl_cstr_display_width(last_row);
+}
+
 #define ITL_PROMPT_ELLIPSIS       "..."
 #define ITL_PROMPT_ELLIPSIS_WIDTH 3
 /* The input cells a clamped prompt always leaves free on the first row. */
@@ -1674,7 +1698,8 @@ struct itl_le
 
   const char *prompt;
   size_t prompt_size;  /* N of bytes in the prompt */
-  size_t prompt_width; /* N of terminal columns the prompt occupies */
+  size_t prompt_width; /* N of columns the prompt's last row occupies */
+  size_t prompt_rows;  /* N of newlines in the prompt, 0 for a single row */
 
   /* Remembered column for repeated visual up/down moves */
   size_t goal_column;
@@ -1819,7 +1844,7 @@ ITL_DEF void itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
   le->out_size               = out_size;
   le->prompt                 = prompt;
   le->prompt_size            = (prompt != NULL) ? strlen(prompt) : 0;
-  le->prompt_width           = itl_cstr_display_width(prompt);
+  le->prompt_width           = itl_prompt_last_row_width(prompt, &le->prompt_rows);
   le->goal_column            = 0;
   /* clang-format on */
 
@@ -3053,7 +3078,11 @@ ITL_DEF itl_le_metrics_t itl_le_compute_metrics(const itl_le_t *le,
   itl_le_metrics_t m = ITL_ZERO_INIT;
   size_t cols = ITL_MAX(tty_cols, 1);
   size_t indent = ITL_LE_INDENT(le, cols);
-  size_t row = 0;
+  /* A multi-row prompt places its trailing row, where the input begins, this
+     many rows below the block's first row, so the cursor and the row total
+     count from there. A single-row prompt keeps prompt_rows zero, so this is
+     the unchanged starting row. */
+  size_t row = le->prompt_rows;
   size_t col = indent;
   size_t i;
 
