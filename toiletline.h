@@ -2920,15 +2920,13 @@ ITL_DEF ITL_THREAD_LOCAL tl_wake_fn itl_g_wake_callback = NULL;
    reset. Each span carries its own opening SGR from the host. */
 #define ITL_HIGHLIGHT_RESET "\x1b[0m"
 
-/* The reverse-video pair the empty-completion flash wraps the input in, so a
-   TAB with no candidate blinks the line the way fish does instead of ringing
-   the bell. */
-#define ITL_FLASH_ON  "\x1b[7m"
-#define ITL_FLASH_OFF "\x1b[27m"
-
-/* True while the empty-completion flash holds, so the input draws in reverse
-   video for the brief flash before it reverts. */
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_flash_input = false;
+/* The screen-reverse toggle the empty-completion flash uses, DECSCNM, the
+   classic visual bell. It inverts the whole screen for the brief hold then
+   restores it, so a TAB with no candidate blinks the way fish flashes
+   instead of ringing the bell, and it is independent of the line render so
+   the highlighter cannot defeat it. */
+#define ITL_SCREEN_REVERSE_ON  "\x1b[?5h"
+#define ITL_SCREEN_REVERSE_OFF "\x1b[?5l"
 
 /* The flash hold, matching fish's 100ms, long enough to perceive and short
    enough not to feel like a stall on a deliberate TAB. */
@@ -3436,10 +3434,6 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     bool in_span = false;
     size_t open_end = 0;
     col = indent;
-    /* The empty-completion flash inverts the whole input for one render. */
-    if (itl_g_flash_input) {
-      itl_char_buf_append_cstr(b, ITL_FLASH_ON);
-    }
     for (i = 0; i < le->line->length; ++i) {
       itl_utf8_t ch = le->line->chars[i];
 
@@ -3447,10 +3441,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
         in_span = false;
       }
-      /* The flash inverts the whole input, so the highlighter spans are held
-         back during it, their per-span resets would otherwise clear the
-         reverse video mid-line. */
-      if (!itl_g_flash_input && !in_span && next_span < span_count &&
+      if (!in_span && next_span < span_count &&
           i == itl_spans[next_span].start)
       {
         itl_char_buf_append_cstr(b, itl_spans[next_span].sgr);
@@ -3488,9 +3479,6 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
        so its reset is emitted here. */
     if (in_span) {
       itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
-    }
-    if (itl_g_flash_input) {
-      itl_char_buf_append_cstr(b, ITL_FLASH_OFF);
     }
     ITL_TTY_CLEAR_TO_END(b);
 
@@ -3958,16 +3946,16 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
     return false;
   }
   if (result.count == 0) {
-    /* No candidate, so flash the input the way fish does rather than ringing
-       the bell or inserting a literal tab. The input draws inverted, holds
-       briefly so the eye catches it, then reverts. The key is handled, so it
+    /* No candidate, so flash the screen the way fish flashes rather than
+       ringing the bell or inserting a literal tab. The screen inverts for the
+       brief hold then restores, written straight to the terminal so the line
+       render and its highlighter cannot swallow it. The key is handled, so it
        never falls through to the host's tab. */
-    itl_g_flash_input = true;
-    itl_le_tty_refresh(le);
+    ITL_WRITE(ITL_STDOUT, ITL_SCREEN_REVERSE_ON,
+              sizeof(ITL_SCREEN_REVERSE_ON) - 1);
     itl_flash_sleep();
-    itl_g_flash_input = false;
-    itl_g_tty_should_refresh_text = true;
-    itl_le_tty_refresh(le);
+    ITL_WRITE(ITL_STDOUT, ITL_SCREEN_REVERSE_OFF,
+              sizeof(ITL_SCREEN_REVERSE_OFF) - 1);
     return true;
   }
 
