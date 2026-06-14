@@ -1685,6 +1685,12 @@ ITL_DEF ITL_THREAD_LOCAL itl_string_t *itl_g_history_draft = NULL;
 
 ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_g_line_buffer = ITL_ZERO_INIT;
 
+/* The whole history entry the ghost currently suggests, kept across keystrokes
+   so typing further into the suggestion stays on the same entry rather than
+   re-scanning and flipping to a more recent one. Empty when no history entry is
+   being suggested. Cleared when a fresh line starts in itl_le_init. */
+ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost_history_entry[ITL_STRING_MAX_LEN] = {0};
+
 typedef struct itl_le itl_le_t;
 
 /* Line editor */
@@ -1851,6 +1857,10 @@ ITL_DEF void itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
   le->prompt_width           = itl_prompt_last_row_width(prompt, &le->prompt_rows);
   le->goal_column            = 0;
   /* clang-format on */
+
+  /* A fresh line starts with no sticky ghost target, so the previous line's
+     suggestion is not inherited. */
+  itl_g_ghost_history_entry[0] = '\0';
 
   /* The next refresh starts a fresh block, so it must not reflow a previous
      render that does not exist. */
@@ -3268,7 +3278,10 @@ ITL_DEF size_t itl_le_index_at_visual(const itl_le_t *le, size_t tty_cols,
 {
   size_t cols = ITL_MAX(tty_cols, 1);
   size_t indent = ITL_LE_INDENT(le, cols);
-  size_t row = 0;
+  /* The rows count from prompt_rows the way itl_le_compute_metrics counts them,
+     so a target row from those metrics lands on the same input row under a
+     multi-row prompt. */
+  size_t row = le->prompt_rows;
   size_t col = indent;
   size_t i, best_index = 0;
   bool has_best = false;
@@ -3808,8 +3821,30 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
   ITL_FILE file;
   itl_string_t *entry;
   size_t index;
+  int matched = 0;
+
+  /* Stay on the entry already suggested while the input is still a strict prefix
+     of it, so typing further into the suggestion keeps the same target rather
+     than flipping to a more recent entry. A diverging input falls through to a
+     fresh scan below. */
+  if (line_byte_len > 0 && itl_g_ghost_history_entry[0] != '\0') {
+    size_t sticky_len = strlen(itl_g_ghost_history_entry);
+    if (line_byte_len < sticky_len &&
+        memcmp(itl_g_ghost_history_entry, line_cstr, line_byte_len) == 0)
+    {
+      size_t suffix_len = sticky_len - line_byte_len;
+      if (suffix_len < sizeof(itl_g_ghost)) {
+        memcpy(itl_g_ghost, itl_g_ghost_history_entry + line_byte_len,
+               suffix_len);
+        itl_g_ghost[suffix_len] = '\0';
+        itl_g_ghost_len = suffix_len;
+        return;
+      }
+    }
+  }
 
   if (itl_g_history_path == NULL || itl_g_history_count == 0) {
+    itl_g_ghost_history_entry[0] = '\0';
     return;
   }
 
@@ -3874,9 +3909,16 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
       memcpy(itl_g_ghost, entry_cstr + line_byte_len, suffix_len);
       itl_g_ghost[suffix_len] = '\0';
       itl_g_ghost_len = suffix_len;
+      /* Remember the whole entry so the next keystroke stays on it. */
+      memcpy(itl_g_ghost_history_entry, entry_cstr, entry_len + 1);
+      matched = 1;
       break;
     }
   }
+
+  /* A scan that found nothing drops the sticky target, so the next keystroke
+     does not resurrect a stale suggestion. */
+  if (!matched) itl_g_ghost_history_entry[0] = '\0';
 
   ITL_STRING_FREE(entry);
   /* The read handle stays open and cached for the next keystroke. */
@@ -3906,8 +3948,10 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
   {
     return;
   }
-  /* An empty line has nothing to extend. */
+  /* An empty line has nothing to extend, and it ends any sticky suggestion so a
+     line cleared back to empty does not keep the previous target. */
   if (line_cstr[0] == '\0') {
+    itl_g_ghost_history_entry[0] = '\0';
     return;
   }
 
@@ -4138,8 +4182,11 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     bool was_vertical = (prev_control & TL_MASK_KEY) == TL_KEY_UP ||
                         (prev_control & TL_MASK_KEY) == TL_KEY_DOWN;
 
-    /* Move up a visual row while inside a multiline or wrapped buffer. */
-    if (m.cursor_row > 0) {
+    /* Move up a visual row while inside a multiline or wrapped buffer. The
+       input's first row sits at prompt_rows in the metrics, since a multi-row
+       prompt offsets the rows, so history is recalled there rather than at row
+       zero, which would be inside the prompt. */
+    if (m.cursor_row > le->prompt_rows) {
       if (!was_vertical) {
         le->goal_column = m.cursor_col;
       }
@@ -4612,6 +4659,7 @@ ITL_DEF int itl_history_search(itl_le_t *le)
   const char *saved_prompt = le->prompt;
   size_t saved_prompt_size = le->prompt_size;
   size_t saved_prompt_width = le->prompt_width;
+  size_t saved_prompt_rows = le->prompt_rows;
 
   int result = TL_KEY_UNKN;
   bool accepted = false;
@@ -4661,6 +4709,11 @@ ITL_DEF int itl_history_search(itl_le_t *le)
     le->prompt = NULL;
     le->prompt_size = 0;
     le->prompt_width = 0;
+    /* The search display owns the whole block, so the prompt's row offset is
+       dropped here, otherwise the metrics would start the search rows below a
+       prompt that is no longer drawn and swallow lines under a multi-row
+       prompt. */
+    le->prompt_rows = 0;
     le->line = display;
     /* Place the caret right after the typed term on the first line. The prefix
        `reverse search: '` is 17 characters. */
@@ -4739,6 +4792,7 @@ ITL_DEF int itl_history_search(itl_le_t *le)
   le->prompt = saved_prompt;
   le->prompt_size = saved_prompt_size;
   le->prompt_width = saved_prompt_width;
+  le->prompt_rows = saved_prompt_rows;
   le->line = &itl_g_line_buffer;
 
   if (accepted && match != ITL_HISTORY_NONE) {
