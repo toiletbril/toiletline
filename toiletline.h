@@ -1689,7 +1689,7 @@ ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_g_line_buffer = ITL_ZERO_INIT;
    so typing further into the suggestion stays on the same entry rather than
    re-scanning and flipping to a more recent one. Empty when no history entry is
    being suggested. Cleared when a fresh line starts in itl_le_init. */
-ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost_history_entry[ITL_STRING_MAX_LEN] = {0};
+ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost_sticky_target[ITL_STRING_MAX_LEN] = {0};
 
 typedef struct itl_le itl_le_t;
 
@@ -1860,7 +1860,7 @@ ITL_DEF void itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
 
   /* A fresh line starts with no sticky ghost target, so the previous line's
      suggestion is not inherited. */
-  itl_g_ghost_history_entry[0] = '\0';
+  itl_g_ghost_sticky_target[0] = '\0';
 
   /* The next refresh starts a fresh block, so it must not reflow a previous
      render that does not exist. */
@@ -1896,6 +1896,13 @@ ITL_DEF void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
     itl_le_move_left(le, count);
   } else if (!backwards) {
     itl_string_erase(le->line, le->cursor_position, count, false);
+  }
+
+  /* An erase that empties the line drops the sticky ghost target, so a retype
+     picks the newest match again rather than re-deriving the old target the
+     fresh input still happens to be a prefix of. */
+  if (le->line->length == 0) {
+    itl_g_ghost_sticky_target[0] = '\0';
   }
 }
 
@@ -2002,6 +2009,9 @@ ITL_DEF void itl_le_clear_line(itl_le_t *le)
 {
   itl_string_clear(le->line);
   le->cursor_position = 0;
+  /* A cleared line has no suggestion, so the sticky ghost target resets and the
+     next input picks a fresh one rather than re-deriving the old target. */
+  itl_g_ghost_sticky_target[0] = '\0';
 }
 
 /* Saves the edited draft line the first time navigation leaves it, so stepping
@@ -3821,30 +3831,8 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
   ITL_FILE file;
   itl_string_t *entry;
   size_t index;
-  int matched = 0;
-
-  /* Stay on the entry already suggested while the input is still a strict prefix
-     of it, so typing further into the suggestion keeps the same target rather
-     than flipping to a more recent entry. A diverging input falls through to a
-     fresh scan below. */
-  if (line_byte_len > 0 && itl_g_ghost_history_entry[0] != '\0') {
-    size_t sticky_len = strlen(itl_g_ghost_history_entry);
-    if (line_byte_len < sticky_len &&
-        memcmp(itl_g_ghost_history_entry, line_cstr, line_byte_len) == 0)
-    {
-      size_t suffix_len = sticky_len - line_byte_len;
-      if (suffix_len < sizeof(itl_g_ghost)) {
-        memcpy(itl_g_ghost, itl_g_ghost_history_entry + line_byte_len,
-               suffix_len);
-        itl_g_ghost[suffix_len] = '\0';
-        itl_g_ghost_len = suffix_len;
-        return;
-      }
-    }
-  }
 
   if (itl_g_history_path == NULL || itl_g_history_count == 0) {
-    itl_g_ghost_history_entry[0] = '\0';
     return;
   }
 
@@ -3911,16 +3899,9 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
       memcpy(itl_g_ghost, entry_cstr + line_byte_len, suffix_len);
       itl_g_ghost[suffix_len] = '\0';
       itl_g_ghost_len = suffix_len;
-      /* Remember the whole entry so the next keystroke stays on it. */
-      memcpy(itl_g_ghost_history_entry, entry_cstr, entry_len + 1);
-      matched = 1;
       break;
     }
   }
-
-  /* A scan that found nothing drops the sticky target, so the next keystroke
-     does not resurrect a stale suggestion. */
-  if (!matched) itl_g_ghost_history_entry[0] = '\0';
 
   ITL_STRING_FREE(entry);
   /* The read handle stays open and cached for the next keystroke. */
@@ -3953,8 +3934,34 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
   /* An empty line has nothing to extend, and it ends any sticky suggestion so a
      line cleared back to empty does not keep the previous target. */
   if (line_cstr[0] == '\0') {
-    itl_g_ghost_history_entry[0] = '\0';
+    itl_g_ghost_sticky_target[0] = '\0';
     return;
+  }
+
+  /* Stay on the target already suggested while the input is still a strict
+     prefix of it, whichever source first produced it. Typing further into a
+     suggestion keeps it rather than flipping as the candidate set shifts
+     between the completion source and the history source. */
+  {
+    size_t line_byte_len = strlen(line_cstr);
+    if (itl_g_ghost_sticky_target[0] != '\0') {
+      size_t target_len = strlen(itl_g_ghost_sticky_target);
+      if (line_byte_len < target_len &&
+          memcmp(itl_g_ghost_sticky_target, line_cstr, line_byte_len) == 0)
+      {
+        size_t suffix_len = target_len - line_byte_len;
+        if (suffix_len < sizeof(itl_g_ghost)) {
+          memcpy(itl_g_ghost, itl_g_ghost_sticky_target + line_byte_len,
+                 suffix_len);
+          itl_g_ghost[suffix_len] = '\0';
+          itl_g_ghost_len = suffix_len;
+          return;
+        }
+      }
+      /* The input no longer extends the sticky target, so the target is dropped
+         and a fresh suggestion is picked below. */
+      itl_g_ghost_sticky_target[0] = '\0';
+    }
   }
 
   itl_ghost_fill_from_completion(le, line_cstr);
@@ -3973,6 +3980,19 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
       if (itl_g_ghost_len == 0) {
         itl_ghost_clear();
       }
+    }
+  }
+
+  /* A source that produced a suggestion records the whole line-plus-ghost as
+     the sticky target, so the next keystroke keeps it while the input stays a
+     prefix of it rather than re-running the sources and flipping. */
+  if (itl_g_ghost_len > 0) {
+    size_t line_byte_len = strlen(line_cstr);
+    if (line_byte_len + itl_g_ghost_len + 1 <=
+        sizeof(itl_g_ghost_sticky_target)) {
+      memcpy(itl_g_ghost_sticky_target, line_cstr, line_byte_len);
+      memcpy(itl_g_ghost_sticky_target + line_byte_len, itl_g_ghost,
+             itl_g_ghost_len + 1);
     }
   }
 }
