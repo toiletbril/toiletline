@@ -2931,14 +2931,16 @@ ITL_DEF ITL_THREAD_LOCAL tl_wake_fn itl_g_wake_callback = NULL;
    reset. Each span carries its own opening SGR from the host. */
 #define ITL_HIGHLIGHT_RESET "\x1b[0m"
 
-/* The empty-completion flash repaints the typed line in reverse video for a
-   brief hold then repaints it normally, the way fish recolors the command
-   line. The reverse-video SGR rides on the real line text rather than a
+/* The empty-completion flash repaints the typed line over a faint background
+   for a brief hold then repaints it normally, the way fish recolors the command
+   line. The background SGR rides on the real line text rather than a
    whole-screen DECSCNM toggle, so a terminal multiplexer that drops DECSCNM
    still shows it. When the flash is active the render wraps the line in these
-   and suppresses the highlight spans, so the whole line inverts as one. */
-#define ITL_FLASH_REVERSE_ON  "\x1b[7m"
-#define ITL_FLASH_REVERSE_OFF "\x1b[27m"
+   and suppresses the highlight spans, so the whole line tints as one. The tint
+   is a dark grey from the 256-color set, fainter than a full reverse, and it
+   is closed by resetting only the background so the foreground stays put. */
+#define ITL_FLASH_TINT_ON  "\x1b[48;5;238m"
+#define ITL_FLASH_TINT_OFF "\x1b[49m"
 
 /* The flash hold, matching fish's 100ms, long enough to perceive and short
    enough not to feel like a stall on a deliberate TAB. */
@@ -3450,7 +3452,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
        once here and the loop below skips the per-span color so the inversion
        is not reset partway. */
     if (itl_g_tty_flash_active) {
-      itl_char_buf_append_cstr(b, ITL_FLASH_REVERSE_ON);
+      itl_char_buf_append_cstr(b, ITL_FLASH_TINT_ON);
     }
     for (i = 0; i < le->line->length; ++i) {
       itl_utf8_t ch = le->line->chars[i];
@@ -3503,7 +3505,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     /* Close the reverse video the flash opened so the inversion ends with the
        line and the trailing clear and the ghost draw below run normal. */
     if (itl_g_tty_flash_active) {
-      itl_char_buf_append_cstr(b, ITL_FLASH_REVERSE_OFF);
+      itl_char_buf_append_cstr(b, ITL_FLASH_TINT_OFF);
     }
     ITL_TTY_CLEAR_TO_END(b);
 
