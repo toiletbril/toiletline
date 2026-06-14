@@ -3869,8 +3869,10 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
      the oldest. The scan is bounded to a recent window so a full history does
      not cost an unbounded run of reads on every keystroke. */
   size_t scanned = 0;
+  /* One scratch buffer for the whole scan, so the per-keystroke stack cost is
+     one entry rather than one per scanned history line. */
+  static ITL_THREAD_LOCAL char entry_cstr[ITL_STRING_MAX_LEN];
   for (index = itl_g_history_count; index-- > 0;) {
-    char entry_cstr[ITL_STRING_MAX_LEN];
     size_t offset = itl_history_index_to_offset(index);
     size_t entry_len;
 
