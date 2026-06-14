@@ -2942,6 +2942,60 @@ ITL_DEF ITL_THREAD_LOCAL tl_wake_fn itl_g_wake_callback = NULL;
 #define ITL_FLASH_TINT_ON  "\x1b[48;5;238m"
 #define ITL_FLASH_TINT_OFF "\x1b[49m"
 
+/* The flash a terminal without the 256-color set falls back to, a plain reverse
+   that every ANSI terminal renders. */
+#define ITL_FLASH_REVERSE_ON  "\x1b[7m"
+#define ITL_FLASH_REVERSE_OFF "\x1b[27m"
+
+/* The terminal color and decoration capabilities, probed once from the
+   environment and cached. A negative value marks the capability unprobed. */
+ITL_DEF ITL_THREAD_LOCAL int itl_g_supports_256_color = -1;
+ITL_DEF ITL_THREAD_LOCAL int itl_g_supports_decorations = -1;
+
+/* Whether the terminal supports the 256-color set, read from COLORTERM naming
+   truecolor or 24bit, or from TERM naming 256color or direct. The check is the
+   environment heuristic modern tools rely on, since reading the terminfo
+   database would pull in a curses dependency shit does without. */
+ITL_DEF int itl_term_supports_256_color(void)
+{
+  if (itl_g_supports_256_color < 0) {
+    const char *colorterm = getenv("COLORTERM");
+    const char *term = getenv("TERM");
+    itl_g_supports_256_color =
+        (colorterm != NULL && (strstr(colorterm, "truecolor") != NULL ||
+                               strstr(colorterm, "24bit") != NULL)) ||
+        (term != NULL && (strstr(term, "256color") != NULL ||
+                          strstr(term, "direct") != NULL));
+  }
+  return itl_g_supports_256_color;
+}
+
+/* Whether the terminal renders the colors and cursor moves the editor draws, so
+   it is a real terminal rather than a dumb or an absent one. A dumb terminal
+   turns off the ghost suggestion and the flash. */
+ITL_DEF int itl_term_supports_decorations(void)
+{
+  if (itl_g_supports_decorations < 0) {
+    const char *term = getenv("TERM");
+    itl_g_supports_decorations =
+        term != NULL && term[0] != '\0' && strcmp(term, "dumb") != 0;
+  }
+  return itl_g_supports_decorations;
+}
+
+/* The flash background-on and background-off SGR for the current terminal, the
+   faint 256-color tint where it is supported and a plain reverse otherwise. */
+ITL_DEF const char *itl_flash_sgr_on(void)
+{
+  return itl_term_supports_256_color() ? ITL_FLASH_TINT_ON
+                                       : ITL_FLASH_REVERSE_ON;
+}
+ITL_DEF const char *itl_flash_sgr_off(void)
+{
+  return itl_term_supports_256_color() ? ITL_FLASH_TINT_OFF
+                                       : ITL_FLASH_REVERSE_OFF;
+}
+
 /* The flash hold, matching fish's 100ms, long enough to perceive and short
    enough not to feel like a stall on a deliberate TAB. */
 #define ITL_FLASH_HOLD_MS 100
@@ -3452,7 +3506,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
        once here and the loop below skips the per-span color so the inversion
        is not reset partway. */
     if (itl_g_tty_flash_active) {
-      itl_char_buf_append_cstr(b, ITL_FLASH_TINT_ON);
+      itl_char_buf_append_cstr(b, itl_flash_sgr_on());
     }
     for (i = 0; i < le->line->length; ++i) {
       itl_utf8_t ch = le->line->chars[i];
@@ -3505,7 +3559,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     /* Close the reverse video the flash opened so the inversion ends with the
        line and the trailing clear and the ghost draw below run normal. */
     if (itl_g_tty_flash_active) {
-      itl_char_buf_append_cstr(b, ITL_FLASH_TINT_OFF);
+      itl_char_buf_append_cstr(b, itl_flash_sgr_off());
     }
     ITL_TTY_CLEAR_TO_END(b);
 
@@ -3617,7 +3671,9 @@ ITL_DEF ITL_THREAD_LOCAL int itl_g_ghost_enabled = 1;
 
 TL_DEF void tl_set_ghost_enabled(int enabled)
 {
-  itl_g_ghost_enabled = enabled;
+  /* A dumb terminal cannot render the dimmed ghost suggestion, so the ghost
+     stays off there whatever the host requests. */
+  itl_g_ghost_enabled = enabled && itl_term_supports_decorations();
 }
 
 /* The host ghost validation callback, or NULL when every history entry is
@@ -3980,13 +4036,17 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
   int itl_completion_handled =
       itl_g_complete_callback(line_cstr, le->cursor_position, &result, 1);
   if (!itl_completion_handled || result.count == 0) {
-    itl_g_tty_flash_active = true;
-    itl_g_tty_should_refresh_text = true;
-    itl_le_tty_refresh(le);
-    itl_flash_sleep();
-    itl_g_tty_flash_active = false;
-    itl_g_tty_should_refresh_text = true;
-    itl_le_tty_refresh(le);
+    /* A dumb terminal cannot render the repaint the flash draws, so the key is
+       still handled but no flash is attempted. */
+    if (itl_term_supports_decorations()) {
+      itl_g_tty_flash_active = true;
+      itl_g_tty_should_refresh_text = true;
+      itl_le_tty_refresh(le);
+      itl_flash_sleep();
+      itl_g_tty_flash_active = false;
+      itl_g_tty_should_refresh_text = true;
+      itl_le_tty_refresh(le);
+    }
     return true;
   }
 
