@@ -4039,9 +4039,11 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
      the names pack into columns. */
   if (result->descriptions != NULL) {
     /* The room left for a description after the name column, so a long one
-       wraps onto continuation lines instead of running off the terminal. At
-       least a little room is kept even when the names are very wide. */
-    size_t desc_room = tty_cols > column_width + 1 ? tty_cols - column_width : 20;
+       wraps onto continuation lines instead of running off the terminal. The
+       wrap width is held to 80 columns even on a wider terminal so a line stays
+       readable, and a little room is kept even when the names are very wide. */
+    size_t wrap_cols = tty_cols < 80 ? tty_cols : 80;
+    size_t desc_room = wrap_cols > column_width + 1 ? wrap_cols - column_width : 20;
     for (i = 0; i < result->count; ++i) {
       const char *name = result->candidates[i];
       const char *desc = result->descriptions[i];
