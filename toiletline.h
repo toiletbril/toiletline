@@ -4038,6 +4038,10 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
      dimmed in a column after the name, the way fish shows them. Without them
      the names pack into columns. */
   if (result->descriptions != NULL) {
+    /* The room left for a description after the name column, so a long one
+       wraps onto continuation lines instead of running off the terminal. At
+       least a little room is kept even when the names are very wide. */
+    size_t desc_room = tty_cols > column_width + 1 ? tty_cols - column_width : 20;
     for (i = 0; i < result->count; ++i) {
       const char *name = result->candidates[i];
       const char *desc = result->descriptions[i];
@@ -4045,11 +4049,45 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
       size_t pad;
       itl_char_buf_append_cstr(b, name);
       if (desc != NULL && desc[0] != '\0') {
+        size_t line_len = 0;
+        const char *p = desc;
         for (pad = len; pad < column_width; ++pad) {
           itl_char_buf_append_byte(b, ' ');
         }
         itl_char_buf_append_cstr(b, "\x1b[90m");
-        itl_char_buf_append_cstr(b, desc);
+        /* One word at a time. A word that no longer fits the line opens a
+           continuation line indented under the description column. A word
+           wider than the room is emitted whole and overflows rather than
+           splitting mid-word. */
+        while (*p != '\0') {
+          const char *word;
+          size_t word_len;
+          while (*p == ' ' || *p == '\t')
+            p++;
+          if (*p == '\0')
+            break;
+          word = p;
+          while (*p != '\0' && *p != ' ' && *p != '\t')
+            p++;
+          word_len = (size_t)(p - word);
+          if (line_len > 0 && line_len + 1 + word_len > desc_room) {
+            size_t k;
+            itl_char_buf_append_cstr(b, ITL_LF);
+            for (k = 0; k < column_width; ++k)
+              itl_char_buf_append_byte(b, ' ');
+            line_len = 0;
+          }
+          if (line_len > 0) {
+            itl_char_buf_append_byte(b, ' ');
+            line_len += 1;
+          }
+          {
+            size_t k;
+            for (k = 0; k < word_len; ++k)
+              itl_char_buf_append_byte(b, (uint8_t)word[k]);
+          }
+          line_len += word_len;
+        }
         itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
       }
       itl_char_buf_append_cstr(b, ITL_LF);
