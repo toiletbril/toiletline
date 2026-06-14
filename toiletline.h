@@ -4044,6 +4044,10 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
   tl_completion result;
   size_t token_len, lcp_len;
 
+  /* Zero so a field the callback leaves unset, the descriptions array when the
+     menu is not shown, reads as NULL rather than a stack leftover. */
+  memset(&result, 0, sizeof(result));
+
   if (itl_g_complete_callback == NULL) {
     return false;
   }
