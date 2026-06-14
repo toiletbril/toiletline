@@ -246,6 +246,10 @@ typedef struct tl_completion
 {
   const char *const *candidates;
   size_t count;
+  /* An array of count description strings aligned by index with candidates, or
+     NULL when no candidate carries a description. The menu shows each one dimmed
+     after its candidate. */
+  const char *const *descriptions;
   const char *longest_common_prefix;
   size_t token_start;
   size_t token_end;
@@ -3964,20 +3968,42 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
     columns = 1;
   }
 
-  column = 0;
-  for (i = 0; i < result->count; ++i) {
-    const char *name = result->candidates[i];
-    size_t len = strlen(name);
-    size_t pad;
-
-    itl_char_buf_append_cstr(b, name);
-    column += 1;
-    if (column >= columns || i + 1 == result->count) {
+  /* With descriptions the list is one candidate per line, the description
+     dimmed in a column after the name, the way fish shows them. Without them
+     the names pack into columns. */
+  if (result->descriptions != NULL) {
+    for (i = 0; i < result->count; ++i) {
+      const char *name = result->candidates[i];
+      const char *desc = result->descriptions[i];
+      size_t len = strlen(name);
+      size_t pad;
+      itl_char_buf_append_cstr(b, name);
+      if (desc != NULL && desc[0] != '\0') {
+        for (pad = len; pad < column_width; ++pad) {
+          itl_char_buf_append_byte(b, ' ');
+        }
+        itl_char_buf_append_cstr(b, "\x1b[90m");
+        itl_char_buf_append_cstr(b, desc);
+        itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+      }
       itl_char_buf_append_cstr(b, ITL_LF);
-      column = 0;
-    } else {
-      for (pad = len; pad < column_width; ++pad) {
-        itl_char_buf_append_byte(b, ' ');
+    }
+  } else {
+    column = 0;
+    for (i = 0; i < result->count; ++i) {
+      const char *name = result->candidates[i];
+      size_t len = strlen(name);
+      size_t pad;
+
+      itl_char_buf_append_cstr(b, name);
+      column += 1;
+      if (column >= columns || i + 1 == result->count) {
+        itl_char_buf_append_cstr(b, ITL_LF);
+        column = 0;
+      } else {
+        for (pad = len; pad < column_width; ++pad) {
+          itl_char_buf_append_byte(b, ' ');
+        }
       }
     }
   }
