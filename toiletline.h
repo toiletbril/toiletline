@@ -1645,6 +1645,15 @@ ITL_DEF bool itl_string_from_bytes(itl_string_t *str, const char *data,
 
 #define ITL_HISTORY_FILE_BUFFER_SIZE (1024 * 2)
 
+/* A single committed history entry is capped at this many bytes. A pasted blob
+   or a generated one-liner that runs to many kilobytes would bloat the history
+   file and slow the per-keystroke ghost scan that reads each entry, so an
+   oversized line is dropped from history rather than stored. The line still runs,
+   only its recall is skipped. */
+#if !defined HISTORY_ENTRY_MAX_BYTES
+#define HISTORY_ENTRY_MAX_BYTES 2048
+#endif /* HISTORY_ENTRY_MAX_BYTES */
+
 /* The history file on disk is the source of truth. Only the byte offset of each
    navigable entry is held in memory, capped to the most recent
    TL_HISTORY_MAX_SIZE entries through a ring. Entry text is read from the file
@@ -2458,6 +2467,13 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str)
   if (str->length <= 1) {
     return false;
   }
+  /* An oversized line is dropped from history, so a pasted blob does not bloat
+     the file or slow the ghost scan that reads each entry. The line itself still
+     runs, only its recall is skipped. */
+  if (str->size > HISTORY_ENTRY_MAX_BYTES) {
+    ITL_TRACELN("skipping oversized history entry, %zu bytes\n", str->size);
+    return false;
+  }
 
   /* Reload the file when another session has grown it since we last looked, the
      way fish merges its history on save. This lets navigation, search, and the
@@ -2942,8 +2958,10 @@ ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len = 0;
 
 /* The history autosuggestion scans at most this many recent entries per
-   keystroke, so a long history does not slow the interactive prompt. */
-#define ITL_GHOST_HISTORY_SCAN_MAX 100
+   keystroke, so a long history does not slow the interactive prompt. The window
+   is wide enough that a match buried under many recent commands is still found,
+   while the per-entry read stays cheap against the cached file handle. */
+#define ITL_GHOST_HISTORY_SCAN_MAX 1000
 
 /* The host highlight callback, or NULL when highlighting is disabled. Only the
    interactive host registers one. The refresh reads it, so it is declared
