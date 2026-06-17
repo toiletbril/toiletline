@@ -2973,20 +2973,11 @@ ITL_DEF ITL_THREAD_LOCAL tl_wake_fn itl_g_wake_callback = NULL;
    reset. Each span carries its own opening SGR from the host. */
 #define ITL_HIGHLIGHT_RESET "\x1b[0m"
 
-/* The empty-completion flash repaints the typed line in white over the faint
-   grey tint for a brief hold then repaints it normally, the way fish recolors
-   the command line. The SGR rides on the real line text rather than a
-   whole-screen DECSCNM toggle, so a terminal multiplexer that drops DECSCNM
-   still shows it. When the flash is active the render wraps the line in these and
-   suppresses the highlight spans, so the whole line reads as white on the tint
-   rather than a syntax color a reverse-video flash would leave unreadable. The
-   tint is a dark grey from the 256-color set, and the close resets the
-   foreground and the background to the defaults. */
-#define ITL_FLASH_TINT_ON  "\x1b[97;48;5;238m"
+/* The empty-completion flash, bright grey over a grey tint. */
+#define ITL_FLASH_TINT_ON  "\x1b[38;5;250;48;5;238m"
 #define ITL_FLASH_TINT_OFF "\x1b[39;49m"
 
-/* The flash a terminal without the 256-color set falls back to, a plain reverse
-   that every ANSI terminal renders. */
+/* The fallback flash for a terminal without the 256-color set. */
 #define ITL_FLASH_REVERSE_ON  "\x1b[7m"
 #define ITL_FLASH_REVERSE_OFF "\x1b[27m"
 
