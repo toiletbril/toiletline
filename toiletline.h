@@ -2973,16 +2973,17 @@ ITL_DEF ITL_THREAD_LOCAL tl_wake_fn itl_g_wake_callback = NULL;
    reset. Each span carries its own opening SGR from the host. */
 #define ITL_HIGHLIGHT_RESET "\x1b[0m"
 
-/* The empty-completion flash repaints the typed line over a faint background
-   for a brief hold then repaints it normally, the way fish recolors the command
-   line. The background SGR rides on the real line text rather than a
+/* The empty-completion flash repaints the typed line in white over the faint
+   grey tint for a brief hold then repaints it normally, the way fish recolors
+   the command line. The SGR rides on the real line text rather than a
    whole-screen DECSCNM toggle, so a terminal multiplexer that drops DECSCNM
-   still shows it. When the flash is active the render wraps the line in these
-   and suppresses the highlight spans, so the whole line tints as one. The tint
-   is a dark grey from the 256-color set, fainter than a full reverse, and it
-   is closed by resetting only the background so the foreground stays put. */
-#define ITL_FLASH_TINT_ON  "\x1b[48;5;238m"
-#define ITL_FLASH_TINT_OFF "\x1b[49m"
+   still shows it. When the flash is active the render wraps the line in these and
+   suppresses the highlight spans, so the whole line reads as white on the tint
+   rather than a syntax color a reverse-video flash would leave unreadable. The
+   tint is a dark grey from the 256-color set, and the close resets the
+   foreground and the background to the defaults. */
+#define ITL_FLASH_TINT_ON  "\x1b[97;48;5;238m"
+#define ITL_FLASH_TINT_OFF "\x1b[39;49m"
 
 /* The flash a terminal without the 256-color set falls back to, a plain reverse
    that every ANSI terminal renders. */
@@ -3025,8 +3026,8 @@ ITL_DEF int itl_term_supports_decorations(void)
   return itl_g_supports_decorations;
 }
 
-/* The flash background-on and background-off SGR for the current terminal, the
-   faint 256-color tint where it is supported and a plain reverse otherwise. */
+/* The flash on and off SGR for the current terminal, the bright white on black
+   where the bright set is supported and the normal white on black otherwise. */
 ITL_DEF const char *itl_flash_sgr_on(void)
 {
   return itl_term_supports_256_color() ? ITL_FLASH_TINT_ON
@@ -3547,9 +3548,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     bool in_span = false;
     size_t open_end = 0;
     col = indent;
-    /* The flash repaints the whole line inverted, so it opens reverse video
-       once here and the loop below skips the per-span color so the inversion
-       is not reset partway. */
+    /* The flash repaints the whole line white on black, so it opens that SGR
+       once here and the loop below skips the per-span color so the flash is not
+       reset partway. */
     if (itl_g_tty_flash_active) {
       itl_char_buf_append_cstr(b, itl_flash_sgr_on());
     }
