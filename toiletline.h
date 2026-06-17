@@ -227,19 +227,19 @@ TL_DEF tl_status_code tl_emit_newlines(const char *buffer);
 TL_DEF tl_status_code tl_set_title(const char *title);
 
 /**
- * The result a completion callback fills. The host owns the storage and keeps it
- * valid until the next callback call. candidates is an array of count C-strings,
- * each a full replacement for the token. token_start and token_end are codepoint
- * indices bounding the replaced span. longest_common_prefix is the longest
- * shared prefix, inserted on the first TAB.
+ * The result a completion callback fills. The host owns the storage and keeps
+ * it valid until the next callback call. candidates is an array of count
+ * C-strings, each a full replacement for the token. token_start and token_end
+ * are codepoint indices bounding the replaced span. longest_common_prefix is
+ * the longest shared prefix, inserted on the first TAB.
  */
 typedef struct tl_completion
 {
   const char *const *candidates;
   size_t count;
   /* An array of count description strings aligned by index with candidates, or
-     NULL when no candidate carries a description. The menu shows each one dimmed
-     after its candidate. */
+     NULL when no candidate carries a description. The menu shows each one
+     dimmed after its candidate. */
   const char *const *descriptions;
   const char *longest_common_prefix;
   size_t token_start;
@@ -274,15 +274,16 @@ TL_DEF void tl_set_ghost_enabled(int enabled);
 typedef int (*tl_ghost_validate_fn)(const char *entry);
 
 /*
- * Register the ghost history validation callback, or NULL to accept every entry.
+ * Register the ghost history validation callback, or NULL to accept every
+ * entry.
  */
 TL_DEF void tl_set_ghost_validate_callback(tl_ghost_validate_fn callback);
 
 /**
  * One colored span of the line. start and end are codepoint indices, start
- * inclusive and end exclusive. sgr is the opening SGR escape such as "\x1b[32m",
- * owned by the host and stable for the callback and its render. The renderer
- * closes every span with a reset.
+ * inclusive and end exclusive. sgr is the opening SGR escape such as
+ * "\x1b[32m", owned by the host and stable for the callback and its render. The
+ * renderer closes every span with a reset.
  */
 typedef struct tl_highlight_span
 {
@@ -293,8 +294,8 @@ typedef struct tl_highlight_span
 
 /**
  * The highlight result. The editor provides spans, an array of capacity slots,
- * and the host fills the first count of them. The spans must be sorted by start,
- * non-overlapping, and within the line.
+ * and the host fills the first count of them. The spans must be sorted by
+ * start, non-overlapping, and within the line.
  */
 typedef struct tl_highlight
 {
@@ -1627,8 +1628,8 @@ ITL_DEF bool itl_string_from_bytes(itl_string_t *str, const char *data,
 /* A single committed history entry is capped at this many bytes. A pasted blob
    or a generated one-liner that runs to many kilobytes would bloat the history
    file and slow the per-keystroke ghost scan that reads each entry, so an
-   oversized line is dropped from history rather than stored. The line still runs,
-   only its recall is skipped. */
+   oversized line is dropped from history rather than stored. The line still
+   runs, only its recall is skipped. */
 #if !defined HISTORY_ENTRY_MAX_BYTES
 #define HISTORY_ENTRY_MAX_BYTES 2048
 #endif /* HISTORY_ENTRY_MAX_BYTES */
@@ -1646,8 +1647,8 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_file_size = 0;
 
 /* The ghost suggestion scans the history file on every keystroke, so its read
    handle is kept open across keystrokes rather than reopened each time. The
-   handle is invalidated whenever the file is appended to, reloaded, or rewritten,
-   so a stale handle never serves an outdated scan. */
+   handle is invalidated whenever the file is appended to, reloaded, or
+   rewritten, so a stale handle never serves an outdated scan. */
 ITL_DEF ITL_THREAD_LOCAL ITL_FILE itl_g_history_read_fd;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_read_fd_open = false;
 
@@ -1677,7 +1678,8 @@ ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_g_line_buffer = ITL_ZERO_INIT;
    so typing further into the suggestion stays on the same entry rather than
    re-scanning and flipping to a more recent one. Empty when no history entry is
    being suggested. Cleared when a fresh line starts in itl_le_init. */
-ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost_sticky_target[ITL_STRING_MAX_LEN] = {0};
+ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost_sticky_target[ITL_STRING_MAX_LEN] = {
+    0};
 
 typedef struct itl_le itl_le_t;
 
@@ -2284,8 +2286,8 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_file_is_bad = false;
    the ring is full so only the most recent TL_HISTORY_MAX_SIZE remain. */
 ITL_DEF void itl_history_push_offset(size_t offset)
 {
-  /* The file grew or was rescanned, so the cached read handle is dropped and the
-     next ghost scan reopens it against the current content. */
+  /* The file grew or was rescanned, so the cached read handle is dropped and
+     the next ghost scan reopens it against the current content. */
   itl_history_read_fd_invalidate();
   if (itl_g_history_count < (TL_HISTORY_MAX_SIZE)) {
     itl_g_history_offsets[(itl_g_history_head + itl_g_history_count) %
@@ -2447,8 +2449,8 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str)
     return false;
   }
   /* An oversized line is dropped from history, so a pasted blob does not bloat
-     the file or slow the ghost scan that reads each entry. The line itself still
-     runs, only its recall is skipped. */
+     the file or slow the ghost scan that reads each entry. The line itself
+     still runs, only its recall is skipped. */
   if (str->size > HISTORY_ENTRY_MAX_BYTES) {
     ITL_TRACELN("skipping oversized history entry, %zu bytes\n", str->size);
     return false;
@@ -2924,8 +2926,8 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_render_len = 0;
    path fires only then, otherwise a mid-line caret forces the full redraw. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_cursor_at_end = false;
 
-/* The ghost suggestion drawn dimmed after the cursor, and its byte length. Right
-   or End accepts it. */
+/* The ghost suggestion drawn dimmed after the cursor, and its byte length.
+   Right or End accepts it. */
 ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len = 0;
 
@@ -2968,8 +2970,8 @@ ITL_DEF int itl_term_supports_256_color(void)
     itl_g_supports_256_color =
         (colorterm != NULL && (strstr(colorterm, "truecolor") != NULL ||
                                strstr(colorterm, "24bit") != NULL)) ||
-        (term != NULL && (strstr(term, "256color") != NULL ||
-                          strstr(term, "direct") != NULL));
+        (term != NULL &&
+         (strstr(term, "256color") != NULL || strstr(term, "direct") != NULL));
   }
   return itl_g_supports_256_color;
 }
@@ -3396,8 +3398,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         size_t s;
         for (s = 0; s < hl.count && s < ITL_HIGHLIGHT_MAX_SPANS; ++s) {
           if (itl_spans[s].start < itl_spans[s].end &&
-              itl_spans[s].end <= le->line->length &&
-              itl_spans[s].sgr != NULL)
+              itl_spans[s].end <= le->line->length && itl_spans[s].sgr != NULL)
           {
             itl_spans[span_count++] = itl_spans[s];
           }
@@ -3408,12 +3409,12 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
   /* Fast path for a plain append at the end of a single unwrapped row with no
      ghost and no highlight movement, writing only the appended bytes. A colored
-     frame qualifies when its spans equal the previous frame's exactly. Any other
-     edit falls through to the full redraw below. The trailing clear erases a
-     ghost a previous frame drew past the line. */
+     frame qualifies when its spans equal the previous frame's exactly. Any
+     other edit falls through to the full redraw below. The trailing clear
+     erases a ghost a previous frame drew past the line. */
   if (itl_g_tty_should_refresh_text && !is_resize && !itl_g_tty_first_render &&
-      have_cur_render && itl_g_ghost_len == 0 &&
-      m.total_rows == 1 && m.cursor_row == 0 && itl_g_le_prev_total_rows == 1 &&
+      have_cur_render && itl_g_ghost_len == 0 && m.total_rows == 1 &&
+      m.cursor_row == 0 && itl_g_le_prev_total_rows == 1 &&
       le->cursor_position == le->line->length && itl_g_le_prev_cursor_at_end &&
       itl_le_prev_spans_equal(itl_spans, span_count))
   {
@@ -3427,7 +3428,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
       itl_char_buf_t *fb = &itl_g_char_buffer;
       size_t k;
       for (k = itl_g_le_prev_render_len; k < cur_len; ++k) {
-        itl_char_buf_append_byte(fb, (uint8_t)itl_cur_render[k]);
+        itl_char_buf_append_byte(fb, (uint8_t) itl_cur_render[k]);
       }
       ITL_TTY_CLEAR_TO_END(fb);
       memcpy(itl_g_le_prev_render, itl_cur_render, cur_len);
@@ -3556,7 +3557,8 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     if (in_span) {
       itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
     }
-    /* Close the flash SGR so the trailing clear and the ghost draw run normal. */
+    /* Close the flash SGR so the trailing clear and the ghost draw run normal.
+     */
     if (itl_g_tty_flash_active) {
       itl_char_buf_append_cstr(b, itl_flash_sgr_off());
     }
@@ -3597,9 +3599,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
   itl_g_le_prev_total_rows = m.total_rows;
   itl_g_le_prev_cursor_row = m.cursor_row + 1;
-  /* Record whether this frame, text or cursor-only, parked the caret at the line
-     end, so the append fast path on the next keystroke knows the physical cursor
-     sits at the append point. */
+  /* Record whether this frame, text or cursor-only, parked the caret at the
+     line end, so the append fast path on the next keystroke knows the physical
+     cursor sits at the append point. */
   itl_g_le_prev_cursor_at_end = (le->cursor_position == le->line->length);
 
   /* Remember the line and the spans this text refresh drew, so the next
@@ -3808,9 +3810,9 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
     return;
   }
 
-  /* The read handle is opened once and cached across keystrokes. It is closed by
-     itl_history_read_fd_invalidate when the file is appended to, reloaded, or
-     rewritten, so it is never stale here. */
+  /* The read handle is opened once and cached across keystrokes. It is closed
+     by itl_history_read_fd_invalidate when the file is appended to, reloaded,
+     or rewritten, so it is never stale here. */
   if (!itl_g_history_read_fd_open) {
     itl_g_history_read_fd = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
     if (ITL_FILE_IS_BAD(itl_g_history_read_fd)) {
@@ -3942,10 +3944,10 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
      the next row and leave the column accounting off when the suggestion is
      accepted, so the ghost is clipped to its first line. */
   {
-    char *newline = (char *)memchr(itl_g_ghost, '\n', itl_g_ghost_len);
+    char *newline = (char *) memchr(itl_g_ghost, '\n', itl_g_ghost_len);
     if (newline != NULL) {
       *newline = '\0';
-      itl_g_ghost_len = (size_t)(newline - itl_g_ghost);
+      itl_g_ghost_len = (size_t) (newline - itl_g_ghost);
       if (itl_g_ghost_len == 0) {
         itl_ghost_clear();
       }
@@ -3958,7 +3960,8 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
   if (itl_g_ghost_len > 0) {
     size_t line_byte_len = strlen(line_cstr);
     if (line_byte_len + itl_g_ghost_len + 1 <=
-        sizeof(itl_g_ghost_sticky_target)) {
+        sizeof(itl_g_ghost_sticky_target))
+    {
       memcpy(itl_g_ghost_sticky_target, line_cstr, line_byte_len);
       memcpy(itl_g_ghost_sticky_target + line_byte_len, itl_g_ghost,
              itl_g_ghost_len + 1);
@@ -4012,7 +4015,8 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
        wrap width is held to 80 columns even on a wider terminal so a line stays
        readable, and a little room is kept even when the names are very wide. */
     size_t wrap_cols = tty_cols < 80 ? tty_cols : 80;
-    size_t desc_room = wrap_cols > column_width + 1 ? wrap_cols - column_width : 20;
+    size_t desc_room =
+        wrap_cols > column_width + 1 ? wrap_cols - column_width : 20;
     for (i = 0; i < result->count; ++i) {
       const char *name = result->candidates[i];
       const char *desc = result->descriptions[i];
@@ -4035,12 +4039,11 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
           size_t word_len;
           while (*p == ' ' || *p == '\t')
             p++;
-          if (*p == '\0')
-            break;
+          if (*p == '\0') break;
           word = p;
           while (*p != '\0' && *p != ' ' && *p != '\t')
             p++;
-          word_len = (size_t)(p - word);
+          word_len = (size_t) (p - word);
           if (line_len > 0 && line_len + 1 + word_len > desc_room) {
             size_t k;
             itl_char_buf_append_cstr(b, ITL_LF);
@@ -4055,7 +4058,7 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
           {
             size_t k;
             for (k = 0; k < word_len; ++k)
-              itl_char_buf_append_byte(b, (uint8_t)word[k]);
+              itl_char_buf_append_byte(b, (uint8_t) word[k]);
           }
           line_len += word_len;
         }
@@ -4880,8 +4883,8 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
   itl_g_le_prev_total_rows = 1;
   itl_g_le_prev_cursor_row = 1;
   /* The incremental-append fast path keys off the previous render, so its state
-     is reset with the row counts, otherwise the first refresh of this line could
-     compare against the previous command's render. */
+     is reset with the row counts, otherwise the first refresh of this line
+     could compare against the previous command's render. */
   itl_g_le_prev_render_len = 0;
   itl_g_le_prev_cursor_at_end = false;
   itl_le_tty_refresh(le);
