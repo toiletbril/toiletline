@@ -82,7 +82,7 @@ extern "C"
 
 /* Max size of in-memory history, must be a power of 2. */
 #if !defined TL_HISTORY_MAX_SIZE
-#define TL_HISTORY_MAX_SIZE 256
+#define TL_HISTORY_MAX_SIZE (256)
 #endif /* TL_HISTORY_MAX_SIZE */
 
 /**
@@ -1750,7 +1750,7 @@ ITL_DEF size_t itl_history_index_to_offset(size_t index)
 {
   TL_ASSERT(index < itl_g_history_count);
   return itl_g_history_offsets[(itl_g_history_head + index) %
-                               TL_HISTORY_MAX_SIZE];
+                               (TL_HISTORY_MAX_SIZE)];
 }
 
 /* Reads the entry that starts at byte offset from the history file into out,
@@ -2308,13 +2308,13 @@ ITL_DEF void itl_history_push_offset(size_t offset)
   /* The file grew or was rescanned, so the cached read handle is dropped and the
      next ghost scan reopens it against the current content. */
   itl_history_read_fd_invalidate();
-  if (itl_g_history_count < TL_HISTORY_MAX_SIZE) {
+  if (itl_g_history_count < (TL_HISTORY_MAX_SIZE)) {
     itl_g_history_offsets[(itl_g_history_head + itl_g_history_count) %
-                          TL_HISTORY_MAX_SIZE] = offset;
+                          (TL_HISTORY_MAX_SIZE)] = offset;
     itl_g_history_count += 1;
   } else {
     itl_g_history_offsets[itl_g_history_head] = offset;
-    itl_g_history_head = (itl_g_history_head + 1) % TL_HISTORY_MAX_SIZE;
+    itl_g_history_head = (itl_g_history_head + 1) % (TL_HISTORY_MAX_SIZE);
   }
 }
 
