@@ -205,10 +205,8 @@ TL_DEF tl_status_code tl_history_load(const char *file_path);
  */
 TL_DEF tl_status_code tl_history_dump(const char *file_path);
 /**
- * Returns the number of UTF-8 characters.
- *
- * Since number of bytes can be bigger than amount of characters, regular
- * `strlen()` will not work, and will only return the number of bytes before \0.
+ * Returns the number of UTF-8 characters, which strlen() cannot since it counts
+ * bytes.
  */
 TL_DEF size_t tl_utf8_strlen(const char *utf8_str);
 /**
@@ -229,18 +227,11 @@ TL_DEF tl_status_code tl_emit_newlines(const char *buffer);
 TL_DEF tl_status_code tl_set_title(const char *title);
 
 /**
- * The result a completion callback fills. The host owns the storage the
- * pointers refer to and must keep it valid until the next callback call, since
- * toiletline reads it right after the call returns and does not free it.
- *
- * candidates points at an array of count C-strings, each a full replacement for
- * the whole token the cursor sits on. token_start and token_end are codepoint
- * indices into the line, in the same unit as the cursor, and bound the token
- * span toiletline replaces. The host passes a byte cursor to the callback and
- * converts the byte offsets it computes back to codepoint indices here, so the
- * editor stays in codepoints and a multibyte glyph never shifts the span.
- * longest_common_prefix is the longest prefix every candidate shares, inserted
- * on the first TAB.
+ * The result a completion callback fills. The host owns the storage and keeps it
+ * valid until the next callback call. candidates is an array of count C-strings,
+ * each a full replacement for the token. token_start and token_end are codepoint
+ * indices bounding the replaced span. longest_common_prefix is the longest
+ * shared prefix, inserted on the first TAB.
  */
 typedef struct tl_completion
 {
@@ -264,9 +255,8 @@ typedef int (*tl_complete_fn)(const char *buffer, size_t cursor,
                               tl_completion *out, int for_listing);
 
 /**
- * Register the completion callback, or NULL to disable completion. Only the
- * interactive host registers one, so a non-interactive run pays nothing and the
- * TAB key keeps its old behavior of returning TL_PRESSED_TAB.
+ * Register the completion callback, or NULL to disable completion. Without one
+ * the TAB key returns TL_PRESSED_TAB.
  */
 TL_DEF void tl_set_complete_callback(tl_complete_fn callback);
 
@@ -277,26 +267,22 @@ TL_DEF void tl_set_complete_callback(tl_complete_fn callback);
 TL_DEF void tl_set_ghost_enabled(int enabled);
 
 /*
- * The ghost history validation callback. The host receives a history entry the
- * ghost is about to suggest and returns nonzero to accept it. A zero return
- * skips the entry and the scan continues with the next one, the way fish drops
- * a suggestion whose command no longer exists. NULL accepts every entry.
+ * The ghost history validation callback. It receives a history entry the ghost
+ * is about to suggest and returns nonzero to accept it, zero to skip it. NULL
+ * accepts every entry.
  */
 typedef int (*tl_ghost_validate_fn)(const char *entry);
 
 /*
- * Register the ghost history validation callback, or NULL to accept every
- * entry. Only the history source consults it, a completion-derived ghost is
- * already validated by the completion engine.
+ * Register the ghost history validation callback, or NULL to accept every entry.
  */
 TL_DEF void tl_set_ghost_validate_callback(tl_ghost_validate_fn callback);
 
 /**
- * One colored span of the line. start and end are codepoint indices, the same
- * codepoint unit the editor edits in, with start inclusive and end exclusive.
- * sgr is the SGR escape that opens the span, such as "\x1b[32m", owned by the
- * host and stable for the duration of the callback and the render that follows.
- * The renderer closes every span with a reset.
+ * One colored span of the line. start and end are codepoint indices, start
+ * inclusive and end exclusive. sgr is the opening SGR escape such as "\x1b[32m",
+ * owned by the host and stable for the callback and its render. The renderer
+ * closes every span with a reset.
  */
 typedef struct tl_highlight_span
 {
@@ -307,9 +293,8 @@ typedef struct tl_highlight_span
 
 /**
  * The highlight result. The editor provides spans, an array of capacity slots,
- * and the host fills the first count of them. The spans must be sorted by
- * start, must not overlap, and must stay within the line, so the renderer can
- * open and close them in one left-to-right pass.
+ * and the host fills the first count of them. The spans must be sorted by start,
+ * non-overlapping, and within the line.
  */
 typedef struct tl_highlight
 {
@@ -321,26 +306,20 @@ typedef struct tl_highlight
 /**
  * The highlight callback. The host receives the current buffer and a result to
  * fill with colored spans. It returns nonzero when it filled one or more spans
- * and zero when the line should stay plain. The renderer emits each span's SGR
- * escape before its start and a reset after its end, between codepoints, so the
- * coloring carries zero column width and never shifts the cursor.
+ * and zero when the line should stay plain.
  */
 typedef int (*tl_highlight_fn)(const char *buffer, tl_highlight *out);
 
 /**
- * Register the highlight callback, or NULL to disable highlighting. Only the
- * interactive host registers one, so a non-interactive run pays nothing and the
- * line is drawn without any SGR escape.
+ * Register the highlight callback, or NULL to disable highlighting.
  */
 TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback);
 
 /**
- * The wake hook the host registers for an out-of-band report such as a
- * finished background job. The wait loop calls it with phase 0 to ask whether
- * anything must print. On a nonzero answer the loop clears the current render
- * block, calls phase 1 so the host writes its CRLF-ended rows, and re-renders
- * the prompt and the line below them. The split keeps the editor ignorant of
- * what the host reports and the host ignorant of the render-row geometry.
+ * The wake hook for an out-of-band report such as a finished background job.
+ * The wait loop calls phase 0 to ask whether anything must print. On a nonzero
+ * answer it clears the render block, calls phase 1 for the host to write its
+ * CRLF-ended rows, and re-renders the prompt and line below them.
  */
 typedef int (*tl_wake_fn)(int phase);
 
@@ -2930,37 +2909,28 @@ next:
 
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_should_refresh_text = true;
 
-/* Set while the empty-completion flash repaints, so the full redraw wraps the
-   line in reverse video and skips the highlight spans, then it clears for the
-   restoring repaint. */
+/* Set while the empty-completion flash repaints. The full redraw then wraps the
+   line in the flash SGR and skips the highlight spans. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_flash_active = false;
 
 /* Line editor's visual extent during the previous refresh() call. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_total_rows = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_row = 1;
-/* The bytes of the line the previous text refresh drew, so a plain append at the
-   end of a single row can write only the new tail rather than reprinting the
-   whole row. The length is zero before the first text refresh. */
+/* The bytes the previous text refresh drew, the base a plain append writes its
+   tail onto. The length is zero before the first text refresh. */
 ITL_DEF ITL_THREAD_LOCAL char itl_g_le_prev_render[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_render_len = 0;
-/* Whether the previous refresh left the physical cursor at the end of the line.
-   The append fast path writes the tail at wherever the cursor sits, so it fires
-   only when the cursor was parked at the append point. A cursor-only move that
-   parks the caret mid-line clears this and forces the full redraw, so a later
-   prefix-sharing whole-line replacement such as a history recall cannot append
-   at the wrong column. */
+/* Whether the previous refresh left the cursor at the line end. The append fast
+   path fires only then, otherwise a mid-line caret forces the full redraw. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_cursor_at_end = false;
 
-/* The ghost suggestion drawn dimmed after the cursor, and its byte length. The
-   refresh reads them, so they are declared before it. The top completion fills
-   them as the user types and Right or End accepts them. */
+/* The ghost suggestion drawn dimmed after the cursor, and its byte length. Right
+   or End accepts it. */
 ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len = 0;
 
 /* The history autosuggestion scans at most this many recent entries per
-   keystroke, so a long history does not slow the interactive prompt. The window
-   is wide enough that a match buried under many recent commands is still found,
-   while the per-entry read stays cheap against the cached file handle. */
+   keystroke to bound the per-keystroke cost on a long history. */
 #define ITL_GHOST_HISTORY_SCAN_MAX 1000
 
 /* The host highlight callback, or NULL when highlighting is disabled. Only the
@@ -3437,16 +3407,10 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   }
 
   /* Fast path for a plain append at the end of a single unwrapped row with no
-     ghost and no highlight movement. The new line is the previous render plus
-     a tail, so only the appended bytes are written the way bash does, and the
-     cursor the previous frame parked at the row end advances over them. A
-     colored frame takes this path too when its spans equal the previous
-     frame's spans exactly, since unmoved spans leave the painted bytes valid
-     and the appended tail uncolored. Any other edit, a deletion, a mid-line
-     insert, a wrap to a second row, a resize, the first render, a span that
-     moved or changed color, or a ghost suggestion fails a condition and falls
-     through to the full redraw below. The trailing clear erases a ghost a
-     previous frame may have drawn past the line. */
+     ghost and no highlight movement, writing only the appended bytes. A colored
+     frame qualifies when its spans equal the previous frame's exactly. Any other
+     edit falls through to the full redraw below. The trailing clear erases a
+     ghost a previous frame drew past the line. */
   if (itl_g_tty_should_refresh_text && !is_resize && !itl_g_tty_first_render &&
       have_cur_render && itl_g_ghost_len == 0 &&
       m.total_rows == 1 && m.cursor_row == 0 && itl_g_le_prev_total_rows == 1 &&
@@ -3539,9 +3503,8 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     bool in_span = false;
     size_t open_end = 0;
     col = indent;
-    /* The flash repaints the whole line white on black, so it opens that SGR
-       once here and the loop below skips the per-span color so the flash is not
-       reset partway. */
+    /* The flash repaints the whole line in one tone. It opens that SGR once and
+       the loop below skips the per-span color. */
     if (itl_g_tty_flash_active) {
       itl_char_buf_append_cstr(b, itl_flash_sgr_on());
     }
@@ -3593,8 +3556,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     if (in_span) {
       itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
     }
-    /* Close the reverse video the flash opened so the inversion ends with the
-       line and the trailing clear and the ghost draw below run normal. */
+    /* Close the flash SGR so the trailing clear and the ghost draw run normal. */
     if (itl_g_tty_flash_active) {
       itl_char_buf_append_cstr(b, itl_flash_sgr_off());
     }
@@ -3862,13 +3824,10 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
     return;
   }
 
-  /* Newest first, so the most recent matching command wins. The index walk runs
-     from the highest navigable index, which is the most recent entry, down to
-     the oldest. The scan is bounded to a recent window so a full history does
-     not cost an unbounded run of reads on every keystroke. */
+  /* Newest first, so the most recent matching command wins, bounded to a recent
+     window. */
   size_t scanned = 0;
-  /* One scratch buffer for the whole scan, so the per-keystroke stack cost is
-     one entry rather than one per scanned history line. */
+  /* One scratch buffer for the whole scan. */
   static ITL_THREAD_LOCAL char entry_cstr[ITL_STRING_MAX_LEN];
   for (index = itl_g_history_count; index-- > 0;) {
     size_t offset = itl_history_index_to_offset(index);
