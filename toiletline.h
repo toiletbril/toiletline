@@ -1645,20 +1645,16 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_head = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_file_size = 0;
 
-/* The ghost suggestion scans the history file on every keystroke, so its read
-   handle is kept open across keystrokes rather than reopened each time. The
-   handle is invalidated whenever the file is appended to, reloaded, or
-   rewritten, so a stale handle never serves an outdated scan. */
-ITL_DEF ITL_THREAD_LOCAL ITL_FILE itl_g_history_read_fd;
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_read_fd_open = false;
-
-ITL_DEF void itl_history_read_fd_invalidate(void)
-{
-  if (itl_g_history_read_fd_open) {
-    ITL_FILE_CLOSE(itl_g_history_read_fd);
-    itl_g_history_read_fd_open = false;
-  }
-}
+/* The whole history file held in memory for the ghost and search scans. The
+   ghost rescans on every keystroke, and decoding entries from this buffer
+   avoids a seek and read per entry. It loads once and is invalidated whenever
+   the file is appended to, reloaded, or rewritten. itl_char_buf is defined past
+   here, so the type is named by an incomplete struct pointer and the buffer
+   functions are defined below its definition. */
+struct itl_char_buf;
+ITL_DEF ITL_THREAD_LOCAL struct itl_char_buf *itl_g_history_read_buffer = NULL;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_read_buffer_loaded = false;
+ITL_DEF void itl_history_read_fd_invalidate(void);
 
 /* False when the loaded file's last line lacked a terminating newline, so the
    next append writes a separator first instead of gluing onto that line. */
@@ -2115,6 +2111,119 @@ ITL_DEF void itl_char_buf_extend(itl_char_buf_t *cb)
 {
   cb->capacity = ITL_CHAR_BUF_REALLOC_CAPACITY(cb->capacity);
   cb->data = (char *) itl_realloc(cb->data, cb->capacity);
+}
+
+/* Grow the buffer to hold at least needed bytes in one reallocation. A bulk
+   load reserves up front rather than doubling through repeated appends. */
+ITL_DEF void itl_char_buf_reserve(itl_char_buf_t *cb, size_t needed)
+{
+  if (cb->capacity >= needed) {
+    return;
+  }
+  while (cb->capacity < needed)
+    cb->capacity = ITL_CHAR_BUF_REALLOC_CAPACITY(cb->capacity);
+  cb->data = (char *) itl_realloc(cb->data, cb->capacity);
+}
+
+ITL_DEF void itl_history_read_fd_invalidate(void)
+{
+  if (itl_g_history_read_buffer != NULL) {
+    ITL_CHAR_BUF_FREE(itl_g_history_read_buffer);
+    itl_g_history_read_buffer = NULL;
+  }
+  itl_g_history_read_buffer_loaded = false;
+}
+
+/* Loads the whole history file into itl_g_history_read_buffer once. The ghost
+   and search scans then decode each entry from memory rather than reading the
+   file per entry. A failed load is recorded and not retried until the next
+   invalidation. Returns true when the buffer holds the file. */
+ITL_DEF bool itl_history_ensure_read_buffer(void)
+{
+  ITL_FILE file;
+  long file_size;
+  size_t total_read = 0;
+
+  if (itl_g_history_read_buffer_loaded) {
+    return itl_g_history_read_buffer != NULL;
+  }
+  itl_g_history_read_buffer_loaded = true;
+
+  if (itl_g_history_path == NULL) {
+    return false;
+  }
+
+  file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
+  if (ITL_FILE_IS_BAD(file)) {
+    return false;
+  }
+
+  file_size = ITL_FILE_SEEK_END(file);
+  if (file_size < 0 || !ITL_FILE_SEEK(file, 0)) {
+    ITL_FILE_CLOSE(file);
+    return false;
+  }
+
+  itl_g_history_read_buffer = itl_char_buf_alloc();
+  itl_char_buf_reserve(itl_g_history_read_buffer, (size_t) file_size + 1);
+
+  while (total_read < (size_t) file_size) {
+    int read_amount =
+        (int) ITL_READ(file, itl_g_history_read_buffer->data + total_read,
+                       (size_t) file_size - total_read);
+    if (read_amount <= 0) {
+      break;
+    }
+    total_read += (size_t) read_amount;
+  }
+  ITL_FILE_CLOSE(file);
+
+  itl_g_history_read_buffer->size = total_read;
+  return true;
+}
+
+/* Decodes the entry that starts at offset in the cached history buffer into
+   out, applying the same backslash decoding as itl_history_read_entry_fd, a
+   backslash n into a newline and a doubled backslash into one. Returns false
+   only when the string cannot be built. */
+ITL_DEF bool itl_history_read_entry_buffered(size_t offset, itl_string_t *out)
+{
+  char decoded[ITL_STRING_MAX_LEN];
+  size_t decoded_size = 0;
+  bool escape_pending = false;
+  size_t i;
+  size_t buffer_size = itl_g_history_read_buffer->size;
+  const char *buffer_data = itl_g_history_read_buffer->data;
+
+  for (i = offset; i < buffer_size; ++i) {
+    uint8_t ch = (uint8_t) buffer_data[i];
+
+    if (escape_pending) {
+      escape_pending = false;
+      if (ch == 'n') {
+        ch = 0x0A;
+      } else if (ch != '\\') {
+        if (decoded_size < ITL_STRING_MAX_LEN) {
+          decoded[decoded_size++] = '\\';
+        }
+      }
+    } else if (ch == '\\') {
+      escape_pending = true;
+      continue;
+    } else if (ch == '\n') {
+      break;
+    } else if (ch == '\r') {
+      continue;
+    }
+
+    if (decoded_size < ITL_STRING_MAX_LEN) {
+      decoded[decoded_size++] = (char) ch;
+    } else {
+      break;
+    }
+  }
+
+  return itl_string_from_bytes(out, decoded, decoded_size);
 }
 
 ITL_DEF void itl_char_buf_append_cstr(itl_char_buf_t *cb, const char *cstr)
@@ -3802,7 +3911,6 @@ ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr)
 ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
 {
   size_t line_byte_len = strlen(line_cstr);
-  ITL_FILE file;
   itl_string_t *entry;
   size_t index;
 
@@ -3810,17 +3918,13 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
     return;
   }
 
-  /* The read handle is opened once and cached across keystrokes. It is closed
-     by itl_history_read_fd_invalidate when the file is appended to, reloaded,
-     or rewritten, so it is never stale here. */
-  if (!itl_g_history_read_fd_open) {
-    itl_g_history_read_fd = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
-    if (ITL_FILE_IS_BAD(itl_g_history_read_fd)) {
-      return;
-    }
-    itl_g_history_read_fd_open = true;
+  /* The whole file is read into memory once and cached across keystrokes, so the
+     newest-first scan below decodes each entry from the buffer rather than
+     seeking and reading a fresh block per entry on every keystroke. The buffer
+     is dropped by itl_history_read_fd_invalidate when the file changes. */
+  if (!itl_history_ensure_read_buffer()) {
+    return;
   }
-  file = itl_g_history_read_fd;
   entry = itl_string_alloc();
   if (entry == NULL) {
     return;
@@ -3840,7 +3944,7 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
     }
     scanned += 1;
 
-    if (!itl_history_read_entry_fd(file, offset, entry)) {
+    if (!itl_history_read_entry_buffered(offset, entry)) {
       continue;
     }
     if (itl_string_to_cstr(entry, entry_cstr, sizeof(entry_cstr)) != TL_SUCCESS)
@@ -4595,7 +4699,6 @@ TL_DEF tl_status_code tl_exit(void)
 ITL_DEF size_t itl_history_find_match(const itl_string_t *query,
                                       size_t start_index, itl_string_t *scratch)
 {
-  ITL_FILE file;
   size_t i;
   size_t found = ITL_HISTORY_NONE;
 
@@ -4607,25 +4710,22 @@ ITL_DEF size_t itl_history_find_match(const itl_string_t *query,
 
   TL_ASSERT(start_index < itl_g_history_count);
 
-  /* Open the file once for the whole scan rather than once per entry, since one
-     search keystroke can walk every navigable entry. */
-  file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
-  if (ITL_FILE_IS_BAD(file)) {
+  /* One search keystroke can walk every navigable entry, decoded from the
+     in-memory file buffer rather than a read per entry. */
+  if (!itl_history_ensure_read_buffer()) {
     return ITL_HISTORY_NONE;
   }
 
   /* Count down from start_index to zero inclusive without underflowing. */
   for (i = start_index + 1; i-- > 0;) {
-    if (itl_history_read_entry_fd(file, itl_history_index_to_offset(i),
-                                  scratch) &&
+    if (itl_history_read_entry_buffered(itl_history_index_to_offset(i),
+                                        scratch) &&
         itl_string_find_substring(scratch, query))
     {
       found = i;
       break;
     }
   }
-
-  ITL_FILE_CLOSE(file);
 
   return found;
 }
@@ -4637,7 +4737,6 @@ ITL_DEF size_t itl_history_find_match_forward(const itl_string_t *query,
                                               size_t start_index,
                                               itl_string_t *scratch)
 {
-  ITL_FILE file;
   size_t i;
   size_t found = ITL_HISTORY_NONE;
 
@@ -4647,22 +4746,19 @@ ITL_DEF size_t itl_history_find_match_forward(const itl_string_t *query,
     return ITL_HISTORY_NONE;
   }
 
-  file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
-  if (ITL_FILE_IS_BAD(file)) {
+  if (!itl_history_ensure_read_buffer()) {
     return ITL_HISTORY_NONE;
   }
 
   for (i = start_index; i < itl_g_history_count; ++i) {
-    if (itl_history_read_entry_fd(file, itl_history_index_to_offset(i),
-                                  scratch) &&
+    if (itl_history_read_entry_buffered(itl_history_index_to_offset(i),
+                                        scratch) &&
         itl_string_find_substring(scratch, query))
     {
       found = i;
       break;
     }
   }
-
-  ITL_FILE_CLOSE(file);
 
   return found;
 }
