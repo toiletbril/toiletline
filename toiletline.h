@@ -2330,7 +2330,8 @@ ITL_DEF void itl_char_buf_append_string_escaped(itl_char_buf_t *cb,
 
 #define ITL_CHAR_BUF_CLEAR(cb) (cb)->size = 0
 
-#define ITL_CHAR_BUF_DUMP(cb) ITL_WRITE(ITL_STDOUT, (cb)->data, (cb)->size)
+#define ITL_CHAR_BUF_DUMP(cb)                                                  \
+  (void) ITL_WRITE(ITL_STDOUT, (cb)->data, (cb)->size)
 
 #define ITL_TTY_HIDE_CURSOR(buffer)                                            \
   itl_char_buf_append_cstr(buffer, "\x1b[?25l")
