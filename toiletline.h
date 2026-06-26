@@ -6168,7 +6168,20 @@ ITL_DEF tl_status_code itl_vi_repeat_last_change(itl_le_t *le)
   return TL_SUCCESS;
 }
 
-ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le)
+ITL_DEF void itl_vi_step_visual_row(itl_le_t *le, bool is_up)
+{
+  itl_le_metrics_t m = itl_le_compute_metrics(le, itl_g_tty_prev_cols);
+
+  if (is_up && m.cursor_row > le->prompt_rows) {
+    le->cursor_position = itl_le_index_at_visual(le, itl_g_tty_prev_cols,
+                                                 m.cursor_row - 1, m.cursor_col);
+  } else if (!is_up && m.cursor_row + 1 < m.total_rows) {
+    le->cursor_position = itl_le_index_at_visual(le, itl_g_tty_prev_cols,
+                                                 m.cursor_row + 1, m.cursor_col);
+  }
+}
+
+ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
 {
   uint8_t byte;
 
@@ -6182,11 +6195,19 @@ ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le)
     int key, kind;
 
     if (le->line->length > 0) {
-      size_t span_end = selection_end + 1;
-      if (span_end > le->line->length) {
-        span_end = le->line->length;
+      size_t span_start = selection_start;
+      size_t span_end;
+
+      if (is_linewise) {
+        span_start = itl_le_line_start_of(le, selection_start);
+        span_end = itl_le_line_end_of(le, selection_end);
+      } else {
+        span_end = selection_end + 1;
+        if (span_end > le->line->length) {
+          span_end = le->line->length;
+        }
       }
-      itl_g_search_spans[0].start = selection_start;
+      itl_g_search_spans[0].start = span_start;
       itl_g_search_spans[0].end = span_end;
       itl_g_search_spans[0].sgr = ITL_VI_SGR_REVERSE;
       itl_g_search_span_count = 1;
@@ -6233,17 +6254,9 @@ ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le)
       continue;
 
     case TL_KEY_UP:
-    case TL_KEY_DOWN: {
-      itl_le_metrics_t m = itl_le_compute_metrics(le, itl_g_tty_prev_cols);
-      if (kind == TL_KEY_UP && m.cursor_row > le->prompt_rows) {
-        le->cursor_position = itl_le_index_at_visual(
-            le, itl_g_tty_prev_cols, m.cursor_row - 1, m.cursor_col);
-      } else if (kind == TL_KEY_DOWN && m.cursor_row + 1 < m.total_rows) {
-        le->cursor_position = itl_le_index_at_visual(
-            le, itl_g_tty_prev_cols, m.cursor_row + 1, m.cursor_col);
-      }
+    case TL_KEY_DOWN:
+      itl_vi_step_visual_row(le, kind == TL_KEY_UP);
       continue;
-    }
 
     default: break;
     }
@@ -6255,14 +6268,26 @@ ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le)
 
       itl_g_search_spans_active = false;
       itl_g_search_span_count = 0;
-      itl_vi_apply_operator(le, op, selection_start, selection_end, true);
 
-      if (op == ITL_VI_OP_CHANGE) {
-        itl_g_vi_last_change.kind = ITL_VI_CHANGE_NONE;
-        itl_vi_start_insert_recording();
+      if (is_linewise) {
+        size_t top_line = itl_le_line_index_of(le, selection_start);
+        size_t bottom_line = itl_le_line_index_of(le, selection_end);
+        le->cursor_position = itl_le_line_start_at_index(le, top_line);
+        itl_vi_operator_line(le, op, (int) byte, bottom_line - top_line + 1);
+
+        if (op != ITL_VI_OP_CHANGE) {
+          itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
+        }
       } else {
-        itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
-        itl_vi_clamp_command_cursor(le);
+        itl_vi_apply_operator(le, op, selection_start, selection_end, true);
+
+        if (op == ITL_VI_OP_CHANGE) {
+          itl_g_vi_last_change.kind = ITL_VI_CHANGE_NONE;
+          itl_vi_start_insert_recording();
+        } else {
+          itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
+          itl_vi_clamp_command_cursor(le);
+        }
       }
 
       itl_g_tty_should_refresh_text = true;
@@ -6573,7 +6598,7 @@ ITL_DEF tl_status_code itl_emacs_multicursor_loop(itl_le_t *le)
       if (marker > line_end) {
         marker = line_end;
       }
-      if (row != active_line) {
+      if (row != active_line && marker < line_end) {
         itl_g_search_spans[itl_g_search_span_count].start = marker;
         itl_g_search_spans[itl_g_search_span_count].end = marker + 1;
         itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_REVERSE;
@@ -6838,6 +6863,51 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
 
   case TL_KEY_UP:
   case TL_KEY_DOWN:
+    /* An operator waits, so the arrow deletes or changes whole lines from the
+       current one to the one the count steps onto, the linewise dk and dj. A
+       step past the first or the last line is a failed motion and changes
+       nothing. */
+    if (itl_g_vi_pending_operator != ITL_VI_OP_NONE) {
+      itl_vi_operator_kind op = itl_g_vi_pending_operator;
+      size_t cursor_line = itl_le_line_index_of(le, le->cursor_position);
+      size_t total_lines = itl_le_line_index_of(le, le->line->length) + 1;
+      size_t step = (itl_g_vi_pending_count == 0) ? 1 : itl_g_vi_pending_count;
+      int doubled = (op == ITL_VI_OP_DELETE)   ? 'd'
+                    : (op == ITL_VI_OP_CHANGE) ? 'c'
+                                               : 'y';
+      size_t target_line = cursor_line;
+
+      if (kind == TL_KEY_UP) {
+        target_line = (cursor_line > step) ? cursor_line - step : 0;
+      } else {
+        target_line = cursor_line + step;
+        if (target_line > total_lines - 1) {
+          target_line = total_lines - 1;
+        }
+      }
+
+      if (target_line != cursor_line) {
+        size_t top_line = ITL_MIN(target_line, cursor_line);
+        size_t bottom_line = ITL_MAX(target_line, cursor_line);
+        le->cursor_position = itl_le_line_start_at_index(le, top_line);
+        itl_vi_operator_line(le, op, doubled, bottom_line - top_line + 1);
+      }
+
+      itl_g_vi_pending_operator = ITL_VI_OP_NONE;
+      itl_g_vi_pending_count = 0;
+      itl_g_vi_pending_register = 0;
+      if (itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND) {
+        itl_vi_clamp_command_cursor(le);
+      }
+      return TL_SUCCESS;
+    }
+
+    /* Normal mode steps between buffer rows only, so the arrows never recall
+       history the way insert mode does. */
+    itl_vi_step_visual_row(le, kind == TL_KEY_UP);
+    itl_vi_clamp_command_cursor(le);
+    return TL_SUCCESS;
+
   case TL_KEY_LEFT:
   case TL_KEY_RIGHT:
   case TL_KEY_HOME:
@@ -7014,7 +7084,12 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
   case 'v':
     itl_g_vi_pending_count = 0;
     itl_g_vi_pending_register = 0;
-    return itl_vi_visual_loop(le);
+    return itl_vi_visual_loop(le, false);
+
+  case 'V':
+    itl_g_vi_pending_count = 0;
+    itl_g_vi_pending_register = 0;
+    return itl_vi_visual_loop(le, true);
 
   case ':':
     itl_g_vi_pending_count = 0;
