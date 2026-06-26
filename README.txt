@@ -51,7 +51,10 @@ Most Emacs style motions work, including Ctrl-A and Ctrl-E for the start and end
 of a line, Ctrl-K and Ctrl-U to kill text, and the arrow keys with Ctrl held for
 word motion.
 
-Ctrl-R starts a reverse incremental history search.
+Ctrl-R starts a reverse incremental history search. Enter accepts the
+highlighted match into the line and leaves the search without running it.
+Ctrl-G cancels the search, and the line is restored to its state from before
+the search began.
 
 A vi editing mode is selected through tl_set_edit_mode. Each line begins in
 insert mode, where the Emacs controls and the history search stay available.
@@ -65,11 +68,16 @@ x, and quit end the input with TL_PRESSED_QUIT. The cursor shape follows the
 submode, a bar in insert, a block in command, and an underline in visual or
 while an operator waits for its motion.
 
-Ctrl-V enters a block selection from command mode or from emacs, a column
-rectangle across several logical lines. The keys d and x delete the rectangle,
-and I, c, or C insert the typed text at the left column of every selected line,
-so several lines are indented at once. The arrows and h, j, k, and l move
-within the rectangle.
+Ctrl-V in command mode enters a block selection, a column rectangle across
+several logical lines. The keys d and x delete the rectangle, and I, c, or C
+insert the typed text at the left column of every selected line, so several
+lines are indented at once. The arrows and h, j, k, and l move within the
+rectangle.
+
+Ctrl-V in emacs mode enters a multi-cursor edit and selects nothing. A cursor
+sits at the same column on every spanned logical line, and Up or Down grows the
+span by one line. A typed character is inserted at every cursor at once, and
+Backspace erases at every cursor. Ctrl-G leaves the multi-cursor edit.
 
 A line can span several rows. Alt-Enter inserts a newline and keeps editing. A
 backslash at the end of a line followed by Enter also continues onto a new row,

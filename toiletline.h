@@ -5407,7 +5407,7 @@ ITL_DEF int itl_history_search(itl_le_t *le)
         break;
       } else {
         accepted = true;
-        result = key;
+        result = (kind == TL_KEY_ENTER) ? TL_KEY_UNKN : key;
         break;
       }
     }
@@ -6543,6 +6543,173 @@ ITL_DEF tl_status_code itl_vi_block_loop(itl_le_t *le, int return_mode)
   return TL_SUCCESS;
 }
 
+ITL_DEF tl_status_code itl_emacs_multicursor_loop(itl_le_t *le)
+{
+  uint8_t byte;
+  size_t anchor_line = itl_le_line_index_of(le, le->cursor_position);
+  size_t active_line = anchor_line;
+  size_t column =
+      le->cursor_position - itl_le_line_start_of(le, le->cursor_position);
+  bool did_push_undo = false;
+
+  while (true) {
+    size_t total_lines = itl_le_line_index_of(le, le->line->length) + 1;
+    size_t top_line = ITL_MIN(anchor_line, active_line);
+    size_t bottom_line = ITL_MAX(anchor_line, active_line);
+    size_t active_start = itl_le_line_start_at_index(le, active_line);
+    size_t active_end = itl_le_line_end_of(le, active_start);
+    int key, kind;
+    size_t row;
+
+    itl_g_search_span_count = 0;
+    for (row = top_line; row <= bottom_line &&
+                         itl_g_search_span_count < ITL_HIGHLIGHT_MAX_SPANS;
+         ++row)
+    {
+      size_t line_start = itl_le_line_start_at_index(le, row);
+      size_t line_end = itl_le_line_end_of(le, line_start);
+      size_t marker = line_start + column;
+
+      if (marker > line_end) {
+        marker = line_end;
+      }
+      if (row != active_line) {
+        itl_g_search_spans[itl_g_search_span_count].start = marker;
+        itl_g_search_spans[itl_g_search_span_count].end = marker + 1;
+        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_REVERSE;
+        itl_g_search_span_count += 1;
+      }
+    }
+    itl_g_search_spans_active = true;
+
+    le->cursor_position =
+        (column < active_end - active_start) ? active_start + column
+                                             : active_end;
+    itl_g_tty_should_refresh_text = true;
+    itl_le_tty_refresh(le);
+
+    if (!ITL_READ_BYTE(&byte)) {
+      break;
+    }
+
+    if (byte == 7) {
+      break;
+    }
+    if (byte == 27 && !itl_input_is_pending()) {
+      break;
+    }
+
+    key = itl_esc_parse(byte);
+    kind = key & TL_MASK_KEY;
+
+    if (kind == TL_KEY_UNKN) {
+      break;
+    }
+
+    if (kind == TL_KEY_ENTER || kind == TL_KEY_EOF ||
+        kind == TL_KEY_INTERRUPT || kind == TL_KEY_SUSPEND)
+    {
+      itl_g_search_spans_active = false;
+      itl_g_search_span_count = 0;
+      itl_g_tty_should_refresh_text = true;
+      itl_le_tty_refresh(le);
+      return itl_le_key_handle(le, key);
+    }
+
+    if (kind == TL_KEY_UP) {
+      if (active_line > 0) {
+        active_line -= 1;
+      }
+      continue;
+    }
+    if (kind == TL_KEY_DOWN) {
+      if (active_line + 1 < total_lines) {
+        active_line += 1;
+      }
+      continue;
+    }
+
+    if (kind == TL_KEY_LEFT || kind == TL_KEY_RIGHT || kind == TL_KEY_HOME ||
+        kind == TL_KEY_END)
+    {
+      itl_le_key_handle(le, key);
+      if (le->cursor_position < active_start) {
+        le->cursor_position = active_start;
+      }
+      if (le->cursor_position > active_end) {
+        le->cursor_position = active_end;
+      }
+      column = le->cursor_position - active_start;
+      continue;
+    }
+
+    if (kind == TL_KEY_BACKSPACE) {
+      if (column > 0) {
+        if (!did_push_undo) {
+          itl_undo_push(le);
+          did_push_undo = true;
+        }
+        row = bottom_line + 1;
+        while (row > top_line) {
+          size_t line_start, line_end, at;
+          row -= 1;
+          line_start = itl_le_line_start_at_index(le, row);
+          line_end = itl_le_line_end_of(le, line_start);
+          at = line_start + column;
+          if (at > line_start && at <= line_end) {
+            itl_string_erase(le->line, at, 1, true);
+          }
+        }
+        column -= 1;
+      }
+      continue;
+    }
+
+    if (kind == TL_KEY_CHAR) {
+      itl_utf8_t ch = itl_utf8_parse(byte);
+      size_t row_count = bottom_line - top_line + 1;
+
+      if (le->line->size + ch.size * row_count >= le->out_size) {
+        continue;
+      }
+      if (!did_push_undo) {
+        itl_undo_push(le);
+        did_push_undo = true;
+      }
+      row = bottom_line + 1;
+      while (row > top_line) {
+        size_t line_start, line_end, at;
+        row -= 1;
+        line_start = itl_le_line_start_at_index(le, row);
+        line_end = itl_le_line_end_of(le, line_start);
+        at = line_start + column;
+        if (at > line_end) {
+          at = line_end;
+        }
+        itl_string_insert(le->line, at, ch);
+      }
+      column += 1;
+      continue;
+    }
+  }
+
+  itl_g_search_spans_active = false;
+  itl_g_search_span_count = 0;
+
+  {
+    size_t active_start = itl_le_line_start_at_index(le, active_line);
+    size_t active_end = itl_le_line_end_of(le, active_start);
+    le->cursor_position = active_start + column;
+    if (le->cursor_position > active_end) {
+      le->cursor_position = active_end;
+    }
+  }
+  itl_g_tty_should_refresh_text = true;
+  itl_le_tty_refresh(le);
+
+  return TL_SUCCESS;
+}
+
 ITL_DEF bool itl_vi_ex_is_quit(const char *command)
 {
   return strcmp(command, "q") == 0 || strcmp(command, "q!") == 0 ||
@@ -7069,9 +7236,15 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
           return code;
         }
       }
+    } else if (input_byte == 22 && itl_g_edit_mode == TL_EDIT_MODE_EMACS) {
+      itl_ghost_clear();
+      code = itl_emacs_multicursor_loop(le);
+      if (code != TL_SUCCESS) {
+        itl_le_clear_line(le);
+        return code;
+      }
     } else if (input_byte == 22 &&
-               (itl_g_edit_mode == TL_EDIT_MODE_EMACS ||
-                itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND))
+               itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND)
     {
       itl_ghost_clear();
       code = itl_vi_block_loop(le, itl_g_edit_mode);
