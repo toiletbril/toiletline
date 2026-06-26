@@ -3158,6 +3158,15 @@ ITL_DEF ITL_THREAD_LOCAL itl_prev_span_t
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_span_count = 0;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_spans_usable = false;
 
+/* The reverse search builds its own highlight spans, the matched entry through
+   the host callback and the prompt label and the hint as bold and yellow runs.
+   The flag is set while the search block is on screen so the refresh draws
+   those spans rather than highlighting the whole block as a command. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_search_spans_active = false;
+ITL_DEF ITL_THREAD_LOCAL tl_highlight_span
+    itl_g_search_spans[ITL_HIGHLIGHT_MAX_SPANS];
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_search_span_count = 0;
+
 ITL_DEF void itl_le_save_prev_spans(const tl_highlight_span *spans,
                                     size_t count)
 {
@@ -3499,7 +3508,19 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   if (itl_g_tty_should_refresh_text) {
     have_cur_render = itl_string_to_cstr(le->line, itl_cur_render,
                                          sizeof(itl_cur_render)) == TL_SUCCESS;
-    if (have_cur_render && itl_g_highlight_callback != NULL) {
+    if (itl_g_search_spans_active) {
+      /* The reverse search prebuilt its spans for the whole block, so the host
+         callback is skipped and those spans are validated and drawn. */
+      size_t s;
+      for (s = 0; s < itl_g_search_span_count; ++s) {
+        if (itl_g_search_spans[s].start < itl_g_search_spans[s].end &&
+            itl_g_search_spans[s].end <= le->line->length &&
+            itl_g_search_spans[s].sgr != NULL)
+        {
+          itl_spans[span_count++] = itl_g_search_spans[s];
+        }
+      }
+    } else if (have_cur_render && itl_g_highlight_callback != NULL) {
       tl_highlight hl;
       hl.spans = itl_spans;
       hl.count = 0;
@@ -4769,11 +4790,46 @@ ITL_DEF size_t itl_history_find_match_forward(const itl_string_t *query,
 #define ITL_HISTORY_NEWEST()                                                   \
   (itl_g_history_count > 0 ? itl_g_history_count - 1 : ITL_HISTORY_NONE)
 
-/* Runs a reverse incremental history search. The status prompt and the matched
-   entry are drawn through the normal refresh by temporarily swapping the line
-   editor's prompt and line. Returns the control key that ended the search so
-   the caller can re-dispatch it, or TL_KEY_UNKN when the search was cancelled
-   or accepted with no further action. */
+#define ITL_SEARCH_SGR_GREEN  "\x1b[32m"
+#define ITL_SEARCH_SGR_YELLOW "\x1b[33m"
+#define ITL_SEARCH_SGR_BOLD   "\x1b[1m"
+
+/* Records one highlight span for the reverse search block, dropped once the
+   span array is full. The start and end are codepoint indices into the display
+   buffer, and the sgr is a static escape so the pointer stays valid until the
+   refresh draws it. */
+ITL_DEF void itl_search_push_span(size_t start, size_t end, const char *sgr)
+{
+  if (start < end && itl_g_search_span_count < ITL_HIGHLIGHT_MAX_SPANS) {
+    itl_g_search_spans[itl_g_search_span_count].start = start;
+    itl_g_search_spans[itl_g_search_span_count].end = end;
+    itl_g_search_spans[itl_g_search_span_count].sgr = sgr;
+    itl_g_search_span_count++;
+  }
+}
+
+/* Appends a guide segment to the status buffer and bolds a key token. Returns
+   the codepoint position past the segment. The guide is ASCII, so a byte is one
+   codepoint. */
+ITL_DEF size_t itl_search_append_guide(itl_char_buf_t *status, size_t position,
+                                       const char *text, bool is_key)
+{
+  size_t text_length = strlen(text);
+
+  itl_char_buf_append_cstr(status, text);
+  if (is_key) {
+    itl_search_push_span(position, position + text_length, ITL_SEARCH_SGR_BOLD);
+  }
+
+  return position + text_length;
+}
+
+/* Runs a reverse incremental history search. The live prompt stays on screen
+   and the matched entry, the search term, and the hint are drawn below it as
+   one multiline buffer swapped into the line editor. The block carries its own
+   highlight spans. Returns the control key that ended the search so the caller
+   can re-dispatch it, or TL_KEY_UNKN when the search was cancelled or accepted
+   with no further action. */
 ITL_DEF int itl_history_search(itl_le_t *le)
 {
   itl_string_t *original = itl_string_alloc();
@@ -4801,54 +4857,127 @@ ITL_DEF int itl_history_search(itl_le_t *le)
 
   itl_string_copy(original, le->line);
 
+  /* A draft already typed becomes the initial query, so it moves into the
+     search term instead of staying on the prompt line. */
+  if (le->line->length > 0) {
+    itl_string_copy(query, le->line);
+    match = itl_history_find_match(query, ITL_HISTORY_NEWEST(), scratch);
+    if (match != ITL_HISTORY_NONE) {
+      itl_string_copy(match_str, scratch);
+    }
+  }
+
   while (true) {
-    /* Build a three line view: the search term, a preview of the match, and a
-       hint line. It is rendered as one multiline buffer with an empty prompt,
-       which reuses the normal refresh. */
+    /* The matched entry shares line one with the live prompt, then the search
+       term and the hint follow on their own rows. The whole block is one
+       multiline buffer drawn through the normal refresh. */
     const itl_string_t *preview =
         (match != ITL_HISTORY_NONE) ? match_str : original;
+    size_t tty_cols = ITL_MAX(itl_g_tty_prev_cols, 1);
+    size_t budget = (tty_cols > saved_prompt_width + 1)
+                        ? tty_cols - saved_prompt_width - 1
+                        : tty_cols;
+    char match_render[ITL_STRING_MAX_LEN];
+    size_t match_bytes = 0;
+    size_t match_length = 0;
+    size_t match_width = 0;
+    size_t line2_start, query_start, line3_start, guide_position;
     size_t pi, pj;
 
-    ITL_CHAR_BUF_CLEAR(status);
-    const char *search_prompt = "(incremental reverse search) '";
-    itl_char_buf_append_cstr(status, search_prompt);
-    if (query->length > 0) {
-      itl_char_buf_append_string(status, query);
-    }
-    itl_char_buf_append_cstr(status, "'\n");
-
-    /* Preview line, with newlines flattened so a multiline entry stays on one
-       row. */
+    /* Flatten newlines to spaces and clip to the prompt's row remainder so the
+       match never wraps under the prompt. */
     for (pi = 0; pi < preview->length; ++pi) {
       itl_utf8_t pch = preview->chars[pi];
-      if (ITL_LE_IS_NEWLINE(pch)) {
-        itl_char_buf_append_byte(status, ' ');
+      bool is_newline = ITL_LE_IS_NEWLINE(pch);
+      size_t char_width = is_newline ? 1 : itl_char_width(pch);
+
+      if (match_width + char_width > budget) {
+        break;
+      }
+      if (match_bytes + pch.size >= ITL_STRING_MAX_LEN) {
+        break;
+      }
+
+      if (is_newline) {
+        match_render[match_bytes++] = ' ';
       } else {
         for (pj = 0; pj < pch.size; ++pj) {
-          itl_char_buf_append_byte(status, pch.bytes[pj]);
+          match_render[match_bytes++] = (char) pch.bytes[pj];
+        }
+      }
+
+      match_length += 1;
+      match_width += char_width;
+    }
+    match_render[match_bytes] = '\0';
+
+    itl_g_search_span_count = 0;
+
+    /* Line one, the matched entry highlighted as the command it would become.
+       The match sits at offset zero, so the host's codepoint spans index the
+       display buffer unchanged. */
+    if (itl_g_highlight_callback != NULL) {
+      tl_highlight_span match_spans[ITL_HIGHLIGHT_MAX_SPANS];
+      tl_highlight hl;
+      hl.spans = match_spans;
+      hl.count = 0;
+      hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
+      if (itl_g_highlight_callback(match_render, &hl)) {
+        size_t s;
+        for (s = 0; s < hl.count && s < ITL_HIGHLIGHT_MAX_SPANS; ++s) {
+          itl_search_push_span(match_spans[s].start, match_spans[s].end,
+                               match_spans[s].sgr);
         }
       }
     }
 
-    itl_char_buf_append_cstr(status, "\n");
-    itl_char_buf_append_cstr(
-        status, "enter to accept, ctrl-r/ctrl-f to search back and "
-                "forward, ctrl-g to cancel");
+    ITL_CHAR_BUF_CLEAR(status);
+    itl_char_buf_append_cstr(status, match_render);
+    itl_char_buf_append_byte(status, '\n');
+
+    /* Line two, the search label in green and the typed query in yellow. The
+       label `(incremental search)` is 20 codepoints and the trailing ` '` is
+       two more. */
+    line2_start = match_length + 1;
+    itl_char_buf_append_cstr(status, "(incremental search) '");
+    itl_search_push_span(line2_start, line2_start + 20, ITL_SEARCH_SGR_GREEN);
+    query_start = line2_start + 22;
+    if (query->length > 0) {
+      itl_char_buf_append_string(status, query);
+      itl_search_push_span(query_start, query_start + query->length,
+                           ITL_SEARCH_SGR_YELLOW);
+    }
+    itl_char_buf_append_byte(status, '\'');
+    itl_char_buf_append_byte(status, '\n');
+
+    /* Line three, the hint with its key tokens bolded. */
+    line3_start = query_start + query->length + 2;
+    guide_position = line3_start;
+    guide_position =
+        itl_search_append_guide(status, guide_position, "enter", true);
+    guide_position =
+        itl_search_append_guide(status, guide_position, " accept   ", false);
+    guide_position =
+        itl_search_append_guide(status, guide_position, "ctrl-r", true);
+    guide_position =
+        itl_search_append_guide(status, guide_position, "/", false);
+    guide_position =
+        itl_search_append_guide(status, guide_position, "ctrl-f", true);
+    guide_position = itl_search_append_guide(status, guide_position,
+                                             " back/forward   ", false);
+    guide_position =
+        itl_search_append_guide(status, guide_position, "ctrl-g", true);
+    (void) itl_search_append_guide(status, guide_position, " cancel", false);
 
     itl_string_from_bytes(display, status->data, status->size);
 
-    le->prompt = NULL;
-    le->prompt_size = 0;
+    /* The prompt stays drawn, but its width and rows are zeroed so the indent
+       is zero and the term and hint rows sit flush left under the prompt. */
     le->prompt_width = 0;
-    /* The search display owns the whole block, so the prompt's row offset is
-       dropped here, otherwise the metrics would start the search rows below a
-       prompt that is no longer drawn and swallow lines under a multi-row
-       prompt. */
     le->prompt_rows = 0;
     le->line = display;
-    /* Place the caret right after the typed term on the first line. The prefix
-       `reverse search: '` is 17 characters. */
-    le->cursor_position = strlen(search_prompt) + query->length;
+    le->cursor_position = query_start + query->length;
+    itl_g_search_spans_active = true;
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
 
@@ -4919,7 +5048,9 @@ ITL_DEF int itl_history_search(itl_le_t *le)
     }
   }
 
-  /* Restore the real prompt and line editor buffer. */
+  /* Restore the real prompt width and line editor buffer, and stop drawing the
+     search spans so the next refresh highlights the line as a command again. */
+  itl_g_search_spans_active = false;
   le->prompt = saved_prompt;
   le->prompt_size = saved_prompt_size;
   le->prompt_width = saved_prompt_width;
