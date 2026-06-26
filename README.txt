@@ -1,8 +1,9 @@
 toiletline
 ----------
-Small, crossplatform, single-header shell library in C99, meant to replace a
-subset of GNU Readline, and work on both Linux and Windows out of the box. It
-uses native API on both platforms and relies on VT100 terminal escape sequences.
+Small, crossplatform, single-header shell library in C99, meant to replace and
+kill GNU Readline, and work on both macOS, Linux and Windows out of the box. It
+uses native API on both platforms and relies on VT100 terminal escape
+sequences.
 
 
 Notes on Windows
@@ -13,8 +14,7 @@ a requires Windows 10 version with build number 10586 or later. This is not
 crucial. The library can still be used with a VT100 compatible terminal with
 it's own terminal proccessing, like Windows Terminal or Alacritty.
 
-And also, UTF-8 locale feature is required for proper multibyte character
-support.
+UTF-8 locale feature is required for proper multibyte character support.
 
 
 Current features
@@ -25,8 +25,9 @@ Current features
 * Line wrapping;
 * Multiline editing;
 * Reverse history search;
-* Bracketed paste;
-* Emacs controls;
+* Emacs and Vi controls;
+* Block selection across lines (multiple cursors);
+* Shared undo and redo;
 * Rich configuration;
 * Persistent history;
 
@@ -50,22 +51,36 @@ Most Emacs style motions work, including Ctrl-A and Ctrl-E for the start and end
 of a line, Ctrl-K and Ctrl-U to kill text, and the arrow keys with Ctrl held for
 word motion.
 
-Ctrl-R starts a reverse incremental history search. The first line shows the
-typed term, the second line shows the current match, and the third line shows
-the available actions. Enter accepts the match, pressing Ctrl-R again steps to an
-older match, and Ctrl-G or Esc cancels.
+Ctrl-R starts a reverse incremental history search.
+
+A vi editing mode is selected through tl_set_edit_mode. Each line begins in
+insert mode, where the Emacs controls and the history search stay available.
+Esc enters command mode, which provides the motions, the operators d, c, and y
+with counts, the named registers, the change repeat on the dot key, and a
+visual selection started with v. The undo ring is shared by the vi u key and
+the Emacs Ctrl-_ binding, and a redo runs on Ctrl-^ or on Ctrl-R in command
+mode. The incremental history search is reached through the slash key in
+command mode. An ex command is opened with the colon key, where q, q!, wq, wq!,
+x, and quit end the input with TL_PRESSED_QUIT. The cursor shape follows the
+submode, a bar in insert, a block in command, and an underline in visual or
+while an operator waits for its motion.
+
+Ctrl-V enters a block selection from command mode or from emacs, a column
+rectangle across several logical lines. The keys d and x delete the rectangle,
+and I, c, or C insert the typed text at the left column of every selected line,
+so several lines are indented at once. The arrows and h, j, k, and l move
+within the rectangle.
 
 A line can span several rows. Alt-Enter inserts a newline and keeps editing. A
 backslash at the end of a line followed by Enter also continues onto a new row,
 fish style, without drawing a second prompt. When the line is submitted each
-backslash that is followed by a newline is removed together with that newline, so
-the two rows are joined like a POSIX shell. Newlines that come from Alt-Enter or
-a paste stay in the returned string. Continuation rows are padded so their text
-lines up under the first row.
+backslash that is followed by a newline is removed together with that newline,
+so the two rows are joined like a POSIX shell. Newlines that come from
+Alt-Enter or a paste stay in the returned string.
 
-Pasted text is read through bracketed paste when the terminal supports it, so the
-newlines inside a paste are inserted instead of submitting the line. A timing
-fallback covers terminals that do not support bracketed paste.
+Pasted text is read through bracketed paste when the terminal supports it, so
+the newlines inside a paste are inserted instead of submitting the line. A
+timing fallback covers terminals that do not support bracketed paste.
 
 
 Configuration macros
@@ -135,7 +150,10 @@ Possible key values:
 * TL_KEY_CLEAR (Ctrl-L);
 * TL_KEY_SUSPEND (Ctrl-Z);
 * TL_KEY_EOF (Ctrl-D);
-* TL_KEY_INTERRUPT (Ctrl-C).
+* TL_KEY_INTERRUPT (Ctrl-C);
+* TL_KEY_HISTORY_SEARCH (Ctrl-R);
+* TL_KEY_UNDO (Ctrl-_);
+* TL_KEY_REDO (Ctrl-^).
 
 
 tl_status_code tl_init(void);
@@ -186,12 +204,13 @@ Returns:
 * TL_PRESSED_ENTER on Enter;
 * TL_PRESSED_INTERRUPT on Ctrl-C;
 * TL_PRESSED_EOF on Ctrl-D when there is no characters on the line;
-* TL_PRESSED_SUSPEND on Ctrl-Z.
+* TL_PRESSED_SUSPEND on Ctrl-Z;
+* TL_PRESSED_QUIT when the vi :q command quits the shell.
 * `TL_ERROR` on errors.
 
 
 void tl_set_predefined_input(const char *str);
----------------------------------
+----------------------------------------------
 Predefine input for `tl_get_input()`. Does not work for `tl_get_character()`.
 
 
@@ -285,6 +304,17 @@ void tl_set_ghost_enabled(int enabled);
 Turns the dimmed ghost suggestion shown ahead of the cursor on or off. It is on
 by default. When it is off neither the completion callback nor the history fills
 it, so a host that wants no inline hint passes 0.
+
+
+void tl_set_edit_mode(int mode);
+--------------------------------
+Selects the line editing mode, one of the tl_edit_mode values. TL_EDIT_MODE_EMACS
+is the default, and any vi value starts each fresh line in vi insert mode. The
+choice is read on the next line, so a host toggles it before the prompt to match
+a `set -o vi` or `set -o emacs` change.
+
+The values are TL_EDIT_MODE_EMACS, TL_EDIT_MODE_VI_INSERT, TL_EDIT_MODE_VI_COMMAND,
+and TL_EDIT_MODE_VI_VISUAL.
 
 
 Examples
