@@ -2995,6 +2995,12 @@ ITL_DEF int itl_esc_parse_posix(uint8_t byte)
   bool read_mod = false;
 
   if (byte == 27) { /* esc */
+    /* A lone ESC has no byte after it, so reading one here would block until
+       the next keystroke and a search or a command mode would never see the
+       cancel. An escape sequence arrives as one burst, so its next byte is
+       already pending. A bare ESC is reported at once when nothing follows. */
+    if (!itl_input_is_pending()) return TL_KEY_UNKN;
+
     ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
 
     if (byte != '[' && byte != 'O') {
@@ -3997,6 +4003,15 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
       }
 
       if (ITL_LE_IS_NEWLINE(ch)) {
+        /* A block selection over an empty line carries a one-cell span on this
+           newline, which has no character of its own to reverse. A reversed
+           space is drawn in its place so the selected cell and the mock cursor
+           still show, then the span is closed since it ends at this cell. */
+        if (in_span && i + 1 == open_end) {
+          itl_char_buf_append_byte(b, ' ');
+          itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+          in_span = false;
+        }
         itl_char_buf_append_cstr(b, ITL_LF);
         itl_char_buf_append_spaces(b, indent);
         col = indent;
@@ -6414,6 +6429,14 @@ ITL_DEF tl_status_code itl_vi_block_loop(itl_le_t *le, int return_mode)
         itl_g_search_spans[itl_g_search_span_count].end = span_end;
         itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_REVERSE;
         itl_g_search_span_count += 1;
+      } else if (line_end < le->line->length) {
+        /* The block covers no column on this line, an empty line or one shorter
+           than the left edge. A one-cell span on its newline draws a reversed
+           space there so the selection and the mock cursor still show. */
+        itl_g_search_spans[itl_g_search_span_count].start = line_end;
+        itl_g_search_spans[itl_g_search_span_count].end = line_end + 1;
+        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_REVERSE;
+        itl_g_search_span_count += 1;
       }
     }
     itl_g_search_spans_active = true;
@@ -6601,6 +6624,14 @@ ITL_DEF tl_status_code itl_emacs_multicursor_loop(itl_le_t *le)
       if (row != active_line && marker < line_end) {
         itl_g_search_spans[itl_g_search_span_count].start = marker;
         itl_g_search_spans[itl_g_search_span_count].end = marker + 1;
+        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_REVERSE;
+        itl_g_search_span_count += 1;
+      } else if (row != active_line && line_end < le->line->length) {
+        /* The line has no character under the marker, an empty line or one
+           shorter than the column. A one-cell span on its newline draws a
+           reversed space there to stand in for the mock cursor. */
+        itl_g_search_spans[itl_g_search_span_count].start = line_end;
+        itl_g_search_spans[itl_g_search_span_count].end = line_end + 1;
         itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_REVERSE;
         itl_g_search_span_count += 1;
       }
