@@ -3474,6 +3474,73 @@ ITL_DEF bool itl_le_prev_spans_equal(const tl_highlight_span *spans,
   return true;
 }
 
+ITL_DEF size_t itl_merge_visual_spans(const tl_highlight_span *syntax,
+                                      size_t syntax_count,
+                                      const tl_highlight_span *selection,
+                                      size_t selection_count,
+                                      size_t line_length, tl_highlight_span *out,
+                                      size_t out_capacity)
+{
+  size_t count = 0;
+  size_t position = 0;
+
+  while (position < line_length && count < out_capacity) {
+    const char *color = NULL;
+    size_t color_end = line_length;
+    const char *selection_sgr = NULL;
+    size_t selection_end = line_length;
+    size_t run_end;
+    const char *sgr;
+    size_t s;
+
+    for (s = 0; s < syntax_count; ++s) {
+      if (position >= syntax[s].start && position < syntax[s].end) {
+        color = syntax[s].sgr;
+        color_end = syntax[s].end;
+        break;
+      }
+      if (syntax[s].start > position) {
+        color_end = syntax[s].start;
+        break;
+      }
+    }
+
+    for (s = 0; s < selection_count; ++s) {
+      if (position >= selection[s].start && position < selection[s].end) {
+        selection_sgr = selection[s].sgr;
+        selection_end = selection[s].end;
+        break;
+      }
+      if (selection[s].start > position) {
+        selection_end = selection[s].start;
+        break;
+      }
+    }
+
+    run_end = color_end < selection_end ? color_end : selection_end;
+    if (run_end <= position)
+      run_end = position + 1;
+
+    sgr = selection_sgr != NULL ? selection_sgr : color;
+    if (sgr != NULL) {
+      if (count > 0 && out[count - 1].end == position &&
+          out[count - 1].sgr == sgr)
+      {
+        out[count - 1].end = run_end;
+      } else {
+        out[count].start = position;
+        out[count].end = run_end;
+        out[count].sgr = sgr;
+        count++;
+      }
+    }
+
+    position = run_end;
+  }
+
+  return count;
+}
+
 /* $COLUMNS and $LINES, same as above. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_rows = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_cols = 1;
@@ -3847,11 +3914,36 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   char itl_cur_render[ITL_STRING_MAX_LEN];
   bool have_cur_render = false;
   tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
+  tl_highlight_span itl_syntax_spans[ITL_HIGHLIGHT_MAX_SPANS];
   size_t span_count = 0;
   if (itl_g_tty_should_refresh_text) {
     have_cur_render = itl_string_to_cstr(le->line, itl_cur_render,
                                          sizeof(itl_cur_render)) == TL_SUCCESS;
-    if (itl_g_search_spans_active) {
+    if (itl_g_search_spans_active &&
+        itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL && have_cur_render &&
+        itl_g_highlight_callback != NULL)
+    {
+      tl_highlight hl;
+      size_t syntax_count = 0;
+      hl.spans = itl_syntax_spans;
+      hl.count = 0;
+      hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
+      if (itl_g_highlight_callback(itl_cur_render, &hl)) {
+        size_t s;
+        for (s = 0; s < hl.count && s < ITL_HIGHLIGHT_MAX_SPANS; ++s) {
+          if (itl_syntax_spans[s].start < itl_syntax_spans[s].end &&
+              itl_syntax_spans[s].end <= le->line->length &&
+              itl_syntax_spans[s].sgr != NULL)
+          {
+            itl_syntax_spans[syntax_count++] = itl_syntax_spans[s];
+          }
+        }
+      }
+      span_count = itl_merge_visual_spans(
+          itl_syntax_spans, syntax_count, itl_g_search_spans,
+          itl_g_search_span_count, le->line->length, itl_spans,
+          ITL_HIGHLIGHT_MAX_SPANS);
+    } else if (itl_g_search_spans_active) {
       /* The reverse search prebuilt its spans for the whole block, so the host
          callback is skipped and those spans are validated and drawn. */
       size_t s;
