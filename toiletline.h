@@ -1731,7 +1731,7 @@ struct itl_le
 #define ITL_VI_REGISTER_COUNT 27
 #define ITL_VI_REGISTER_UNNAMED 26
 #define ITL_UNDO_STACK_DEPTH    64
-#define ITL_VI_SGR_REVERSE      "\x1b[7m"
+#define ITL_VI_SGR_SELECT      "\x1b[1;7m"
 
 typedef enum
 {
@@ -4070,6 +4070,8 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     size_t next_span = 0;
     bool in_span = false;
     size_t open_end = 0;
+    const char *open_sgr = NULL;
+    bool suppress_pad = itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL;
     col = indent;
     /* The flash repaints the whole line in one tone. It opens that SGR once and
        the loop below skips the per-span color. */
@@ -4090,6 +4092,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
           itl_char_buf_append_cstr(b, itl_spans[next_span].sgr);
           in_span = true;
           open_end = itl_spans[next_span].end;
+          open_sgr = itl_spans[next_span].sgr;
           next_span++;
         }
       }
@@ -4103,28 +4106,45 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
           itl_char_buf_append_byte(b, ' ');
           itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
           in_span = false;
+        } else if (in_span && suppress_pad) {
+          itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
         }
         itl_char_buf_append_cstr(b, ITL_LF);
         itl_char_buf_append_spaces(b, indent);
         col = indent;
+        if (in_span && suppress_pad) {
+          itl_char_buf_append_cstr(b, open_sgr);
+        }
         continue;
       }
 
       {
         size_t char_width = itl_char_width(ch);
         if (char_width == 2 && col + 1 >= cols) {
+          if (in_span && suppress_pad) {
+            itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+          }
           itl_char_buf_append_cstr(b, ITL_LF);
           itl_char_buf_append_spaces(b, indent);
           col = indent;
+          if (in_span && suppress_pad) {
+            itl_char_buf_append_cstr(b, open_sgr);
+          }
         }
         for (j = 0; j < ch.size; ++j) {
           itl_char_buf_append_byte(b, ch.bytes[j]);
         }
         col += char_width;
         if (col >= cols) {
+          if (in_span && suppress_pad) {
+            itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+          }
           itl_char_buf_append_cstr(b, ITL_LF);
           itl_char_buf_append_spaces(b, indent);
           col = indent;
+          if (in_span && suppress_pad) {
+            itl_char_buf_append_cstr(b, open_sgr);
+          }
         }
       }
     }
@@ -6316,7 +6336,7 @@ ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
       }
       itl_g_search_spans[0].start = span_start;
       itl_g_search_spans[0].end = span_end;
-      itl_g_search_spans[0].sgr = ITL_VI_SGR_REVERSE;
+      itl_g_search_spans[0].sgr = ITL_VI_SGR_SELECT;
       itl_g_search_span_count = 1;
     } else {
       itl_g_search_span_count = 0;
@@ -6519,7 +6539,7 @@ ITL_DEF tl_status_code itl_vi_block_loop(itl_le_t *le, int return_mode)
       if (span_start < span_end) {
         itl_g_search_spans[itl_g_search_span_count].start = span_start;
         itl_g_search_spans[itl_g_search_span_count].end = span_end;
-        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_REVERSE;
+        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_SELECT;
         itl_g_search_span_count += 1;
       } else if (line_end < le->line->length) {
         /* The block covers no column on this line, an empty line or one shorter
@@ -6527,7 +6547,7 @@ ITL_DEF tl_status_code itl_vi_block_loop(itl_le_t *le, int return_mode)
            space there so the selection and the mock cursor still show. */
         itl_g_search_spans[itl_g_search_span_count].start = line_end;
         itl_g_search_spans[itl_g_search_span_count].end = line_end + 1;
-        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_REVERSE;
+        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_SELECT;
         itl_g_search_span_count += 1;
       }
     }
@@ -6716,7 +6736,7 @@ ITL_DEF tl_status_code itl_emacs_multicursor_loop(itl_le_t *le)
       if (row != active_line && marker < line_end) {
         itl_g_search_spans[itl_g_search_span_count].start = marker;
         itl_g_search_spans[itl_g_search_span_count].end = marker + 1;
-        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_REVERSE;
+        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_SELECT;
         itl_g_search_span_count += 1;
       } else if (row != active_line && line_end < le->line->length) {
         /* The line has no character under the marker, an empty line or one
@@ -6724,7 +6744,7 @@ ITL_DEF tl_status_code itl_emacs_multicursor_loop(itl_le_t *le)
            reversed space there to stand in for the mock cursor. */
         itl_g_search_spans[itl_g_search_span_count].start = line_end;
         itl_g_search_spans[itl_g_search_span_count].end = line_end + 1;
-        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_REVERSE;
+        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_SELECT;
         itl_g_search_span_count += 1;
       }
     }
