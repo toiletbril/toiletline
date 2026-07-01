@@ -6897,8 +6897,6 @@ ITL_DEF tl_status_code itl_vi_ex_command(itl_le_t *le)
 
     itl_string_from_bytes(display, status->data, status->size);
 
-    le->prompt_width = 0;
-    le->prompt_rows = 0;
     le->line = display;
     le->cursor_position = display->length;
     itl_g_search_span_count = 0;
