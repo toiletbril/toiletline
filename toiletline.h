@@ -3437,6 +3437,7 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_search_spans_active = false;
 ITL_DEF ITL_THREAD_LOCAL tl_highlight_span
     itl_g_search_spans[ITL_HIGHLIGHT_MAX_SPANS];
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_search_span_count = 0;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_multicursor_active = false;
 
 ITL_DEF void itl_le_save_prev_spans(const tl_highlight_span *spans,
                                     size_t count)
@@ -3920,8 +3921,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     have_cur_render = itl_string_to_cstr(le->line, itl_cur_render,
                                          sizeof(itl_cur_render)) == TL_SUCCESS;
     if (itl_g_search_spans_active &&
-        itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL && have_cur_render &&
-        itl_g_highlight_callback != NULL)
+        (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
+         itl_g_multicursor_active) &&
+        have_cur_render && itl_g_highlight_callback != NULL)
     {
       tl_highlight hl;
       size_t syntax_count = 0;
@@ -6712,6 +6714,8 @@ ITL_DEF tl_status_code itl_emacs_multicursor_loop(itl_le_t *le)
       le->cursor_position - itl_le_line_start_of(le, le->cursor_position);
   bool did_push_undo = false;
 
+  itl_g_multicursor_active = true;
+
   while (true) {
     size_t total_lines = itl_le_line_index_of(le, le->line->length) + 1;
     size_t top_line = ITL_MIN(anchor_line, active_line);
@@ -6779,6 +6783,7 @@ ITL_DEF tl_status_code itl_emacs_multicursor_loop(itl_le_t *le)
     {
       itl_g_search_spans_active = false;
       itl_g_search_span_count = 0;
+      itl_g_multicursor_active = false;
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
       return itl_le_key_handle(le, key);
@@ -6863,6 +6868,7 @@ ITL_DEF tl_status_code itl_emacs_multicursor_loop(itl_le_t *le)
 
   itl_g_search_spans_active = false;
   itl_g_search_span_count = 0;
+  itl_g_multicursor_active = false;
 
   {
     size_t active_start = itl_le_line_start_at_index(le, active_line);
