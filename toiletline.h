@@ -405,7 +405,9 @@ TL_DEF void tl_set_edit_mode(int mode);
  */
 #define ITL_STRING_MAX_LEN 8191
 
+#if !defined ITL_TTY_IS_TTY
 #define ITL_TTY_IS_TTY() ITL_ISATTY(STDIN_FILENO)
+#endif /* ITL_TTY_IS_TTY */
 
 #elif defined ITL_POSIX
 #if !defined _DEFAULT_SOURCE
@@ -455,7 +457,9 @@ TL_DEF void tl_set_edit_mode(int mode);
 /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
 #define ITL_STRING_MAX_LEN 4095
 
+#if !defined ITL_TTY_IS_TTY
 #define ITL_TTY_IS_TTY() ITL_ISATTY(STDIN_FILENO)
+#endif /* ITL_TTY_IS_TTY */
 #endif /* ITL_POSIX */
 
 #if defined TL_DEBUG || defined TL_USE_STDIO || defined TL_SEE_BYTES

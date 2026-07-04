@@ -1,3 +1,4 @@
+#define ITL_TTY_IS_TTY() (1)
 #define TOILETLINE_IMPLEMENTATION
 #include "toiletline.h"
 
@@ -372,6 +373,7 @@ test_metrics(void)
   }
 
   /* Continuation rows are padded by the prompt width. */
+  le.prompt = ">> ";
   le.prompt_width = 3;
   m = itl_le_compute_metrics(&le, 80);
   if (m.total_rows != 2 || m.cursor_row != 1 || m.cursor_col != 5) {
@@ -383,6 +385,7 @@ test_metrics(void)
 
   /* A soft wrap with padding wraps to the indent column. */
   ITL_STRING_FROM_CSTR(line, "abcde");
+  le.prompt = "> ";
   le.prompt_width = 2;
   le.cursor_position = line->length;
   m = itl_le_compute_metrics(&le, 5);
@@ -901,15 +904,17 @@ main(void)
 {
   size_t i;
   bool   result;
+  size_t failed_count = 0;
 
   for (i = 0; i < countof(test_cases); ++i) {
     result = test_cases[i].func();
     if (!result) {
       printf("%s: *** FAIL.\n", test_cases[i].name);
+      failed_count += 1;
     } else {
       printf("%s: ok.\n", test_cases[i].name);
     }
   }
 
-  return 0;
+  return failed_count > 0 ? 1 : 0;
 }
