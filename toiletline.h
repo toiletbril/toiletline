@@ -3312,6 +3312,23 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_cursor_at_end = false;
 ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len = 0;
 
+ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost_case_fix[ITL_STRING_MAX_LEN] = {0};
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_case_fix_len = 0;
+
+ITL_DEF int itl_ascii_prefix_matches_casefold(const char *entry,
+                                              const char *typed, size_t length)
+{
+  size_t i;
+  for (i = 0; i < length; i++) {
+    unsigned char a = (unsigned char) entry[i];
+    unsigned char b = (unsigned char) typed[i];
+    if (a >= 'A' && a <= 'Z') a = (unsigned char) (a - 'A' + 'a');
+    if (b >= 'A' && b <= 'Z') b = (unsigned char) (b - 'A' + 'a');
+    if (a != b) return 0;
+  }
+  return 1;
+}
+
 /* The history autosuggestion scans at most this many recent entries per
    keystroke to bound the per-keystroke cost on a long history. */
 #define ITL_GHOST_HISTORY_SCAN_MAX 1000
@@ -4342,6 +4359,18 @@ ITL_DEF void itl_ghost_clear(void)
 {
   itl_g_ghost_len = 0;
   itl_g_ghost[0] = '\0';
+  itl_g_ghost_case_fix_len = 0;
+  itl_g_ghost_case_fix[0] = '\0';
+}
+
+ITL_DEF void itl_ghost_accept(itl_le_t *le)
+{
+  if (itl_g_ghost_case_fix_len > 0) {
+    itl_le_clear_line(le);
+    itl_le_insert_cstr(le, itl_g_ghost_case_fix);
+  } else {
+    itl_le_insert_cstr(le, itl_g_ghost);
+  }
 }
 
 /* Ask the host for the top completion of the current line and fill the ghost
@@ -4457,7 +4486,9 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
     if (entry_len <= line_byte_len) {
       continue;
     }
-    if (memcmp(entry_cstr, line_cstr, line_byte_len) != 0) {
+    if (!itl_ascii_prefix_matches_casefold(entry_cstr, line_cstr,
+                                           line_byte_len))
+    {
       continue;
     }
     /* The host vets the entry before it becomes the suggestion, so a command
@@ -4476,6 +4507,16 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
       memcpy(itl_g_ghost, entry_cstr + line_byte_len, suffix_len);
       itl_g_ghost[suffix_len] = '\0';
       itl_g_ghost_len = suffix_len;
+      if (memcmp(entry_cstr, line_cstr, line_byte_len) != 0 &&
+          entry_len < sizeof(itl_g_ghost_case_fix))
+      {
+        memcpy(itl_g_ghost_case_fix, entry_cstr, entry_len);
+        itl_g_ghost_case_fix[entry_len] = '\0';
+        itl_g_ghost_case_fix_len = entry_len;
+      } else {
+        itl_g_ghost_case_fix[0] = '\0';
+        itl_g_ghost_case_fix_len = 0;
+      }
       break;
     }
   }
@@ -4515,6 +4556,9 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
     return;
   }
 
+  itl_g_ghost_case_fix_len = 0;
+  itl_g_ghost_case_fix[0] = '\0';
+
   /* Stay on the target already suggested while the input is still a strict
      prefix of it, whichever source first produced it. Typing further into a
      suggestion keeps it rather than flipping as the candidate set shifts
@@ -4532,6 +4576,8 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
                  suffix_len);
           itl_g_ghost[suffix_len] = '\0';
           itl_g_ghost_len = suffix_len;
+          itl_g_ghost_case_fix_len = 0;
+          itl_g_ghost_case_fix[0] = '\0';
           return;
         }
       }
@@ -4867,7 +4913,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     if (le->cursor_position == le->line->length && itl_g_ghost_len > 0 &&
         !(esc & TL_MOD_CTRL))
     {
-      itl_le_insert_cstr(le, itl_g_ghost);
+      itl_ghost_accept(le);
       itl_ghost_clear();
       itl_g_tty_should_refresh_text = true;
       break;
@@ -4911,7 +4957,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     /* At the end of the line, End accepts the ghost suggestion the same way
        Right does. */
     if (le->cursor_position == le->line->length && itl_g_ghost_len > 0) {
-      itl_le_insert_cstr(le, itl_g_ghost);
+      itl_ghost_accept(le);
       itl_ghost_clear();
       itl_g_tty_should_refresh_text = true;
       break;
