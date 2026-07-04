@@ -473,7 +473,7 @@ test_history_multiline_file(void)
 {
   bool ok = true;
 
-  const char *path = "/tmp/tl_test_history.txt";
+  const char *path = "tl_test_history.txt";
 
   itl_string_t *entry = itl_string_alloc();
   itl_string_t *got = itl_string_alloc();
@@ -556,7 +556,7 @@ hist_entry_is(size_t index, const char *expected)
 static bool
 test_history_ring_cap(void)
 {
-  const char *path = "/tmp/tl_test_ring.txt";
+  const char *path = "tl_test_ring.txt";
   bool   ok = true;
   size_t total = (size_t) TL_HISTORY_MAX_SIZE + 44;
   size_t i;
@@ -607,7 +607,7 @@ test_history_ring_cap(void)
 static bool
 test_history_dedup(void)
 {
-  const char *path = "/tmp/tl_test_dedup.txt";
+  const char *path = "tl_test_dedup.txt";
   bool ok = true;
 
   itl_g_is_active = true;
@@ -636,7 +636,7 @@ test_history_dedup(void)
 static bool
 test_history_unterminated_line(void)
 {
-  const char *path = "/tmp/tl_test_unterminated.txt";
+  const char *path = "tl_test_unterminated.txt";
   bool  ok = true;
   FILE *f;
 
@@ -676,7 +676,7 @@ test_history_unterminated_line(void)
 static bool
 test_history_search(void)
 {
-  const char *path = "/tmp/tl_test_search.txt";
+  const char *path = "tl_test_search.txt";
   bool ok = true;
 
   itl_string_t *query = itl_string_alloc();
@@ -756,7 +756,7 @@ test_history_search(void)
 static bool
 test_history_short_entry_skipped(void)
 {
-  const char *path = "/tmp/tl_test_short.txt";
+  const char *path = "tl_test_short.txt";
   bool ok = true;
 
   itl_g_is_active = true;
@@ -782,7 +782,7 @@ test_history_short_entry_skipped(void)
 static bool
 test_history_alloc_balance(void)
 {
-  const char *path = "/tmp/tl_test_alloc.txt";
+  const char *path = "tl_test_alloc.txt";
   bool   ok = true;
   size_t before;
 
@@ -823,7 +823,7 @@ test_history_alloc_balance(void)
 static bool
 test_history_concurrent_merge(void)
 {
-  const char *path = "/tmp/tl_test_merge.txt";
+  const char *path = "tl_test_merge.txt";
   bool  ok = true;
   FILE *other;
 

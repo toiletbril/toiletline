@@ -39,7 +39,7 @@ main(void)
     } else {
       size_t j, size = strlen(char_buffer);
 
-      printf("Received character: '%s' of of size %zu. Bytes:", char_buffer,
+      printf("Received character: '%s' of size %zu. Bytes:", char_buffer,
              size);
 
       for (j = 0; j < size; ++j) {

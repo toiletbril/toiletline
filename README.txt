@@ -8,11 +8,11 @@ sequences.
 
 Notes on Windows
 ----------------
-The library makes use of ENABLE_VIRTUAL_TERMINAL_PROCESSING switch that allows
-to enable native VT100 escape sequence processing for conhost.exe and such. That
-a requires Windows 10 version with build number 10586 or later. This is not
-crucial. The library can still be used with a VT100 compatible terminal with
-it's own terminal proccessing, like Windows Terminal or Alacritty.
+The library uses the ENABLE_VIRTUAL_TERMINAL_PROCESSING switch to enable
+native VT100 escape sequence processing for conhost.exe and such. That
+requires a Windows 10 build of 10586 or later. This is not crucial. The
+library can still be used with a VT100 compatible terminal with its own
+terminal processing, like Windows Terminal or Alacritty.
 
 UTF-8 locale feature is required for proper multibyte character support.
 
@@ -42,7 +42,7 @@ file which creates implementation and includes the library. Compile it to
 object file (`-c` flag in gcc/clang) and link your program against it.
 
 Assume that every function is thread-unsafe until stated otherwise. UI probably
-shouldn't be modified my multiple threads anyway.
+shouldn't be modified by multiple threads anyway.
 
 
 Keys and editing
@@ -99,6 +99,8 @@ macro.
 * TL_USE_STDIO can be defined to use <stdio.h> functions instead of raw
   `read()`, `open()` and etc.
 * TL_HISTORY_MAX_SIZE configures maximum history size;
+* ITL_HISTORY_ENTRY_MAX_BYTES caps the byte length of a single history entry;
+  longer entries are silently dropped from history;
 * TL_NO_SUSPEND prevents Ctrl-Z from sending `SIGTSTP` to the terminal. Note
   that Windows does not have this signal, and if this macro is not defined,
   Ctrl-Z will call `exit(0)`;
@@ -161,7 +163,9 @@ Possible key values:
 * TL_KEY_INTERRUPT (Ctrl-C);
 * TL_KEY_HISTORY_SEARCH (Ctrl-R);
 * TL_KEY_UNDO (Ctrl-_);
-* TL_KEY_REDO (Ctrl-^).
+* TL_KEY_REDO (Ctrl-^);
+* TL_KEY_PASTE_BEGIN (bracketed paste marker, surfaced through
+  tl_last_control_sequence when tl_get_character reads it).
 
 
 tl_status_code tl_init(void);
@@ -180,8 +184,7 @@ Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
 tl_status_code tl_exit(void);
 -----------------------------
-Exit toiletline, restore terminal state, delete all completions, and free
-internal memory.
+Exit toiletline, restore terminal state, and free internal memory.
 
 Returns `TL_SUCCESS` or `TL_ERROR` on errors.
 
@@ -198,9 +201,10 @@ tl_status_code tl_get_input(char *line_buffer, size_t size, const char *prompt);
 Get input from user.
 
 To support multi-byte characters and null at the end, size needs to be at least
-2 or more. Submitted input will be written to `*line_buffer` as a
-null-terminated string. After the size is exhausted, character inputs will be
-ignored.
+2. It must not exceed the platform maximum string length, 4095 bytes on POSIX
+and 8191 bytes on Windows, or the call traps. Submitted input will be written to
+`*line_buffer` as a null-terminated string. After the size is exhausted,
+character inputs will be ignored.
 
 The submitted string can contain embedded newlines from multiline editing or a
 paste, so the buffer is not always a single line.
@@ -212,7 +216,8 @@ Returns:
 * TL_PRESSED_ENTER on Enter;
 * TL_PRESSED_INTERRUPT on Ctrl-C;
 * TL_PRESSED_EOF on Ctrl-D when there is no characters on the line;
-* TL_PRESSED_SUSPEND on Ctrl-Z;
+* TL_PRESSED_SUSPEND on Ctrl-Z, only when TL_NO_SUSPEND is defined; the
+  default build handles Ctrl-Z internally;
 * TL_PRESSED_TAB on Tab when no completion callback is registered;
 * TL_PRESSED_QUIT when the vi :q command quits the shell.
 * `TL_ERROR` on errors.
@@ -227,6 +232,9 @@ tl_status_code tl_get_character(char *char_buffer, size_t size, const char *prom
 ------------------------------------------------------------------------------------
 Read a character without waiting and modify `tl_last_control_sequence`.
 
+`size` must be between 2 and 5: one UTF-8 character of up to four bytes plus
+the null terminator. A larger buffer traps the call.
+
 Returns:
 * TL_SUCCESS on a character;
 * TL_PRESSED_CONTROL_SEQUENCE on a control sequence (`tl_last_control_sequence`
@@ -238,10 +246,10 @@ tl_status_code tl_history_load(const char *file_path);
 ------------------------------------------------------
 Load history from a file.
 
-If loading a history file fails for any reason other than non-existent file,
+If loading a history file fails for any reason other than a non-existent file,
 `tl_history_dump()` will be a no-op to avoid overwriting wrong files. Finding a
-non-alphanumeric character while loading the file is treated as an error as
-well (that means you accidentaly loaded a binary file T__T).
+control byte that is not whitespace while loading the file is treated as an
+error as well (that means you accidentaly loaded a binary file T__T).
 
 Returns:
 * `TL_SUCCESS`;
