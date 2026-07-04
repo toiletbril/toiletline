@@ -629,7 +629,6 @@ ITL_DEF inline void itl_do_nothing() {}
 #define ITL_MAX(i, j) (((i) > (j)) ? (i) : (j))
 #define ITL_MIN(i, j) (((i) < (j)) ? (i) : (j))
 
-/* Do `catch_` if `expr` is not true */
 #define ITL_TRY(expr, catch_)                                                  \
   do {                                                                         \
     if (!(expr)) {                                                             \
@@ -782,7 +781,6 @@ TL_DEF tl_status_code tl_enter_raw_mode(void)
 
   ITL_TRY(ITL_TTY_IS_TTY(), return TL_ERROR);
 
-  /* If raw mode failed, restore terminal's state */
   ITL_TRY(itl_enter_raw_mode_impl(), {
     itl_exit_raw_mode_impl();
     return TL_ERROR;
@@ -1047,7 +1045,6 @@ ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
 
   bytes[0] = first_byte;
 
-  /* Consequent bytes. */
   for (i = 1; i < size; ++i) {
     ITL_TRY_READ_BYTE(&bytes[i], return itl_replacement_character);
     /* Each continuation byte must match the bit pattern 0b10xxxxxx. */
@@ -1360,7 +1357,6 @@ ITL_DEF void itl_string_extend(itl_string_t *str)
                                           str->capacity * sizeof(itl_utf8_t));
 }
 
-/* Returns length of the matching prefix */
 ITL_DEF size_t itl_string_prefix_with_offset(const itl_string_t *str1,
                                              size_t start, size_t end,
                                              const itl_string_t *str2)
@@ -1422,7 +1418,6 @@ ITL_DEF void itl_string_recalc_size(itl_string_t *str)
   }
 }
 
-/* Shrinks string to capacity of ITL_STRING_INIT_SIZE */
 ITL_DEF void itl_string_shrink(itl_string_t *str)
 {
   str->capacity = ITL_STRING_INIT_SIZE;
@@ -1489,7 +1484,6 @@ ITL_DEF void itl_string_erase(itl_string_t *str, size_t position, size_t count,
   }
 
   if (backwards) {
-    /* Deleting at the start or at the end */
     if (position >= str->length) {
       str->length -= count;
       itl_string_recalc_size(str);
@@ -1505,7 +1499,6 @@ ITL_DEF void itl_string_erase(itl_string_t *str, size_t position, size_t count,
     position += count;
   }
 
-  /* Erase the characters by shifting */
   itl_string_shift(str, position, count, true);
   itl_string_recalc_size(str);
 }
@@ -1711,7 +1704,6 @@ typedef struct itl_le itl_le_t;
 /* Line editor */
 struct itl_le
 {
-  /* Contents of the line */
   itl_string_t *line;
   size_t cursor_position;
 
@@ -1726,7 +1718,6 @@ struct itl_le
   size_t prompt_width; /* N of columns the prompt's last row occupies */
   size_t prompt_rows;  /* N of newlines in the prompt, 0 for a single row */
 
-  /* Remembered column for repeated visual up/down moves */
   size_t goal_column;
 };
 
