@@ -4415,6 +4415,35 @@ ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr)
       memcpy(itl_g_ghost, lcp + skip_offset, suffix_len);
       itl_g_ghost[suffix_len] = '\0';
       itl_g_ghost_len = suffix_len;
+      {
+        size_t token_start_bytes = 0;
+        size_t cp;
+        for (cp = 0;
+             cp < result.token_start && line_cstr[token_start_bytes] != '\0';
+             cp++)
+        {
+          token_start_bytes += 1;
+          while (line_cstr[token_start_bytes] != '\0' &&
+                 (line_cstr[token_start_bytes] & 0xC0) == 0x80)
+          {
+            token_start_bytes += 1;
+          }
+        }
+        {
+          size_t typed_byte_len = strlen(line_cstr) - token_start_bytes;
+          size_t lcp_full_len = strlen(lcp);
+          size_t fixed_len = token_start_bytes + lcp_full_len;
+          int differs =
+              skip_offset != typed_byte_len ||
+              memcmp(lcp, line_cstr + token_start_bytes, typed_byte_len) != 0;
+          if (differs && fixed_len < sizeof(itl_g_ghost_case_fix)) {
+            memcpy(itl_g_ghost_case_fix, line_cstr, token_start_bytes);
+            memcpy(itl_g_ghost_case_fix + token_start_bytes, lcp,
+                   lcp_full_len + 1);
+            itl_g_ghost_case_fix_len = fixed_len;
+          }
+        }
+      }
     }
   }
 }
