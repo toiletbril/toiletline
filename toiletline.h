@@ -259,9 +259,9 @@ typedef struct tl_completion
 } tl_completion;
 
 /**
- * The completion callback. The host receives the current buffer, its cursor
- * byte offset, and a result to fill. It returns nonzero when it filled the
- * result and zero when it has nothing to offer.
+ * The completion callback. The host receives the current buffer, the cursor
+ * as a codepoint index, and a result to fill. It returns nonzero when it
+ * filled the result and zero when it has nothing to offer.
  */
 typedef int (*tl_complete_fn)(const char *buffer, size_t cursor,
                               tl_completion *out, int for_listing);
@@ -508,8 +508,8 @@ ITL_DEF int itl_write_impl(FILE *f, const void *buf, size_t size)
 ITL_DEF int ITL_READ_BYTE_RAW(void)
 {
 #if !defined ITL_INJECT_KLEE
-  int buf[1];
-  return (ITL_READ(ITL_STDIN, buf, 1) != 1) ? -1 : *buf;
+  unsigned char byte_value;
+  return (ITL_READ(ITL_STDIN, &byte_value, 1) != 1) ? -1 : (int) byte_value;
 #else
   static size_t i = 0;
   if (i >= ITL_KLEE_BUFFER_SIZE - 1) {
@@ -783,7 +783,7 @@ TL_DEF tl_status_code tl_enter_raw_mode(void)
 
   /* If raw mode failed, restore terminal's state */
   ITL_TRY(itl_enter_raw_mode_impl(), {
-    tl_exit_raw_mode();
+    itl_exit_raw_mode_impl();
     return TL_ERROR;
   });
 
@@ -1496,6 +1496,9 @@ ITL_DEF void itl_string_erase(itl_string_t *str, size_t position, size_t count,
     if (position >= str->length) {
       return;
     }
+    if (count > str->length - position) {
+      count = str->length - position;
+    }
     position += count;
   }
 
@@ -1836,10 +1839,12 @@ ITL_DEF bool itl_undo_pop(itl_le_t *le)
     return false;
   }
 
-  if (itl_g_undo_count < ITL_UNDO_STACK_DEPTH) {
-    itl_undo_store(&itl_g_undo_stack[itl_g_undo_head], le);
-    itl_g_redo_count += 1;
+  if (itl_g_undo_count == ITL_UNDO_STACK_DEPTH) {
+    itl_g_undo_count -= 1;
   }
+
+  itl_undo_store(&itl_g_undo_stack[itl_g_undo_head], le);
+  itl_g_redo_count += 1;
 
   top = (itl_g_undo_head + ITL_UNDO_STACK_DEPTH - 1) % ITL_UNDO_STACK_DEPTH;
   itl_string_copy(le->line, itl_g_undo_stack[top].line);
@@ -2508,8 +2513,8 @@ ITL_DEF void itl_char_buf_append_size_t(itl_char_buf_t *cb, size_t n)
   }
 
   /* Digits are put in reverse order */
-  for (i = new_size - 1; i >= cb->size; --i) {
-    cb->data[i] = (char) (n % 10) + '0';
+  for (i = new_size; i > cb->size; --i) {
+    cb->data[i - 1] = (char) (n % 10) + '0';
     n /= 10;
   }
 
@@ -2600,7 +2605,7 @@ ITL_DEF void itl_char_buf_append_string_escaped(itl_char_buf_t *cb,
   do {                                                                         \
     itl_char_buf_append_cstr(buffer, "\x1b[");                                 \
     itl_char_buf_append_size_t(buffer, (size_t) steps);                        \
-    itl_char_buf_append_byte(buffer, 'C')                                      \
+    itl_char_buf_append_byte(buffer, 'C');                                     \
   } while (0)
 
 #define ITL_TTY_MOVE_UP(buffer, rows)                                          \
@@ -2904,14 +2909,10 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str)
    TL_SUCCESS or TL_ERROR, sets errno on failure. */
 ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
 {
-  ITL_FILE in_file;
   ITL_FILE out_file;
-  char buffer[ITL_HISTORY_FILE_BUFFER_SIZE];
-  int read_amount;
+  size_t total_written = 0;
   tl_status_code ret = TL_SUCCESS;
 
-  /* The file is about to be rewritten, so the cached ghost read handle is
-     dropped and reopened against the new content on the next scan. */
   itl_history_read_fd_invalidate();
 
   TL_ASSERT(itl_g_is_active && "Dump history before calling tl_exit()!");
@@ -2930,8 +2931,7 @@ ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
     return TL_SUCCESS;
   }
 
-  in_file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
-  if (ITL_FILE_IS_BAD(in_file)) {
+  if (!itl_history_ensure_read_buffer()) {
     /* The store may not exist yet when no command was entered. */
     return (errno == ENOENT) ? TL_SUCCESS : TL_ERROR;
   }
@@ -2940,20 +2940,21 @@ ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
   if (ITL_FILE_IS_BAD(out_file)) {
     ITL_TRACELN("could not open history file for dump (%s): %s\n", path,
                 strerror(errno));
-    ITL_FILE_CLOSE(in_file);
     return TL_ERROR;
   }
 
-  while ((read_amount = (int) ITL_READ(in_file, buffer,
-                                       ITL_HISTORY_FILE_BUFFER_SIZE)) > 0)
-  {
-    if (ITL_WRITE(out_file, buffer, (size_t) read_amount) == -1) {
+  while (total_written < itl_g_history_read_buffer->size) {
+    int write_amount =
+        (int) ITL_WRITE(out_file,
+                        itl_g_history_read_buffer->data + total_written,
+                        itl_g_history_read_buffer->size - total_written);
+    if (write_amount <= 0) {
       ret = TL_ERROR;
       break;
     }
+    total_written += (size_t) write_amount;
   }
 
-  ITL_FILE_CLOSE(in_file);
   ITL_FILE_CLOSE(out_file);
 
   return ret;
@@ -3071,6 +3072,10 @@ ITL_DEF int itl_esc_parse_posix(uint8_t byte)
   }
 
   if (!read_mod) {
+    if (byte >= 0x40) {
+      return event;
+    }
+
     ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
     if (byte == ';') {
       ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
@@ -3171,6 +3176,8 @@ ITL_DEF int itl_esc_parse(uint8_t byte)
 ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_char_buffer = ITL_ZERO_INIT;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_is_dumb = true;
 
+ITL_DEF int itl_term_supports_decorations(void);
+
 /* *le, *rows, *cols can be NULL. */
 ITL_DEF bool itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows,
                               size_t *cols)
@@ -3188,7 +3195,7 @@ ITL_DEF bool itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows,
   struct winsize window;
 #endif
 
-  if (itl_g_tty_is_dumb) {
+  if (itl_g_tty_is_dumb && !itl_term_supports_decorations()) {
     if ((emacs_buf = getenv("COLUMNS")) == NULL) {
       itl_g_tty_is_dumb = false;
       goto next;
@@ -3210,10 +3217,10 @@ next:
 #if defined ITL_VT_SIZE
 
   b = &itl_g_char_buffer;
-  itl_tty_move_forward(b, 999);
-  itl_tty_status_report(b);
-  itl_char_buf_dump(b);
-  itl_char_buf_clear(b);
+  ITL_TTY_MOVE_FORWARD(b, 999);
+  ITL_TTY_STATUS_REPORT(b);
+  ITL_CHAR_BUF_DUMP(b);
+  ITL_CHAR_BUF_CLEAR(b);
 
   /* There might be pasted input awaiting to be processed. Read and parse all
      bytes until escape is encountered. */
@@ -3224,11 +3231,11 @@ next:
       break;
     }
     /* don't print control sequences if they got pasted */
-    if (itl_esc_parse(*first) != TL_KEY_CHAR) {
+    if (itl_esc_parse((uint8_t) *first) != TL_KEY_CHAR) {
       continue;
     }
     if (le != NULL) {
-      itl_le_insert(le, itl_utf8_parse(*first));
+      itl_le_insert(le, itl_utf8_parse((uint8_t) *first));
     }
   }
 

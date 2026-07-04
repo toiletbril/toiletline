@@ -88,7 +88,7 @@ Alt-Enter or a paste stay in the returned string.
 
 Pasted text is read through bracketed paste when the terminal supports it, so
 the newlines inside a paste are inserted instead of submitting the line. A
-timing fallback covers terminals that do not support bracketed paste.
+terminal without bracketed paste submits each pasted line separately.
 
 
 Configuration macros
@@ -205,14 +205,15 @@ ignored.
 The submitted string can contain embedded newlines from multiline editing or a
 paste, so the buffer is not always a single line.
 
-All control sequences except Enter, EOF, and Interrupt will be handled
-internally.
+All control sequences except Enter, EOF, Interrupt, Suspend, the vi :q quit,
+and Tab without a completion callback will be handled internally.
 
 Returns:
 * TL_PRESSED_ENTER on Enter;
 * TL_PRESSED_INTERRUPT on Ctrl-C;
 * TL_PRESSED_EOF on Ctrl-D when there is no characters on the line;
 * TL_PRESSED_SUSPEND on Ctrl-Z;
+* TL_PRESSED_TAB on Tab when no completion callback is registered;
 * TL_PRESSED_QUIT when the vi :q command quits the shell.
 * `TL_ERROR` on errors.
 
@@ -244,7 +245,7 @@ well (that means you accidentaly loaded a binary file T__T).
 
 Returns:
 * `TL_SUCCESS`;
-* `TL_ERROR` on errors. Sets `errno` to `-EINVAL` if a previous call to
+* `TL_ERROR` on errors. Sets `errno` to `EINVAL` if a previous call to
   `tl_history_load()` was attempted on a binary file, sets `errno` to respective
   values on other failures.
 
@@ -255,7 +256,7 @@ Dump history to a file, overwriting it. Should be called before tl_exit()!
 
 Returns:
 * `TL_SUCCESS`;
-* `TL_ERROR` on errors. Sets `errno` to `-EINVAL` if a previous call to
+* `TL_ERROR` on errors. Sets `errno` to `EINVAL` if a previous call to
   `tl_history_load()` was attempted on a binary file, sets `errno` to respective
   values on other failures.
 
@@ -294,9 +295,9 @@ void tl_set_complete_callback(tl_complete_fn callback);
 ------------------------------------------------------
 Registers the completion callback the editor calls on `Tab` and while building
 the ghost suggestion. The callback receives the current line and the cursor
-position in bytes and fills a `tl_completion` with the candidates, their count,
-the longest common prefix, and the token span to replace. Pass `NULL` to turn
-completion off, which is the default.
+position in codepoints and fills a `tl_completion` with the candidates, their
+count, the longest common prefix, and the token span to replace. Pass `NULL` to
+turn completion off, which is the default.
 
 
 void tl_set_highlight_callback(tl_highlight_fn callback);
