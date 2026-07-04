@@ -1652,32 +1652,16 @@ ITL_DEF bool itl_string_from_bytes(itl_string_t *str, const char *data,
 
 #define ITL_HISTORY_FILE_BUFFER_SIZE (1024 * 2)
 
-/* A single committed history entry is capped at this many bytes. A pasted blob
-   or a generated one-liner that runs to many kilobytes would bloat the history
-   file and slow the per-keystroke ghost scan that reads each entry, so an
-   oversized line is dropped from history rather than stored. The line still
-   runs, only its recall is skipped. */
 #if !defined HISTORY_ENTRY_MAX_BYTES
 #define HISTORY_ENTRY_MAX_BYTES 2048
 #endif /* HISTORY_ENTRY_MAX_BYTES */
 
-/* The history file on disk is the source of truth. Only the byte offset of each
-   navigable entry is held in memory, capped to the most recent
-   TL_HISTORY_MAX_SIZE entries through a ring. Entry text is read from the file
-   on demand and never retained beyond the line currently shown, so a large
-   history file does not grow memory on an embedded device. */
 ITL_DEF ITL_THREAD_LOCAL char *itl_g_history_path = NULL;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_offsets[TL_HISTORY_MAX_SIZE];
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_head = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_file_size = 0;
 
-/* The whole history file held in memory for the ghost and search scans. The
-   ghost rescans on every keystroke, and decoding entries from this buffer
-   avoids a seek and read per entry. It loads once and is invalidated whenever
-   the file is appended to, reloaded, or rewritten. itl_char_buf is defined past
-   here, so the type is named by an incomplete struct pointer and the buffer
-   functions are defined below its definition. */
 struct itl_char_buf;
 ITL_DEF ITL_THREAD_LOCAL struct itl_char_buf *itl_g_history_read_buffer = NULL;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_read_buffer_loaded = false;
@@ -4567,8 +4551,12 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
     size_t line_byte_len = strlen(line_cstr);
     if (itl_g_ghost_sticky_target[0] != '\0') {
       size_t target_len = strlen(itl_g_ghost_sticky_target);
+      /* The match is case-insensitive on the typed prefix, so a sticky target
+         that corrected the case keeps its correction as the user types further
+         into it, the way Tab does. */
       if (line_byte_len < target_len &&
-          memcmp(itl_g_ghost_sticky_target, line_cstr, line_byte_len) == 0)
+          itl_ascii_prefix_matches_casefold(itl_g_ghost_sticky_target, line_cstr,
+                                            line_byte_len))
       {
         size_t suffix_len = target_len - line_byte_len;
         if (suffix_len < sizeof(itl_g_ghost)) {
@@ -4576,8 +4564,18 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
                  suffix_len);
           itl_g_ghost[suffix_len] = '\0';
           itl_g_ghost_len = suffix_len;
-          itl_g_ghost_case_fix_len = 0;
-          itl_g_ghost_case_fix[0] = '\0';
+          /* The typed prefix differs in case from the target, so accepting the
+             ghost rewrites the whole line to the target's casing. */
+          if (memcmp(itl_g_ghost_sticky_target, line_cstr, line_byte_len) != 0 &&
+              target_len < sizeof(itl_g_ghost_case_fix))
+          {
+            memcpy(itl_g_ghost_case_fix, itl_g_ghost_sticky_target, target_len);
+            itl_g_ghost_case_fix[target_len] = '\0';
+            itl_g_ghost_case_fix_len = target_len;
+          } else {
+            itl_g_ghost_case_fix_len = 0;
+            itl_g_ghost_case_fix[0] = '\0';
+          }
           return;
         }
       }
@@ -4610,13 +4608,20 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
      the sticky target, so the next keystroke keeps it while the input stays a
      prefix of it rather than re-running the sources and flipping. */
   if (itl_g_ghost_len > 0) {
-    size_t line_byte_len = strlen(line_cstr);
-    if (line_byte_len + itl_g_ghost_len + 1 <=
-        sizeof(itl_g_ghost_sticky_target))
+    if (itl_g_ghost_case_fix_len > 0 &&
+        itl_g_ghost_case_fix_len + 1 <= sizeof(itl_g_ghost_sticky_target))
     {
-      memcpy(itl_g_ghost_sticky_target, line_cstr, line_byte_len);
-      memcpy(itl_g_ghost_sticky_target + line_byte_len, itl_g_ghost,
-             itl_g_ghost_len + 1);
+      memcpy(itl_g_ghost_sticky_target, itl_g_ghost_case_fix,
+             itl_g_ghost_case_fix_len + 1);
+    } else {
+      size_t line_byte_len = strlen(line_cstr);
+      if (line_byte_len + itl_g_ghost_len + 1 <=
+          sizeof(itl_g_ghost_sticky_target))
+      {
+        memcpy(itl_g_ghost_sticky_target, line_cstr, line_byte_len);
+        memcpy(itl_g_ghost_sticky_target + line_byte_len, itl_g_ghost,
+               itl_g_ghost_len + 1);
+      }
     }
   }
 }
@@ -4774,8 +4779,6 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
   tl_completion result;
   size_t token_len, lcp_len;
 
-  /* Zero so a field the callback leaves unset, the descriptions array when the
-     menu is not shown, reads as NULL rather than a stack leftover. */
   memset(&result, 0, sizeof(result));
 
   if (itl_g_complete_callback == NULL) {
@@ -4785,14 +4788,6 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
   {
     return false;
   }
-  /* The host returns zero when it produced no candidates, so a falsy return and
-     a zero count are the same no-candidate case. The short circuit keeps the
-     count read off the uninitialized result when the return was already falsy.
-     No candidate flashes the line the way fish flashes rather than ringing the
-     bell or inserting a literal tab. The line repaints in reverse video, holds
-     for the brief beat, then repaints normal. The reverse rides on the real
-     text so a multiplexer that drops a whole-screen toggle still shows it. The
-     key is handled, so it never falls through to the host's tab. */
   int itl_completion_handled =
       itl_g_complete_callback(line_cstr, le->cursor_position, &result, 1);
   if (!itl_completion_handled || result.count == 0) {
