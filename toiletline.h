@@ -3312,13 +3312,22 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_flash_active = false;
 /* Line editor's visual extent during the previous refresh() call. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_total_rows = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_row = 1;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_col = 0;
 /* The bytes the previous text refresh drew, the base a plain append writes its
    tail onto. The length is zero before the first text refresh. */
 ITL_DEF ITL_THREAD_LOCAL char itl_g_le_prev_render[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_render_len = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_length = 0;
 /* Whether the previous refresh left the cursor at the line end. The append fast
    path fires only then, otherwise a mid-line caret forces the full redraw. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_cursor_at_end = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_plain_append_pending = false;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_plain_append_width = 0;
+#if !defined NDEBUG
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_append_refresh_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_full_refresh_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_metrics_scan_count = 0;
+#endif
 
 /* The ghost suggestion drawn dimmed after the cursor, and its byte length.
    Right or End accepts it. */
@@ -3487,20 +3496,31 @@ ITL_DEF void itl_le_save_prev_spans(const tl_highlight_span *spans,
   }
 }
 
-ITL_DEF bool itl_le_prev_spans_equal(const tl_highlight_span *spans,
-                                     size_t count)
+ITL_DEF bool itl_le_prev_spans_append_compatible(
+    const tl_highlight_span *spans, size_t count, size_t current_length,
+    const char **tail_sgr)
 {
   size_t s;
+  *tail_sgr = NULL;
   if (!itl_g_le_prev_spans_usable || count != itl_g_le_prev_span_count) {
     return false;
   }
   for (s = 0; s < count; ++s) {
     if (spans[s].start != itl_g_le_prev_spans[s].start ||
-        spans[s].end != itl_g_le_prev_spans[s].end ||
         strcmp(spans[s].sgr, itl_g_le_prev_spans[s].sgr) != 0)
     {
       return false;
     }
+    if (spans[s].end == itl_g_le_prev_spans[s].end) {
+      continue;
+    }
+    if (s + 1 != count ||
+        itl_g_le_prev_spans[s].end != itl_g_le_prev_length ||
+        spans[s].end != current_length)
+    {
+      return false;
+    }
+    *tail_sgr = spans[s].sgr;
   }
   return true;
 }
@@ -3933,7 +3953,20 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
   cols = ITL_MAX(tty_cols, 1);
   indent = ITL_LE_INDENT(le, cols);
-  m = itl_le_compute_metrics(le, tty_cols);
+  if (itl_g_tty_plain_append_pending && !is_resize &&
+      !itl_g_tty_first_render && itl_g_le_prev_cursor_at_end &&
+      itl_g_le_prev_cursor_col + itl_g_tty_plain_append_width < cols)
+  {
+    m.total_rows = itl_g_le_prev_total_rows;
+    m.cursor_row = itl_g_le_prev_cursor_row - 1;
+    m.cursor_col =
+        itl_g_le_prev_cursor_col + itl_g_tty_plain_append_width;
+  } else {
+#if !defined NDEBUG
+    itl_g_debug_metrics_scan_count += 1;
+#endif
+    m = itl_le_compute_metrics(le, tty_cols);
+  }
 
   ITL_TRACELN("refresh: total %zu, crow %zu, ccol %zu, curp %zu\n",
               m.total_rows, m.cursor_row, m.cursor_col, le->cursor_position);
@@ -3952,6 +3985,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
   tl_highlight_span itl_syntax_spans[ITL_HIGHLIGHT_MAX_SPANS];
   size_t span_count = 0;
+  const char *append_tail_sgr = NULL;
   if (itl_g_tty_should_refresh_text) {
     have_cur_render = itl_string_to_cstr(le->line, itl_cur_render,
                                          sizeof(itl_cur_render)) == TL_SUCCESS;
@@ -4010,16 +4044,13 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     }
   }
 
-  /* Fast path for a plain append at the end of a single unwrapped row with no
-     ghost and no highlight movement, writing only the appended bytes. A colored
-     frame qualifies when its spans equal the previous frame's exactly. Any
-     other edit falls through to the full redraw below. The trailing clear
-     erases a ghost a previous frame drew past the line. */
+  bool spans_are_append_compatible = itl_le_prev_spans_append_compatible(
+      itl_spans, span_count, le->line->length, &append_tail_sgr);
   if (itl_g_tty_should_refresh_text && !is_resize && !itl_g_tty_first_render &&
-      have_cur_render && itl_g_ghost_len == 0 && m.total_rows == 1 &&
-      m.cursor_row == 0 && itl_g_le_prev_total_rows == 1 &&
+      have_cur_render && m.total_rows == itl_g_le_prev_total_rows &&
+      m.cursor_row + 1 == itl_g_le_prev_cursor_row &&
       le->cursor_position == le->line->length && itl_g_le_prev_cursor_at_end &&
-      itl_le_prev_spans_equal(itl_spans, span_count))
+      spans_are_append_compatible)
   {
     /* A successful itl_string_to_cstr wrote exactly the line's byte size, so
        the length is read off the line rather than recounted with strlen. */
@@ -4030,15 +4061,34 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     {
       itl_char_buf_t *fb = &itl_g_char_buffer;
       size_t k;
+      if (append_tail_sgr != NULL) {
+        itl_char_buf_append_cstr(fb, append_tail_sgr);
+      }
       for (k = itl_g_le_prev_render_len; k < cur_len; ++k) {
         itl_char_buf_append_byte(fb, (uint8_t) itl_cur_render[k]);
       }
+      if (append_tail_sgr != NULL) {
+        itl_char_buf_append_cstr(fb, ITL_HIGHLIGHT_RESET);
+      }
       ITL_TTY_CLEAR_TO_END(fb);
+      if (itl_g_ghost_len > 0 && m.cursor_col + itl_g_ghost_len < cols) {
+        itl_char_buf_append_cstr(fb, "\x1b[90m");
+        itl_char_buf_append_cstr(fb, itl_g_ghost);
+        itl_char_buf_append_cstr(fb, "\x1b[0m");
+        ITL_TTY_CLEAR_TO_END(fb);
+        ITL_TTY_MOVE_TO_COLUMN(fb, m.cursor_col + 1);
+      }
       memcpy(itl_g_le_prev_render, itl_cur_render, cur_len);
       itl_g_le_prev_render_len = cur_len;
-      itl_g_le_prev_total_rows = 1;
-      itl_g_le_prev_cursor_row = 1;
+      itl_g_le_prev_length = le->line->length;
+      itl_g_le_prev_total_rows = m.total_rows;
+      itl_g_le_prev_cursor_row = m.cursor_row + 1;
+      itl_g_le_prev_cursor_col = m.cursor_col;
       itl_g_le_prev_cursor_at_end = true;
+#if !defined NDEBUG
+      itl_g_debug_append_refresh_count += 1;
+#endif
+      itl_g_tty_plain_append_pending = false;
       ITL_CHAR_BUF_DUMP(fb);
       ITL_CHAR_BUF_CLEAR(fb);
       return true;
@@ -4046,6 +4096,11 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   }
 
   b = &itl_g_char_buffer;
+#if !defined NDEBUG
+  if (itl_g_tty_should_refresh_text) {
+    itl_g_debug_full_refresh_count += 1;
+  }
+#endif
   itl_vi_sync_cursor_shape(b);
   ITL_TTY_HIDE_CURSOR(b);
   ITL_TTY_AUTOWRAP_OFF(b);
@@ -4232,6 +4287,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
   itl_g_le_prev_total_rows = m.total_rows;
   itl_g_le_prev_cursor_row = m.cursor_row + 1;
+  itl_g_le_prev_cursor_col = m.cursor_col;
   /* Record whether this frame, text or cursor-only, parked the caret at the
      line end, so the append fast path on the next keystroke knows the physical
      cursor sits at the append point. */
@@ -4246,9 +4302,11 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
       /* A successful itl_string_to_cstr wrote exactly the line's byte size, so
          the length is read off the line rather than recounted with strlen. */
       itl_g_le_prev_render_len = le->line->size;
+      itl_g_le_prev_length = le->line->length;
       memcpy(itl_g_le_prev_render, itl_cur_render, itl_g_le_prev_render_len);
     } else {
       itl_g_le_prev_render_len = 0;
+      itl_g_le_prev_length = 0;
     }
     itl_le_save_prev_spans(itl_spans, span_count);
   }
@@ -4256,13 +4314,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   itl_g_tty_prev_rows = tty_rows;
   itl_g_tty_prev_cols = tty_cols;
   itl_g_tty_first_render = false;
+  itl_g_tty_plain_append_pending = false;
 
-#if defined ITL_POSIX
   itl_g_tty_changed_size = 0;
-#else
-  /* Windows does not present anything useful and is a bad OS. */
-  itl_g_tty_changed_size = 1;
-#endif
   ITL_TTY_AUTOWRAP_ON(b);
   ITL_TTY_SHOW_CURSOR(b);
 
@@ -4821,6 +4875,7 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
   /* The line is redrawn fresh below the list, so forget the old block. */
   itl_g_le_prev_total_rows = 1;
   itl_g_le_prev_cursor_row = 1;
+  itl_g_le_prev_cursor_col = 0;
   itl_g_tty_should_refresh_text = true;
 }
 
@@ -7493,6 +7548,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
      is reset with the row counts, otherwise the first refresh of this line
      could compare against the previous command's render. */
   itl_g_le_prev_render_len = 0;
+  itl_g_le_prev_length = 0;
   itl_g_le_prev_cursor_at_end = false;
   itl_le_tty_refresh(le);
 
@@ -7523,7 +7579,9 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
         itl_g_tty_first_render = true;
         itl_g_le_prev_total_rows = 1;
         itl_g_le_prev_cursor_row = 1;
+        itl_g_le_prev_cursor_col = 0;
         itl_g_le_prev_render_len = 0;
+        itl_g_le_prev_length = 0;
         itl_g_le_prev_cursor_at_end = false;
         itl_g_tty_should_refresh_text = true;
         itl_le_tty_refresh(le);
@@ -7590,6 +7648,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
     }
 
     input_type = itl_esc_parse(input_byte);
+    itl_g_tty_plain_append_pending = false;
 
     if (itl_g_vi_block_insert_active &&
         itl_g_edit_mode == TL_EDIT_MODE_VI_INSERT)
@@ -7689,7 +7748,11 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
         itl_ghost_update(le);
       }
     } else {
-      itl_le_insert(le, itl_utf8_parse(input_byte));
+      itl_utf8_t appended_character = itl_utf8_parse(input_byte);
+      itl_g_tty_plain_append_pending =
+          le->cursor_position == le->line->length;
+      itl_g_tty_plain_append_width = itl_char_width(appended_character);
+      itl_le_insert(le, appended_character);
       itl_g_tty_should_refresh_text = true;
       /* Recompute the ghost for the token the new character extended. */
       itl_ghost_update(le);
