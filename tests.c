@@ -571,6 +571,41 @@ hist_entry_is(size_t index, const char *expected)
   return is_equal;
 }
 
+static int
+reject_ghost_history_entry(const char *entry)
+{
+  (void) entry;
+  return 0;
+}
+
+static bool
+test_rejected_ghost_history_prefix_is_cached(void)
+{
+  const char *path = "tl_test_rejected_ghost.txt";
+  bool ok = true;
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+  if (!hist_append_cstr("zzzz-invalid-history-command")) {
+    ok = false;
+  }
+  tl_set_ghost_validate_callback(reject_ghost_history_entry);
+  itl_ghost_fill_from_history("z", 1);
+  if (itl_g_ghost_history_miss_prefix_length != 1 ||
+      itl_g_ghost_history_miss_prefix[0] != 'z')
+  {
+    TEST_PRINTF("rejected prefix was not cached\n");
+    ok = false;
+  }
+
+  tl_set_ghost_validate_callback(NULL);
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
 static bool
 test_history_ring_cap(void)
 {
@@ -910,6 +945,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_find_substring),
                                    DEFINE_TEST_CASE(test_join_continuations),
                                    DEFINE_TEST_CASE(test_history_multiline_file),
+                                   DEFINE_TEST_CASE(
+                                       test_rejected_ghost_history_prefix_is_cached),
                                    DEFINE_TEST_CASE(test_history_ring_cap),
                                    DEFINE_TEST_CASE(test_history_dedup),
                                    DEFINE_TEST_CASE(test_history_unterminated_line),

@@ -4600,7 +4600,6 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr,
 {
   size_t index;
   bool found_match = false;
-  bool found_text_prefix = false;
 
   if (itl_g_history_path == NULL || itl_g_history_count == 0) {
     return;
@@ -4652,7 +4651,6 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr,
     {
       continue;
     }
-    found_text_prefix = true;
     /* The host vets the entry before it becomes the suggestion, so a command
        that no longer resolves is skipped and the scan keeps looking, the way
        fish validates its autosuggestions. */
@@ -4684,7 +4682,7 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr,
     }
   }
 
-  if (!found_match && !found_text_prefix &&
+  if (!found_match &&
       line_byte_len < sizeof(itl_g_ghost_history_miss_prefix))
   {
     memcpy(itl_g_ghost_history_miss_prefix, line_cstr, line_byte_len + 1);
@@ -7805,6 +7803,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
          before the key runs. Tab and the arrow keys that accept the ghost
          manage it themselves inside the handler. */
       bool is_tab = (input_type & TL_MASK_KEY) == TL_KEY_TAB;
+      size_t line_length_before_key = le->line->length;
       itl_undo_close_insert_run();
       bool accepts_ghost = ((input_type & TL_MASK_KEY) == TL_KEY_RIGHT ||
                             (input_type & TL_MASK_KEY) == TL_KEY_END) &&
@@ -7831,7 +7830,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
         return code;
       }
       /* After tab grew the line, offer a fresh ghost for the new token. */
-      if (is_tab) {
+      if (is_tab && le->line->length > line_length_before_key) {
         itl_ghost_update(le);
       }
     } else {
