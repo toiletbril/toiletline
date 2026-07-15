@@ -147,7 +147,8 @@ test_string_erase(void)
       {"это строка",         "то строка"},
       {"это строка",         "это стр"},
       {"это строка",         "это строка"},
-      {"это строка",         "это строка"}
+      {"это строка",         "это строка"},
+      {"hello",              "ello"}
   };
   /* clang-format on */
 
@@ -157,7 +158,8 @@ test_string_erase(void)
       {0,  1, false},
       {10, 3, true },
       {10, 3, false},
-      {0,  0, true }
+      {0,  0, true },
+      {1,  3, true }
   };
 
   for (i = 0; i < countof(tests); ++i) {
@@ -169,7 +171,7 @@ test_string_erase(void)
     itl_string_to_cstr(str, out_buffer, BUFFER_SIZE);
 
     result = strcmp(out_buffer, test.should_be);
-    if (result != 0) {
+    if (result != 0 || str->size != strlen(test.should_be)) {
       TEST_PRINTF("Result %zu: '%s', should be: '%s'\n", i, out_buffer,
                   test.should_be);
       ITL_STRING_FREE(str);
@@ -192,6 +194,7 @@ test_string_insert(void)
 
   itl_string_t *str = itl_string_alloc();
   itl_utf8_t    A = itl_utf8_new((uint8_t[4]){0x41}, 1);
+  itl_utf8_t    two_byte = itl_utf8_new((uint8_t[4]){0xC3, 0xA9}, 2);
 
   /* clang-format off */
   const string_test_case_t tests[] = {
@@ -213,12 +216,19 @@ test_string_insert(void)
     itl_string_to_cstr(str, out_buffer, BUFFER_SIZE);
 
     result = strcmp(out_buffer, test.should_be);
-    if (result != 0) {
+    if (result != 0 || str->size != strlen(test.should_be)) {
       TEST_PRINTF("Result %zu: '%s', should be: '%s'\n", i, out_buffer,
                   test.should_be);
       ITL_STRING_FREE(str);
       return false;
     }
+  }
+
+  ITL_STRING_FROM_CSTR(str, "ab");
+  itl_string_insert(str, 1, two_byte);
+  if (str->size != 4) {
+    ITL_STRING_FREE(str);
+    return false;
   }
 
   ITL_STRING_FREE(str);
@@ -337,6 +347,14 @@ test_char_width(void)
                 itl_char_width(combining), itl_char_width(emoji));
     return false;
   }
+
+  memcpy(itl_g_ghost, "\xC3\xA9", 3);
+  itl_g_ghost_len = 2;
+  itl_g_ghost_width = itl_cstr_display_width(itl_g_ghost);
+  if (itl_g_ghost_len != 2 || itl_g_ghost_width != 1) return false;
+  itl_ghost_clear();
+  if (itl_g_ghost_len != 0 || itl_g_ghost_width != 0) return false;
+
   return true;
 }
 
@@ -569,7 +587,7 @@ test_history_ring_cap(void)
 
   /* Append more than the ring holds so the oldest entries are evicted. */
   for (i = 0; i < total; ++i) {
-    sprintf(line, "cmd %zu", i);
+    snprintf(line, sizeof(line), "cmd %zu", i);
     if (!hist_append_cstr(line)) {
       TEST_PRINTF("append %zu failed\n", i);
       ok = false;
@@ -587,12 +605,13 @@ test_history_ring_cap(void)
   }
 
   /* The oldest surviving entry is the one total - MAX commands in. */
-  sprintf(expected, "cmd %zu", total - (size_t) TL_HISTORY_MAX_SIZE);
+  snprintf(expected, sizeof(expected), "cmd %zu",
+           total - (size_t) TL_HISTORY_MAX_SIZE);
   if (ok && !hist_entry_is(0, expected)) {
     TEST_PRINTF("oldest surviving entry is wrong\n");
     ok = false;
   }
-  sprintf(expected, "cmd %zu", total - 1);
+  snprintf(expected, sizeof(expected), "cmd %zu", total - 1);
   if (ok && !hist_entry_is(itl_g_history_count - 1, expected)) {
     TEST_PRINTF("newest entry is wrong\n");
     ok = false;

@@ -1476,6 +1476,10 @@ ITL_DEF void itl_string_shift(itl_string_t *str, size_t position,
 ITL_DEF void itl_string_erase(itl_string_t *str, size_t position, size_t count,
                               bool backwards)
 {
+  size_t erased_size = 0;
+  size_t erased_position;
+  size_t erased_end;
+
   ITL_TRACELN("string_erase: pos: %zu, count: %zu, backwards: %d, len %zu\n",
               position, count, backwards, str->length);
 
@@ -1485,10 +1489,9 @@ ITL_DEF void itl_string_erase(itl_string_t *str, size_t position, size_t count,
 
   if (backwards) {
     if (position >= str->length) {
-      str->length -= count;
-      itl_string_recalc_size(str);
-      return;
+      position = str->length;
     }
+    if (count > position) count = position;
   } else {
     if (position >= str->length) {
       return;
@@ -1499,8 +1502,15 @@ ITL_DEF void itl_string_erase(itl_string_t *str, size_t position, size_t count,
     position += count;
   }
 
+  erased_position = position - count;
+  erased_end = position;
+  while (erased_position < erased_end) {
+    erased_size += str->chars[erased_position].size;
+    erased_position += 1;
+  }
   itl_string_shift(str, position, count, true);
-  itl_string_recalc_size(str);
+  TL_ASSERT(str->size >= erased_size);
+  str->size -= erased_size;
 }
 
 ITL_DEF void itl_string_insert(itl_string_t *str, size_t position,
@@ -1520,7 +1530,7 @@ ITL_DEF void itl_string_insert(itl_string_t *str, size_t position,
   }
 
   str->chars[position] = ch;
-  itl_string_recalc_size(str);
+  str->size += ch.size;
 }
 
 /* Removes every backslash that is immediately followed by a newline, together
@@ -1698,6 +1708,11 @@ ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_g_line_buffer = ITL_ZERO_INIT;
    being suggested. Cleared when a fresh line starts in itl_le_init. */
 ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost_sticky_target[ITL_STRING_MAX_LEN] = {
     0};
+ITL_DEF ITL_THREAD_LOCAL char
+    itl_g_ghost_history_miss_prefix[ITL_STRING_MAX_LEN] = {0};
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_history_miss_prefix_length = 0;
+ITL_DEF ITL_THREAD_LOCAL char itl_g_serialized_line[ITL_STRING_MAX_LEN] = {0};
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_serialized_line_ready = false;
 
 typedef struct itl_le itl_le_t;
 
@@ -2068,6 +2083,9 @@ ITL_DEF void itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
   /* A fresh line starts with no sticky ghost target, so the previous line's
      suggestion is not inherited. */
   itl_g_ghost_sticky_target[0] = '\0';
+  itl_g_ghost_history_miss_prefix[0] = '\0';
+  itl_g_ghost_history_miss_prefix_length = 0;
+  itl_g_serialized_line_ready = false;
 
   /* The next refresh starts a fresh block, so it must not reflow a previous
      render that does not exist. */
@@ -2400,6 +2418,8 @@ ITL_DEF void itl_history_read_fd_invalidate(void)
     itl_g_history_read_buffer = NULL;
   }
   itl_g_history_read_buffer_loaded = false;
+  itl_g_ghost_history_miss_prefix[0] = '\0';
+  itl_g_ghost_history_miss_prefix_length = 0;
 }
 
 /* Loads the whole history file into itl_g_history_read_buffer once. The ghost
@@ -2450,18 +2470,17 @@ ITL_DEF bool itl_history_ensure_read_buffer(void)
   return true;
 }
 
-/* Decodes the entry that starts at offset in the cached history buffer into
-   out, applying the same backslash decoding as itl_history_read_entry_fd, a
-   backslash n into a newline and a doubled backslash into one. Returns false
-   only when the string cannot be built. */
-ITL_DEF bool itl_history_read_entry_buffered(size_t offset, itl_string_t *out)
+ITL_DEF bool itl_history_decode_entry_buffered(size_t offset, char *decoded,
+                                               size_t capacity,
+                                               size_t *decoded_size_out)
 {
-  char decoded[ITL_STRING_MAX_LEN];
   size_t decoded_size = 0;
   bool escape_pending = false;
   size_t i;
   size_t buffer_size = itl_g_history_read_buffer->size;
   const char *buffer_data = itl_g_history_read_buffer->data;
+
+  if (capacity == 0) return false;
 
   for (i = offset; i < buffer_size; ++i) {
     uint8_t ch = (uint8_t) buffer_data[i];
@@ -2471,9 +2490,8 @@ ITL_DEF bool itl_history_read_entry_buffered(size_t offset, itl_string_t *out)
       if (ch == 'n') {
         ch = 0x0A;
       } else if (ch != '\\') {
-        if (decoded_size < ITL_STRING_MAX_LEN) {
-          decoded[decoded_size++] = '\\';
-        }
+        if (decoded_size + 1 >= capacity) return false;
+        decoded[decoded_size++] = '\\';
       }
     } else if (ch == '\\') {
       escape_pending = true;
@@ -2484,11 +2502,24 @@ ITL_DEF bool itl_history_read_entry_buffered(size_t offset, itl_string_t *out)
       continue;
     }
 
-    if (decoded_size < ITL_STRING_MAX_LEN) {
-      decoded[decoded_size++] = (char) ch;
-    } else {
-      break;
-    }
+    if (decoded_size + 1 >= capacity) return false;
+    decoded[decoded_size++] = (char) ch;
+  }
+
+  decoded[decoded_size] = '\0';
+  *decoded_size_out = decoded_size;
+  return true;
+}
+
+ITL_DEF bool itl_history_read_entry_buffered(size_t offset, itl_string_t *out)
+{
+  char decoded[ITL_STRING_MAX_LEN + 1];
+  size_t decoded_size;
+
+  if (!itl_history_decode_entry_buffered(offset, decoded, sizeof(decoded),
+                                         &decoded_size))
+  {
+    return false;
   }
 
   return itl_string_from_bytes(out, decoded, decoded_size);
@@ -3327,12 +3358,15 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_plain_append_width = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_append_refresh_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_full_refresh_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_metrics_scan_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_line_serialization_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_ghost_history_scan_count = 0;
 #endif
 
 /* The ghost suggestion drawn dimmed after the cursor, and its byte length.
    Right or End accepts it. */
 ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_width = 0;
 
 ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost_case_fix[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_case_fix_len = 0;
@@ -3980,15 +4014,26 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
      and the metrics pass that placed the cursor never sees them, the same
      zero-width handling the ghost text relies on. Out-of-bounds or empty spans
      are dropped here. */
-  char itl_cur_render[ITL_STRING_MAX_LEN];
+  char itl_cur_render_storage[ITL_STRING_MAX_LEN];
+  const char *itl_cur_render = itl_cur_render_storage;
   bool have_cur_render = false;
   tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
   tl_highlight_span itl_syntax_spans[ITL_HIGHLIGHT_MAX_SPANS];
   size_t span_count = 0;
   const char *append_tail_sgr = NULL;
   if (itl_g_tty_should_refresh_text) {
-    have_cur_render = itl_string_to_cstr(le->line, itl_cur_render,
-                                         sizeof(itl_cur_render)) == TL_SUCCESS;
+    if (itl_g_serialized_line_ready) {
+      itl_cur_render = itl_g_serialized_line;
+      have_cur_render = true;
+    } else {
+#if !defined NDEBUG
+      itl_g_debug_line_serialization_count += 1;
+#endif
+      have_cur_render =
+          itl_string_to_cstr(le->line, itl_cur_render_storage,
+                             sizeof(itl_cur_render_storage)) == TL_SUCCESS;
+    }
+    itl_g_serialized_line_ready = false;
     if (itl_g_search_spans_active &&
         (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
          itl_g_multicursor_active) &&
@@ -4071,7 +4116,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         itl_char_buf_append_cstr(fb, ITL_HIGHLIGHT_RESET);
       }
       ITL_TTY_CLEAR_TO_END(fb);
-      if (itl_g_ghost_len > 0 && m.cursor_col + itl_g_ghost_len < cols) {
+      if (itl_g_ghost_len > 0 && m.cursor_col + itl_g_ghost_width < cols) {
         itl_char_buf_append_cstr(fb, "\x1b[90m");
         itl_char_buf_append_cstr(fb, itl_g_ghost);
         itl_char_buf_append_cstr(fb, "\x1b[0m");
@@ -4255,12 +4300,11 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     /* Draw the ghost suggestion dimmed after the line. It is shown only when
        the cursor sits at the very end of the buffer and the suggestion fits on
        the current row without wrapping, so it never pushes a line break and the
-       cursor restore below lands on the real caret. The ghost text is ASCII
-       here, so its byte length is its column width. A second clear erases a
+       cursor restore below lands on the real caret. A second clear erases a
        longer ghost left from a previous frame, then the cursor is parked back
        on the real caret column. */
     if (itl_g_ghost_len > 0 && le->cursor_position == le->line->length &&
-        col + itl_g_ghost_len < cols)
+        col + itl_g_ghost_width < cols)
     {
       itl_char_buf_append_cstr(b, "\x1b[90m");
       itl_char_buf_append_cstr(b, itl_g_ghost);
@@ -4432,6 +4476,7 @@ ITL_DEF bool itl_le_insert_cstr(itl_le_t *le, const char *text)
 ITL_DEF void itl_ghost_clear(void)
 {
   itl_g_ghost_len = 0;
+  itl_g_ghost_width = 0;
   itl_g_ghost[0] = '\0';
   itl_g_ghost_case_fix_len = 0;
   itl_g_ghost_case_fix[0] = '\0';
@@ -4458,7 +4503,9 @@ ITL_DEF void itl_ghost_accept(itl_le_t *le)
    ghost is the part of the common prefix past what the user already typed, so
    it only ever appends. Leaves the ghost cleared when completion offers
    nothing. */
-ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr)
+ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le,
+                                            const char *line_cstr,
+                                            size_t line_byte_len)
 {
   tl_completion result;
 
@@ -4526,7 +4573,7 @@ ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr)
           }
         }
         {
-          size_t typed_byte_len = strlen(line_cstr) - token_start_bytes;
+          size_t typed_byte_len = line_byte_len - token_start_bytes;
           size_t lcp_full_len = strlen(lcp);
           size_t fixed_len = token_start_bytes + lcp_full_len;
           int differs =
@@ -4548,13 +4595,23 @@ ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr)
    autosuggests. The most recent history entry that begins with the whole typed
    line supplies the rest of that line as a dimmed suggestion. Leaves the ghost
    cleared when no entry matches. */
-ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
+ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr,
+                                         size_t line_byte_len)
 {
-  size_t line_byte_len = strlen(line_cstr);
-  itl_string_t *entry;
   size_t index;
+  bool found_match = false;
+  bool found_text_prefix = false;
 
   if (itl_g_history_path == NULL || itl_g_history_count == 0) {
+    return;
+  }
+
+  if (line_byte_len >= itl_g_ghost_history_miss_prefix_length &&
+      itl_g_ghost_history_miss_prefix_length > 0 &&
+      itl_ascii_prefix_matches_casefold(
+          line_cstr, itl_g_ghost_history_miss_prefix,
+          itl_g_ghost_history_miss_prefix_length))
+  {
     return;
   }
 
@@ -4565,11 +4622,6 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
   if (!itl_history_ensure_read_buffer()) {
     return;
   }
-  entry = itl_string_alloc();
-  if (entry == NULL) {
-    return;
-  }
-
   /* Newest first, so the most recent matching command wins, bounded to a recent
      window. */
   size_t scanned = 0;
@@ -4583,15 +4635,15 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
       break;
     }
     scanned += 1;
+#if !defined NDEBUG
+    itl_g_debug_ghost_history_scan_count += 1;
+#endif
 
-    if (!itl_history_read_entry_buffered(offset, entry)) {
-      continue;
-    }
-    if (itl_string_to_cstr(entry, entry_cstr, sizeof(entry_cstr)) != TL_SUCCESS)
+    if (!itl_history_decode_entry_buffered(offset, entry_cstr,
+                                           sizeof(entry_cstr), &entry_len))
     {
       continue;
     }
-    entry_len = strlen(entry_cstr);
     if (entry_len <= line_byte_len) {
       continue;
     }
@@ -4600,6 +4652,7 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
     {
       continue;
     }
+    found_text_prefix = true;
     /* The host vets the entry before it becomes the suggestion, so a command
        that no longer resolves is skipped and the scan keeps looking, the way
        fish validates its autosuggestions. */
@@ -4626,11 +4679,17 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
         itl_g_ghost_case_fix[0] = '\0';
         itl_g_ghost_case_fix_len = 0;
       }
+      found_match = true;
       break;
     }
   }
 
-  ITL_STRING_FREE(entry);
+  if (!found_match && !found_text_prefix &&
+      line_byte_len < sizeof(itl_g_ghost_history_miss_prefix))
+  {
+    memcpy(itl_g_ghost_history_miss_prefix, line_cstr, line_byte_len + 1);
+    itl_g_ghost_history_miss_prefix_length = line_byte_len;
+  }
   /* The read handle stays open and cached for the next keystroke. */
 }
 
@@ -4640,9 +4699,12 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr)
    buffer. */
 ITL_DEF void itl_ghost_update(itl_le_t *le)
 {
-  char line_cstr[ITL_STRING_MAX_LEN];
+  const char *line_cstr = itl_g_serialized_line;
+  bool did_extend_serialized_line = false;
+  size_t line_byte_len;
 
   itl_ghost_clear();
+  itl_g_serialized_line_ready = false;
 
   /* The host turned the ghost off, so no source fills it. */
   if (!itl_g_ghost_enabled) {
@@ -4654,10 +4716,35 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
   if (le->cursor_position != le->line->length) {
     return;
   }
-  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS)
+  if (itl_g_tty_plain_append_pending && itl_g_le_prev_cursor_at_end &&
+      le->line->length > 0)
   {
-    return;
+    const itl_utf8_t *appended = &le->line->chars[le->line->length - 1];
+    if (itl_g_le_prev_render_len + appended->size == le->line->size &&
+        le->line->size < sizeof(itl_g_serialized_line))
+    {
+      size_t byte_position;
+      memcpy(itl_g_serialized_line, itl_g_le_prev_render,
+             itl_g_le_prev_render_len);
+      for (byte_position = 0; byte_position < appended->size; byte_position++)
+        itl_g_serialized_line[itl_g_le_prev_render_len + byte_position] =
+            (char) appended->bytes[byte_position];
+      itl_g_serialized_line[le->line->size] = '\0';
+      did_extend_serialized_line = true;
+    }
   }
+  if (!did_extend_serialized_line) {
+#if !defined NDEBUG
+    itl_g_debug_line_serialization_count += 1;
+#endif
+    if (itl_string_to_cstr(le->line, itl_g_serialized_line,
+                           sizeof(itl_g_serialized_line)) != TL_SUCCESS)
+    {
+      return;
+    }
+  }
+  itl_g_serialized_line_ready = true;
+  line_byte_len = le->line->size;
   /* An empty line has nothing to extend, and it ends any sticky suggestion so a
      line cleared back to empty does not keep the previous target. */
   if (line_cstr[0] == '\0') {
@@ -4673,7 +4760,6 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
      suggestion keeps it rather than flipping as the candidate set shifts
      between the completion source and the history source. */
   {
-    size_t line_byte_len = strlen(line_cstr);
     if (itl_g_ghost_sticky_target[0] != '\0') {
       size_t target_len = strlen(itl_g_ghost_sticky_target);
       /* The match is case-insensitive on the typed prefix, so a sticky target
@@ -4702,6 +4788,7 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
             itl_g_ghost_case_fix_len = 0;
             itl_g_ghost_case_fix[0] = '\0';
           }
+          itl_g_ghost_width = itl_cstr_display_width(itl_g_ghost);
           return;
         }
       }
@@ -4711,9 +4798,9 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
     }
   }
 
-  itl_ghost_fill_from_completion(le, line_cstr);
+  itl_ghost_fill_from_completion(le, line_cstr, line_byte_len);
   if (itl_g_ghost_len == 0) {
-    itl_ghost_fill_from_history(line_cstr);
+    itl_ghost_fill_from_history(line_cstr, line_byte_len);
   }
 
   /* A multiline suggestion drawn on the current line would push the caret onto
@@ -4729,6 +4816,7 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
       }
     }
   }
+  itl_g_ghost_width = itl_cstr_display_width(itl_g_ghost);
 
   /* A source that produced a suggestion records the whole line-plus-ghost as
      the sticky target, so the next keystroke keeps it while the input stays a
@@ -4740,7 +4828,6 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
       memcpy(itl_g_ghost_sticky_target, itl_g_ghost_case_fix,
              itl_g_ghost_case_fix_len + 1);
     } else {
-      size_t line_byte_len = strlen(line_cstr);
       if (line_byte_len + itl_g_ghost_len + 1 <=
           sizeof(itl_g_ghost_sticky_target))
       {
