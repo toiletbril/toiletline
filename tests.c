@@ -426,22 +426,27 @@ test_find_substring(void)
   itl_string_t *hay = itl_string_alloc();
   itl_string_t *needle = itl_string_alloc();
 
-  ITL_STRING_FROM_CSTR(hay, "hello world");
+  ITL_STRING_FROM_CSTR(hay, "Hello WORLD");
 
   ITL_STRING_FROM_CSTR(needle, "o wo");
-  if (!itl_string_find_substring(hay, needle)) {
+  if (!itl_string_find_substring_ascii_casefold(hay, needle)) {
     ok = false;
   }
   ITL_STRING_FROM_CSTR(needle, "world");
-  if (!itl_string_find_substring(hay, needle)) {
+  if (!itl_string_find_substring_ascii_casefold(hay, needle)) {
     ok = false;
   }
   ITL_STRING_FROM_CSTR(needle, "xyz");
-  if (itl_string_find_substring(hay, needle)) {
+  if (itl_string_find_substring_ascii_casefold(hay, needle)) {
     ok = false;
   }
   ITL_STRING_FROM_CSTR(needle, "");
-  if (!itl_string_find_substring(hay, needle)) {
+  if (!itl_string_find_substring_ascii_casefold(hay, needle)) {
+    ok = false;
+  }
+  ITL_STRING_FROM_CSTR(hay, "echo \xC3\x84");
+  ITL_STRING_FROM_CSTR(needle, "\xC3\xA4");
+  if (itl_string_find_substring_ascii_casefold(hay, needle)) {
     ok = false;
   }
 
@@ -741,12 +746,12 @@ test_history_search(void)
   remove(path);
   tl_history_load(path);
 
-  hist_append_cstr("git status");
-  hist_append_cstr("git commit");
+  hist_append_cstr("Git Status");
+  hist_append_cstr("GIT commit");
   hist_append_cstr("make test");
 
   /* Searching backward from the newest finds "git commit" at index 1. */
-  ITL_STRING_FROM_CSTR(query, "git");
+  ITL_STRING_FROM_CSTR(query, "gIt");
   match = itl_history_find_match(query, itl_g_history_count - 1, scratch);
   if (match != 1) {
     TEST_PRINTF("expected match at index 1, got %zu\n", match);
@@ -766,7 +771,7 @@ test_history_search(void)
      next forward step finds "git commit" at index 1, the mirror of the
      backward walk. */
   if (ok) {
-    ITL_STRING_FROM_CSTR(query, "git");
+    ITL_STRING_FROM_CSTR(query, "GiT");
     match = itl_history_find_match_forward(query, 0, scratch);
     if (match != 0) {
       TEST_PRINTF("expected forward match at index 0, got %zu\n", match);

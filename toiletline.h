@@ -1006,6 +1006,20 @@ ITL_DEF bool itl_utf8_equal(itl_utf8_t ch1, itl_utf8_t ch2)
   return true;
 }
 
+ITL_DEF uint8_t itl_ascii_fold_byte(uint8_t byte)
+{
+  if (byte >= 'A' && byte <= 'Z') return (uint8_t) (byte - 'A' + 'a');
+  return byte;
+}
+
+ITL_DEF bool itl_utf8_equal_ascii_casefold(itl_utf8_t ch1, itl_utf8_t ch2)
+{
+  if (itl_utf8_equal(ch1, ch2)) return true;
+  if (ch1.size != 1 || ch2.size != 1) return false;
+  return itl_ascii_fold_byte(ch1.bytes[0]) ==
+         itl_ascii_fold_byte(ch2.bytes[0]);
+}
+
 ITL_DEF uint8_t itl_utf8_width(int byte)
 {
   if ((byte & 0x80) == 0)
@@ -1555,9 +1569,9 @@ ITL_DEF void itl_string_join_continuations(itl_string_t *str)
   itl_string_recalc_size(str);
 }
 
-/* Returns true when needle occurs as a contiguous run of characters in str. */
-ITL_DEF bool itl_string_find_substring(const itl_string_t *str,
-                                       const itl_string_t *needle)
+/* Returns true when needle occurs as an ASCII-case-folded contiguous run. */
+ITL_DEF bool itl_string_find_substring_ascii_casefold(
+    const itl_string_t *str, const itl_string_t *needle)
 {
   size_t i, j;
 
@@ -1570,7 +1584,9 @@ ITL_DEF bool itl_string_find_substring(const itl_string_t *str,
 
   for (i = 0; i + needle->length <= str->length; ++i) {
     for (j = 0; j < needle->length; ++j) {
-      if (!itl_utf8_equal(str->chars[i + j], needle->chars[j])) {
+      if (!itl_utf8_equal_ascii_casefold(str->chars[i + j],
+                                         needle->chars[j]))
+      {
         break;
       }
     }
@@ -3473,9 +3489,7 @@ ITL_DEF int itl_ascii_prefix_matches_casefold(const char *entry,
   for (i = 0; i < length; i++) {
     unsigned char a = (unsigned char) entry[i];
     unsigned char b = (unsigned char) typed[i];
-    if (a >= 'A' && a <= 'Z') a = (unsigned char) (a - 'A' + 'a');
-    if (b >= 'A' && b <= 'Z') b = (unsigned char) (b - 'A' + 'a');
-    if (a != b) return 0;
+    if (itl_ascii_fold_byte(a) != itl_ascii_fold_byte(b)) return 0;
   }
   return 1;
 }
@@ -5612,7 +5626,7 @@ ITL_DEF size_t itl_history_find_match(const itl_string_t *query,
   for (i = start_index + 1; i-- > 0;) {
     if (itl_history_read_entry_buffered(itl_history_index_to_offset(i),
                                         scratch) &&
-        itl_string_find_substring(scratch, query))
+        itl_string_find_substring_ascii_casefold(scratch, query))
     {
       found = i;
       break;
@@ -5645,7 +5659,7 @@ ITL_DEF size_t itl_history_find_match_forward(const itl_string_t *query,
   for (i = start_index; i < itl_g_history_count; ++i) {
     if (itl_history_read_entry_buffered(itl_history_index_to_offset(i),
                                         scratch) &&
-        itl_string_find_substring(scratch, query))
+        itl_string_find_substring_ascii_casefold(scratch, query))
     {
       found = i;
       break;
