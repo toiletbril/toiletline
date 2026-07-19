@@ -1686,6 +1686,10 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_file_size = 0;
 struct itl_char_buf;
 ITL_DEF ITL_THREAD_LOCAL struct itl_char_buf *itl_g_history_read_buffer = NULL;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_read_buffer_loaded = false;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_read_buffer_offset = 0;
+#if !defined NDEBUG
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_history_buffer_load_count = 0;
+#endif
 ITL_DEF void itl_history_read_fd_invalidate(void);
 
 /* False when the loaded file's last line lacked a terminating newline, so the
@@ -2418,6 +2422,7 @@ ITL_DEF void itl_history_read_fd_invalidate(void)
     itl_g_history_read_buffer = NULL;
   }
   itl_g_history_read_buffer_loaded = false;
+  itl_g_history_read_buffer_offset = 0;
   itl_g_ghost_history_miss_prefix[0] = '\0';
   itl_g_ghost_history_miss_prefix_length = 0;
 }
@@ -2430,6 +2435,8 @@ ITL_DEF bool itl_history_ensure_read_buffer(void)
 {
   ITL_FILE file;
   long file_size;
+  size_t retained_offset;
+  size_t retained_size;
   size_t total_read = 0;
 
   if (itl_g_history_read_buffer_loaded) {
@@ -2447,18 +2454,31 @@ ITL_DEF bool itl_history_ensure_read_buffer(void)
   }
 
   file_size = ITL_FILE_SEEK_END(file);
-  if (file_size < 0 || !ITL_FILE_SEEK(file, 0)) {
+  if (file_size < 0) {
     ITL_FILE_CLOSE(file);
     return false;
   }
+  retained_offset = itl_g_history_count > 0
+                        ? itl_history_index_to_offset(0)
+                        : (size_t) file_size;
+  if (retained_offset > (size_t) file_size ||
+      !ITL_FILE_SEEK(file, retained_offset))
+  {
+    ITL_FILE_CLOSE(file);
+    return false;
+  }
+  retained_size = (size_t) file_size - retained_offset;
 
+#if !defined NDEBUG
+  itl_g_debug_history_buffer_load_count += 1;
+#endif
   itl_g_history_read_buffer = itl_char_buf_alloc();
-  itl_char_buf_reserve(itl_g_history_read_buffer, (size_t) file_size + 1);
+  itl_char_buf_reserve(itl_g_history_read_buffer, retained_size + 1);
 
-  while (total_read < (size_t) file_size) {
+  while (total_read < retained_size) {
     int read_amount =
         (int) ITL_READ(file, itl_g_history_read_buffer->data + total_read,
-                       (size_t) file_size - total_read);
+                       retained_size - total_read);
     if (read_amount <= 0) {
       break;
     }
@@ -2467,6 +2487,7 @@ ITL_DEF bool itl_history_ensure_read_buffer(void)
   ITL_FILE_CLOSE(file);
 
   itl_g_history_read_buffer->size = total_read;
+  itl_g_history_read_buffer_offset = retained_offset;
   return true;
 }
 
@@ -2481,6 +2502,9 @@ ITL_DEF bool itl_history_decode_entry_buffered(size_t offset, char *decoded,
   const char *buffer_data = itl_g_history_read_buffer->data;
 
   if (capacity == 0) return false;
+  if (offset < itl_g_history_read_buffer_offset) return false;
+  offset -= itl_g_history_read_buffer_offset;
+  if (offset > buffer_size) return false;
 
   for (i = offset; i < buffer_size; ++i) {
     uint8_t ch = (uint8_t) buffer_data[i];
@@ -2953,11 +2977,10 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str)
    TL_SUCCESS or TL_ERROR, sets errno on failure. */
 ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
 {
+  char file_buffer[ITL_HISTORY_FILE_BUFFER_SIZE];
+  ITL_FILE in_file;
   ITL_FILE out_file;
-  size_t total_written = 0;
   tl_status_code ret = TL_SUCCESS;
-
-  itl_history_read_fd_invalidate();
 
   TL_ASSERT(itl_g_is_active && "Dump history before calling tl_exit()!");
 
@@ -2975,11 +2998,6 @@ ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
     return TL_SUCCESS;
   }
 
-  if (!itl_history_ensure_read_buffer()) {
-    /* The store may not exist yet when no command was entered. */
-    return (errno == ENOENT) ? TL_SUCCESS : TL_ERROR;
-  }
-
   out_file = ITL_FILE_OPEN_FOR_WRITE(path);
   if (ITL_FILE_IS_BAD(out_file)) {
     ITL_TRACELN("could not open history file for dump (%s): %s\n", path,
@@ -2987,17 +3005,36 @@ ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
     return TL_ERROR;
   }
 
-  while (total_written < itl_g_history_read_buffer->size) {
-    int write_amount = (int) ITL_WRITE(
-        out_file, itl_g_history_read_buffer->data + total_written,
-        itl_g_history_read_buffer->size - total_written);
-    if (write_amount <= 0) {
+  in_file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
+  if (ITL_FILE_IS_BAD(in_file)) {
+    ITL_FILE_CLOSE(out_file);
+    return (errno == ENOENT) ? TL_SUCCESS : TL_ERROR;
+  }
+
+  for (;;) {
+    int read_amount =
+        (int) ITL_READ(in_file, file_buffer, ITL_HISTORY_FILE_BUFFER_SIZE);
+    size_t total_written = 0;
+    if (read_amount < 0) {
       ret = TL_ERROR;
       break;
     }
-    total_written += (size_t) write_amount;
+    if (read_amount == 0) break;
+
+    while (total_written < (size_t) read_amount) {
+      int write_amount =
+          (int) ITL_WRITE(out_file, file_buffer + total_written,
+                          (size_t) read_amount - total_written);
+      if (write_amount <= 0) {
+        ret = TL_ERROR;
+        break;
+      }
+      total_written += (size_t) write_amount;
+    }
+    if (ret != TL_SUCCESS) break;
   }
 
+  ITL_FILE_CLOSE(in_file);
   ITL_FILE_CLOSE(out_file);
 
   return ret;
