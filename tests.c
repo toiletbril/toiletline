@@ -540,6 +540,7 @@ test_history_multiline_file(void)
   ITL_STRING_FREE(entry);
   ITL_STRING_FREE(got);
   itl_g_is_active = false;
+  remove(path);
   return ok;
 }
 
