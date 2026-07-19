@@ -1687,6 +1687,7 @@ struct itl_char_buf;
 ITL_DEF ITL_THREAD_LOCAL struct itl_char_buf *itl_g_history_read_buffer = NULL;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_read_buffer_loaded = false;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_read_buffer_offset = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_read_buffer_start = 0;
 #if !defined NDEBUG
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_history_buffer_load_count = 0;
 #endif
@@ -2423,6 +2424,7 @@ ITL_DEF void itl_history_read_fd_invalidate(void)
   }
   itl_g_history_read_buffer_loaded = false;
   itl_g_history_read_buffer_offset = 0;
+  itl_g_history_read_buffer_start = 0;
   itl_g_ghost_history_miss_prefix[0] = '\0';
   itl_g_ghost_history_miss_prefix_length = 0;
 }
@@ -2488,6 +2490,7 @@ ITL_DEF bool itl_history_ensure_read_buffer(void)
 
   itl_g_history_read_buffer->size = total_read;
   itl_g_history_read_buffer_offset = retained_offset;
+  itl_g_history_read_buffer_start = 0;
   return true;
 }
 
@@ -2504,7 +2507,8 @@ ITL_DEF bool itl_history_decode_entry_buffered(size_t offset, char *decoded,
   if (capacity == 0) return false;
   if (offset < itl_g_history_read_buffer_offset) return false;
   offset -= itl_g_history_read_buffer_offset;
-  if (offset > buffer_size) return false;
+  if (offset < itl_g_history_read_buffer_start || offset > buffer_size)
+    return false;
 
   for (i = offset; i < buffer_size; ++i) {
     uint8_t ch = (uint8_t) buffer_data[i];
@@ -2616,6 +2620,60 @@ ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
   cb->size += 1;
 }
 
+ITL_DEF void itl_history_append_read_buffer(size_t previous_file_size,
+                                            const char *data,
+                                            size_t data_size)
+{
+  size_t retained_offset;
+  size_t discarded_size;
+
+  if (!itl_g_history_read_buffer_loaded) return;
+  if (itl_g_history_read_buffer == NULL) {
+    itl_g_history_read_buffer = itl_char_buf_alloc();
+    itl_g_history_read_buffer_offset = previous_file_size;
+    itl_g_history_read_buffer_start = 0;
+  }
+  if (itl_g_history_read_buffer_offset +
+          itl_g_history_read_buffer->size !=
+      previous_file_size)
+  {
+    itl_history_read_fd_invalidate();
+    return;
+  }
+
+  itl_char_buf_reserve(itl_g_history_read_buffer,
+                       itl_g_history_read_buffer->size + data_size);
+  memcpy(itl_g_history_read_buffer->data + itl_g_history_read_buffer->size,
+         data, data_size);
+  itl_g_history_read_buffer->size += data_size;
+
+  if (itl_g_history_count == 0) return;
+  retained_offset = itl_g_history_offsets[itl_g_history_head];
+  if (retained_offset < itl_g_history_read_buffer_offset ||
+      retained_offset > itl_g_history_read_buffer_offset +
+                            itl_g_history_read_buffer->size)
+  {
+    itl_history_read_fd_invalidate();
+    return;
+  }
+
+  itl_g_history_read_buffer_start =
+      retained_offset - itl_g_history_read_buffer_offset;
+  if (itl_g_history_read_buffer_start <=
+      itl_g_history_read_buffer->size / 2)
+  {
+    return;
+  }
+
+  discarded_size = itl_g_history_read_buffer_start;
+  memmove(itl_g_history_read_buffer->data,
+          itl_g_history_read_buffer->data + discarded_size,
+          itl_g_history_read_buffer->size - discarded_size);
+  itl_g_history_read_buffer->size -= discarded_size;
+  itl_g_history_read_buffer_offset += discarded_size;
+  itl_g_history_read_buffer_start = 0;
+}
+
 ITL_DEF void itl_char_buf_append_spaces(itl_char_buf_t *cb, size_t count)
 {
   /* The padding for a wrapped continuation row grows the buffer once and fills
@@ -2719,9 +2777,6 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_file_is_bad = false;
    the ring is full so only the most recent TL_HISTORY_MAX_SIZE remain. */
 ITL_DEF void itl_history_push_offset(size_t offset)
 {
-  /* The file grew or was rescanned, so the cached read handle is dropped and
-     the next ghost scan reopens it against the current content. */
-  itl_history_read_fd_invalidate();
   if (itl_g_history_count < (TL_HISTORY_MAX_SIZE)) {
     itl_g_history_offsets[(itl_g_history_head + itl_g_history_count) %
                           (TL_HISTORY_MAX_SIZE)] = offset;
@@ -2746,6 +2801,7 @@ ITL_DEF bool itl_history_scan_fd(ITL_FILE file)
 
   itl_g_history_head = 0;
   itl_g_history_count = 0;
+  itl_history_read_fd_invalidate();
 
   if (!ITL_FILE_SEEK(file, 0)) {
     return false;
@@ -2960,6 +3016,8 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str)
       itl_g_history_file_size = (size_t) real_end + buffer->size;
       itl_g_history_ends_with_newline = true;
       itl_history_push_offset(new_offset);
+      itl_history_append_read_buffer((size_t) real_end, buffer->data,
+                                     buffer->size);
       ITL_TRACELN("appended history entry at offset %zu, %zu entries now\n",
                   new_offset, itl_g_history_count);
     }
