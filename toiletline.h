@@ -398,8 +398,8 @@ TL_DEF void tl_set_edit_mode(int mode);
 /* Seeks to the end and yields the resulting offset, the file size, or -1. */
 #define ITL_FILE_SEEK_END(file) ((long) _lseek(file, 0L, SEEK_END))
 
-#define ITL_WRITE(fd, buf, size) _write(fd, buf, (unsigned long) size)
-#define ITL_READ(fd, buf, size)  _read(fd, buf, (unsigned long) size)
+#define ITL_WRITE(fd, buf, size) _write(fd, buf, (unsigned int) (size))
+#define ITL_READ(fd, buf, size)  _read(fd, buf, (unsigned int) (size))
 #endif /* !ITL_USE_STDIO */
 
 /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation>
@@ -3131,8 +3131,8 @@ ITL_DEF size_t itl_parse_size(const char *cstr, size_t *result)
   return i;
 }
 
-#ifdef ITL_POSIX
-ITL_DEF int itl_esc_parse_posix(uint8_t byte)
+#if defined ITL_POSIX || defined ITL_WIN32
+ITL_DEF int itl_esc_parse_vt(uint8_t byte)
 {
   int event = 0;
   bool read_mod = false;
@@ -3252,12 +3252,17 @@ ITL_DEF int itl_esc_parse_posix(uint8_t byte)
 
   return event;
 }
-#endif /* ITL_POSIX */
+#endif /* ITL_POSIX || ITL_WIN32 */
 
 #ifdef ITL_WIN32
 ITL_DEF int itl_esc_parse_win32(uint8_t byte)
 {
   int event = 0;
+
+  /* ENABLE_VIRTUAL_TERMINAL_INPUT reports arrows and navigation keys as the
+     same CSI sequences as a POSIX terminal. Keep accepting the legacy _getch
+     scan-code pairs for consoles that do not provide VT input. */
+  if (byte == 27) return itl_esc_parse_vt(byte);
 
   /* https://learn.microsoft.com/en-us/previous-versions/visualstudio/visual-studio-6.0/aa299374(v=vs.60)
    */
@@ -3329,7 +3334,7 @@ ITL_DEF int itl_esc_parse(uint8_t byte)
 #if defined ITL_WIN32
   return itl_esc_parse_win32(byte);
 #elif defined ITL_POSIX
-  return itl_esc_parse_posix(byte);
+  return itl_esc_parse_vt(byte);
 #endif /* ITL_POSIX */
 }
 
