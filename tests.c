@@ -612,6 +612,39 @@ test_rejected_ghost_history_prefix_is_cached(void)
   return ok;
 }
 
+#if defined ITL_WIN32 && !defined ITL_NO_WIN_ESCAPES
+static bool
+test_windows_ghost_does_not_require_term(void)
+{
+  const char *term = getenv("TERM");
+  char       *saved_term = term != NULL ? _strdup(term) : NULL;
+  bool        enabled_without_term;
+  bool        dumb_term_disables;
+  bool        explicit_disable_works;
+
+  if (term != NULL && saved_term == NULL) return false;
+
+  _putenv_s("TERM", "");
+  itl_g_supports_decorations = -1;
+  tl_set_ghost_enabled(1);
+  enabled_without_term = itl_g_ghost_enabled != 0;
+
+  _putenv_s("TERM", "dumb");
+  itl_g_supports_decorations = -1;
+  tl_set_ghost_enabled(1);
+  dumb_term_disables = itl_g_ghost_enabled == 0;
+
+  tl_set_ghost_enabled(0);
+  explicit_disable_works = itl_g_ghost_enabled == 0;
+
+  _putenv_s("TERM", saved_term != NULL ? saved_term : "");
+  free(saved_term);
+  itl_g_supports_decorations = -1;
+
+  return enabled_without_term && dumb_term_disables && explicit_disable_works;
+}
+#endif
+
 static bool
 test_history_ring_cap(void)
 {
@@ -953,6 +986,10 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_history_multiline_file),
                                    DEFINE_TEST_CASE(
                                        test_rejected_ghost_history_prefix_is_cached),
+#if defined ITL_WIN32 && !defined ITL_NO_WIN_ESCAPES
+                                   DEFINE_TEST_CASE(
+                                       test_windows_ghost_does_not_require_term),
+#endif
                                    DEFINE_TEST_CASE(test_history_ring_cap),
                                    DEFINE_TEST_CASE(test_history_dedup),
                                    DEFINE_TEST_CASE(test_history_unterminated_line),

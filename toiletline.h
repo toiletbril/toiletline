@@ -3550,9 +3550,18 @@ ITL_DEF int itl_term_supports_256_color(void)
 ITL_DEF int itl_term_supports_decorations(void)
 {
   if (itl_g_supports_decorations < 0) {
+#if defined ITL_WIN32 && !defined ITL_NO_WIN_ESCAPES
+    const char *term = getenv("TERM");
+    /* Raw initialization enables VT output before the editor renders, while
+       native Windows sessions commonly leave TERM unset. Keep dumb as an
+       explicit opt-out. */
+    itl_g_supports_decorations =
+        term == NULL || term[0] == '\0' || strcmp(term, "dumb") != 0;
+#else
     const char *term = getenv("TERM");
     itl_g_supports_decorations =
         term != NULL && term[0] != '\0' && strcmp(term, "dumb") != 0;
+#endif
   }
   return itl_g_supports_decorations;
 }

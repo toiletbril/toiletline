@@ -13,6 +13,8 @@ native VT100 escape sequence processing for conhost.exe and such. That
 requires a Windows 10 build of 10586 or later. This is not crucial. The
 library can still be used with a VT100 compatible terminal with its own
 terminal processing, like Windows Terminal or Alacritty.
+Native Windows consoles do not need to set TERM for inline suggestions and
+other decorations after virtual terminal processing has been enabled.
 
 UTF-8 locale feature is required for proper multibyte character support.
 
