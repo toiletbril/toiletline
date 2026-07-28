@@ -1730,6 +1730,9 @@ ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_g_line_buffer = ITL_ZERO_INIT;
 ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost_sticky_target[ITL_STRING_MAX_LEN] = {
     0};
 ITL_DEF ITL_THREAD_LOCAL char
+    itl_g_ghost_completion_miss_prefix[ITL_STRING_MAX_LEN] = {0};
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_completion_miss_prefix_length = 0;
+ITL_DEF ITL_THREAD_LOCAL char
     itl_g_ghost_history_miss_prefix[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_history_miss_prefix_length = 0;
 ITL_DEF ITL_THREAD_LOCAL char itl_g_serialized_line[ITL_STRING_MAX_LEN] = {0};
@@ -2104,6 +2107,8 @@ ITL_DEF void itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
   /* A fresh line starts with no sticky ghost target, so the previous line's
      suggestion is not inherited. */
   itl_g_ghost_sticky_target[0] = '\0';
+  itl_g_ghost_completion_miss_prefix[0] = '\0';
+  itl_g_ghost_completion_miss_prefix_length = 0;
   itl_g_ghost_history_miss_prefix[0] = '\0';
   itl_g_ghost_history_miss_prefix_length = 0;
   itl_g_serialized_line_ready = false;
@@ -4621,6 +4626,47 @@ ITL_DEF void itl_ghost_accept(itl_le_t *le)
   }
 }
 
+ITL_DEF bool itl_ghost_extends_completion_miss_plainly(
+    const char *line_cstr, size_t line_byte_len)
+{
+  size_t position;
+  if (itl_g_ghost_completion_miss_prefix_length == 0 ||
+      line_byte_len < itl_g_ghost_completion_miss_prefix_length ||
+      memcmp(line_cstr, itl_g_ghost_completion_miss_prefix,
+             itl_g_ghost_completion_miss_prefix_length) != 0)
+  {
+    return false;
+  }
+
+  for (position = itl_g_ghost_completion_miss_prefix_length;
+       position < line_byte_len; position++)
+  {
+    unsigned char byte = (unsigned char) line_cstr[position];
+    bool is_plain = (byte >= 'a' && byte <= 'z') ||
+                    (byte >= 'A' && byte <= 'Z') ||
+                    (byte >= '0' && byte <= '9') || byte == '_' ||
+                    byte == '-' || byte == '.' || byte >= 0x80;
+    if (!is_plain) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+ITL_DEF void itl_ghost_record_completion_miss(const char *line_cstr,
+                                               size_t line_byte_len)
+{
+  if (line_byte_len >= sizeof(itl_g_ghost_completion_miss_prefix)) {
+    itl_g_ghost_completion_miss_prefix[0] = '\0';
+    itl_g_ghost_completion_miss_prefix_length = 0;
+    return;
+  }
+
+  memcpy(itl_g_ghost_completion_miss_prefix, line_cstr, line_byte_len + 1);
+  itl_g_ghost_completion_miss_prefix_length = line_byte_len;
+}
+
 /* Ask the host for the top completion of the current line and fill the ghost
    suffix when the longest common prefix extends the token under the cursor. The
    ghost is the part of the common prefix past what the user already typed, so
@@ -4635,13 +4681,23 @@ ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le,
   if (itl_g_complete_callback == NULL) {
     return;
   }
+  if (itl_ghost_extends_completion_miss_plainly(line_cstr, line_byte_len)) {
+    return;
+  }
+  itl_g_ghost_completion_miss_prefix[0] = '\0';
+  itl_g_ghost_completion_miss_prefix_length = 0;
   /* The cursor passed to the callback is a codepoint index, the unit toiletline
      edits in, and it equals the line length here since the ghost only fires at
      the end of the line. */
   if (!itl_g_complete_callback(line_cstr, le->line->length, &result, 0)) {
+    itl_ghost_record_completion_miss(line_cstr, line_byte_len);
     return;
   }
-  if (result.count == 0 || result.longest_common_prefix == NULL) {
+  if (result.count == 0) {
+    itl_ghost_record_completion_miss(line_cstr, line_byte_len);
+    return;
+  }
+  if (result.longest_common_prefix == NULL) {
     return;
   }
 
@@ -4826,6 +4882,10 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
 
   itl_ghost_clear();
   itl_g_serialized_line_ready = false;
+  if (!itl_g_tty_plain_append_pending) {
+    itl_g_ghost_completion_miss_prefix[0] = '\0';
+    itl_g_ghost_completion_miss_prefix_length = 0;
+  }
 
   /* The host turned the ghost off, so no source fills it. */
   if (!itl_g_ghost_enabled) {
