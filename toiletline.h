@@ -1193,13 +1193,9 @@ ITL_DEF size_t itl_char_width(itl_utf8_t ch)
   return 1;
 }
 
-/* Sums the terminal column width of a null-terminated UTF-8 string. */
-/* Walk the string accumulating display cells until stop_after cells are
-   consumed or the string ends, and report the byte offset the walk stopped
-   at through out_offset when it is non-null. The full-width measure and the
-   prompt clamp share this walk, so the escape skipping never diverges. */
-ITL_DEF size_t itl_cstr_width_walk(const char *cstr, size_t stop_after,
-                                   size_t *out_offset)
+/* The walker consumes at most byte_length bytes and stops at a null byte. */
+ITL_DEF size_t itl_strn_width_walk(const char *cstr, size_t byte_length,
+                                   size_t stop_after, size_t *out_offset)
 {
   size_t width = 0, i = 0;
 
@@ -1210,20 +1206,23 @@ ITL_DEF size_t itl_cstr_width_walk(const char *cstr, size_t stop_after,
     return 0;
   }
 
-  while (cstr[i] != '\0' && width < stop_after) {
+  while (i < byte_length && cstr[i] != '\0') {
     /* An ANSI escape sequence such as a color code or a window-title set
        occupies no terminal columns, so skip it whole. A prompt that carries one
        would otherwise push the caret right by the length of its escape bytes.
      */
     if ((uint8_t) cstr[i] == 0x1b) {
       i += 1;
+      if (i >= byte_length) break;
       if (cstr[i] == '[') {
         /* A CSI sequence runs until a byte in the final range. */
         i += 1;
-        while (cstr[i] != '\0' && (cstr[i] < 0x40 || cstr[i] > 0x7e)) {
+        while (i < byte_length && cstr[i] != '\0' &&
+               (cstr[i] < 0x40 || cstr[i] > 0x7e))
+        {
           i += 1;
         }
-        if (cstr[i] != '\0') {
+        if (i < byte_length && cstr[i] != '\0') {
           i += 1;
         }
       } else if (cstr[i] == ']') {
@@ -1231,17 +1230,21 @@ ITL_DEF size_t itl_cstr_width_walk(const char *cstr, size_t stop_after,
            terminator, ESC backslash. Its body is non-printing, so the whole run
            is skipped or the title text would be counted as caret columns. */
         i += 1;
-        while (cstr[i] != '\0' && (uint8_t) cstr[i] != 0x07 &&
-               !((uint8_t) cstr[i] == 0x1b && cstr[i + 1] == '\\'))
+        while (i < byte_length && cstr[i] != '\0' &&
+               (uint8_t) cstr[i] != 0x07 &&
+               !(i + 1 < byte_length && (uint8_t) cstr[i] == 0x1b &&
+                 cstr[i + 1] == '\\'))
         {
           i += 1;
         }
-        if ((uint8_t) cstr[i] == 0x1b && cstr[i + 1] == '\\') {
+        if (i + 1 < byte_length && (uint8_t) cstr[i] == 0x1b &&
+            cstr[i + 1] == '\\')
+        {
           i += 2;
-        } else if (cstr[i] != '\0') {
+        } else if (i < byte_length && cstr[i] != '\0') {
           i += 1;
         }
-      } else if (cstr[i] != '\0') {
+      } else if (i < byte_length && cstr[i] != '\0') {
         /* A two-byte escape such as a charset select, ESC then one byte. */
         i += 1;
       }
@@ -1252,15 +1255,30 @@ ITL_DEF size_t itl_cstr_width_walk(const char *cstr, size_t stop_after,
     itl_utf8_t ch;
     uint8_t j;
 
-    if (rune_width == 0) {
-      i += 1; /* Skip a stray byte instead of stalling. */
+    if (rune_width == 0 || i + rune_width > byte_length) {
+      if (width >= stop_after) break;
+      width += 1;
+      i += 1;
       continue;
     }
-    for (j = 0; j < rune_width && cstr[i + j] != '\0'; ++j) {
+    for (j = 1; j < rune_width; ++j) {
+      if (((uint8_t) cstr[i + j] & 0xC0) != 0x80) break;
+    }
+    if (j != rune_width) {
+      if (width >= stop_after) break;
+      width += 1;
+      i += 1;
+      continue;
+    }
+    for (j = 0; j < rune_width; ++j) {
       ch.bytes[j] = (uint8_t) cstr[i + j];
     }
     ch.size = j;
-    width += itl_char_width(ch);
+    {
+      size_t character_width = itl_char_width(ch);
+      if (character_width > 0 && width >= stop_after) break;
+      width += character_width;
+    }
     i += j;
   }
 
@@ -1270,9 +1288,20 @@ ITL_DEF size_t itl_cstr_width_walk(const char *cstr, size_t stop_after,
   return width;
 }
 
+ITL_DEF size_t itl_cstr_width_walk(const char *cstr, size_t stop_after,
+                                   size_t *out_offset)
+{
+  return itl_strn_width_walk(cstr, (size_t) -1, stop_after, out_offset);
+}
+
 ITL_DEF size_t itl_cstr_display_width(const char *cstr)
 {
   return itl_cstr_width_walk(cstr, (size_t) -1, NULL);
+}
+
+ITL_DEF size_t itl_strn_display_width(const char *cstr, size_t byte_length)
+{
+  return itl_strn_width_walk(cstr, byte_length, (size_t) -1, NULL);
 }
 
 /* The display width of the prompt's last row and, through out_rows, the count

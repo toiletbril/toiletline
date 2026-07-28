@@ -338,6 +338,11 @@ test_char_width(void)
   itl_utf8_t cjk = itl_utf8_new((uint8_t[4]){0xE4, 0xBD, 0xA0}, 3);
   itl_utf8_t combining = itl_utf8_new((uint8_t[4]){0xCC, 0x81}, 2);
   itl_utf8_t emoji = itl_utf8_new((uint8_t[4]){0xF0, 0x9F, 0x98, 0x80}, 4);
+  const char invalid[] = {(char) 0xE2, 'A', 'B'};
+  const char truncated[] = {(char) 0xE2, (char) 0x80};
+  const char combined[] = {'A', (char) 0xCC, (char) 0x81, 'B'};
+  const char escaped[] = {'A', 0x1B, '[', '0', 'm', 'B'};
+  size_t offset = 0;
 
   if (itl_char_width(ascii) != 1 || itl_char_width(cjk) != 2 ||
       itl_char_width(combining) != 0 || itl_char_width(emoji) != 2)
@@ -345,6 +350,23 @@ test_char_width(void)
     TEST_PRINTF("widths: ascii %zu cjk %zu comb %zu emoji %zu\n",
                 itl_char_width(ascii), itl_char_width(cjk),
                 itl_char_width(combining), itl_char_width(emoji));
+    return false;
+  }
+
+  if (itl_strn_display_width(invalid, sizeof(invalid)) != 3 ||
+      itl_strn_display_width(truncated, sizeof(truncated)) != 2)
+  {
+    return false;
+  }
+
+  if (itl_strn_width_walk(combined, sizeof(combined), 1, &offset) != 1 ||
+      offset != 3)
+  {
+    return false;
+  }
+  if (itl_strn_width_walk(escaped, sizeof(escaped), 1, &offset) != 1 ||
+      offset != 5)
+  {
     return false;
   }
 
