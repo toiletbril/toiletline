@@ -5250,6 +5250,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
   }
 
   itl_ghost_clear();
+  itl_g_ghost_sticky_target[0] = '\0';
 
   /* A lone candidate is the full replacement for the token, so it goes in even
      when it is no longer than what the user typed, which covers a glob token
