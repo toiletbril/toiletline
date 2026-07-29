@@ -5275,7 +5275,9 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
     return true;
   }
 
-  token_len = result.token_end - result.token_start;
+  token_len = le->cursor_position >= result.token_start
+                  ? le->cursor_position - result.token_start
+                  : 0;
   lcp_len = result.longest_common_prefix != NULL
                 ? tl_utf8_strlen(result.longest_common_prefix)
                 : 0;
