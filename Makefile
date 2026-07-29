@@ -49,6 +49,7 @@ endif
 clean:
 	@echo "RM $(ITEMS_TO_REMOVE)"
 	@rm -f $(ITEMS_TO_REMOVE)
+	@rm -rf ./*.dSYM
 
 .PHONY: default
 .PHONY: cte cted test examples examples_debug see_bytes clean
