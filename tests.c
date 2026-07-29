@@ -9,7 +9,7 @@
 #define TEST_PRINTF(...)                                                       \
   do {                                                                         \
     fputs(__func__, stdout);                                                   \
-    printf(": " __VA_ARGS__);                                                  \
+    printf(": "__VA_ARGS__);                                                   \
   } while (0)
 
 #define countof(a) (sizeof(a) / sizeof((a)[0]))
@@ -27,16 +27,17 @@ typedef struct from_cstr_test_case from_cstr_test_case_t;
 struct from_cstr_test_case
 {
   const char *original;
-  size_t length;
-  size_t size;
+  size_t      length;
+  size_t      size;
 };
 
-static bool test_string_from_cstr(void)
+static bool
+test_string_from_cstr(void)
 {
-  size_t i;
-  int result;
+  size_t                i;
+  int                   result;
   from_cstr_test_case_t test;
-  char out_buffer[BUFFER_SIZE];
+  char                  out_buffer[BUFFER_SIZE];
 
   itl_string_t *str = itl_string_alloc();
 
@@ -78,16 +79,17 @@ struct shift_test_case
 {
   size_t pos;
   size_t count;
-  bool backwards;
+  bool   backwards;
 };
 
-static bool test_string_shift(void)
+static bool
+test_string_shift(void)
 {
-  size_t i;
-  int result;
+  size_t             i;
+  int                result;
   string_test_case_t test;
-  shift_test_case_t shift;
-  char out_buffer[BUFFER_SIZE];
+  shift_test_case_t  shift;
+  char               out_buffer[BUFFER_SIZE];
 
   itl_string_t *str = itl_string_alloc();
 
@@ -127,13 +129,14 @@ static bool test_string_shift(void)
   return true;
 }
 
-static bool test_string_erase(void)
+static bool
+test_string_erase(void)
 {
-  size_t i;
-  int result;
+  size_t             i;
+  int                result;
   string_test_case_t test;
-  shift_test_case_t erase;
-  char out_buffer[BUFFER_SIZE];
+  shift_test_case_t  erase;
+  char               out_buffer[BUFFER_SIZE];
 
   itl_string_t *str = itl_string_alloc();
 
@@ -181,16 +184,17 @@ static bool test_string_erase(void)
   return true;
 }
 
-static bool test_string_insert(void)
+static bool
+test_string_insert(void)
 {
-  int result;
-  size_t i, pos;
+  int                result;
+  size_t             i, pos;
   string_test_case_t test;
-  char out_buffer[BUFFER_SIZE];
+  char               out_buffer[BUFFER_SIZE];
 
   itl_string_t *str = itl_string_alloc();
-  itl_utf8_t A = itl_utf8_new((uint8_t[4]){0x41}, 1);
-  itl_utf8_t two_byte = itl_utf8_new((uint8_t[4]){0xC3, 0xA9}, 2);
+  itl_utf8_t    A = itl_utf8_new((uint8_t[4]){0x41}, 1);
+  itl_utf8_t    two_byte = itl_utf8_new((uint8_t[4]){0xC3, 0xA9}, 2);
 
   /* clang-format off */
   const string_test_case_t tests[] = {
@@ -1001,12 +1005,13 @@ test_completion_callback(const char *buffer, size_t cursor,
                          tl_completion *completion, int for_listing)
 {
   static const char *candidates[] = {"alpha"};
+  static size_t call_count;
 
   (void) buffer;
   (void) cursor;
   (void) for_listing;
   completion->candidates = candidates;
-  completion->count = 1;
+  completion->count = call_count++ == 0 ? 1 : 0;
   completion->token_start = 0;
   completion->token_end = 2;
   return 1;
@@ -1017,6 +1022,7 @@ test_tab_clears_stale_ghost_target(void)
 {
   char out_buffer[BUFFER_SIZE];
   char line_buffer[BUFFER_SIZE];
+  bool replacement_ok;
   bool was_handled;
   itl_le_t le = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
@@ -1026,11 +1032,15 @@ test_tab_clears_stale_ghost_target(void)
   memcpy(itl_g_ghost_sticky_target, "stale", 6);
   tl_set_complete_callback(test_completion_callback);
   was_handled = itl_completion_handle_tab(&le);
-  tl_set_complete_callback(NULL);
   itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  replacement_ok = was_handled && strcmp(line_buffer, "alpha") == 0;
+
+  memcpy(itl_g_ghost_sticky_target, "stale", 6);
+  was_handled = itl_completion_handle_tab(&le);
+  tl_set_complete_callback(NULL);
 
   ITL_STRING_FREE(line);
-  return was_handled && strcmp(line_buffer, "alpha") == 0 &&
+  return replacement_ok && was_handled &&
          itl_g_ghost_sticky_target[0] == '\0';
 }
 
