@@ -1016,8 +1016,7 @@ ITL_DEF bool itl_utf8_equal_ascii_casefold(itl_utf8_t ch1, itl_utf8_t ch2)
 {
   if (itl_utf8_equal(ch1, ch2)) return true;
   if (ch1.size != 1 || ch2.size != 1) return false;
-  return itl_ascii_fold_byte(ch1.bytes[0]) ==
-         itl_ascii_fold_byte(ch2.bytes[0]);
+  return itl_ascii_fold_byte(ch1.bytes[0]) == itl_ascii_fold_byte(ch2.bytes[0]);
 }
 
 ITL_DEF uint8_t itl_utf8_width(int byte)
@@ -1599,8 +1598,9 @@ ITL_DEF void itl_string_join_continuations(itl_string_t *str)
 }
 
 /* Returns true when needle occurs as an ASCII-case-folded contiguous run. */
-ITL_DEF bool itl_string_find_substring_ascii_casefold(
-    const itl_string_t *str, const itl_string_t *needle)
+ITL_DEF bool
+itl_string_find_substring_ascii_casefold(const itl_string_t *str,
+                                         const itl_string_t *needle)
 {
   size_t i, j;
 
@@ -1613,9 +1613,7 @@ ITL_DEF bool itl_string_find_substring_ascii_casefold(
 
   for (i = 0; i + needle->length <= str->length; ++i) {
     for (j = 0; j < needle->length; ++j) {
-      if (!itl_utf8_equal_ascii_casefold(str->chars[i + j],
-                                         needle->chars[j]))
-      {
+      if (!itl_utf8_equal_ascii_casefold(str->chars[i + j], needle->chars[j])) {
         break;
       }
     }
@@ -1670,7 +1668,7 @@ ITL_DEF tl_status_code itl_string_to_cstr(const itl_string_t *str, char *cstr,
 }
 
 ITL_DEF bool itl_string_from_bytes(itl_string_t *str, const char *data,
-                                    size_t size)
+                                   size_t size)
 {
   size_t i, j, k;
   uint8_t rune_width;
@@ -2510,9 +2508,8 @@ ITL_DEF bool itl_history_ensure_read_buffer(void)
     ITL_FILE_CLOSE(file);
     return false;
   }
-  retained_offset = itl_g_history_count > 0
-                        ? itl_history_index_to_offset(0)
-                        : (size_t) file_size;
+  retained_offset = itl_g_history_count > 0 ? itl_history_index_to_offset(0)
+                                            : (size_t) file_size;
   if (retained_offset > (size_t) file_size ||
       !ITL_FILE_SEEK(file, retained_offset))
   {
@@ -2671,8 +2668,7 @@ ITL_DEF void itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 }
 
 ITL_DEF void itl_history_append_read_buffer(size_t previous_file_size,
-                                            const char *data,
-                                            size_t data_size)
+                                            const char *data, size_t data_size)
 {
   size_t retained_offset;
   size_t discarded_size;
@@ -2683,8 +2679,7 @@ ITL_DEF void itl_history_append_read_buffer(size_t previous_file_size,
     itl_g_history_read_buffer_offset = previous_file_size;
     itl_g_history_read_buffer_start = 0;
   }
-  if (itl_g_history_read_buffer_offset +
-          itl_g_history_read_buffer->size !=
+  if (itl_g_history_read_buffer_offset + itl_g_history_read_buffer->size !=
       previous_file_size)
   {
     itl_history_read_fd_invalidate();
@@ -2700,8 +2695,8 @@ ITL_DEF void itl_history_append_read_buffer(size_t previous_file_size,
   if (itl_g_history_count == 0) return;
   retained_offset = itl_g_history_offsets[itl_g_history_head];
   if (retained_offset < itl_g_history_read_buffer_offset ||
-      retained_offset > itl_g_history_read_buffer_offset +
-                            itl_g_history_read_buffer->size)
+      retained_offset >
+          itl_g_history_read_buffer_offset + itl_g_history_read_buffer->size)
   {
     itl_history_read_fd_invalidate();
     return;
@@ -2709,9 +2704,7 @@ ITL_DEF void itl_history_append_read_buffer(size_t previous_file_size,
 
   itl_g_history_read_buffer_start =
       retained_offset - itl_g_history_read_buffer_offset;
-  if (itl_g_history_read_buffer_start <=
-      itl_g_history_read_buffer->size / 2)
-  {
+  if (itl_g_history_read_buffer_start <= itl_g_history_read_buffer->size / 2) {
     return;
   }
 
@@ -3130,9 +3123,8 @@ ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
     if (read_amount == 0) break;
 
     while (total_written < (size_t) read_amount) {
-      int write_amount =
-          (int) ITL_WRITE(out_file, file_buffer + total_written,
-                          (size_t) read_amount - total_written);
+      int write_amount = (int) ITL_WRITE(out_file, file_buffer + total_written,
+                                         (size_t) read_amount - total_written);
       if (write_amount <= 0) {
         ret = TL_ERROR;
         break;
@@ -3687,9 +3679,10 @@ ITL_DEF void itl_le_save_prev_spans(const tl_highlight_span *spans,
   }
 }
 
-ITL_DEF bool itl_le_prev_spans_append_compatible(
-    const tl_highlight_span *spans, size_t count, size_t current_length,
-    const char **tail_sgr)
+ITL_DEF bool itl_le_prev_spans_append_compatible(const tl_highlight_span *spans,
+                                                 size_t count,
+                                                 size_t current_length,
+                                                 const char **tail_sgr)
 {
   size_t s;
   *tail_sgr = NULL;
@@ -3705,8 +3698,7 @@ ITL_DEF bool itl_le_prev_spans_append_compatible(
     if (spans[s].end == itl_g_le_prev_spans[s].end) {
       continue;
     }
-    if (s + 1 != count ||
-        itl_g_le_prev_spans[s].end != itl_g_le_prev_length ||
+    if (s + 1 != count || itl_g_le_prev_spans[s].end != itl_g_le_prev_length ||
         spans[s].end != current_length)
     {
       return false;
@@ -4144,14 +4136,13 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
   cols = ITL_MAX(tty_cols, 1);
   indent = ITL_LE_INDENT(le, cols);
-  if (itl_g_tty_plain_append_pending && !is_resize &&
-      !itl_g_tty_first_render && itl_g_le_prev_cursor_at_end &&
+  if (itl_g_tty_plain_append_pending && !is_resize && !itl_g_tty_first_render &&
+      itl_g_le_prev_cursor_at_end &&
       itl_g_le_prev_cursor_col + itl_g_tty_plain_append_width < cols)
   {
     m.total_rows = itl_g_le_prev_total_rows;
     m.cursor_row = itl_g_le_prev_cursor_row - 1;
-    m.cursor_col =
-        itl_g_le_prev_cursor_col + itl_g_tty_plain_append_width;
+    m.cursor_col = itl_g_le_prev_cursor_col + itl_g_tty_plain_append_width;
   } else {
 #if !defined NDEBUG
     itl_g_debug_metrics_scan_count += 1;
@@ -4655,8 +4646,8 @@ ITL_DEF void itl_ghost_accept(itl_le_t *le)
   }
 }
 
-ITL_DEF bool itl_ghost_extends_completion_miss_plainly(
-    const char *line_cstr, size_t line_byte_len)
+ITL_DEF bool itl_ghost_extends_completion_miss_plainly(const char *line_cstr,
+                                                       size_t line_byte_len)
 {
   size_t position;
   if (itl_g_ghost_completion_miss_prefix_length == 0 ||
@@ -4684,7 +4675,7 @@ ITL_DEF bool itl_ghost_extends_completion_miss_plainly(
 }
 
 ITL_DEF void itl_ghost_record_completion_miss(const char *line_cstr,
-                                               size_t line_byte_len)
+                                              size_t line_byte_len)
 {
   if (line_byte_len >= sizeof(itl_g_ghost_completion_miss_prefix)) {
     itl_g_ghost_completion_miss_prefix[0] = '\0';
@@ -4701,8 +4692,7 @@ ITL_DEF void itl_ghost_record_completion_miss(const char *line_cstr,
    ghost is the part of the common prefix past what the user already typed, so
    it only ever appends. Leaves the ghost cleared when completion offers
    nothing. */
-ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le,
-                                            const char *line_cstr,
+ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le, const char *line_cstr,
                                             size_t line_byte_len)
 {
   tl_completion result;
@@ -4815,9 +4805,9 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr,
 
   if (line_byte_len >= itl_g_ghost_history_miss_prefix_length &&
       itl_g_ghost_history_miss_prefix_length > 0 &&
-      itl_ascii_prefix_matches_casefold(
-          line_cstr, itl_g_ghost_history_miss_prefix,
-          itl_g_ghost_history_miss_prefix_length))
+      itl_ascii_prefix_matches_casefold(line_cstr,
+                                        itl_g_ghost_history_miss_prefix,
+                                        itl_g_ghost_history_miss_prefix_length))
   {
     return;
   }
@@ -4890,9 +4880,7 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr,
     }
   }
 
-  if (!found_match &&
-      line_byte_len < sizeof(itl_g_ghost_history_miss_prefix))
-  {
+  if (!found_match && line_byte_len < sizeof(itl_g_ghost_history_miss_prefix)) {
     memcpy(itl_g_ghost_history_miss_prefix, line_cstr, line_byte_len + 1);
     itl_g_ghost_history_miss_prefix_length = line_byte_len;
   }
@@ -5180,26 +5168,41 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
    units, leaving the cursor at the end of the inserted text. The span is erased
    first so a mid-word cursor does not keep the bytes to its right, then the
    replacement is inserted at the token start. */
-ITL_DEF void itl_completion_replace_token(itl_le_t *le,
+ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
                                           const tl_completion *result,
                                           const char *text)
 {
   size_t line_length = le->line->length;
   size_t token_start = result->token_start;
   size_t token_end = result->token_end;
+  size_t token_size = 0;
+  size_t replacement_size;
+  size_t remaining_size;
+  size_t position;
 
   /* A host callback can return a span off the end of the line or inverted, the
      same off-by-one the highlight path validates and drops. Clamp both ends to
      the line and ignore the completion otherwise, so a bad span never traps the
      shift assert inside itl_string_insert. */
   if (token_start > line_length) {
-    return;
+    return false;
   }
   if (token_end > line_length) {
     token_end = line_length;
   }
   if (token_end < token_start) {
-    return;
+    return false;
+  }
+
+  for (position = token_start; position < token_end; ++position) {
+    token_size += le->line->chars[position].size;
+  }
+  replacement_size = strlen(text);
+  remaining_size = le->line->size - token_size;
+  if (remaining_size >= le->out_size ||
+      replacement_size >= le->out_size - remaining_size)
+  {
+    return false;
   }
 
   {
@@ -5207,7 +5210,7 @@ ITL_DEF void itl_completion_replace_token(itl_le_t *le,
 
     le->cursor_position = token_start;
     ITL_LE_ERASE_FORWARD(le, token_len);
-    itl_le_insert_cstr(le, text);
+    return itl_le_insert_cstr(le, text);
   }
 }
 
@@ -5478,7 +5481,8 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
   } break;
 
   case TL_KEY_KILL_LINE_BEFORE: {
-    ITL_LE_ERASE_BACKWARD(le, le->cursor_position - itl_le_logical_line_start(le));
+    ITL_LE_ERASE_BACKWARD(le,
+                          le->cursor_position - itl_le_logical_line_start(le));
   } break;
 
   case TL_KEY_SUSPEND: {
@@ -7509,7 +7513,7 @@ ITL_DEF tl_status_code itl_vi_ex_command(itl_le_t *le)
 }
 
 ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
-                                                int key)
+                                               int key)
 {
   int kind = key & TL_MASK_KEY;
   itl_utf8_t none = ITL_ZERO_INIT;
@@ -8048,8 +8052,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       }
     } else {
       itl_utf8_t appended_character = itl_utf8_parse(input_byte);
-      itl_g_tty_plain_append_pending =
-          le->cursor_position == le->line->length;
+      itl_g_tty_plain_append_pending = le->cursor_position == le->line->length;
       itl_g_tty_plain_append_width = itl_char_width(appended_character);
       itl_le_insert(le, appended_character);
       itl_g_tty_should_refresh_text = true;

@@ -9,7 +9,7 @@
 #define TEST_PRINTF(...)                                                       \
   do {                                                                         \
     fputs(__func__, stdout);                                                   \
-    printf(": "__VA_ARGS__);                                                   \
+    printf(": " __VA_ARGS__);                                                  \
   } while (0)
 
 #define countof(a) (sizeof(a) / sizeof((a)[0]))
@@ -27,17 +27,16 @@ typedef struct from_cstr_test_case from_cstr_test_case_t;
 struct from_cstr_test_case
 {
   const char *original;
-  size_t      length;
-  size_t      size;
+  size_t length;
+  size_t size;
 };
 
-static bool
-test_string_from_cstr(void)
+static bool test_string_from_cstr(void)
 {
-  size_t                i;
-  int                   result;
+  size_t i;
+  int result;
   from_cstr_test_case_t test;
-  char                  out_buffer[BUFFER_SIZE];
+  char out_buffer[BUFFER_SIZE];
 
   itl_string_t *str = itl_string_alloc();
 
@@ -79,17 +78,16 @@ struct shift_test_case
 {
   size_t pos;
   size_t count;
-  bool   backwards;
+  bool backwards;
 };
 
-static bool
-test_string_shift(void)
+static bool test_string_shift(void)
 {
-  size_t             i;
-  int                result;
+  size_t i;
+  int result;
   string_test_case_t test;
-  shift_test_case_t  shift;
-  char               out_buffer[BUFFER_SIZE];
+  shift_test_case_t shift;
+  char out_buffer[BUFFER_SIZE];
 
   itl_string_t *str = itl_string_alloc();
 
@@ -129,14 +127,13 @@ test_string_shift(void)
   return true;
 }
 
-static bool
-test_string_erase(void)
+static bool test_string_erase(void)
 {
-  size_t             i;
-  int                result;
+  size_t i;
+  int result;
   string_test_case_t test;
-  shift_test_case_t  erase;
-  char               out_buffer[BUFFER_SIZE];
+  shift_test_case_t erase;
+  char out_buffer[BUFFER_SIZE];
 
   itl_string_t *str = itl_string_alloc();
 
@@ -184,17 +181,16 @@ test_string_erase(void)
   return true;
 }
 
-static bool
-test_string_insert(void)
+static bool test_string_insert(void)
 {
-  int                result;
-  size_t             i, pos;
+  int result;
+  size_t i, pos;
   string_test_case_t test;
-  char               out_buffer[BUFFER_SIZE];
+  char out_buffer[BUFFER_SIZE];
 
   itl_string_t *str = itl_string_alloc();
-  itl_utf8_t    A = itl_utf8_new((uint8_t[4]){0x41}, 1);
-  itl_utf8_t    two_byte = itl_utf8_new((uint8_t[4]){0xC3, 0xA9}, 2);
+  itl_utf8_t A = itl_utf8_new((uint8_t[4]){0x41}, 1);
+  itl_utf8_t two_byte = itl_utf8_new((uint8_t[4]){0xC3, 0xA9}, 2);
 
   /* clang-format off */
   const string_test_case_t tests[] = {
@@ -979,6 +975,65 @@ test_history_concurrent_merge(void)
   return ok;
 }
 
+static bool
+test_completion_replacement_is_atomic(void)
+{
+  char out_buffer[6];
+  char line_buffer[BUFFER_SIZE];
+  bool was_replaced;
+  itl_le_t le = ITL_ZERO_INIT;
+  tl_completion completion = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(line, "abcde");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  completion.token_start = 4;
+  completion.token_end = 5;
+  was_replaced = itl_completion_replace_token(&le, &completion, "xyz");
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+
+  ITL_STRING_FREE(line);
+  return !was_replaced && strcmp(line_buffer, "abcde") == 0;
+}
+
+static int
+test_completion_callback(const char *buffer, size_t cursor,
+                         tl_completion *completion, int for_listing)
+{
+  static const char *candidates[] = {"alpha"};
+
+  (void) buffer;
+  (void) cursor;
+  (void) for_listing;
+  completion->candidates = candidates;
+  completion->count = 1;
+  completion->token_start = 0;
+  completion->token_end = 2;
+  return 1;
+}
+
+static bool
+test_tab_clears_stale_ghost_target(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  char line_buffer[BUFFER_SIZE];
+  bool was_handled;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(line, "ab");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  memcpy(itl_g_ghost_sticky_target, "stale", 6);
+  tl_set_complete_callback(test_completion_callback);
+  was_handled = itl_completion_handle_tab(&le);
+  tl_set_complete_callback(NULL);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+
+  ITL_STRING_FREE(line);
+  return was_handled && strcmp(line_buffer, "alpha") == 0 &&
+         itl_g_ghost_sticky_target[0] == '\0';
+}
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -1018,7 +1073,11 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_history_search),
                                    DEFINE_TEST_CASE(test_history_short_entry_skipped),
                                    DEFINE_TEST_CASE(test_history_alloc_balance),
-                                   DEFINE_TEST_CASE(test_history_concurrent_merge)};
+                                   DEFINE_TEST_CASE(test_history_concurrent_merge),
+                                   DEFINE_TEST_CASE(
+                                       test_completion_replacement_is_atomic),
+                                   DEFINE_TEST_CASE(
+                                       test_tab_clears_stale_ghost_target)};
 
 int
 main(void)
