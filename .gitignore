@@ -10,3 +10,6 @@ example_history.txt
 *.lib
 *.ilk
 *.exe
+/example.dSYM/Contents
+/example_character.dSYM/Contents
+/tests.dSYM/Contents

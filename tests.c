@@ -1000,6 +1000,58 @@ test_completion_replacement_is_atomic(void)
   return !was_replaced && strcmp(line_buffer, "abcde") == 0;
 }
 
+static bool
+test_alt_arrows_use_word_movement(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool left_matches;
+  bool right_matches;
+  bool ghost_was_not_accepted;
+  itl_le_t ctrl_le = ITL_ZERO_INIT;
+  itl_le_t alt_le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(line, "alpha beta");
+  itl_le_init(&ctrl_le, line, out_buffer, sizeof(out_buffer), "");
+  itl_le_init(&alt_le, line, out_buffer, sizeof(out_buffer), "");
+  itl_le_key_handle(&ctrl_le, TL_KEY_LEFT | TL_MOD_CTRL);
+  itl_le_key_handle(&alt_le, TL_KEY_LEFT | TL_MOD_ALT);
+  left_matches = ctrl_le.cursor_position == alt_le.cursor_position;
+
+  ctrl_le.cursor_position = 0;
+  alt_le.cursor_position = 0;
+  itl_le_key_handle(&ctrl_le, TL_KEY_RIGHT | TL_MOD_CTRL);
+  itl_le_key_handle(&alt_le, TL_KEY_RIGHT | TL_MOD_ALT);
+  right_matches = ctrl_le.cursor_position == alt_le.cursor_position;
+
+  alt_le.cursor_position = line->length;
+  memcpy(itl_g_ghost, " tail", 6);
+  itl_g_ghost_len = 5;
+  itl_le_key_handle(&alt_le, TL_KEY_RIGHT | TL_MOD_ALT);
+  ghost_was_not_accepted = line->length == 10 && itl_g_ghost_len == 5;
+  itl_ghost_clear();
+
+  ITL_STRING_FREE(line);
+  return left_matches && right_matches && ghost_was_not_accepted;
+}
+
+#if defined ITL_POSIX
+static bool
+test_alt_backspace_sequences(void)
+{
+  int delete_event;
+  int backspace_event;
+
+  itl_g_pushback_byte = 127;
+  delete_event = itl_esc_parse(27);
+  itl_g_pushback_byte = 8;
+  backspace_event = itl_esc_parse(27);
+
+  return delete_event == (TL_KEY_BACKSPACE | TL_MOD_CTRL) &&
+         backspace_event == (TL_KEY_BACKSPACE | TL_MOD_CTRL);
+}
+#endif
+
 static int
 test_completion_callback(const char *buffer, size_t cursor,
                          tl_completion *completion, int for_listing)
@@ -1024,9 +1076,11 @@ test_tab_clears_stale_ghost_target(void)
   char line_buffer[BUFFER_SIZE];
   bool replacement_ok;
   bool was_handled;
+  int previous_supports_decorations = itl_g_supports_decorations;
   itl_le_t le = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
+  itl_g_supports_decorations = 0;
   ITL_STRING_FROM_CSTR(line, "ab");
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
   memcpy(itl_g_ghost_sticky_target, "stale", 6);
@@ -1038,6 +1092,7 @@ test_tab_clears_stale_ghost_target(void)
   memcpy(itl_g_ghost_sticky_target, "stale", 6);
   was_handled = itl_completion_handle_tab(&le);
   tl_set_complete_callback(NULL);
+  itl_g_supports_decorations = previous_supports_decorations;
 
   ITL_STRING_FREE(line);
   return replacement_ok && was_handled &&
@@ -1086,6 +1141,12 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_history_concurrent_merge),
                                    DEFINE_TEST_CASE(
                                        test_completion_replacement_is_atomic),
+                                   DEFINE_TEST_CASE(
+                                       test_alt_arrows_use_word_movement),
+#if defined ITL_POSIX
+                                   DEFINE_TEST_CASE(
+                                       test_alt_backspace_sequences),
+#endif
                                    DEFINE_TEST_CASE(
                                        test_tab_clears_stale_ghost_target)};
 

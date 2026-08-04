@@ -3187,6 +3187,8 @@ ITL_DEF int itl_esc_parse_vt(uint8_t byte)
 
       case 'd': return TL_KEY_DELETE | TL_MOD_CTRL;
       case 'h': return TL_KEY_BACKSPACE | TL_MOD_CTRL;
+      case 8:
+      case 127: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
 
       case '.':
       case '>': return TL_KEY_HISTORY_END;
@@ -5367,7 +5369,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     /* At the end of the line, a Right with ghost text accepts the suggestion by
        inserting it, rather than moving the cursor nowhere. */
     if (le->cursor_position == le->line->length && itl_g_ghost_len > 0 &&
-        !(esc & TL_MOD_CTRL))
+        !(esc & (TL_MOD_CTRL | TL_MOD_ALT)))
     {
       itl_ghost_accept(le);
       itl_ghost_clear();
@@ -5375,7 +5377,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
       break;
     }
     if (le->cursor_position < le->line->length) {
-      if (esc & TL_MOD_CTRL) {
+      if (esc & (TL_MOD_CTRL | TL_MOD_ALT)) {
         cursor_was_on_space = ITL_LE_CURSOR_IS_ON_SPACE(le);
         itl_le_move_right(le, ITL_LE_STEPS_TO_TOKEN_FORWARD(le));
         if (cursor_was_on_space) {
@@ -5391,7 +5393,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     size_t steps;
     bool cursor_was_on_space;
     if (le->cursor_position > 0 && le->cursor_position <= le->line->length) {
-      if (esc & TL_MOD_CTRL) {
+      if (esc & (TL_MOD_CTRL | TL_MOD_ALT)) {
         cursor_was_on_space = (le->cursor_position == le->line->length) ||
                               ITL_LE_CURSOR_IS_ON_SPACE(le);
         steps = ITL_LE_STEPS_TO_TOKEN_BACKWARD(le);
