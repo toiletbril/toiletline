@@ -535,7 +535,7 @@ test_history_multiline_file(void)
   /* A missing file is fine here, the load still records the store path. */
   tl_history_load(path);
 
-  if (!itl_history_append_to_file(entry)) {
+  if (!itl_history_append_to_file(entry, true)) {
     TEST_PRINTF("append failed\n");
     ok = false;
   }
@@ -575,7 +575,7 @@ hist_append_cstr(const char *command)
   bool was_written;
 
   ITL_STRING_FROM_CSTR(str, command);
-  was_written = itl_history_append_to_file(str);
+  was_written = itl_history_append_to_file(str, true);
   ITL_STRING_FREE(str);
 
   return was_written;
@@ -691,6 +691,15 @@ test_history_ring_cap(void)
     }
   }
 
+  if (ok && (itl_g_history_total_count != total ||
+             itl_g_last_history_event_number != total))
+  {
+    TEST_PRINTF("total %zu and last %zu, expected %zu\n",
+                itl_g_history_total_count,
+                itl_g_last_history_event_number, total);
+    ok = false;
+  }
+
   if (ok) {
     tl_history_load(path);
     if (itl_g_history_count != TL_HISTORY_MAX_SIZE) {
@@ -771,6 +780,14 @@ test_history_unterminated_line(void)
 
   tl_history_load(path);
   hist_append_cstr("pwd");
+  if (itl_g_history_total_count != 2 ||
+      itl_g_last_history_event_number != 2)
+  {
+    TEST_PRINTF("unterminated append total %zu and last %zu\n",
+                itl_g_history_total_count,
+                itl_g_last_history_event_number);
+    ok = false;
+  }
   tl_history_load(path);
 
   if (itl_g_history_count != 2) {
@@ -960,6 +977,15 @@ test_history_concurrent_merge(void)
 
   /* Our next append must merge in the other session's entry before writing. */
   hist_append_cstr("third three");
+
+  if (itl_g_history_total_count != 3 ||
+      itl_g_last_history_event_number != 3)
+  {
+    TEST_PRINTF("merged total %zu and last %zu\n",
+                itl_g_history_total_count,
+                itl_g_last_history_event_number);
+    ok = false;
+  }
 
   if (itl_g_history_count != 3) {
     TEST_PRINTF("expected 3 merged entries, got %zu\n", itl_g_history_count);

@@ -397,6 +397,7 @@ TL_DEF void tl_set_edit_mode(int mode);
   (_lseek(file, (long) (offset), SEEK_SET) == (long) (offset))
 /* Seeks to the end and yields the resulting offset, the file size, or -1. */
 #define ITL_FILE_SEEK_END(file) ((long) _lseek(file, 0L, SEEK_END))
+#define ITL_FILE_TELL(file)     ((long) _lseek(file, 0L, SEEK_CUR))
 
 #define ITL_WRITE(fd, buf, size) _write(fd, buf, (unsigned int) (size))
 #define ITL_READ(fd, buf, size)  _read(fd, buf, (unsigned int) (size))
@@ -450,6 +451,7 @@ TL_DEF void tl_set_edit_mode(int mode);
   (lseek(file, (off_t) (offset), SEEK_SET) == (off_t) (offset))
 /* Seeks to the end and yields the resulting offset, the file size, or -1. */
 #define ITL_FILE_SEEK_END(file) ((long) lseek(file, (off_t) 0, SEEK_END))
+#define ITL_FILE_TELL(file)     ((long) lseek(file, (off_t) 0, SEEK_CUR))
 
 #define ITL_WRITE(fd, buf, size) write(fd, buf, (unsigned long) size)
 #define ITL_READ(fd, buf, size)  read(fd, buf, (unsigned long) size)
@@ -488,6 +490,7 @@ TL_DEF void tl_set_edit_mode(int mode);
 /* Seeks to the end and yields the resulting offset, the file size, or -1. */
 #define ITL_FILE_SEEK_END(file)                                                \
   (fseek(file, 0L, SEEK_END) == 0 ? ftell(file) : -1L)
+#define ITL_FILE_TELL(file) ftell(file)
 
 ITL_DEF int itl_write_impl(FILE *f, const void *buf, size_t size)
 {
@@ -1726,6 +1729,8 @@ ITL_DEF ITL_THREAD_LOCAL char *itl_g_history_path = NULL;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_offsets[TL_HISTORY_MAX_SIZE];
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_head = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_total_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_last_history_event_number = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_file_size = 0;
 
 struct itl_char_buf;
@@ -2006,6 +2011,8 @@ ITL_DEF void itl_g_history_free(void)
 
   itl_g_history_head = 0;
   itl_g_history_count = 0;
+  itl_g_history_total_count = 0;
+  itl_g_last_history_event_number = 0;
   itl_g_history_file_size = 0;
   itl_g_history_ends_with_newline = true;
 }
@@ -2851,6 +2858,7 @@ ITL_DEF bool itl_history_scan_fd(ITL_FILE file)
 
   itl_g_history_head = 0;
   itl_g_history_count = 0;
+  itl_g_history_total_count = 0;
   itl_history_read_fd_invalidate();
 
   if (!ITL_FILE_SEEK(file, 0)) {
@@ -2889,6 +2897,7 @@ ITL_DEF bool itl_history_scan_fd(ITL_FILE file)
 
       if (ch == '\n') {
         itl_history_push_offset(entry_start);
+        itl_g_history_total_count += 1;
         entry_start = file_pos + 1;
         continue;
       }
@@ -2965,23 +2974,28 @@ ITL_DEF tl_status_code itl_history_load_from_file(const char *path)
    Consecutive duplicates and entries of length one or zero are skipped, which
    matches what the dumper persisted. Returns true on a successful write.
    Returns false when the entry is skipped or the write fails. */
-ITL_DEF bool itl_history_append_to_file(const itl_string_t *str)
+ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
+                                        bool should_require_terminal)
 {
   ITL_FILE read_file;
   ITL_FILE append_file;
   itl_char_buf_t *buffer;
   long real_end;
+  long actual_end;
   size_t new_offset;
   bool ok = true;
   bool is_duplicate = false;
+  bool should_rescan = false;
+  bool had_unterminated_tail;
 
+  itl_g_last_history_event_number = 0;
   if (itl_g_history_path == NULL || itl_g_history_file_is_bad) {
     return false;
   }
   /* A non-interactive run reading from a pipe or a file leaves the history
      file untouched, so only a real terminal session records its commands the
      way bash skips history off a tty. */
-  if (!ITL_TTY_IS_TTY()) {
+  if (should_require_terminal && !ITL_TTY_IS_TTY()) {
     return false;
   }
   if (str->length <= 1) {
@@ -3029,7 +3043,8 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str)
   /* When the file does not end on a newline, write a separator first so the new
      entry starts its own physical line instead of gluing onto the previous one.
    */
-  if (!itl_g_history_ends_with_newline) {
+  had_unterminated_tail = !itl_g_history_ends_with_newline;
+  if (had_unterminated_tail) {
     itl_char_buf_append_byte(buffer, '\n');
   }
   itl_char_buf_append_string_escaped(buffer, str);
@@ -3063,9 +3078,20 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str)
       itl_g_history_file_is_bad = true;
       ok = false;
     } else {
-      itl_g_history_file_size = (size_t) real_end + buffer->size;
+      actual_end = ITL_FILE_TELL(append_file);
+      if (actual_end < 0) actual_end = real_end + (long) buffer->size;
+      new_offset = (size_t) actual_end - buffer->size +
+                   (had_unterminated_tail ? 1 : 0);
+      should_rescan = had_unterminated_tail ||
+                      (size_t) actual_end !=
+                          (size_t) real_end + buffer->size;
+      itl_g_history_file_size = (size_t) actual_end;
       itl_g_history_ends_with_newline = true;
-      itl_history_push_offset(new_offset);
+      if (!should_rescan) {
+        itl_history_push_offset(new_offset);
+        itl_g_history_total_count += 1;
+        itl_g_last_history_event_number = itl_g_history_total_count;
+      }
       itl_history_append_read_buffer((size_t) real_end, buffer->data,
                                      buffer->size);
       ITL_TRACELN("appended history entry at offset %zu, %zu entries now\n",
@@ -3075,6 +3101,26 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str)
 
   ITL_FILE_CLOSE(append_file);
   ITL_CHAR_BUF_FREE(buffer);
+
+  if (ok && should_rescan) {
+    size_t index;
+    read_file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
+    if (ITL_FILE_IS_BAD(read_file) || !itl_history_scan_fd(read_file)) {
+      if (!ITL_FILE_IS_BAD(read_file)) ITL_FILE_CLOSE(read_file);
+      return false;
+    }
+    ITL_FILE_CLOSE(read_file);
+
+    itl_g_last_history_event_number = 0;
+    for (index = 0; index < itl_g_history_count; ++index) {
+      if (itl_history_index_to_offset(index) == new_offset) {
+        itl_g_last_history_event_number =
+            itl_g_history_total_count - itl_g_history_count + index + 1;
+        break;
+      }
+    }
+    if (itl_g_last_history_event_number == 0) return false;
+  }
 
   return ok;
 }
@@ -5460,7 +5506,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
                 TL_SUCCESS,
             return TL_ERROR_SIZE);
     /* Persist the accepted command and return to the draft state. */
-    itl_history_append_to_file(le->line);
+    itl_history_append_to_file(le->line, true);
     if (itl_g_history_draft != NULL) {
       itl_string_clear(itl_g_history_draft);
     }
