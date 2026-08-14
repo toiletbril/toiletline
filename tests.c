@@ -1095,6 +1095,77 @@ test_completion_callback(const char *buffer, size_t cursor,
   return 1;
 }
 
+static int
+test_tailscale_completion_callback(const char *buffer, size_t cursor,
+                                   tl_completion *completion, int for_listing)
+{
+  static const char *candidates[] = {"tailscale"};
+
+  (void) buffer;
+  (void) cursor;
+  (void) for_listing;
+  completion->candidates = candidates;
+  completion->count = 1;
+  completion->longest_common_prefix = "tailscale";
+  completion->token_start = 0;
+  completion->token_end = 4;
+  return 1;
+}
+
+static bool
+test_ghost_prefers_recent_history(void)
+{
+  const char *path = "tl_test_ghost_history_priority.txt";
+  char out_buffer[BUFFER_SIZE];
+  char line_buffer[BUFFER_SIZE];
+  bool ok = true;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+  if (!hist_append_cstr("tailscale up --older")) ok = false;
+  if (!hist_append_cstr("tailscale status --json")) ok = false;
+
+  ITL_STRING_FROM_CSTR(line, "tail");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.cursor_position = line->length;
+  tl_set_complete_callback(test_tailscale_completion_callback);
+  itl_ghost_update(&le);
+  if (strcmp(itl_g_ghost, "scale status --json") != 0) {
+    TEST_PRINTF("ghost was '%s'\n", itl_g_ghost);
+    ok = false;
+  }
+  itl_ghost_accept(&le);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, "tailscale status --json") != 0) {
+    TEST_PRINTF("accepted line was '%s'\n", line_buffer);
+    ok = false;
+  }
+
+  remove(path);
+  itl_g_history_free();
+  tl_history_load(path);
+  if (!hist_append_cstr("unrelated command")) ok = false;
+  ITL_STRING_FROM_CSTR(line, "tail");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_ghost_update(&le);
+  if (strcmp(itl_g_ghost, "scale") != 0) {
+    TEST_PRINTF("fallback ghost was '%s'\n", itl_g_ghost);
+    ok = false;
+  }
+
+  tl_set_complete_callback(NULL);
+  itl_ghost_clear();
+  itl_g_ghost_sticky_target[0] = '\0';
+  ITL_STRING_FREE(line);
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
 static bool
 test_tab_clears_stale_ghost_target(void)
 {
@@ -1173,6 +1244,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_alt_backspace_sequences),
 #endif
+                                   DEFINE_TEST_CASE(
+                                       test_ghost_prefers_recent_history),
                                    DEFINE_TEST_CASE(
                                        test_tab_clears_stale_ghost_target)};
 

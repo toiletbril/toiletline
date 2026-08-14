@@ -4847,10 +4847,9 @@ ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le,
   }
 }
 
-/* Fill the ghost from history when completion offered none, the way fish
-   autosuggests. The most recent history entry that begins with the whole typed
-   line supplies the rest of that line as a dimmed suggestion. Leaves the ghost
-   cleared when no entry matches. */
+/* Fill the ghost from history before completion. The most recent history entry
+   that begins with the whole typed line supplies the rest of that line as a
+   dimmed suggestion. Leaves the ghost cleared when no entry matches. */
 ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr,
                                          size_t line_byte_len)
 {
@@ -4947,10 +4946,9 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr,
   /* The read handle stays open and cached for the next keystroke. */
 }
 
-/* Update the dimmed ghost suggestion shown after the cursor. The completion's
-   longest common prefix is tried first, then a history match. It is shown only
-   when the cursor sits at the very end of the line, so it never splits the
-   buffer. */
+/* Update the dimmed ghost suggestion shown after the cursor. History is tried
+   first, then completion. It is shown only when the cursor sits at the very end
+   of the line, so it never splits the buffer. */
 ITL_DEF void itl_ghost_update(itl_le_t *le)
 {
   const char *line_cstr = itl_g_serialized_line;
@@ -5056,9 +5054,9 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
     }
   }
 
-  itl_ghost_fill_from_completion(le, line_cstr, line_byte_len);
+  itl_ghost_fill_from_history(line_cstr, line_byte_len);
   if (itl_g_ghost_len == 0) {
-    itl_ghost_fill_from_history(line_cstr, line_byte_len);
+    itl_ghost_fill_from_completion(le, line_cstr, line_byte_len);
   }
 
   /* A multiline suggestion drawn on the current line would push the caret onto
