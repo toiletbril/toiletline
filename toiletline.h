@@ -3161,8 +3161,9 @@ ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
 
   in_file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
   if (ITL_FILE_IS_BAD(in_file)) {
+    int const open_error = errno;
     ITL_FILE_CLOSE(out_file);
-    return (errno == ENOENT) ? TL_SUCCESS : TL_ERROR;
+    return (open_error == ENOENT) ? TL_SUCCESS : TL_ERROR;
   }
 
   for (;;) {
