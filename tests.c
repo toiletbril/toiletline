@@ -735,12 +735,9 @@ test_history_ring_cap(void)
   }
 
   tl_set_history_limit(TL_HISTORY_MAX_SIZE);
-  snprintf(expected, sizeof(expected), "cmd %zu",
-           total - (size_t) TL_HISTORY_MAX_SIZE);
-  if (ok && (itl_g_history_count != TL_HISTORY_MAX_SIZE ||
-             !hist_entry_is(0, expected)))
-  {
-    TEST_PRINTF("grown history limit did not reload older entries\n");
+  if (ok && itl_g_history_count != 2) {
+    TEST_PRINTF("grown history limit resurrected %zu entries\n",
+                itl_g_history_count);
     ok = false;
   }
 
@@ -751,6 +748,16 @@ test_history_ring_cap(void)
     ok = false;
   }
   tl_set_history_limit(TL_HISTORY_MAX_SIZE);
+  if (ok && !hist_append_cstr("after growth")) {
+    TEST_PRINTF("append after growing the history limit failed\n");
+    ok = false;
+  }
+  if (ok && (itl_g_history_count != 1 ||
+             !hist_entry_is(0, "after growth")))
+  {
+    TEST_PRINTF("grown history limit retained the wrong new entry\n");
+    ok = false;
+  }
 
   remove(path);
   itl_g_history_free();

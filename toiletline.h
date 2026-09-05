@@ -8205,21 +8205,10 @@ TL_DEF void tl_set_history_enabled(bool enabled)
 
 TL_DEF void tl_set_history_limit(size_t entry_count)
 {
-  ITL_FILE file;
   size_t removed_count;
 
   if (entry_count > TL_HISTORY_MAX_SIZE) entry_count = TL_HISTORY_MAX_SIZE;
   if (entry_count == itl_g_history_limit) return;
-
-  if (entry_count > itl_g_history_limit && itl_g_history_path != NULL) {
-    itl_g_history_limit = entry_count;
-    file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
-    if (!ITL_FILE_IS_BAD(file)) {
-      (void) itl_history_scan_fd(file);
-      ITL_FILE_CLOSE(file);
-    }
-    return;
-  }
 
   itl_g_history_limit = entry_count;
   if (itl_g_history_count <= entry_count) return;
