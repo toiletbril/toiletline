@@ -1233,6 +1233,31 @@ test_tab_clears_stale_ghost_target(void)
          itl_g_ghost_sticky_target[0] == '\0';
 }
 
+/* The external-screen pair is only meaningful around a live raw-mode session,
+   so each half refuses the state the other one owns. Driving a real handoff
+   needs a terminal and is covered by the interactive pty harness instead. */
+static bool
+test_external_screen_requires_raw_mode(void)
+{
+  bool begin_refused;
+  bool end_refused;
+  bool previous_active = itl_g_is_active;
+  bool previous_raw = itl_g_entered_raw_mode;
+
+  itl_g_is_active = true;
+
+  itl_g_entered_raw_mode = false;
+  begin_refused = tl_begin_external_screen() == TL_ERROR;
+
+  itl_g_entered_raw_mode = true;
+  end_refused = tl_end_external_screen() == TL_ERROR;
+
+  itl_g_entered_raw_mode = previous_raw;
+  itl_g_is_active = previous_active;
+
+  return begin_refused && end_refused;
+}
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -1284,7 +1309,9 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_ghost_prefers_recent_history),
                                    DEFINE_TEST_CASE(
-                                       test_tab_clears_stale_ghost_target)};
+                                       test_tab_clears_stale_ghost_target),
+                                   DEFINE_TEST_CASE(
+                                       test_external_screen_requires_raw_mode)};
 
 int
 main(void)
