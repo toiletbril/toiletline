@@ -278,6 +278,22 @@ typedef int (*tl_complete_fn)(const char *buffer, size_t cursor,
  */
 TL_DEF void tl_set_complete_callback(tl_complete_fn callback);
 
+/**
+ * Temporarily hand the terminal to an interactive program while tl_get_input()
+ * is active. The begin call clears the editor-owned input block and restores
+ * cooked mode. The end call re-enters raw mode and invalidates the saved render
+ * so the next editor refresh repaints the prompt and draft from scratch.
+ */
+TL_DEF tl_status_code tl_begin_external_screen(void);
+TL_DEF tl_status_code tl_end_external_screen(void);
+
+/**
+ * Let the terminal turn the interrupt key back into SIGINT while the editor
+ * stays in raw mode. A host callback that runs a slow command turns this on for
+ * its duration so the key reaches the command instead of queueing as input.
+ */
+TL_DEF tl_status_code tl_set_signal_keys(int enabled);
+
 /*
  * Enables or disables the dimmed ghost suggestion shown ahead of the cursor.
  * Enabled by default. When disabled neither completion nor history fills it.
@@ -4697,6 +4713,108 @@ ITL_DEF void itl_ghost_clear(void)
   itl_g_ghost[0] = '\0';
   itl_g_ghost_case_fix_len = 0;
   itl_g_ghost_case_fix[0] = '\0';
+}
+
+TL_DEF tl_status_code tl_set_signal_keys(int enabled)
+{
+#if defined ITL_POSIX
+  struct termios term;
+
+  ITL_TRY(itl_g_entered_raw_mode, return TL_ERROR);
+  ITL_TRY(tcgetattr(STDIN_FILENO, &term) == 0, return TL_ERROR);
+
+  /* Raw mode cleared ISIG, which is why the interrupt key arrives as an
+     ordinary byte. Setting it back makes the terminal raise SIGINT again
+     without disturbing echo, canonical input, or the timing controls. */
+  if (enabled) {
+    term.c_lflag |= (tcflag_t) ISIG;
+  } else {
+    term.c_lflag &= (tcflag_t) ~ISIG;
+  }
+
+  ITL_TRY(tcsetattr(STDIN_FILENO, TCSANOW, &term) == 0, return TL_ERROR);
+  return TL_SUCCESS;
+#else
+  /* The Windows console has no equivalent knob, and the host reads the key
+     itself there. */
+  (void) enabled;
+  return TL_SUCCESS;
+#endif /* ITL_POSIX */
+}
+
+/* The height of the prompt block the picker was opened under, so the resume
+   side knows how far back up the block starts. Zero when no handoff is open. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_external_screen_rows = 0;
+
+TL_DEF tl_status_code tl_begin_external_screen(void)
+{
+  itl_char_buf_t *b = &itl_g_char_buffer;
+  size_t move_down;
+  size_t i;
+
+  TL_ASSERT(itl_g_is_active && "tl_init() should be called");
+  ITL_TRY(itl_g_entered_raw_mode, return TL_ERROR);
+
+  /* The prompt and the line being edited stay on screen, so the picker opens
+     under them and the user keeps reading what the completion is for. Only the
+     cursor moves, down past the last row of the block, which is where a
+     height-limited child starts drawing. */
+  move_down = itl_g_le_prev_total_rows - (itl_g_le_prev_cursor_row - 1);
+  itl_g_external_screen_rows = itl_g_le_prev_total_rows;
+
+  ITL_CHAR_BUF_CLEAR(b);
+  for (i = 0; i < move_down; ++i) {
+    itl_char_buf_append_cstr(b, ITL_LF);
+  }
+  ITL_TTY_AUTOWRAP_ON(b);
+  ITL_TTY_SHOW_CURSOR(b);
+  ITL_CHAR_BUF_DUMP(b);
+  ITL_CHAR_BUF_CLEAR(b);
+
+  return tl_exit_raw_mode();
+}
+
+TL_DEF tl_status_code tl_end_external_screen(void)
+{
+  itl_char_buf_t *b = &itl_g_char_buffer;
+
+  TL_ASSERT(itl_g_is_active && "tl_init() should be called");
+  ITL_TRY(!itl_g_entered_raw_mode, return TL_ERROR);
+  ITL_TRY(tl_enter_raw_mode() == TL_SUCCESS, return TL_ERROR);
+
+  /* A child that limits its own height restores the cursor where it started,
+     which is one row past the block. Walking back to the top of the block and
+     erasing from there drops both the stale prompt and whatever the child left
+     behind, so the repaint below lands the new prompt in the same spot rather
+     than under a copy of the old one. */
+  ITL_CHAR_BUF_CLEAR(b);
+  if (itl_g_external_screen_rows > 0) {
+    ITL_TTY_MOVE_UP(b, itl_g_external_screen_rows);
+  }
+  ITL_TTY_MOVE_TO_COLUMN(b, 1);
+  ITL_TTY_CLEAR_BELOW(b);
+  ITL_CHAR_BUF_DUMP(b);
+  ITL_CHAR_BUF_CLEAR(b);
+  itl_g_external_screen_rows = 0;
+
+  /* The child may also have moved the cursor, switched screen buffers, resized
+     the window, or repainted anywhere. Every incremental-render shortcut is
+     therefore dropped so the next refresh repaints from scratch. The line
+     buffer, cursor, undo history, and history draft are untouched. */
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  itl_g_tty_should_refresh_text = true;
+  itl_g_tty_plain_append_pending = false;
+  itl_g_le_prev_total_rows = 1;
+  itl_g_le_prev_cursor_row = 1;
+  itl_g_le_prev_cursor_col = 0;
+  itl_g_le_prev_render_len = 0;
+  itl_g_le_prev_length = 0;
+  itl_g_le_prev_cursor_at_end = false;
+  itl_g_le_prev_spans_usable = false;
+  itl_ghost_clear();
+  itl_g_ghost_sticky_target[0] = '\0';
+  return TL_SUCCESS;
 }
 
 ITL_DEF void itl_ghost_accept(itl_le_t *le)
