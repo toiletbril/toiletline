@@ -217,6 +217,8 @@ TL_DEF tl_status_code tl_history_load(const char *file_path);
  * invalid file or to the underlying value on other failures.
  */
 TL_DEF tl_status_code tl_history_dump(const char *file_path);
+/** Enable or disable the automatic history append performed on submission. */
+TL_DEF void tl_set_history_enabled(bool enabled);
 /**
  * Returns the number of UTF-8 characters, which strlen() cannot since it counts
  * bytes.
@@ -1732,6 +1734,7 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_total_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_last_history_event_number = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_file_size = 0;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_enabled = true;
 
 struct itl_char_buf;
 ITL_DEF ITL_THREAD_LOCAL struct itl_char_buf *itl_g_history_read_buffer = NULL;
@@ -5505,7 +5508,10 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
                 TL_SUCCESS,
             return TL_ERROR_SIZE);
     /* Persist the accepted command and return to the draft state. */
-    itl_history_append_to_file(le->line, true);
+    itl_g_last_history_event_number = 0;
+    if (itl_g_history_enabled) {
+      itl_history_append_to_file(le->line, true);
+    }
     if (itl_g_history_draft != NULL) {
       itl_string_clear(itl_g_history_draft);
     }
@@ -8182,6 +8188,11 @@ TL_DEF tl_status_code tl_get_character(char *char_buffer,
 TL_DEF tl_status_code tl_history_load(const char *file_path)
 {
   return itl_history_load_from_file(file_path);
+}
+
+TL_DEF void tl_set_history_enabled(bool enabled)
+{
+  itl_g_history_enabled = enabled;
 }
 
 TL_DEF tl_status_code tl_history_dump(const char *file_path)
