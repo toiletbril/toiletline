@@ -535,7 +535,7 @@ test_history_multiline_file(void)
   /* A missing file is fine here, the load still records the store path. */
   tl_history_load(path);
 
-  if (!itl_history_append_to_file(entry, true)) {
+  if (!itl_history_append_to_file(entry, true, false)) {
     TEST_PRINTF("append failed\n");
     ok = false;
   }
@@ -575,7 +575,7 @@ hist_append_cstr(const char *command)
   bool was_written;
 
   ITL_STRING_FROM_CSTR(str, command);
-  was_written = itl_history_append_to_file(str, true);
+  was_written = itl_history_append_to_file(str, true, false);
   ITL_STRING_FREE(str);
 
   return was_written;

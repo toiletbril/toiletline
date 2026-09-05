@@ -44,6 +44,7 @@ extern "C"
 #define _CRT_SECURE_NO_WARNINGS
 #endif /* !_CRT_SECURE_NO_WARNINGS */
 
+#include <stdbool.h>
 #include <stddef.h>
 
 /* If not defined, Ctrl-Z will raise `SIGTSTP` internally and toiletline will
@@ -2974,11 +2975,12 @@ ITL_DEF tl_status_code itl_history_load_from_file(const char *path)
 }
 
 /* Appends an accepted command to the history file and records its offset.
-   Consecutive duplicates and entries of length one or zero are skipped, which
-   matches what the dumper persisted. Returns true on a successful write.
+   Entries of length one or zero are skipped. Consecutive duplicates are
+   skipped unless the caller requests them. Returns true on a successful write.
    Returns false when the entry is skipped or the write fails. */
 ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
-                                        bool should_require_terminal)
+                                        bool should_require_terminal,
+                                        bool should_allow_duplicate)
 {
   ITL_FILE read_file;
   ITL_FILE append_file;
@@ -3038,7 +3040,7 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
     }
     ITL_FILE_CLOSE(read_file);
   }
-  if (is_duplicate) {
+  if (is_duplicate && !should_allow_duplicate) {
     return false;
   }
 
@@ -5510,7 +5512,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     /* Persist the accepted command and return to the draft state. */
     itl_g_last_history_event_number = 0;
     if (itl_g_history_enabled) {
-      itl_history_append_to_file(le->line, true);
+      itl_history_append_to_file(le->line, true, false);
     }
     if (itl_g_history_draft != NULL) {
       itl_string_clear(itl_g_history_draft);
