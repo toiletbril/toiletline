@@ -722,6 +722,36 @@ test_history_ring_cap(void)
     ok = false;
   }
 
+  tl_set_history_limit(2);
+  snprintf(expected, sizeof(expected), "cmd %zu", total - 2);
+  if (ok && (itl_g_history_count != 2 || !hist_entry_is(0, expected))) {
+    TEST_PRINTF("shrunk history limit retained the wrong entries\n");
+    ok = false;
+  }
+  snprintf(expected, sizeof(expected), "cmd %zu", total - 1);
+  if (ok && !hist_entry_is(1, expected)) {
+    TEST_PRINTF("shrunk history limit retained the wrong entries\n");
+    ok = false;
+  }
+
+  tl_set_history_limit(TL_HISTORY_MAX_SIZE);
+  snprintf(expected, sizeof(expected), "cmd %zu",
+           total - (size_t) TL_HISTORY_MAX_SIZE);
+  if (ok && (itl_g_history_count != TL_HISTORY_MAX_SIZE ||
+             !hist_entry_is(0, expected)))
+  {
+    TEST_PRINTF("grown history limit did not reload older entries\n");
+    ok = false;
+  }
+
+  tl_set_history_limit(0);
+  if (ok && itl_g_history_count != 0) {
+    TEST_PRINTF("zero history limit retained %zu entries\n",
+                itl_g_history_count);
+    ok = false;
+  }
+  tl_set_history_limit(TL_HISTORY_MAX_SIZE);
+
   remove(path);
   itl_g_history_free();
   itl_g_is_active = false;

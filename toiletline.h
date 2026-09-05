@@ -220,6 +220,8 @@ TL_DEF tl_status_code tl_history_load(const char *file_path);
 TL_DEF tl_status_code tl_history_dump(const char *file_path);
 /** Enable or disable the automatic history append performed on submission. */
 TL_DEF void tl_set_history_enabled(bool enabled);
+/** Bound the number of history entries retained for recall and listing. */
+TL_DEF void tl_set_history_limit(size_t entry_count);
 /**
  * Returns the number of UTF-8 characters, which strlen() cannot since it counts
  * bytes.
@@ -1735,6 +1737,7 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_total_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_last_history_event_number = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_file_size = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_limit = TL_HISTORY_MAX_SIZE;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_enabled = true;
 
 struct itl_char_buf;
@@ -2835,15 +2838,18 @@ ITL_DEF void itl_char_buf_append_string_escaped(itl_char_buf_t *cb,
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_file_is_bad = false;
 
 /* Records the byte offset of one entry in the ring, evicting the oldest when
-   the ring is full so only the most recent TL_HISTORY_MAX_SIZE remain. */
+   the configured limit is full. */
 ITL_DEF void itl_history_push_offset(size_t offset)
 {
-  if (itl_g_history_count < (TL_HISTORY_MAX_SIZE)) {
+  if (itl_g_history_limit == 0) return;
+
+  if (itl_g_history_count < itl_g_history_limit) {
     itl_g_history_offsets[(itl_g_history_head + itl_g_history_count) %
                           (TL_HISTORY_MAX_SIZE)] = offset;
     itl_g_history_count += 1;
   } else {
-    itl_g_history_offsets[itl_g_history_head] = offset;
+    itl_g_history_offsets[(itl_g_history_head + itl_g_history_count) %
+                          (TL_HISTORY_MAX_SIZE)] = offset;
     itl_g_history_head = (itl_g_history_head + 1) % (TL_HISTORY_MAX_SIZE);
   }
 }
@@ -8195,6 +8201,34 @@ TL_DEF tl_status_code tl_history_load(const char *file_path)
 TL_DEF void tl_set_history_enabled(bool enabled)
 {
   itl_g_history_enabled = enabled;
+}
+
+TL_DEF void tl_set_history_limit(size_t entry_count)
+{
+  ITL_FILE file;
+  size_t removed_count;
+
+  if (entry_count > TL_HISTORY_MAX_SIZE) entry_count = TL_HISTORY_MAX_SIZE;
+  if (entry_count == itl_g_history_limit) return;
+
+  if (entry_count > itl_g_history_limit && itl_g_history_path != NULL) {
+    itl_g_history_limit = entry_count;
+    file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
+    if (!ITL_FILE_IS_BAD(file)) {
+      (void) itl_history_scan_fd(file);
+      ITL_FILE_CLOSE(file);
+    }
+    return;
+  }
+
+  itl_g_history_limit = entry_count;
+  if (itl_g_history_count <= entry_count) return;
+
+  removed_count = itl_g_history_count - entry_count;
+  itl_g_history_head =
+      (itl_g_history_head + removed_count) % (TL_HISTORY_MAX_SIZE);
+  itl_g_history_count = entry_count;
+  itl_history_read_fd_invalidate();
 }
 
 TL_DEF tl_status_code tl_history_dump(const char *file_path)
