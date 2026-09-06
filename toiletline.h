@@ -301,6 +301,13 @@ TL_DEF tl_status_code tl_set_signal_keys(int enabled);
 TL_DEF void tl_set_ghost_enabled(int enabled);
 
 /*
+ * Enables or disables the selectable candidate menu opened under the prompt
+ * when a second TAB finds several candidates. Disabled by default, which keeps
+ * the plain printed column list.
+ */
+TL_DEF void tl_set_completion_menu_enabled(int enabled);
+
+/*
  * The ghost history validation callback. It receives a history entry the ghost
  * is about to suggest and returns nonzero to accept it, zero to skip it. NULL
  * accepts every entry.
@@ -1698,26 +1705,48 @@ ITL_DEF bool itl_string_from_bytes(itl_string_t *str, const char *data,
 {
   size_t i, j, k;
   uint8_t rune_width;
+  uint32_t codepoint;
 
   /* Clamp the byte count to the platform cap, the same silent-truncation
      policy itl_history_read_entry_fd uses, so a host setter that feeds an
-     oversized string never trips the length assert in itl_string_recalc_size.
-     The existing per-rune cutoff below drops a rune straddling the clamp. */
+     oversized string never trips the length assert in
+     itl_string_recalc_size. */
   if (size > ITL_STRING_MAX_LEN) {
     size = ITL_STRING_MAX_LEN;
+    while (size > 0 && (data[size] & 0xC0) == 0x80) {
+      --size;
+    }
+  }
+
+  for (k = 0; k < size;) {
+    rune_width = itl_utf8_width((uint8_t) data[k]);
+    if (rune_width == 0 || k + rune_width > size) {
+      return false;
+    }
+
+    codepoint = (uint8_t) data[k] &
+                (rune_width == 1   ? 0x7FU
+                 : rune_width == 2 ? 0x1FU
+                 : rune_width == 3 ? 0x0FU
+                                   : 0x07U);
+    for (j = 1; j < rune_width; ++j) {
+      uint8_t continuation_byte = (uint8_t) data[k + j];
+      if ((continuation_byte & 0xC0) != 0x80) return false;
+      codepoint = (codepoint << 6) | (continuation_byte & 0x3F);
+    }
+    if ((rune_width == 2 && codepoint < 0x80U) ||
+        (rune_width == 3 && codepoint < 0x800U) ||
+        (rune_width == 4 && codepoint < 0x10000U) ||
+        codepoint > 0x10FFFFU ||
+        (codepoint >= 0xD800U && codepoint <= 0xDFFFU))
+    {
+      return false;
+    }
+    k += rune_width;
   }
 
   for (i = 0, k = 0; k < size; ++i) {
     rune_width = itl_utf8_width((uint8_t) data[k]);
-    if (rune_width == 0) {
-      return false; /* Something went wrong. */
-    }
-
-    /* A trailing multibyte sequence cut off by `size` is dropped instead of
-       claiming more bytes than were actually copied. */
-    if (k + rune_width > size) {
-      break;
-    }
 
     while (str->capacity < i + 1) {
       itl_string_extend(str);
@@ -2061,6 +2090,7 @@ ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
   char decoded[ITL_STRING_MAX_LEN];
   size_t decoded_size = 0;
   bool escape_pending = false;
+  bool carriage_return_pending = false;
   bool line_done = false;
   bool was_truncated = false;
 
@@ -2083,6 +2113,24 @@ ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
     for (i = 0; i < (size_t) read_amount && !line_done; ++i) {
       uint8_t ch = (uint8_t) chunk[i];
 
+      if (carriage_return_pending) {
+        carriage_return_pending = false;
+        if (ch == '\n') {
+          line_done = true;
+          continue;
+        }
+
+        /* The record was written with CRLF endings. A carriage return anywhere
+           else is entry data. */
+        if (decoded_size < ITL_STRING_MAX_LEN) {
+          decoded[decoded_size++] = '\r';
+        } else {
+          was_truncated = true;
+          line_done = true;
+          continue;
+        }
+      }
+
       if (escape_pending) {
         escape_pending = false;
         if (ch == 'n') {
@@ -2103,6 +2151,7 @@ ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
         line_done = true;
         continue;
       } else if (ch == '\r') {
+        carriage_return_pending = true;
         continue;
       }
 
@@ -2112,6 +2161,14 @@ ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
         was_truncated = true;
         line_done = true;
       }
+    }
+  }
+
+  if (carriage_return_pending) {
+    if (decoded_size < ITL_STRING_MAX_LEN) {
+      decoded[decoded_size++] = '\r';
+    } else {
+      was_truncated = true;
     }
   }
 
@@ -2511,8 +2568,10 @@ ITL_DEF void itl_history_read_fd_invalidate(void)
 
 /* Loads the whole history file into itl_g_history_read_buffer once. The ghost
    and search scans then decode each entry from memory rather than reading the
-   file per entry. A failed load is recorded and not retried until the next
-   invalidation. Returns true when the buffer holds the file. */
+   file per entry. A failure to open or seek is recorded and not retried until
+   the next invalidation. A failure while reading or closing invalidates the
+   buffer, so the following call loads again. Returns true when the buffer holds
+   the file. */
 ITL_DEF bool itl_history_ensure_read_buffer(void)
 {
   ITL_FILE file;
@@ -2561,12 +2620,18 @@ ITL_DEF bool itl_history_ensure_read_buffer(void)
     int read_amount =
         (int) ITL_READ(file, itl_g_history_read_buffer->data + total_read,
                        retained_size - total_read);
+    if (read_amount < 0 && errno == EINTR) continue;
     if (read_amount <= 0) {
-      break;
+      ITL_FILE_CLOSE(file);
+      itl_history_read_fd_invalidate();
+      return false;
     }
     total_read += (size_t) read_amount;
   }
-  ITL_FILE_CLOSE(file);
+  if (ITL_FILE_CLOSE(file) != 0) {
+    itl_history_read_fd_invalidate();
+    return false;
+  }
 
   itl_g_history_read_buffer->size = total_read;
   itl_g_history_read_buffer_offset = retained_offset;
@@ -2606,7 +2671,11 @@ ITL_DEF bool itl_history_decode_entry_buffered(size_t offset, char *decoded,
       continue;
     } else if (ch == '\n') {
       break;
-    } else if (ch == '\r') {
+    } else if (ch == '\r' && i + 1 < buffer_size &&
+               buffer_data[i + 1] == '\n')
+    {
+      /* The record was written with CRLF endings. A carriage return anywhere
+         else is entry data. */
       continue;
     }
 
@@ -2870,6 +2939,55 @@ ITL_DEF void itl_history_push_offset(size_t offset)
   }
 }
 
+/* Drops the offset ring and the cached read descriptor. A scan calls this to
+   start over, and an aborting scan calls it to abandon what it read. */
+ITL_DEF void itl_history_offsets_reset(void)
+{
+  itl_g_history_head = 0;
+  itl_g_history_count = 0;
+  itl_g_history_total_count = 0;
+  itl_history_read_fd_invalidate();
+}
+
+/* Accounts for a leading span that was dropped from the history file. The
+   retained entries keep their order and event numbers, and every live offset
+   shrinks by the same count. The cached read buffer maps the previous offsets
+   and is dropped. */
+ITL_DEF void itl_history_offsets_shift(size_t removed_byte_count)
+{
+  size_t index;
+
+  TL_ASSERT(removed_byte_count <= itl_g_history_file_size);
+
+  for (index = 0; index < itl_g_history_count; ++index) {
+    size_t slot = (itl_g_history_head + index) % (TL_HISTORY_MAX_SIZE);
+
+    TL_ASSERT(itl_g_history_offsets[slot] >= removed_byte_count);
+    itl_g_history_offsets[slot] -= removed_byte_count;
+  }
+
+  itl_g_history_file_size -= removed_byte_count;
+  itl_history_read_fd_invalidate();
+}
+
+/* Writes the whole span, retrying an interrupted call and resuming a partial
+   write. The returned count is short only when the write failed. */
+ITL_DEF size_t itl_history_write_all(ITL_FILE file, const char *data,
+                                     size_t size)
+{
+  size_t total_written = 0;
+
+  while (total_written < size) {
+    int written =
+        (int) ITL_WRITE(file, data + total_written, size - total_written);
+    if (written < 0 && errno == EINTR) continue;
+    if (written <= 0) break;
+    total_written += (size_t) written;
+  }
+
+  return total_written;
+}
+
 /* Scans the open file from the start, rebuilding the offset ring, the recorded
    file size, and the trailing-newline flag. Returns false on a read error or a
    non-text byte. Touches neither the path nor the draft, so it is safe to call
@@ -2880,23 +2998,25 @@ ITL_DEF bool itl_history_scan_fd(ITL_FILE file)
   bool escape_pending = false;
   size_t entry_start = 0;
   size_t file_pos = 0;
+  size_t retained_limit = itl_g_history_limit;
   uint8_t last_byte = (uint8_t) '\n';
-
-  itl_g_history_head = 0;
-  itl_g_history_count = 0;
-  itl_g_history_total_count = 0;
-  itl_history_read_fd_invalidate();
 
   if (!ITL_FILE_SEEK(file, 0)) {
     return false;
   }
+
+  itl_g_history_limit = TL_HISTORY_MAX_SIZE;
+  itl_history_offsets_reset();
 
   for (;;) {
     int read_amount =
         (int) ITL_READ(file, file_buffer, ITL_HISTORY_FILE_BUFFER_SIZE);
     size_t i;
 
+    if (read_amount < 0 && errno == EINTR) continue;
     if (read_amount < 0) {
+      itl_history_offsets_reset();
+      itl_g_history_limit = retained_limit;
       return false; /* Read error. */
     }
     if (read_amount == 0) {
@@ -2932,12 +3052,16 @@ ITL_DEF bool itl_history_scan_fd(ITL_FILE file)
         continue;
       }
 
-      /* Loaded a binary file on accident? */
-      if (iscntrl(ch) && !isspace(ch)) {
+      /* Loaded a binary file on accident? The bytes are classified here without
+         ctype, because a locale decides which of them are control bytes and a
+         history file has to read the same way everywhere. */
+      if ((ch < 0x20 && ch != '\t' && ch != '\v' && ch != '\f') || ch == 0x7f) {
         ITL_TRACELN("non-text byte '%X' detected in history file at offset "
                     "%zu\n",
                     (uint8_t) ch, file_pos);
         errno = EINVAL;
+        itl_history_offsets_reset();
+        itl_g_history_limit = retained_limit;
         return false;
       }
     }
@@ -2949,6 +3073,14 @@ ITL_DEF bool itl_history_scan_fd(ITL_FILE file)
   itl_g_history_file_size = file_pos;
   itl_g_history_ends_with_newline =
       (file_pos == 0) || (last_byte == (uint8_t) '\n');
+  if (itl_g_history_count > retained_limit) {
+    size_t removed_count = itl_g_history_count - retained_limit;
+    itl_g_history_head =
+        (itl_g_history_head + removed_count) % (TL_HISTORY_MAX_SIZE);
+    itl_g_history_count = retained_limit;
+    itl_history_read_fd_invalidate();
+  }
+  itl_g_history_limit = retained_limit;
 
   return true;
 }
@@ -2998,8 +3130,9 @@ ITL_DEF tl_status_code itl_history_load_from_file(const char *path)
 
 /* Appends an accepted command to the history file and records its offset.
    Entries of length one or zero are skipped. Consecutive duplicates are
-   skipped unless the caller requests them. Returns true on a successful write.
-   Returns false when the entry is skipped or the write fails. */
+   skipped unless the caller requests them. Returns true on a successful write
+   or duplicate skip. Returns false when another entry is skipped or the write
+   fails. */
 ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
                                         bool should_require_terminal,
                                         bool should_allow_duplicate)
@@ -3016,7 +3149,9 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
   bool had_unterminated_tail;
 
   itl_g_last_history_event_number = 0;
-  if (itl_g_history_path == NULL || itl_g_history_file_is_bad) {
+  if (itl_g_history_path == NULL || itl_g_history_file_is_bad ||
+      itl_g_history_limit == 0)
+  {
     return false;
   }
   /* A non-interactive run reading from a pipe or a file leaves the history
@@ -3063,7 +3198,8 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
     ITL_FILE_CLOSE(read_file);
   }
   if (is_duplicate && !should_allow_duplicate) {
-    return false;
+    itl_g_last_history_event_number = itl_g_history_total_count;
+    return true;
   }
 
   buffer = itl_char_buf_alloc();
@@ -3096,14 +3232,17 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
   new_offset = (size_t) real_end + (itl_g_history_ends_with_newline ? 0 : 1);
 
   {
-    int written = (int) ITL_WRITE(append_file, buffer->data, buffer->size);
-    if (written == -1 || (size_t) written != buffer->size) {
-      /* A hard error or a short write would desync the recorded offsets from
-         the real file, so mark the file bad and record nothing. */
+    size_t total_written =
+        itl_history_write_all(append_file, buffer->data, buffer->size);
+    if (total_written < buffer->size) {
       ITL_TRACELN("could not append to history file (%s): %s\n",
                   itl_g_history_path, strerror(errno));
       itl_g_history_file_is_bad = true;
       ok = false;
+    }
+    if (!ok) {
+      itl_g_history_file_size = (size_t) real_end + total_written;
+      itl_g_history_ends_with_newline = false;
     } else {
       actual_end = ITL_FILE_TELL(append_file);
       if (actual_end < 0) actual_end = real_end + (long) buffer->size;
@@ -3126,7 +3265,10 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
     }
   }
 
-  ITL_FILE_CLOSE(append_file);
+  if (ITL_FILE_CLOSE(append_file) != 0) {
+    itl_g_history_file_is_bad = true;
+    ok = false;
+  }
   ITL_CHAR_BUF_FREE(buffer);
 
   if (ok && should_rescan) {
@@ -3134,6 +3276,10 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
     read_file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
     if (ITL_FILE_IS_BAD(read_file) || !itl_history_scan_fd(read_file)) {
       if (!ITL_FILE_IS_BAD(read_file)) ITL_FILE_CLOSE(read_file);
+
+      /* The entry reached the file and the ring no longer describes it, so the
+         next load has to rebuild instead of trusting the offsets. */
+      itl_g_history_file_is_bad = true;
       return false;
     }
     ITL_FILE_CLOSE(read_file);
@@ -3146,7 +3292,10 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
         break;
       }
     }
-    if (itl_g_last_history_event_number == 0) return false;
+    if (itl_g_last_history_event_number == 0) {
+      itl_g_history_file_is_bad = true;
+      return false;
+    }
   }
 
   return ok;
@@ -3197,27 +3346,23 @@ ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
     int read_amount =
         (int) ITL_READ(in_file, file_buffer, ITL_HISTORY_FILE_BUFFER_SIZE);
     size_t total_written = 0;
+    if (read_amount < 0 && errno == EINTR) continue;
     if (read_amount < 0) {
       ret = TL_ERROR;
       break;
     }
     if (read_amount == 0) break;
 
-    while (total_written < (size_t) read_amount) {
-      int write_amount =
-          (int) ITL_WRITE(out_file, file_buffer + total_written,
-                          (size_t) read_amount - total_written);
-      if (write_amount <= 0) {
-        ret = TL_ERROR;
-        break;
-      }
-      total_written += (size_t) write_amount;
+    total_written =
+        itl_history_write_all(out_file, file_buffer, (size_t) read_amount);
+    if (total_written < (size_t) read_amount) {
+      ret = TL_ERROR;
+      break;
     }
-    if (ret != TL_SUCCESS) break;
   }
 
-  ITL_FILE_CLOSE(in_file);
-  ITL_FILE_CLOSE(out_file);
+  if (ITL_FILE_CLOSE(in_file) != 0) ret = TL_ERROR;
+  if (ITL_FILE_CLOSE(out_file) != 0) ret = TL_ERROR;
 
   return ret;
 }
@@ -4643,6 +4788,17 @@ TL_DEF void tl_set_ghost_enabled(int enabled)
   itl_g_ghost_enabled = enabled && itl_term_supports_decorations();
 }
 
+/* Whether a second TAB opens the selectable menu. A host that wants the plain
+   printed list, or that drives another selector of its own, leaves it off. */
+ITL_DEF ITL_THREAD_LOCAL int itl_g_completion_menu_enabled = 0;
+
+TL_DEF void tl_set_completion_menu_enabled(int enabled)
+{
+  /* The menu draws a reversed selection band and dimmed text, so a dumb
+     terminal keeps the plain list whatever the host requests. */
+  itl_g_completion_menu_enabled = enabled && itl_term_supports_decorations();
+}
+
 /* The host ghost validation callback, or NULL when every history entry is
    acceptable. Consulted by the history scan only. */
 ITL_DEF ITL_THREAD_LOCAL tl_ghost_validate_fn itl_g_ghost_validate_callback =
@@ -5402,19 +5558,356 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
   }
 }
 
+/* The selectable candidate menu drawn under the input block. Its rows sit
+   outside the rows the line editor tracks, so the menu clears them itself
+   before every repaint and before it returns. */
+#define ITL_MENU_MAX_ROWS         16
+#define ITL_MENU_MAX_NAME_WIDTH   32
+#define ITL_MENU_ROW_PREFIX       "  "
+#define ITL_MENU_ROW_PREFIX_WIDTH 2
+#define ITL_MENU_SELECTED_SGR     "\x1b[7m"
+#define ITL_MENU_DESCRIPTION_SGR  "\x1b[90m"
+#define ITL_MENU_NO_SELECTION     ((size_t) -1)
+
+ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc);
+
+/* The candidate rows the menu may draw. The input block and the count row are
+   held back so the prompt stays on screen, and the fixed ceiling keeps a long
+   list from filling a tall terminal. At least one row is always offered. */
+ITL_DEF size_t itl_menu_row_budget(size_t tty_rows)
+{
+  size_t reserved = itl_g_le_prev_total_rows + 1;
+  size_t budget = tty_rows > reserved ? tty_rows - reserved : 1;
+
+  if (budget > ITL_MENU_MAX_ROWS) {
+    budget = ITL_MENU_MAX_ROWS;
+  }
+
+  return budget;
+}
+
+/* The index of the first candidate drawn. The origin is clamped against the end
+   of the list, then moved by the least amount that brings the selection back
+   into view. Without a selection it only gets clamped, so the view holds still
+   while the list is merely open. */
+ITL_DEF size_t itl_menu_window_start(size_t count, size_t selected,
+                                     size_t window_start, size_t rows)
+{
+  size_t last_start;
+
+  if (count <= rows) {
+    return 0;
+  }
+
+  last_start = count - rows;
+  if (window_start > last_start) {
+    window_start = last_start;
+  }
+  if (selected == ITL_MENU_NO_SELECTION) {
+    return window_start;
+  }
+  if (selected < window_start) {
+    return selected;
+  }
+  if (selected >= window_start + rows) {
+    return selected + 1 - rows;
+  }
+
+  return window_start;
+}
+
+/* Append at most width columns of text and pad the remainder with spaces when
+   the caller asked for a fixed cell. Returns the columns written, which can
+   exceed the width by one when a double-width character straddles the edge. */
+ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
+                                    size_t width, bool should_pad)
+{
+  size_t offset = 0;
+  size_t drawn = itl_cstr_width_walk(text, width, &offset);
+  size_t i;
+
+  for (i = 0; i < offset; ++i) {
+    itl_char_buf_append_byte(b, (uint8_t) text[i]);
+  }
+
+  if (!should_pad) {
+    return drawn;
+  }
+
+  for (i = drawn; i < width; ++i) {
+    itl_char_buf_append_byte(b, ' ');
+  }
+
+  return drawn > width ? drawn : width;
+}
+
+/* Draw one candidate, its name in a fixed column so every description starts at
+   the same offset. The selected row is reversed to the edge of the row so the
+   selection reads as a band. */
+ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
+                                 size_t index, size_t name_width,
+                                 size_t desc_width, size_t row_cols,
+                                 bool is_selected)
+{
+  const char *name = result->candidates[index];
+  const char *desc =
+      result->descriptions != NULL ? result->descriptions[index] : NULL;
+  size_t drawn = ITL_MENU_ROW_PREFIX_WIDTH;
+
+  if (is_selected) {
+    itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_SGR);
+  }
+  itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
+
+  drawn += itl_menu_append_cell(b, name, name_width, true);
+
+  if (desc != NULL && desc[0] != '\0' && desc_width > 0) {
+    itl_char_buf_append_byte(b, ' ');
+    if (!is_selected) {
+      itl_char_buf_append_cstr(b, ITL_MENU_DESCRIPTION_SGR);
+    }
+
+    drawn += 1 + itl_menu_append_cell(b, desc, desc_width, false);
+
+    if (!is_selected) {
+      itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+    }
+  }
+
+  if (is_selected) {
+    itl_char_buf_append_spaces(b, drawn < row_cols ? row_cols - drawn : 0);
+    itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+  }
+}
+
+/* Draw the dimmed count row shown while part of the list is out of view. */
+ITL_DEF void itl_menu_append_summary(itl_char_buf_t *b, size_t first,
+                                     size_t last, size_t count)
+{
+  itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
+  itl_char_buf_append_cstr(b, ITL_MENU_DESCRIPTION_SGR);
+  itl_char_buf_append_cstr(b, "showing ");
+  itl_char_buf_append_size_t(b, first);
+  itl_char_buf_append_byte(b, '-');
+  itl_char_buf_append_size_t(b, last);
+  itl_char_buf_append_cstr(b, " of ");
+  itl_char_buf_append_size_t(b, count);
+  itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+}
+
+/* Step to the first row below the input block and clear everything under it,
+   the same accounting tl_emit_newlines uses. Returns the rows stepped over so
+   the caller can walk back up to the caret. */
+ITL_DEF size_t itl_menu_open_area(itl_char_buf_t *b)
+{
+  size_t move_down = itl_g_le_prev_total_rows - (itl_g_le_prev_cursor_row - 1);
+  size_t i;
+
+  for (i = 0; i < move_down; ++i) {
+    itl_char_buf_append_cstr(b, ITL_LF);
+  }
+  ITL_TTY_MOVE_TO_COLUMN(b, 1);
+  ITL_TTY_CLEAR_BELOW(b);
+
+  return move_down;
+}
+
+/* Park the caret back on the input line after the menu rows were written. */
+ITL_DEF void itl_menu_close_area(itl_char_buf_t *b, size_t rows_below)
+{
+  if (rows_below > 0) {
+    ITL_TTY_MOVE_UP(b, rows_below);
+  }
+  ITL_TTY_MOVE_TO_COLUMN(b, itl_g_le_prev_cursor_col + 1);
+  ITL_TTY_SHOW_CURSOR(b);
+  ITL_CHAR_BUF_DUMP(b);
+  ITL_CHAR_BUF_CLEAR(b);
+}
+
+/* Repaint the menu rows under the input block. The rows are written from the
+   first row below the block downward, and the caret returns to the line, so the
+   editor's own render path never sees them. */
+ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
+                           size_t window_start, size_t rows)
+{
+  itl_char_buf_t *b = &itl_g_char_buffer;
+  size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
+  size_t row_cols = tty_cols > 1 ? tty_cols - 1 : 1;
+  size_t window_end = window_start + rows;
+  size_t name_width = 0;
+  size_t desc_width;
+  size_t drawn_rows = 0;
+  size_t move_down;
+  size_t i;
+
+  if (window_end > result->count) {
+    window_end = result->count;
+  }
+
+  /* The name column is measured across the whole list, so the descriptions stay
+     in place while the window scrolls. */
+  for (i = 0; i < result->count; ++i) {
+    size_t width = itl_cstr_display_width(result->candidates[i]);
+    if (width > name_width) {
+      name_width = width;
+    }
+  }
+
+  if (name_width > ITL_MENU_MAX_NAME_WIDTH) {
+    name_width = ITL_MENU_MAX_NAME_WIDTH;
+  }
+  if (name_width + ITL_MENU_ROW_PREFIX_WIDTH >= row_cols) {
+    name_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH
+                     ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH
+                     : 1;
+  }
+  desc_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH + name_width + 1
+                   ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH - name_width - 1
+                   : 0;
+
+  ITL_CHAR_BUF_CLEAR(b);
+  ITL_TTY_HIDE_CURSOR(b);
+  move_down = itl_menu_open_area(b);
+
+  for (i = window_start; i < window_end; ++i) {
+    if (drawn_rows > 0) {
+      itl_char_buf_append_cstr(b, ITL_LF);
+    }
+    itl_menu_append_row(b, result, i, name_width, desc_width, row_cols,
+                        i == selected);
+    drawn_rows += 1;
+  }
+
+  if (window_start > 0 || window_end < result->count) {
+    if (drawn_rows > 0) {
+      itl_char_buf_append_cstr(b, ITL_LF);
+    }
+    itl_menu_append_summary(b, window_start + 1, window_end, result->count);
+    drawn_rows += 1;
+  }
+
+  itl_menu_close_area(b, drawn_rows > 0 ? move_down + drawn_rows - 1
+                                        : move_down);
+}
+
+/* Wipe every row the menu drew and leave the caret on the input line. */
+ITL_DEF void itl_menu_erase(void)
+{
+  itl_char_buf_t *b = &itl_g_char_buffer;
+  size_t move_down;
+
+  ITL_CHAR_BUF_CLEAR(b);
+  ITL_TTY_HIDE_CURSOR(b);
+  move_down = itl_menu_open_area(b);
+  itl_menu_close_area(b, move_down);
+}
+
+/* Run the candidate menu until the user accepts a candidate, dismisses it, or
+   presses a key the menu does not own. Tab and the down arrow step forward, the
+   up arrow steps back, Enter accepts the highlighted candidate, and escape
+   closes the menu and leaves the line alone. Any other key closes the menu and
+   then does its own work on the line, so the menu never swallows a keystroke.
+   Returns the status the caller must return, which carries a terminating key
+   such as Enter on an unhighlighted menu back to the host. */
+ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
+                                           const tl_completion *result)
+{
+  size_t selected = ITL_MENU_NO_SELECTION;
+  size_t window_start = 0;
+
+  /* The ghost was cleared before the candidates were gathered, so one repaint
+     takes it off the screen before the rows go under the block. */
+  itl_g_tty_should_refresh_text = true;
+  itl_le_tty_refresh(le);
+
+  for (;;) {
+    size_t tty_rows;
+    size_t rows;
+    uint8_t byte;
+    int key, kind;
+
+    /* A resize invalidates the block the rows are measured against, so the line
+       is repainted first and the new size feeds the row budget. */
+    if (itl_g_tty_changed_size != 0) {
+      itl_g_tty_should_refresh_text = true;
+      itl_le_tty_refresh(le);
+    }
+
+    tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
+    rows = itl_menu_row_budget(tty_rows);
+    window_start =
+        itl_menu_window_start(result->count, selected, window_start, rows);
+    itl_menu_draw(result, selected, window_start, rows);
+
+    if (!ITL_READ_BYTE(&byte)) {
+      break;
+    }
+
+    key = itl_esc_parse(byte);
+    kind = key & TL_MASK_KEY;
+
+    if (kind == TL_KEY_TAB || kind == TL_KEY_DOWN) {
+      if (selected == ITL_MENU_NO_SELECTION) {
+        selected = 0;
+      } else if (selected + 1 < result->count) {
+        selected += 1;
+      }
+      continue;
+    }
+
+    if (kind == TL_KEY_UP) {
+      if (selected == ITL_MENU_NO_SELECTION) {
+        selected = 0;
+      } else if (selected > 0) {
+        selected -= 1;
+      }
+      continue;
+    }
+
+    itl_menu_erase();
+    itl_g_tty_should_refresh_text = true;
+
+    if (kind == TL_KEY_ENTER && selected != ITL_MENU_NO_SELECTION) {
+      itl_completion_replace_token(le, result, result->candidates[selected]);
+      return TL_SUCCESS;
+    }
+
+    if (kind == TL_KEY_UNKN) {
+      return TL_SUCCESS;
+    }
+
+    if (kind == TL_KEY_CHAR) {
+      itl_le_insert(le, itl_utf8_parse(byte));
+      itl_ghost_update(le);
+      return TL_SUCCESS;
+    }
+
+    itl_undo_close_insert_run();
+    return itl_le_key_handle(le, key);
+  }
+
+  itl_menu_erase();
+  itl_g_tty_should_refresh_text = true;
+
+  return TL_SUCCESS;
+}
+
 /* Handle the TAB key when a completion callback is registered. Replace the
    whole token under the cursor with the longest common prefix when that prefix
    extends the token, and when several candidates remain and the prefix did not
-   grow, print them below the prompt. A single candidate replaces the token
+   grow, present them below the prompt. A single candidate replaces the token
    outright, since it is the one full replacement. Returns true when it handled
-   the key, false when the host should fall back to the default TAB behavior. */
-ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
+   the key, false when the host should fall back to the default TAB behavior.
+   out_code receives the status the caller must return, which is TL_SUCCESS
+   unless the menu re-dispatched a key that terminates the line. */
+ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
 {
   char line_cstr[ITL_STRING_MAX_LEN];
   tl_completion result;
   size_t token_len, lcp_len;
 
   memset(&result, 0, sizeof(result));
+  *out_code = TL_SUCCESS;
 
   if (itl_g_complete_callback == NULL) {
     return false;
@@ -5466,7 +5959,14 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le)
     return true;
   }
 
-  /* The prefix did not grow the token, so a second TAB lists the candidates. */
+  /* The prefix did not grow the token, so a second TAB presents the candidates.
+     The menu owns the keys until it closes. Without it the candidates are
+     printed as a static column list. */
+  if (itl_g_completion_menu_enabled) {
+    *out_code = itl_completion_menu(le, &result);
+    return true;
+  }
+
   itl_completion_print_list(&result);
   return true;
 }
@@ -5483,11 +5983,13 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
 
   switch (esc & TL_MASK_KEY) {
   case TL_KEY_TAB: {
+    tl_status_code completion_code = TL_SUCCESS;
+
     /* A registered completion callback handles TAB in place, inserting the
-       common prefix or listing the candidates. With no callback, TAB keeps its
-       old contract of returning to the host. */
-    if (itl_completion_handle_tab(le)) {
-      return TL_SUCCESS;
+       common prefix, opening the menu, or listing the candidates. With no
+       callback, TAB keeps its old contract of returning to the host. */
+    if (itl_completion_handle_tab(le, &completion_code)) {
+      return completion_code;
     }
     ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
                 TL_SUCCESS,

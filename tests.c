@@ -332,6 +332,100 @@ test_utf8_strlen(void)
 }
 
 static bool
+test_string_from_bytes_truncates_at_rune_boundary(void)
+{
+  static char  bytes[ITL_STRING_MAX_LEN + 3];
+  char         last_character[2];
+  size_t       i;
+  itl_string_t *string = itl_string_alloc();
+
+  for (i = 0; i < ITL_STRING_MAX_LEN - 1; ++i) {
+    bytes[i] = 'x';
+  }
+  bytes[i++] = (char) 0xC3;
+  bytes[i++] = (char) 0xA9;
+  bytes[i] = 'y';
+
+  if (!itl_string_from_bytes(string, bytes, sizeof(bytes)) ||
+      string->size != ITL_STRING_MAX_LEN - 1)
+  {
+    TEST_PRINTF("multibyte truncation failed, size %zu\n", string->size);
+    ITL_STRING_FREE(string);
+    return false;
+  }
+  last_character[0] = (char) string->chars[string->length - 1].bytes[0];
+  last_character[1] = '\0';
+  if (strcmp(last_character, "x") != 0) {
+    TEST_PRINTF("multibyte truncation kept a partial rune\n");
+    ITL_STRING_FREE(string);
+    return false;
+  }
+
+  ITL_STRING_FREE(string);
+  return true;
+}
+
+static bool
+test_string_from_bytes_rejects_malformed_utf8(void)
+{
+  static const unsigned char lone_continuation[] = {0x80};
+  static const unsigned char invalid_lead[] = {0xF8};
+  static const unsigned char truncated[] = {0xE2, 0x82};
+  static const unsigned char invalid_continuation[] = {0xE2, 0x41, 0xAC};
+  static const unsigned char valid_prefix_then_invalid[] = {'x', 0x80};
+  static const unsigned char overlong_two[] = {0xC0, 0x80};
+  static const unsigned char overlong_three[] = {0xE0, 0x80, 0xAF};
+  static const unsigned char overlong_four[] = {0xF0, 0x80, 0x80, 0xAF};
+  static const unsigned char surrogate[] = {0xED, 0xA0, 0x80};
+  static const unsigned char out_of_range[] = {0xF4, 0x90, 0x80, 0x80};
+  static const struct {
+    const unsigned char *bytes;
+    size_t               size;
+  } cases[] = {
+      {lone_continuation, sizeof(lone_continuation)},
+      {invalid_lead, sizeof(invalid_lead)},
+      {truncated, sizeof(truncated)},
+      {invalid_continuation, sizeof(invalid_continuation)},
+      {valid_prefix_then_invalid, sizeof(valid_prefix_then_invalid)},
+      {overlong_two, sizeof(overlong_two)},
+      {overlong_three, sizeof(overlong_three)},
+      {overlong_four, sizeof(overlong_four)},
+      {surrogate, sizeof(surrogate)},
+      {out_of_range, sizeof(out_of_range)},
+  };
+  itl_string_t *string = itl_string_alloc();
+  size_t        i;
+
+  if (!itl_string_from_bytes(string, "kept", 4)) {
+    ITL_STRING_FREE(string);
+    return false;
+  }
+
+  for (i = 0; i < countof(cases); ++i) {
+    char unchanged[5];
+
+    if (itl_string_from_bytes(string, (const char *) cases[i].bytes,
+                              cases[i].size))
+    {
+      TEST_PRINTF("malformed UTF-8 case %zu was accepted\n", i);
+      ITL_STRING_FREE(string);
+      return false;
+    }
+    if (itl_string_to_cstr(string, unchanged, sizeof(unchanged)) !=
+            TL_SUCCESS ||
+        strcmp(unchanged, "kept") != 0)
+    {
+      TEST_PRINTF("malformed UTF-8 case %zu changed the destination\n", i);
+      ITL_STRING_FREE(string);
+      return false;
+    }
+  }
+
+  ITL_STRING_FREE(string);
+  return true;
+}
+
+static bool
 test_char_width(void)
 {
   itl_utf8_t ascii = itl_utf8_new((uint8_t[4]){0x41}, 1);
@@ -842,6 +936,191 @@ test_history_unterminated_line(void)
   return ok;
 }
 
+/* Both readers decode a record the same way, so a lone carriage return survives
+   as data and a CRLF ending is dropped on either path. */
+static bool
+test_history_carriage_return_rule(void)
+{
+  const char *path = "tl_test_carriage_return.txt";
+  bool  ok = true;
+  FILE *f;
+
+  itl_string_t *buffered = itl_string_alloc();
+  itl_string_t *unbuffered = itl_string_alloc();
+
+  itl_g_is_active = true;
+  remove(path);
+
+  f = fopen(path, "wb");
+  if (f == NULL) {
+    TEST_PRINTF("could not create file\n");
+    ITL_STRING_FREE(buffered);
+    ITL_STRING_FREE(unbuffered);
+    itl_g_is_active = false;
+    return false;
+  }
+
+  /* The first record carries a lone carriage return. The second record ends
+     with a carriage return and a line feed. */
+  fwrite("a\rb\nc\r\n", 1, 7, f);
+  fclose(f);
+
+  if (tl_history_load(path) != TL_SUCCESS) {
+    TEST_PRINTF("load failed\n");
+    ok = false;
+  }
+
+  if (ok && itl_g_history_count != 2) {
+    TEST_PRINTF("expected 2 entries, got %zu\n", itl_g_history_count);
+    ok = false;
+  }
+
+  if (ok && (!hist_entry_is(0, "a\rb") || !hist_entry_is(1, "c"))) {
+    TEST_PRINTF("the unbuffered reader mishandled a carriage return\n");
+    ok = false;
+  }
+
+  if (ok && !itl_history_ensure_read_buffer()) {
+    TEST_PRINTF("could not fill the read buffer\n");
+    ok = false;
+  }
+
+  if (ok) {
+    size_t index;
+
+    for (index = 0; index < itl_g_history_count; ++index) {
+      size_t offset = itl_history_index_to_offset(index);
+
+      if (!itl_history_read_entry_buffered(offset, buffered) ||
+          !itl_history_read_entry(offset, unbuffered) ||
+          !itl_string_equal(buffered, unbuffered))
+      {
+        TEST_PRINTF("entry %zu differs between the readers\n", index);
+        ok = false;
+      }
+    }
+  }
+
+  ITL_STRING_FREE(buffered);
+  ITL_STRING_FREE(unbuffered);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  remove(path);
+  return ok;
+}
+
+/* A history write drops the entries the limit no longer reaches and shifts the
+   offsets that remain, so the resulting state has to equal a scan of the
+   shortened file. */
+static bool
+test_history_offset_shift_matches_scan(void)
+{
+  const char *path = "tl_test_offset_shift.txt";
+  bool   ok = true;
+  size_t removed_byte_count = 0;
+  size_t shifted_offsets[2] = {0, 0};
+  size_t shifted_count = 0;
+  size_t original_total_count = 0;
+  size_t shifted_total_count = 0;
+  size_t shifted_file_size = 0;
+  size_t index;
+  FILE  *f;
+
+  itl_g_is_active = true;
+  remove(path);
+
+  f = fopen(path, "wb");
+  if (f == NULL) {
+    TEST_PRINTF("could not create file\n");
+    itl_g_is_active = false;
+    return false;
+  }
+  fwrite("one\ntwo\nthree\n", 1, 14, f);
+  fclose(f);
+
+  tl_set_history_limit(2);
+  if (tl_history_load(path) != TL_SUCCESS || itl_g_history_count != 2) {
+    TEST_PRINTF("the limited load did not retain two entries\n");
+    ok = false;
+  }
+
+  if (ok) {
+    original_total_count = itl_g_history_total_count;
+    removed_byte_count = itl_history_index_to_offset(0);
+    if (removed_byte_count != 4) {
+      TEST_PRINTF("expected the oldest retained entry at offset 4, got %zu\n",
+                  removed_byte_count);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    /* Leave behind what the replacement writes, which is the file without the
+       dropped span. */
+    f = fopen(path, "wb");
+    if (f == NULL) {
+      TEST_PRINTF("could not rewrite file\n");
+      ok = false;
+    } else {
+      fwrite("two\nthree\n", 1, 10, f);
+      fclose(f);
+    }
+  }
+
+  if (ok) {
+    itl_history_offsets_shift(removed_byte_count);
+    shifted_count = itl_g_history_count;
+    shifted_total_count = itl_g_history_total_count;
+    shifted_file_size = itl_g_history_file_size;
+
+    for (index = 0; index < shifted_count && index < 2; ++index) {
+      shifted_offsets[index] = itl_history_index_to_offset(index);
+    }
+
+    if (!hist_entry_is(0, "two") || !hist_entry_is(1, "three")) {
+      TEST_PRINTF("the shifted offsets do not read the retained entries\n");
+      ok = false;
+    }
+  }
+
+  if (ok && tl_history_load(path) != TL_SUCCESS) {
+    TEST_PRINTF("the reload of the shortened file failed\n");
+    ok = false;
+  }
+
+  if (ok && shifted_total_count != original_total_count) {
+    TEST_PRINTF("the shift changed the total from %zu to %zu\n",
+                original_total_count, shifted_total_count);
+    ok = false;
+  }
+
+  if (ok && (shifted_count != itl_g_history_count ||
+             shifted_file_size != itl_g_history_file_size))
+  {
+    TEST_PRINTF("the shift left %zu entries and %zu bytes, the scan left "
+                "%zu and %zu\n",
+                shifted_count, shifted_file_size, itl_g_history_count,
+                itl_g_history_file_size);
+    ok = false;
+  }
+
+  if (ok) {
+    for (index = 0; index < itl_g_history_count; ++index) {
+      if (shifted_offsets[index] != itl_history_index_to_offset(index)) {
+        TEST_PRINTF("offset %zu differs between the shift and the scan\n",
+                    index);
+        ok = false;
+      }
+    }
+  }
+
+  tl_set_history_limit(TL_HISTORY_MAX_SIZE);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  remove(path);
+  return ok;
+}
+
 static bool
 test_history_search(void)
 {
@@ -1210,6 +1489,7 @@ test_tab_clears_stale_ghost_target(void)
   char line_buffer[BUFFER_SIZE];
   bool replacement_ok;
   bool was_handled;
+  tl_status_code completion_code = TL_SUCCESS;
   int previous_supports_decorations = itl_g_supports_decorations;
   itl_le_t le = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
@@ -1219,17 +1499,17 @@ test_tab_clears_stale_ghost_target(void)
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
   memcpy(itl_g_ghost_sticky_target, "stale", 6);
   tl_set_complete_callback(test_completion_callback);
-  was_handled = itl_completion_handle_tab(&le);
+  was_handled = itl_completion_handle_tab(&le, &completion_code);
   itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
   replacement_ok = was_handled && strcmp(line_buffer, "alpha") == 0;
 
   memcpy(itl_g_ghost_sticky_target, "stale", 6);
-  was_handled = itl_completion_handle_tab(&le);
+  was_handled = itl_completion_handle_tab(&le, &completion_code);
   tl_set_complete_callback(NULL);
   itl_g_supports_decorations = previous_supports_decorations;
 
   ITL_STRING_FREE(line);
-  return replacement_ok && was_handled &&
+  return replacement_ok && was_handled && completion_code == TL_SUCCESS &&
          itl_g_ghost_sticky_target[0] == '\0';
 }
 
@@ -1280,6 +1560,10 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_char_buf),
                                    DEFINE_TEST_CASE(test_parse_size),
                                    DEFINE_TEST_CASE(test_utf8_strlen),
+                                   DEFINE_TEST_CASE(
+                                       test_string_from_bytes_truncates_at_rune_boundary),
+                                   DEFINE_TEST_CASE(
+                                       test_string_from_bytes_rejects_malformed_utf8),
                                    DEFINE_TEST_CASE(test_char_width),
                                    DEFINE_TEST_CASE(test_metrics),
                                    DEFINE_TEST_CASE(test_find_substring),
@@ -1294,6 +1578,10 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_history_ring_cap),
                                    DEFINE_TEST_CASE(test_history_dedup),
                                    DEFINE_TEST_CASE(test_history_unterminated_line),
+                                   DEFINE_TEST_CASE(
+                                       test_history_carriage_return_rule),
+                                   DEFINE_TEST_CASE(
+                                       test_history_offset_shift_matches_scan),
                                    DEFINE_TEST_CASE(test_history_search),
                                    DEFINE_TEST_CASE(test_history_short_entry_skipped),
                                    DEFINE_TEST_CASE(test_history_alloc_balance),
