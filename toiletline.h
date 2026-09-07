@@ -5631,6 +5631,10 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
 #define ITL_MENU_MAX_ROWS         16
 #define ITL_MENU_ROW_PREFIX       "  "
 #define ITL_MENU_ROW_PREFIX_WIDTH 2
+/* The selected row closes with the same width it opens with, so the reversed
+   block reads as a button around the entry. */
+#define ITL_MENU_ROW_SUFFIX       "  "
+#define ITL_MENU_ROW_SUFFIX_WIDTH 2
 #define ITL_MENU_SELECTED_SGR    "\x1b[7m"
 #define ITL_MENU_DESCRIPTION_SGR "\x1b[90m"
 
@@ -5733,6 +5737,7 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
   }
 
   if (is_selected) {
+    itl_char_buf_append_cstr(b, ITL_MENU_ROW_SUFFIX);
     itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
   }
 }
@@ -5810,13 +5815,18 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
     }
   }
 
-  if (name_width + ITL_MENU_ROW_PREFIX_WIDTH >= row_cols) {
-    name_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH
-                     ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH
-                     : 1;
+  if (name_width + ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_ROW_SUFFIX_WIDTH >=
+      row_cols)
+  {
+    name_width =
+        row_cols > ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_ROW_SUFFIX_WIDTH
+            ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH - ITL_MENU_ROW_SUFFIX_WIDTH
+            : 1;
   }
-  desc_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH + name_width + 1
-                   ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH - name_width - 1
+  desc_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH + name_width + 1 +
+                              ITL_MENU_ROW_SUFFIX_WIDTH
+                   ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH - name_width - 1 -
+                         ITL_MENU_ROW_SUFFIX_WIDTH
                    : 0;
 
   ITL_CHAR_BUF_CLEAR(b);
@@ -6462,7 +6472,9 @@ ITL_DEF void itl_le_read_paste(itl_le_t *le)
 
 TL_DEF tl_status_code tl_init(void)
 {
+#if defined ITL_POSIX
   bool did_enter_raw_mode = false;
+#endif
 
   TL_ASSERT(!(TL_HISTORY_MAX_SIZE & (TL_HISTORY_MAX_SIZE - 1)) &&
             "History size must be a power of 2");
@@ -6475,7 +6487,9 @@ TL_DEF tl_status_code tl_init(void)
   if (!itl_g_entered_raw_mode) {
     ITL_TRY(ITL_TTY_IS_TTY(), return TL_ERROR);
     ITL_TRY(tl_enter_raw_mode() == TL_SUCCESS, return TL_ERROR);
+#if defined ITL_POSIX
     did_enter_raw_mode = true;
+#endif
   }
 
 #if defined ITL_POSIX
