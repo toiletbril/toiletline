@@ -5706,8 +5706,10 @@ ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
   return drawn > width ? drawn : width;
 }
 
-/* Draw one candidate, its name in a fixed column so every description starts at
-   the same offset. The selected row reverses only the displayed entry. */
+/* Draw one candidate. The name keeps a fixed column when a description follows
+   it, so every description starts at the same offset, and a row without one
+   ends right after the name. The selected row reverses only the displayed
+   entry. */
 ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
                                  size_t index, size_t name_width,
                                  size_t desc_width, bool is_selected)
@@ -5715,15 +5717,16 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
   const char *name = result->candidates[index];
   const char *desc =
       result->descriptions != NULL ? result->descriptions[index] : NULL;
+  bool has_description = desc != NULL && desc[0] != '\0' && desc_width > 0;
 
   if (is_selected) {
     itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_SGR);
   }
   itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
 
-  itl_menu_append_cell(b, name, name_width, true);
+  itl_menu_append_cell(b, name, name_width, has_description);
 
-  if (desc != NULL && desc[0] != '\0' && desc_width > 0) {
+  if (has_description) {
     itl_char_buf_append_byte(b, ' ');
     if (!is_selected) {
       itl_char_buf_append_cstr(b, ITL_MENU_DESCRIPTION_SGR);
@@ -5949,12 +5952,12 @@ ITL_DEF bool itl_menu_candidate_is_directory(const char *candidate)
 
 /* Run the candidate menu until the user accepts a candidate, dismisses it, or
    presses a key the menu does not own. Tab and the down arrow step forward, the
-   up arrow steps back, Enter accepts the highlighted candidate, and escape
-   closes the menu and leaves the line alone. A printable key and backspace
-   narrow and widen the list in place, and accepting a directory walks into it,
-   so the menu stays open while the host still offers candidates. Any other key
-   closes the menu and then does its own work on the line, so the menu never
-   swallows a keystroke. Returns the status the caller must return, which
+   up arrow steps back, Enter accepts the highlighted candidate, and escape or
+   ctrl-g cancels and puts back the line the menu opened on. A printable key and
+   backspace narrow and widen the list in place, and accepting a directory walks
+   into it, so the menu stays open while the host still offers candidates. Any
+   other key closes the menu and then does its own work on the line, so the menu
+   never swallows a keystroke. Returns the status the caller must return, which
    carries a terminating key such as Enter on an unhighlighted menu back to the
    host. */
 ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
@@ -5963,6 +5966,16 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
   tl_completion result = *initial;
   size_t selected = 0;
   size_t window_start = 0;
+
+  /* Typing and walking into a directory both edit the line, so the line as it
+     stands is kept for a cancel to restore. A line too long for the buffer
+     keeps no copy and cancels in place. */
+  char original_line[ITL_STRING_MAX_LEN];
+  size_t original_line_size = le->line->size;
+  size_t original_cursor = le->cursor_position;
+  bool has_original_line =
+      itl_string_to_cstr(le->line, original_line, sizeof(original_line)) ==
+      TL_SUCCESS;
 
   /* The ghost was cleared before the candidates were gathered, so one repaint
      takes it off the screen before the rows go under the block. */
@@ -6069,6 +6082,15 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     }
 
     if (kind == TL_KEY_UNKN) {
+      if (has_original_line) {
+        itl_string_from_bytes(le->line, original_line, original_line_size);
+        le->cursor_position = original_cursor <= le->line->length
+                                  ? original_cursor
+                                  : le->line->length;
+        itl_ghost_clear();
+        itl_le_tty_refresh(le);
+      }
+
       return TL_SUCCESS;
     }
 
