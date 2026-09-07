@@ -5097,6 +5097,83 @@ ITL_DEF void itl_ghost_record_completion_miss(const char *line_cstr,
   itl_g_ghost_completion_miss_prefix_length = line_byte_len;
 }
 
+/* Fill the ghost from a replacement for the token that starts at token_start.
+   The ghost is the part of the replacement past what the user already typed, so
+   it only ever appends. A replacement whose typed part differs from the line,
+   in case or in spelling, also records the whole corrected line. */
+ITL_DEF void itl_ghost_fill_from_token_text(itl_le_t *le, const char *line_cstr,
+                                            size_t line_byte_len,
+                                            size_t token_start, const char *text)
+{
+  if (text == NULL || token_start > le->line->length) {
+    return;
+  }
+
+  {
+    /* The token under the cursor runs from token_start to the end of the line,
+       so its length in codepoints is the line length minus the start.
+       token_start is a codepoint index, so the replacement is measured in
+       codepoints and then walked to its byte offset. */
+    size_t typed_len = le->line->length - token_start;
+    size_t text_len = tl_utf8_strlen(text);
+    if (text_len <= typed_len) {
+      return;
+    }
+    {
+      /* Skip the typed codepoints to find where the untyped byte suffix begins,
+         since the bytes the user already typed are not part of the ghost. */
+      size_t skip_offset = 0;
+      size_t skipped = 0;
+      while (skipped < typed_len && text[skip_offset] != '\0') {
+        if ((text[skip_offset] & 0xC0) != 0x80) {
+          skipped += 1;
+        }
+        skip_offset += 1;
+      }
+      /* A continuation byte that belongs to the last skipped codepoint must not
+         start the suffix, so advance past the whole codepoint. */
+      while (text[skip_offset] != '\0' && (text[skip_offset] & 0xC0) == 0x80) {
+        skip_offset += 1;
+      }
+      size_t suffix_len = strlen(text + skip_offset);
+      if (suffix_len >= sizeof(itl_g_ghost)) {
+        return;
+      }
+      memcpy(itl_g_ghost, text + skip_offset, suffix_len);
+      itl_g_ghost[suffix_len] = '\0';
+      itl_g_ghost_len = suffix_len;
+      {
+        size_t token_start_bytes = 0;
+        size_t cp;
+        for (cp = 0; cp < token_start && line_cstr[token_start_bytes] != '\0';
+             cp++)
+        {
+          token_start_bytes += 1;
+          while (line_cstr[token_start_bytes] != '\0' &&
+                 (line_cstr[token_start_bytes] & 0xC0) == 0x80)
+          {
+            token_start_bytes += 1;
+          }
+        }
+        {
+          size_t typed_byte_len = line_byte_len - token_start_bytes;
+          size_t text_byte_len = strlen(text);
+          size_t fixed_len = token_start_bytes + text_byte_len;
+          int differs =
+              skip_offset != typed_byte_len ||
+              memcmp(text, line_cstr + token_start_bytes, typed_byte_len) != 0;
+          if (differs && fixed_len < sizeof(itl_g_ghost_case_fix)) {
+            memcpy(itl_g_ghost_case_fix, line_cstr, token_start_bytes);
+            memcpy(itl_g_ghost_case_fix + token_start_bytes, text,
+                   text_byte_len + 1);
+            itl_g_ghost_case_fix_len = fixed_len;
+          }
+        }
+      }
+    }
+  }
+}
+
 /* Ask the host for the top completion of the current line and fill the ghost
    suffix when the longest common prefix extends the token under the cursor. The
    ghost is the part of the common prefix past what the user already typed, so
@@ -5131,73 +5208,9 @@ ITL_DEF void itl_ghost_fill_from_completion(itl_le_t *le,
     return;
   }
 
-  {
-    /* The token under the cursor runs from token_start to the end of the line,
-       so its length in codepoints is the line length minus the start. The ghost
-       is the part of the common prefix past that typed length, the suffix the
-       user has not typed yet. token_start is a codepoint index, so the prefix
-       is measured in codepoints and then walked to its byte offset. */
-    size_t typed_len = le->line->length - result.token_start;
-    size_t lcp_len = tl_utf8_strlen(result.longest_common_prefix);
-    if (lcp_len <= typed_len) {
-      return;
-    }
-    {
-      /* Skip the typed codepoints to find where the untyped byte suffix begins,
-         since the prefix bytes the user already typed are not part of the
-         ghost. */
-      const char *lcp = result.longest_common_prefix;
-      size_t skip_offset = 0;
-      size_t skipped = 0;
-      while (skipped < typed_len && lcp[skip_offset] != '\0') {
-        if ((lcp[skip_offset] & 0xC0) != 0x80) {
-          skipped += 1;
-        }
-        skip_offset += 1;
-      }
-      /* A continuation byte that belongs to the last skipped codepoint must not
-         start the suffix, so advance past the whole codepoint. */
-      while (lcp[skip_offset] != '\0' && (lcp[skip_offset] & 0xC0) == 0x80) {
-        skip_offset += 1;
-      }
-      size_t suffix_len = strlen(lcp + skip_offset);
-      if (suffix_len >= sizeof(itl_g_ghost)) {
-        return;
-      }
-      memcpy(itl_g_ghost, lcp + skip_offset, suffix_len);
-      itl_g_ghost[suffix_len] = '\0';
-      itl_g_ghost_len = suffix_len;
-      {
-        size_t token_start_bytes = 0;
-        size_t cp;
-        for (cp = 0;
-             cp < result.token_start && line_cstr[token_start_bytes] != '\0';
-             cp++)
-        {
-          token_start_bytes += 1;
-          while (line_cstr[token_start_bytes] != '\0' &&
-                 (line_cstr[token_start_bytes] & 0xC0) == 0x80)
-          {
-            token_start_bytes += 1;
-          }
-        }
-        {
-          size_t typed_byte_len = line_byte_len - token_start_bytes;
-          size_t lcp_full_len = strlen(lcp);
-          size_t fixed_len = token_start_bytes + lcp_full_len;
-          int differs =
-              skip_offset != typed_byte_len ||
-              memcmp(lcp, line_cstr + token_start_bytes, typed_byte_len) != 0;
-          if (differs && fixed_len < sizeof(itl_g_ghost_case_fix)) {
-            memcpy(itl_g_ghost_case_fix, line_cstr, token_start_bytes);
-            memcpy(itl_g_ghost_case_fix + token_start_bytes, lcp,
-                   lcp_full_len + 1);
-            itl_g_ghost_case_fix_len = fixed_len;
-          }
-        }
-      }
-    }
-  }
+  itl_ghost_fill_from_token_text(le, line_cstr, line_byte_len,
+                                 result.token_start,
+                                 result.longest_common_prefix);
 }
 
 /* Fill the ghost from history before completion. The most recent history entry
@@ -5950,6 +5963,33 @@ ITL_DEF bool itl_menu_candidate_is_directory(const char *candidate)
   return last == '/';
 }
 
+/* Show the highlighted candidate as ghost text on the line the menu opened on,
+   so the line above the rows reads as the line that accepting it produces. The
+   ghost only appends, so a candidate that does not extend the typed token
+   leaves the line bare. */
+ITL_DEF void itl_menu_ghost_preview(itl_le_t *le, const tl_completion *result,
+                                    size_t selected)
+{
+  char line_cstr[ITL_STRING_MAX_LEN];
+
+  itl_ghost_clear();
+
+  if (!itl_g_ghost_enabled || selected >= result->count) {
+    return;
+  }
+  if (le->cursor_position != le->line->length) {
+    return;
+  }
+  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS) {
+    return;
+  }
+
+  itl_ghost_fill_from_token_text(le, line_cstr, le->line->size,
+                                 result->token_start,
+                                 result->candidates[selected]);
+  itl_g_ghost_width = itl_cstr_display_width(itl_g_ghost);
+}
+
 /* Run the candidate menu until the user accepts a candidate, dismisses it, or
    presses a key the menu does not own. Tab and the down arrow step forward, the
    up arrow steps back, Enter accepts the highlighted candidate, and escape or
@@ -5967,6 +6007,10 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
   size_t selected = 0;
   size_t window_start = 0;
 
+  /* The row the ghost was filled from. It starts outside the candidate range so
+     the first pass fills the preview, and a regather puts it back there. */
+  size_t previewed = (size_t) -1;
+
   /* Typing and walking into a directory both edit the line, so the line as it
      stands is kept for a cancel to restore. A line too long for the buffer
      keeps no copy and cancels in place. */
@@ -5977,10 +6021,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
       itl_string_to_cstr(le->line, original_line, sizeof(original_line)) ==
       TL_SUCCESS;
 
-  /* The ghost was cleared before the candidates were gathered, so one repaint
-     takes it off the screen before the rows go under the block. */
   itl_g_tty_should_refresh_text = true;
-  itl_le_tty_refresh(le);
 
   for (;;) {
     size_t tty_rows;
@@ -5991,6 +6032,16 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     /* A resize invalidates the block the rows are measured against, so the line
        is repainted first and the new size feeds the row budget. */
     if (itl_g_tty_changed_size != 0) {
+      itl_g_tty_should_refresh_text = true;
+      itl_le_tty_refresh(le);
+    }
+
+    /* The ghost follows the highlighted row, so the preview is refilled and the
+       line above the rows is repainted whenever the highlight moves. The first
+       pass also takes the ghost of the typed line off the screen. */
+    if (previewed != selected) {
+      itl_menu_ghost_preview(le, &result, selected);
+      previewed = selected;
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
     }
@@ -6062,6 +6113,9 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 
     itl_menu_erase();
     itl_g_tty_should_refresh_text = true;
+    /* The preview belongs to the rows that were just erased, so no path out of
+       the menu keeps it on the line. */
+    itl_ghost_clear();
 
     if (kind == TL_KEY_ENTER || kind == TL_KEY_TAB) {
       const char *candidate = result.candidates[selected];
@@ -6074,7 +6128,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
       if (is_directory && itl_menu_regather(le, &result)) {
         selected = 0;
         window_start = 0;
-        itl_le_tty_refresh(le);
+        previewed = (size_t) -1;
         continue;
       }
 
@@ -6087,7 +6141,6 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
         le->cursor_position = original_cursor <= le->line->length
                                   ? original_cursor
                                   : le->line->length;
-        itl_ghost_clear();
         itl_le_tty_refresh(le);
       }
 
@@ -6100,7 +6153,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
       if (itl_menu_regather(le, &result)) {
         selected = 0;
         window_start = 0;
-        itl_le_tty_refresh(le);
+        previewed = (size_t) -1;
         continue;
       }
 
@@ -6114,7 +6167,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
       if (itl_menu_regather(le, &result)) {
         selected = 0;
         window_start = 0;
-        itl_le_tty_refresh(le);
+        previewed = (size_t) -1;
         continue;
       }
 
