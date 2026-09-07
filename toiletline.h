@@ -279,6 +279,23 @@ typedef int (*tl_complete_fn)(const char *buffer, size_t cursor,
 TL_DEF void tl_set_complete_callback(tl_complete_fn callback);
 
 /**
+ * The history selector callback. The host receives the matching history
+ * entries, newest first, and picks one with a program of its own. It returns 1
+ * when it wrote the chosen entry to out_selected, 0 when it ran nothing and the
+ * editor is to search on its own, and a negative value when its selector ran
+ * and the user chose nothing. The chosen string stays valid until the next
+ * call.
+ */
+typedef int (*tl_history_select_fn)(const char *const *entries, size_t count,
+                                    const char **out_selected);
+
+/**
+ * Register the history selector callback, or NULL to keep ctrl-R inside the
+ * editor.
+ */
+TL_DEF void tl_set_history_select_callback(tl_history_select_fn callback);
+
+/**
  * Temporarily hand the terminal to an interactive program while tl_get_input()
  * is active. The begin call clears the editor-owned input block and restores
  * cooked mode. The end call re-enters raw mode and invalidates the saved render
@@ -4843,6 +4860,16 @@ TL_DEF void tl_set_complete_callback(tl_complete_fn callback)
   itl_g_complete_callback = callback;
 }
 
+/* The host history selector callback, or NULL when ctrl-R stays inside the
+   editor. Only a host that drives a program of its own registers one. */
+ITL_DEF ITL_THREAD_LOCAL tl_history_select_fn itl_g_history_select_callback =
+    NULL;
+
+TL_DEF void tl_set_history_select_callback(tl_history_select_fn callback)
+{
+  itl_g_history_select_callback = callback;
+}
+
 /* Whether the dimmed ghost suggestion is offered at all. A host that wants no
    inline hint, such as one started with a no-completion flag, turns it off so
    neither the completion nor the history source fills it. */
@@ -5910,6 +5937,12 @@ ITL_DEF bool itl_refresh_after_wake(itl_le_t *le)
   return true;
 }
 
+/* Refills the menu candidates for the line as it stands now, returning false
+   when the source has nothing to offer, which leaves the result untouched. The
+   menu takes one of these so a second list, such as history, drives the same
+   loop the completion candidates do. */
+typedef bool (*itl_menu_gather_fn)(itl_le_t *le, tl_completion *result);
+
 /* Ask the host for the candidates of the line as it stands now. The host keeps
    its storage valid until the next call, so a fresh result replaces the one the
    menu held and the previous candidates are dropped. */
@@ -5935,6 +5968,122 @@ ITL_DEF bool itl_menu_regather(itl_le_t *le, tl_completion *result)
   }
 
   *result = fresh;
+  return true;
+}
+
+/* The history rows the selector may list, and the pool that holds their bytes
+   back to back. One static block keeps a gather free of allocation, and both
+   ceilings bound what a long history can put on screen. */
+#define ITL_HISTORY_MENU_MAX_ENTRIES 128
+#define ITL_HISTORY_MENU_POOL_SIZE   16384
+
+ITL_DEF ITL_THREAD_LOCAL char
+    itl_g_history_menu_pool[ITL_HISTORY_MENU_POOL_SIZE];
+ITL_DEF ITL_THREAD_LOCAL const char
+    *itl_g_history_menu_entries[ITL_HISTORY_MENU_MAX_ENTRIES];
+
+/* True when needle appears anywhere in haystack, comparing ASCII letters
+   without case. An empty needle matches every entry. */
+ITL_DEF bool itl_ascii_contains_casefold(const char *haystack,
+                                         size_t haystack_len,
+                                         const char *needle, size_t needle_len)
+{
+  size_t start;
+
+  if (needle_len == 0) {
+    return true;
+  }
+  if (needle_len > haystack_len) {
+    return false;
+  }
+
+  for (start = 0; start + needle_len <= haystack_len; ++start) {
+    if (itl_ascii_prefix_matches_casefold(haystack + start, needle, needle_len))
+    {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/* Fill the menu candidates with the history entries that contain the line,
+   newest first. The line is the search query, so the whole of it is replaced
+   when a row is accepted. An entry already gathered is dropped, so a command
+   run many times takes one row. */
+ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
+{
+  char query[ITL_STRING_MAX_LEN];
+  char entry[ITL_STRING_MAX_LEN + 1];
+  size_t query_len;
+  size_t pool_used = 0;
+  size_t found_count = 0;
+  size_t index;
+
+  if (itl_g_history_count == 0 || itl_g_history_path == NULL) {
+    return false;
+  }
+  if (itl_string_to_cstr(le->line, query, sizeof(query)) != TL_SUCCESS) {
+    return false;
+  }
+  if (!itl_history_ensure_read_buffer()) {
+    return false;
+  }
+
+  query_len = le->line->size;
+
+  for (index = itl_g_history_count; index-- > 0;) {
+    size_t entry_len;
+    size_t gathered;
+    bool is_repeat = false;
+
+    if (found_count >= ITL_HISTORY_MENU_MAX_ENTRIES) {
+      break;
+    }
+
+    if (!itl_history_decode_entry_buffered(itl_history_index_to_offset(index),
+                                           entry, sizeof(entry), &entry_len))
+    {
+      continue;
+    }
+    if (entry_len == 0 ||
+        !itl_ascii_contains_casefold(entry, entry_len, query, query_len))
+    {
+      continue;
+    }
+    if (pool_used + entry_len + 1 > sizeof(itl_g_history_menu_pool)) {
+      break;
+    }
+
+    for (gathered = 0; gathered < found_count; ++gathered) {
+      if (strcmp(itl_g_history_menu_entries[gathered], entry) == 0) {
+        is_repeat = true;
+        break;
+      }
+    }
+
+    if (is_repeat) {
+      continue;
+    }
+
+    memcpy(itl_g_history_menu_pool + pool_used, entry, entry_len + 1);
+    itl_g_history_menu_entries[found_count] =
+        itl_g_history_menu_pool + pool_used;
+    pool_used += entry_len + 1;
+    found_count += 1;
+  }
+
+  if (found_count == 0) {
+    return false;
+  }
+
+  result->candidates = itl_g_history_menu_entries;
+  result->count = found_count;
+  result->descriptions = NULL;
+  result->longest_common_prefix = NULL;
+  result->token_start = 0;
+  result->token_end = le->line->length;
+
   return true;
 }
 
@@ -5999,9 +6148,12 @@ ITL_DEF void itl_menu_ghost_preview(itl_le_t *le, const tl_completion *result,
    other key closes the menu and then does its own work on the line, so the menu
    never swallows a keystroke. Returns the status the caller must return, which
    carries a terminating key such as Enter on an unhighlighted menu back to the
-   host. */
+   host. gather refills the list as the line changes, and can_descend belongs to
+   a list of paths, where accepting a directory reopens the menu inside it. */
 ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
-                                           const tl_completion *initial)
+                                           const tl_completion *initial,
+                                           itl_menu_gather_fn gather,
+                                           bool can_descend)
 {
   tl_completion result = *initial;
   size_t selected = 0;
@@ -6119,13 +6271,14 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 
     if (kind == TL_KEY_ENTER || kind == TL_KEY_TAB) {
       const char *candidate = result.candidates[selected];
-      bool is_directory = itl_menu_candidate_is_directory(candidate);
+      bool is_directory =
+          can_descend && itl_menu_candidate_is_directory(candidate);
 
       if (!itl_completion_replace_token(le, &result, candidate)) {
         return TL_SUCCESS;
       }
 
-      if (is_directory && itl_menu_regather(le, &result)) {
+      if (is_directory && gather(le, &result)) {
         selected = 0;
         window_start = 0;
         previewed = (size_t) -1;
@@ -6150,7 +6303,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     if (kind == TL_KEY_CHAR) {
       itl_le_insert(le, itl_utf8_parse(byte));
 
-      if (itl_menu_regather(le, &result)) {
+      if (gather(le, &result)) {
         selected = 0;
         window_start = 0;
         previewed = (size_t) -1;
@@ -6164,7 +6317,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     if (key == TL_KEY_BACKSPACE && le->cursor_position > result.token_start) {
       ITL_LE_ERASE_BACKWARD(le, 1);
 
-      if (itl_menu_regather(le, &result)) {
+      if (gather(le, &result)) {
         selected = 0;
         window_start = 0;
         previewed = (size_t) -1;
@@ -6256,12 +6409,30 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
      The menu owns the keys until it closes. Without it the candidates are
      printed as a static column list. */
   if (itl_g_completion_menu_enabled) {
-    *out_code = itl_completion_menu(le, &result);
+    *out_code = itl_completion_menu(le, &result, itl_menu_regather, true);
     return true;
   }
 
   itl_completion_print_list(&result);
   return true;
+}
+
+/* List the history entries that match the line and let the menu keys pick one.
+   The line is the search query, so typing narrows the list in place and
+   accepting replaces the whole line with the entry. An empty history and a
+   query nothing matches both leave the line alone. Returns the status the
+   caller must return. */
+ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
+{
+  tl_completion result;
+
+  memset(&result, 0, sizeof(result));
+
+  if (!itl_history_menu_gather(le, &result)) {
+    return TL_SUCCESS;
+  }
+
+  return itl_completion_menu(le, &result, itl_history_menu_gather, false);
 }
 
 ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
@@ -7079,6 +7250,44 @@ ITL_DEF int itl_history_search(itl_le_t *le)
   ITL_CHAR_BUF_FREE(status);
 
   return result;
+}
+
+/* Reach history through whichever selector is configured. The host is asked
+   first, since its own program runs outside the editor. The menu lists the
+   matching entries under the prompt when it is enabled, and the incremental
+   block runs when neither is. Returns the key that ended the search for the
+   caller to dispatch, and writes the status the caller must return. */
+ITL_DEF int itl_history_select(itl_le_t *le, tl_status_code *out_code)
+{
+  *out_code = TL_SUCCESS;
+
+  if (itl_g_history_select_callback != NULL) {
+    tl_completion entries;
+    const char *chosen = NULL;
+
+    memset(&entries, 0, sizeof(entries));
+
+    if (itl_history_menu_gather(le, &entries)) {
+      int host_result = itl_g_history_select_callback(
+          entries.candidates, entries.count, &chosen);
+
+      if (host_result != 0) {
+        if (host_result > 0 && chosen != NULL) {
+          itl_completion_replace_token(le, &entries, chosen);
+        }
+
+        itl_g_tty_should_refresh_text = true;
+        return TL_KEY_UNKN;
+      }
+    }
+  }
+
+  if (itl_g_completion_menu_enabled) {
+    *out_code = itl_history_menu(le);
+    return TL_KEY_UNKN;
+  }
+
+  return itl_history_search(le);
 }
 
 ITL_DEF size_t itl_vi_register_index(char name)
@@ -8771,11 +8980,15 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
     return itl_vi_ex_command(le);
 
   case '/': {
-    int after_search = itl_history_search(le);
+    tl_status_code select_code = TL_SUCCESS;
+    int after_search = itl_history_select(le, &select_code);
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
     itl_g_vi_pending_count = 0;
     itl_g_vi_pending_register = 0;
+    if (select_code != TL_SUCCESS) {
+      return select_code;
+    }
     if (after_search != TL_KEY_UNKN) {
       tl_status_code search_code = itl_le_key_handle(le, after_search);
       if (search_code != TL_SUCCESS) {
@@ -8966,11 +9179,16 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
          its raw byte so the right arrow, which also parses to TL_KEY_RIGHT,
          still moves the cursor. Once in search, ctrl-f and ctrl-r steer it
          forward and backward. */
-      int after_search = itl_history_search(le);
+      tl_status_code select_code = TL_SUCCESS;
+      int after_search = itl_history_select(le, &select_code);
       /* Redraw the restored line first so the search view is cleared even when
          the terminating key submits or only moves the cursor. */
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
+      if (select_code != TL_SUCCESS) {
+        itl_le_clear_line(le);
+        return select_code;
+      }
       if (after_search != TL_KEY_UNKN) {
         code = itl_le_key_handle(le, after_search);
         if (code != TL_SUCCESS) {
