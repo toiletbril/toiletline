@@ -1378,6 +1378,15 @@ test_alt_arrows_use_word_movement(void)
 }
 
 #if defined ITL_POSIX
+static volatile sig_atomic_t test_alarm_fired;
+
+static void
+test_alarm_handler(int signal_number)
+{
+  (void) signal_number;
+  test_alarm_fired = 1;
+}
+
 static bool
 test_alt_backspace_sequences(void)
 {
@@ -1391,6 +1400,74 @@ test_alt_backspace_sequences(void)
 
   return delete_event == (TL_KEY_BACKSPACE | TL_MOD_CTRL) &&
          backspace_event == (TL_KEY_BACKSPACE | TL_MOD_CTRL);
+}
+
+static bool
+test_pending_resize_wakes_input_wait(void)
+{
+  int pipe_descriptors[2] = {-1, -1};
+  int saved_stdin = -1;
+  bool did_block_signals = false;
+  bool result = false;
+  sigset_t saved_mask;
+  sigset_t wait_mask;
+  struct sigaction saved_alarm_action = ITL_ZERO_INIT;
+  struct sigaction saved_resize_action = ITL_ZERO_INIT;
+  struct sigaction alarm_action = ITL_ZERO_INIT;
+  struct sigaction resize_action = ITL_ZERO_INIT;
+
+  if (sigprocmask(SIG_SETMASK, NULL, &saved_mask) != 0) goto cleanup;
+  wait_mask = saved_mask;
+  if (sigdelset(&wait_mask, SIGALRM) != 0 ||
+      sigdelset(&wait_mask, SIGWINCH) != 0 ||
+      sigprocmask(SIG_SETMASK, &wait_mask, NULL) != 0)
+  {
+    goto cleanup;
+  }
+  if (sigaction(SIGALRM, NULL, &saved_alarm_action) != 0 ||
+      sigaction(SIGWINCH, NULL, &saved_resize_action) != 0)
+  {
+    goto cleanup;
+  }
+
+  alarm_action.sa_handler = test_alarm_handler;
+  resize_action.sa_handler = itl_handle_sigwinch;
+  if (sigemptyset(&alarm_action.sa_mask) != 0 ||
+      sigemptyset(&resize_action.sa_mask) != 0 ||
+      sigaction(SIGALRM, &alarm_action, NULL) != 0 ||
+      sigaction(SIGWINCH, &resize_action, NULL) != 0)
+  {
+    goto cleanup;
+  }
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+  saved_stdin = dup(STDIN_FILENO);
+  if (saved_stdin < 0 || dup2(pipe_descriptors[0], STDIN_FILENO) < 0)
+    goto cleanup;
+  if (!itl_block_input_wake_signals(&wait_mask)) goto cleanup;
+  did_block_signals = true;
+
+  itl_g_tty_changed_size = 0;
+  test_alarm_fired = 0;
+  if (raise(SIGWINCH) != 0) goto cleanup;
+  alarm(1);
+  result = itl_wait_for_input(&wait_mask) && test_alarm_fired == 0 &&
+           itl_g_tty_changed_size != 0;
+
+cleanup:
+  alarm(0);
+  if (did_block_signals) itl_restore_input_wake_signals(&wait_mask);
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+  sigaction(SIGALRM, &saved_alarm_action, NULL);
+  sigaction(SIGWINCH, &saved_resize_action, NULL);
+  sigprocmask(SIG_SETMASK, &saved_mask, NULL);
+  test_alarm_fired = 0;
+  itl_g_tty_changed_size = 1;
+  return result;
 }
 #endif
 
@@ -1593,6 +1670,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
 #if defined ITL_POSIX
                                    DEFINE_TEST_CASE(
                                        test_alt_backspace_sequences),
+                                   DEFINE_TEST_CASE(
+                                       test_pending_resize_wakes_input_wait),
 #endif
                                    DEFINE_TEST_CASE(
                                        test_ghost_prefers_recent_history),

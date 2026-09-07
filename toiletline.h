@@ -445,6 +445,7 @@ TL_DEF void tl_set_edit_mode(int mode);
 #endif
 
 #include <poll.h>
+#include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -904,16 +905,31 @@ ITL_DEF bool itl_input_is_pending(void)
 }
 
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
-/* Blocks until input arrives or a signal interrupts the wait. A delivered
-   SIGWINCH wakes this so the caller can redraw the line as the window resizes
-   instead of waiting for the next keystroke. */
-ITL_DEF void itl_wait_for_input(void)
+ITL_DEF bool itl_block_input_wake_signals(sigset_t *previous_signals)
 {
-  struct pollfd pfd;
-  pfd.fd = STDIN_FILENO;
-  pfd.events = POLLIN;
-  pfd.revents = 0;
-  poll(&pfd, 1, -1);
+  sigset_t blocked_signals;
+
+  sigemptyset(&blocked_signals);
+  sigaddset(&blocked_signals, SIGWINCH);
+  sigaddset(&blocked_signals, SIGCHLD);
+  return sigprocmask(SIG_BLOCK, &blocked_signals, previous_signals) == 0;
+}
+
+ITL_DEF bool itl_restore_input_wake_signals(const sigset_t *previous_signals)
+{
+  return sigprocmask(SIG_SETMASK, previous_signals, NULL) == 0;
+}
+
+ITL_DEF bool itl_wait_for_input(const sigset_t *previous_signals)
+{
+  fd_set readable;
+  int result;
+
+  FD_ZERO(&readable);
+  FD_SET(STDIN_FILENO, &readable);
+  result = pselect(STDIN_FILENO + 1, &readable, NULL, NULL, NULL,
+                   previous_signals);
+  return result >= 0 || errno == EINTR;
 }
 #endif /* ITL_POSIX && !ITL_INJECT_KLEE */
 
@@ -3473,6 +3489,7 @@ ITL_DEF int itl_esc_parse_vt(uint8_t byte)
 
     case 'F': return event | TL_KEY_END;
     case 'H': return event | TL_KEY_HOME;
+    case 'Z': return event | TL_MOD_SHIFT | TL_KEY_TAB;
 
     case '3': event |= TL_KEY_DELETE; break;
     case '4': event |= TL_KEY_END; break;
@@ -3535,6 +3552,7 @@ ITL_DEF int itl_esc_parse_win32(uint8_t byte)
 
     case 'G': event = TL_KEY_HOME; break;
     case 'O': event = TL_KEY_END; break;
+    case 15: event = TL_KEY_TAB | TL_MOD_SHIFT; break;
 
     case 147: event = TL_KEY_DELETE | TL_MOD_CTRL; break;
     case 'S': event = TL_KEY_DELETE; break;
@@ -4019,15 +4037,15 @@ ITL_DEF bool itl_win_console_resized(void)
 }
 
 #if !defined ITL_INJECT_KLEE
-/* Blocks on the console input handle until a keystroke is queued, the Windows
-   counterpart to the POSIX poll. The handle wakes the moment any record
-   arrives, so a keypress is served without the latency of a fixed sleep, while
-   the twenty millisecond timeout keeps polling the console size since a resize
-   raises no signal on Windows. A non-character record, a key release, a lone
-   modifier, a mouse move, or a resize, would keep the handle signaled and spin
-   the wait, so it is consumed here. A resize record marks the line for a
-   redraw the way SIGWINCH does. A real keystroke is left in the buffer for the
-   _getch reader, told apart by _kbhit. */
+/* Blocks on the console input handle until a keystroke or resize is queued,
+   the Windows counterpart to the POSIX poll. The handle wakes the moment any
+   record arrives, so a keypress is served without the latency of a fixed sleep,
+   while the twenty millisecond timeout keeps polling the console size since a
+   resize raises no signal on Windows. A non-character record, a key release, a
+   lone modifier, or a mouse move would keep the handle signaled and spin the
+   wait, so it is consumed here. A resize record marks the line for a redraw and
+   returns to the caller. A real keystroke is left in the buffer for the _getch
+   reader, told apart by _kbhit. */
 ITL_DEF void itl_wait_for_input(void)
 {
   HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
@@ -4038,6 +4056,7 @@ ITL_DEF void itl_wait_for_input(void)
     if (WaitForSingleObject(handle, 20) != WAIT_OBJECT_0) {
       if (itl_win_console_resized()) {
         itl_g_tty_changed_size = 1;
+        return;
       }
       continue;
     }
@@ -4055,6 +4074,7 @@ ITL_DEF void itl_wait_for_input(void)
         record.EventType == WINDOW_BUFFER_SIZE_EVENT)
     {
       itl_g_tty_changed_size = 1;
+      return;
     }
   }
 }
@@ -4331,10 +4351,29 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   size_t i, j, tty_rows, tty_cols, cols, indent;
   size_t col, move_up;
   itl_le_metrics_t m;
+  bool has_resize;
+#if defined ITL_POSIX && !defined ITL_INJECT_KLEE
+  sigset_t previous_signals;
+
+  if (!itl_block_input_wake_signals(&previous_signals)) {
+    return false;
+  }
+  has_resize = itl_g_tty_changed_size != 0;
+  itl_g_tty_changed_size = 0;
+  if (!itl_restore_input_wake_signals(&previous_signals)) {
+    if (has_resize) {
+      itl_g_tty_changed_size = 1;
+    }
+    return false;
+  }
+#else
+  has_resize = itl_g_tty_changed_size != 0;
+  itl_g_tty_changed_size = 0;
+#endif
   /* A genuine resize reflowed the previous render, so the stored row counts are
      stale and the clear below cannot trust them. The first render has no
      previous block, so it is never treated as a resize. */
-  bool is_resize = (itl_g_tty_changed_size != 0) && !itl_g_tty_first_render;
+  bool is_resize = has_resize && !itl_g_tty_first_render;
 
   /* A resize that lands while an arrow key cleared the text-refresh flag must
      still reflow and repaint, so force the text path. Otherwise the cursor-only
@@ -4352,7 +4391,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   TL_ASSERT(le->line->size >= le->line->length);
   TL_ASSERT(le->line->length <= ITL_STRING_MAX_LEN);
 
-  if (itl_g_tty_changed_size) {
+  if (has_resize) {
     ITL_TRY(itl_tty_get_size(le, &tty_rows, &tty_cols), {
       /* Could not get terminal size? */
       tty_rows = 24;
@@ -4738,7 +4777,6 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   itl_g_tty_first_render = false;
   itl_g_tty_plain_append_pending = false;
 
-  itl_g_tty_changed_size = 0;
   ITL_TTY_AUTOWRAP_ON(b);
   ITL_TTY_SHOW_CURSOR(b);
 
@@ -4751,7 +4789,8 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 ITL_DEF ITL_THREAD_LOCAL itl_le_t itl_g_le = ITL_ZERO_INIT;
 
 #if defined ITL_POSIX
-ITL_DEF ITL_THREAD_LOCAL void (*itl_g_prev_sigwinch)(int) = SIG_DFL;
+ITL_DEF ITL_THREAD_LOCAL struct sigaction itl_g_prev_sigwinch = ITL_ZERO_INIT;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_has_sigwinch_handler = false;
 
 ITL_DEF void itl_handle_sigwinch(int signal_number)
 {
@@ -4760,6 +4799,34 @@ ITL_DEF void itl_handle_sigwinch(int signal_number)
   }
   /* Only set the flag here. The main loop does the redraw in normal context. */
   itl_g_tty_changed_size = 1;
+}
+
+ITL_DEF bool itl_install_sigwinch_handler(void)
+{
+  struct sigaction action = ITL_ZERO_INIT;
+
+  action.sa_handler = itl_handle_sigwinch;
+  if (sigemptyset(&action.sa_mask) != 0 ||
+      sigaction(SIGWINCH, &action, &itl_g_prev_sigwinch) != 0)
+  {
+    return false;
+  }
+
+  itl_g_has_sigwinch_handler = true;
+  return true;
+}
+
+ITL_DEF bool itl_restore_sigwinch_handler(void)
+{
+  if (!itl_g_has_sigwinch_handler) {
+    return true;
+  }
+  if (sigaction(SIGWINCH, &itl_g_prev_sigwinch, NULL) != 0) {
+    return false;
+  }
+
+  itl_g_has_sigwinch_handler = false;
+  return true;
 }
 #endif
 
@@ -5562,12 +5629,10 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
    outside the rows the line editor tracks, so the menu clears them itself
    before every repaint and before it returns. */
 #define ITL_MENU_MAX_ROWS         16
-#define ITL_MENU_MAX_NAME_WIDTH   32
 #define ITL_MENU_ROW_PREFIX       "  "
 #define ITL_MENU_ROW_PREFIX_WIDTH 2
-#define ITL_MENU_SELECTED_SGR     "\x1b[7m"
-#define ITL_MENU_DESCRIPTION_SGR  "\x1b[90m"
-#define ITL_MENU_NO_SELECTION     ((size_t) -1)
+#define ITL_MENU_SELECTED_SGR    "\x1b[7m"
+#define ITL_MENU_DESCRIPTION_SGR "\x1b[90m"
 
 ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc);
 
@@ -5588,8 +5653,7 @@ ITL_DEF size_t itl_menu_row_budget(size_t tty_rows)
 
 /* The index of the first candidate drawn. The origin is clamped against the end
    of the list, then moved by the least amount that brings the selection back
-   into view. Without a selection it only gets clamped, so the view holds still
-   while the list is merely open. */
+   into view. */
 ITL_DEF size_t itl_menu_window_start(size_t count, size_t selected,
                                      size_t window_start, size_t rows)
 {
@@ -5602,9 +5666,6 @@ ITL_DEF size_t itl_menu_window_start(size_t count, size_t selected,
   last_start = count - rows;
   if (window_start > last_start) {
     window_start = last_start;
-  }
-  if (selected == ITL_MENU_NO_SELECTION) {
-    return window_start;
   }
   if (selected < window_start) {
     return selected;
@@ -5642,24 +5703,21 @@ ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
 }
 
 /* Draw one candidate, its name in a fixed column so every description starts at
-   the same offset. The selected row is reversed to the edge of the row so the
-   selection reads as a band. */
+   the same offset. The selected row reverses only the displayed entry. */
 ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
                                  size_t index, size_t name_width,
-                                 size_t desc_width, size_t row_cols,
-                                 bool is_selected)
+                                 size_t desc_width, bool is_selected)
 {
   const char *name = result->candidates[index];
   const char *desc =
       result->descriptions != NULL ? result->descriptions[index] : NULL;
-  size_t drawn = ITL_MENU_ROW_PREFIX_WIDTH;
 
   if (is_selected) {
     itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_SGR);
   }
   itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
 
-  drawn += itl_menu_append_cell(b, name, name_width, true);
+  itl_menu_append_cell(b, name, name_width, true);
 
   if (desc != NULL && desc[0] != '\0' && desc_width > 0) {
     itl_char_buf_append_byte(b, ' ');
@@ -5667,7 +5725,7 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
       itl_char_buf_append_cstr(b, ITL_MENU_DESCRIPTION_SGR);
     }
 
-    drawn += 1 + itl_menu_append_cell(b, desc, desc_width, false);
+    itl_menu_append_cell(b, desc, desc_width, false);
 
     if (!is_selected) {
       itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
@@ -5675,7 +5733,6 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
   }
 
   if (is_selected) {
-    itl_char_buf_append_spaces(b, drawn < row_cols ? row_cols - drawn : 0);
     itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
   }
 }
@@ -5753,9 +5810,6 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
     }
   }
 
-  if (name_width > ITL_MENU_MAX_NAME_WIDTH) {
-    name_width = ITL_MENU_MAX_NAME_WIDTH;
-  }
   if (name_width + ITL_MENU_ROW_PREFIX_WIDTH >= row_cols) {
     name_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH
                      ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH
@@ -5773,8 +5827,7 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
     if (drawn_rows > 0) {
       itl_char_buf_append_cstr(b, ITL_LF);
     }
-    itl_menu_append_row(b, result, i, name_width, desc_width, row_cols,
-                        i == selected);
+    itl_menu_append_row(b, result, i, name_width, desc_width, i == selected);
     drawn_rows += 1;
   }
 
@@ -5802,6 +5855,35 @@ ITL_DEF void itl_menu_erase(void)
   itl_menu_close_area(b, move_down);
 }
 
+ITL_DEF bool itl_refresh_after_wake(itl_le_t *le)
+{
+  itl_char_buf_t *wake_buf;
+
+  if (itl_g_wake_callback == NULL || !itl_g_wake_callback(0)) {
+    return false;
+  }
+
+  wake_buf = &itl_g_char_buffer;
+  if (itl_g_le_prev_cursor_row > 1) {
+    ITL_TTY_MOVE_UP(wake_buf, itl_g_le_prev_cursor_row - 1);
+  }
+  ITL_TTY_MOVE_TO_COLUMN(wake_buf, 1);
+  ITL_TTY_CLEAR_BELOW(wake_buf);
+  ITL_CHAR_BUF_DUMP(wake_buf);
+  ITL_CHAR_BUF_CLEAR(wake_buf);
+  itl_g_wake_callback(1);
+  itl_g_tty_first_render = true;
+  itl_g_le_prev_total_rows = 1;
+  itl_g_le_prev_cursor_row = 1;
+  itl_g_le_prev_cursor_col = 0;
+  itl_g_le_prev_render_len = 0;
+  itl_g_le_prev_length = 0;
+  itl_g_le_prev_cursor_at_end = false;
+  itl_g_tty_should_refresh_text = true;
+  itl_le_tty_refresh(le);
+  return true;
+}
+
 /* Run the candidate menu until the user accepts a candidate, dismisses it, or
    presses a key the menu does not own. Tab and the down arrow step forward, the
    up arrow steps back, Enter accepts the highlighted candidate, and escape
@@ -5812,7 +5894,7 @@ ITL_DEF void itl_menu_erase(void)
 ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
                                            const tl_completion *result)
 {
-  size_t selected = ITL_MENU_NO_SELECTION;
+  size_t selected = 0;
   size_t window_start = 0;
 
   /* The ghost was cleared before the candidates were gathered, so one repaint
@@ -5839,6 +5921,46 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
         itl_menu_window_start(result->count, selected, window_start, rows);
     itl_menu_draw(result, selected, window_start, rows);
 
+#if defined ITL_POSIX && !defined ITL_INJECT_KLEE
+    {
+      sigset_t previous_signals;
+      bool should_redraw = false;
+
+      if (!itl_block_input_wake_signals(&previous_signals)) {
+        return TL_ERROR;
+      }
+
+      for (;;) {
+        if (itl_g_tty_changed_size != 0) {
+          should_redraw = true;
+          break;
+        }
+        if (itl_refresh_after_wake(le)) {
+          should_redraw = true;
+          break;
+        }
+        if (itl_input_is_pending()) {
+          break;
+        }
+        if (!itl_wait_for_input(&previous_signals)) {
+          itl_restore_input_wake_signals(&previous_signals);
+          return TL_ERROR;
+        }
+      }
+
+      if (!itl_restore_input_wake_signals(&previous_signals)) {
+        return TL_ERROR;
+      }
+      if (should_redraw) {
+        continue;
+      }
+    }
+#elif !defined ITL_INJECT_KLEE
+    while (!itl_input_is_pending()) {
+      itl_wait_for_input();
+    }
+#endif /* ITL_POSIX && !ITL_INJECT_KLEE */
+
     if (!ITL_READ_BYTE(&byte)) {
       break;
     }
@@ -5846,28 +5968,22 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     key = itl_esc_parse(byte);
     kind = key & TL_MASK_KEY;
 
-    if (kind == TL_KEY_TAB || kind == TL_KEY_DOWN) {
-      if (selected == ITL_MENU_NO_SELECTION) {
-        selected = 0;
-      } else if (selected + 1 < result->count) {
-        selected += 1;
-      }
+    if (kind == TL_KEY_DOWN) {
+      selected = selected + 1 < result->count ? selected + 1 : 0;
       continue;
     }
 
-    if (kind == TL_KEY_UP) {
-      if (selected == ITL_MENU_NO_SELECTION) {
-        selected = 0;
-      } else if (selected > 0) {
-        selected -= 1;
-      }
+    if (kind == TL_KEY_UP ||
+        (kind == TL_KEY_TAB && (key & TL_MOD_SHIFT) != 0))
+    {
+      selected = selected > 0 ? selected - 1 : result->count - 1;
       continue;
     }
 
     itl_menu_erase();
     itl_g_tty_should_refresh_text = true;
 
-    if (kind == TL_KEY_ENTER && selected != ITL_MENU_NO_SELECTION) {
+    if (kind == TL_KEY_ENTER || kind == TL_KEY_TAB) {
       itl_completion_replace_token(le, result, result->candidates[selected]);
       return TL_SUCCESS;
     }
@@ -6346,6 +6462,8 @@ ITL_DEF void itl_le_read_paste(itl_le_t *le)
 
 TL_DEF tl_status_code tl_init(void)
 {
+  bool did_enter_raw_mode = false;
+
   TL_ASSERT(!(TL_HISTORY_MAX_SIZE & (TL_HISTORY_MAX_SIZE - 1)) &&
             "History size must be a power of 2");
   TL_ASSERT(TL_HISTORY_MAX_SIZE >= 0 && "History size must be positive");
@@ -6354,14 +6472,20 @@ TL_DEF tl_status_code tl_init(void)
     return TL_SUCCESS;
   }
 
-#if defined ITL_POSIX
-  itl_g_prev_sigwinch = signal(SIGWINCH, itl_handle_sigwinch);
-#endif
-
   if (!itl_g_entered_raw_mode) {
     ITL_TRY(ITL_TTY_IS_TTY(), return TL_ERROR);
     ITL_TRY(tl_enter_raw_mode() == TL_SUCCESS, return TL_ERROR);
+    did_enter_raw_mode = true;
   }
+
+#if defined ITL_POSIX
+  if (!itl_install_sigwinch_handler()) {
+    if (did_enter_raw_mode) {
+      tl_exit_raw_mode();
+    }
+    return TL_ERROR;
+  }
+#endif
 
   itl_string_init(&itl_g_line_buffer);
   itl_char_buf_init(&itl_g_char_buffer);
@@ -6382,6 +6506,10 @@ TL_DEF tl_status_code tl_exit(void)
     ITL_TRY(tl_exit_raw_mode() == TL_SUCCESS, return TL_ERROR);
   }
 
+#if defined ITL_POSIX
+  ITL_TRY(itl_restore_sigwinch_handler(), return TL_ERROR);
+#endif
+
   itl_g_history_free();
   itl_vi_free();
   ITL_FREE(itl_g_line_buffer.chars);
@@ -6391,11 +6519,6 @@ TL_DEF tl_status_code tl_exit(void)
   TL_ASSERT(itl_g_alloc_count == 0);
 
   itl_g_is_active = false;
-
-#if defined ITL_POSIX
-  signal(SIGWINCH, itl_g_prev_sigwinch);
-  itl_g_prev_sigwinch = SIG_DFL;
-#endif
 
   return TL_SUCCESS;
 }
@@ -8549,42 +8672,31 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
 
   while (true) {
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
-    /* Block for input, but wake on SIGWINCH to redraw the line live as the
-       window resizes instead of waiting for the next keystroke. A SIGCHLD
-       wakes the poll the same way, and the wake hook lets the host print a
-       job report above the live prompt. */
-    for (;;) {
-      if (itl_g_tty_changed_size) {
-        itl_g_tty_should_refresh_text = true;
-        itl_le_tty_refresh(le);
+    {
+      sigset_t previous_signals;
+
+      if (!itl_block_input_wake_signals(&previous_signals)) {
+        return TL_ERROR;
       }
-      if (itl_g_wake_callback != NULL && itl_g_wake_callback(0)) {
-        /* Clear the current render block the way the full refresh does, the
-           block top then everything below, so the host's rows land where
-           the prompt began and the fresh render follows them. */
-        itl_char_buf_t *wake_buf = &itl_g_char_buffer;
-        if (itl_g_le_prev_cursor_row > 1) {
-          ITL_TTY_MOVE_UP(wake_buf, itl_g_le_prev_cursor_row - 1);
+
+      for (;;) {
+        if (itl_g_tty_changed_size) {
+          itl_g_tty_should_refresh_text = true;
+          itl_le_tty_refresh(le);
         }
-        ITL_TTY_MOVE_TO_COLUMN(wake_buf, 1);
-        ITL_TTY_CLEAR_BELOW(wake_buf);
-        ITL_CHAR_BUF_DUMP(wake_buf);
-        ITL_CHAR_BUF_CLEAR(wake_buf);
-        itl_g_wake_callback(1);
-        itl_g_tty_first_render = true;
-        itl_g_le_prev_total_rows = 1;
-        itl_g_le_prev_cursor_row = 1;
-        itl_g_le_prev_cursor_col = 0;
-        itl_g_le_prev_render_len = 0;
-        itl_g_le_prev_length = 0;
-        itl_g_le_prev_cursor_at_end = false;
-        itl_g_tty_should_refresh_text = true;
-        itl_le_tty_refresh(le);
+        itl_refresh_after_wake(le);
+        if (itl_input_is_pending()) {
+          break;
+        }
+        if (!itl_wait_for_input(&previous_signals)) {
+          itl_restore_input_wake_signals(&previous_signals);
+          return TL_ERROR;
+        }
       }
-      if (itl_input_is_pending()) {
-        break;
+
+      if (!itl_restore_input_wake_signals(&previous_signals)) {
+        return TL_ERROR;
       }
-      itl_wait_for_input();
     }
 #elif defined ITL_WIN32 && !defined ITL_INJECT_KLEE
     /* The console raises no resize signal, so the wait blocks on the input
