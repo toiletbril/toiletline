@@ -5894,16 +5894,73 @@ ITL_DEF bool itl_refresh_after_wake(itl_le_t *le)
   return true;
 }
 
+/* Ask the host for the candidates of the line as it stands now. The host keeps
+   its storage valid until the next call, so a fresh result replaces the one the
+   menu held and the previous candidates are dropped. */
+ITL_DEF bool itl_menu_regather(itl_le_t *le, tl_completion *result)
+{
+  char line_cstr[ITL_STRING_MAX_LEN];
+  tl_completion fresh;
+
+  memset(&fresh, 0, sizeof(fresh));
+
+  if (itl_g_complete_callback == NULL) {
+    return false;
+  }
+  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS)
+  {
+    return false;
+  }
+  if (!itl_g_complete_callback(line_cstr, le->cursor_position, &fresh, 1)) {
+    return false;
+  }
+  if (fresh.count == 0) {
+    return false;
+  }
+
+  *result = fresh;
+  return true;
+}
+
+/* A filesystem candidate closes with the path separator when it names a
+   directory. A quoted candidate closes with its quote, which is stepped over. */
+ITL_DEF bool itl_menu_candidate_is_directory(const char *candidate)
+{
+  size_t length = strlen(candidate);
+  char last;
+
+  if (length == 0) {
+    return false;
+  }
+
+  last = candidate[length - 1];
+  if ((last == '"' || last == '\'') && length > 1) {
+    last = candidate[length - 2];
+  }
+
+#if defined ITL_WIN32
+  if (last == '\\') {
+    return true;
+  }
+#endif
+
+  return last == '/';
+}
+
 /* Run the candidate menu until the user accepts a candidate, dismisses it, or
    presses a key the menu does not own. Tab and the down arrow step forward, the
    up arrow steps back, Enter accepts the highlighted candidate, and escape
-   closes the menu and leaves the line alone. Any other key closes the menu and
-   then does its own work on the line, so the menu never swallows a keystroke.
-   Returns the status the caller must return, which carries a terminating key
-   such as Enter on an unhighlighted menu back to the host. */
+   closes the menu and leaves the line alone. A printable key and backspace
+   narrow and widen the list in place, and accepting a directory walks into it,
+   so the menu stays open while the host still offers candidates. Any other key
+   closes the menu and then does its own work on the line, so the menu never
+   swallows a keystroke. Returns the status the caller must return, which
+   carries a terminating key such as Enter on an unhighlighted menu back to the
+   host. */
 ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
-                                           const tl_completion *result)
+                                           const tl_completion *initial)
 {
+  tl_completion result = *initial;
   size_t selected = 0;
   size_t window_start = 0;
 
@@ -5928,8 +5985,8 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
     rows = itl_menu_row_budget(tty_rows);
     window_start =
-        itl_menu_window_start(result->count, selected, window_start, rows);
-    itl_menu_draw(result, selected, window_start, rows);
+        itl_menu_window_start(result.count, selected, window_start, rows);
+    itl_menu_draw(&result, selected, window_start, rows);
 
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
     {
@@ -5979,14 +6036,14 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     kind = key & TL_MASK_KEY;
 
     if (kind == TL_KEY_DOWN) {
-      selected = selected + 1 < result->count ? selected + 1 : 0;
+      selected = selected + 1 < result.count ? selected + 1 : 0;
       continue;
     }
 
     if (kind == TL_KEY_UP ||
         (kind == TL_KEY_TAB && (key & TL_MOD_SHIFT) != 0))
     {
-      selected = selected > 0 ? selected - 1 : result->count - 1;
+      selected = selected > 0 ? selected - 1 : result.count - 1;
       continue;
     }
 
@@ -5994,7 +6051,20 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     itl_g_tty_should_refresh_text = true;
 
     if (kind == TL_KEY_ENTER || kind == TL_KEY_TAB) {
-      itl_completion_replace_token(le, result, result->candidates[selected]);
+      const char *candidate = result.candidates[selected];
+      bool is_directory = itl_menu_candidate_is_directory(candidate);
+
+      if (!itl_completion_replace_token(le, &result, candidate)) {
+        return TL_SUCCESS;
+      }
+
+      if (is_directory && itl_menu_regather(le, &result)) {
+        selected = 0;
+        window_start = 0;
+        itl_le_tty_refresh(le);
+        continue;
+      }
+
       return TL_SUCCESS;
     }
 
@@ -6004,6 +6074,28 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 
     if (kind == TL_KEY_CHAR) {
       itl_le_insert(le, itl_utf8_parse(byte));
+
+      if (itl_menu_regather(le, &result)) {
+        selected = 0;
+        window_start = 0;
+        itl_le_tty_refresh(le);
+        continue;
+      }
+
+      itl_ghost_update(le);
+      return TL_SUCCESS;
+    }
+
+    if (key == TL_KEY_BACKSPACE && le->cursor_position > result.token_start) {
+      ITL_LE_ERASE_BACKWARD(le, 1);
+
+      if (itl_menu_regather(le, &result)) {
+        selected = 0;
+        window_start = 0;
+        itl_le_tty_refresh(le);
+        continue;
+      }
+
       itl_ghost_update(le);
       return TL_SUCCESS;
     }
