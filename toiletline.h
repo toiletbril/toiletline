@@ -5813,17 +5813,131 @@ ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
   return drawn > width ? drawn : width;
 }
 
+/* Report the byte length and the column width of the codepoint that starts the
+   text. A byte that begins no valid sequence counts as one byte of one column,
+   the way the width walker counts it. The host counts its spans over the same
+   raw bytes. Every byte belongs to exactly one step, and an escape byte is a
+   codepoint of its own here. */
+ITL_DEF void itl_menu_step_codepoint(const char *text, size_t byte_length,
+                                     size_t *out_bytes, size_t *out_width)
+{
+  uint8_t rune_width = itl_utf8_width((uint8_t) text[0]);
+  itl_utf8_t ch;
+  uint8_t j;
+
+  *out_bytes = 1;
+  *out_width = 1;
+
+  if (rune_width == 0 || (size_t) rune_width > byte_length) {
+    return;
+  }
+
+  for (j = 1; j < rune_width; ++j) {
+    if (((uint8_t) text[j] & 0xC0) != 0x80) break;
+  }
+
+  if (j != rune_width) {
+    return;
+  }
+
+  for (j = 0; j < rune_width; ++j) {
+    ch.bytes[j] = (uint8_t) text[j];
+  }
+  ch.size = j;
+
+  *out_bytes = rune_width;
+  *out_width = itl_char_width(ch);
+}
+
+/* Draw a cell whose text carries the colors the host chose for it. The spans
+   are codepoint ranges over that same text, sorted and non-overlapping. Each
+   colored run opens with its own sequence and closes with a reset. The cell
+   keeps the width its column grants and pads the remainder for a caller that
+   asked for a fixed cell. */
+ITL_DEF void itl_menu_append_colored_cell(itl_char_buf_t *b, const char *text,
+                                          size_t width,
+                                          const tl_highlight_span *spans,
+                                          size_t span_count, bool should_pad)
+{
+  size_t text_bytes = strlen(text);
+  size_t byte_offset = 0;
+  size_t codepoint_index = 0;
+  size_t drawn = 0;
+  size_t next_span = 0;
+  size_t open_span = span_count;
+  size_t i;
+
+  while (byte_offset < text_bytes && drawn < width) {
+    size_t active = span_count;
+    size_t step_bytes = 0;
+    size_t step_width = 0;
+    size_t j;
+
+    while (next_span < span_count && spans[next_span].end <= codepoint_index) {
+      next_span += 1;
+    }
+
+    if (next_span < span_count && spans[next_span].start <= codepoint_index) {
+      active = next_span;
+    }
+
+    if (active != open_span) {
+      if (open_span != span_count) {
+        itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+      }
+
+      if (active != span_count) {
+        itl_char_buf_append_cstr(b, itl_color_sequence(spans[active].sgr));
+      }
+
+      open_span = active;
+    }
+
+    itl_menu_step_codepoint(text + byte_offset, text_bytes - byte_offset,
+                            &step_bytes, &step_width);
+
+    if (step_width > 0 && drawn + step_width > width) {
+      break;
+    }
+
+    for (j = 0; j < step_bytes; ++j) {
+      itl_char_buf_append_byte(b, (uint8_t) text[byte_offset + j]);
+    }
+
+    byte_offset += step_bytes;
+    codepoint_index += 1;
+    drawn += step_width;
+  }
+
+  if (open_span != span_count) {
+    itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+  }
+
+  if (!should_pad) {
+    return;
+  }
+
+  for (i = drawn; i < width; ++i) {
+    itl_char_buf_append_byte(b, ' ');
+  }
+}
+
 /* Draw one candidate. The name keeps a fixed column when a description follows
    it. Every description starts at the same offset, and a row without one ends
-   right after the name. The selected row reverses only the displayed entry. */
+   right after the name. The selected row reverses only the displayed entry.
+   A source that asked for highlighting has its names colored by the host. The
+   selected row stays plain. Reverse video already marks it, and the ghost
+   preview shows it colored on the line above. */
 ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
                                  size_t index, size_t name_width,
-                                 size_t desc_width, bool is_selected)
+                                 size_t desc_width, bool is_selected,
+                                 bool should_highlight)
 {
   const char *name = result->candidates[index];
   const char *desc =
       result->descriptions != NULL ? result->descriptions[index] : NULL;
   bool has_description = desc != NULL && desc[0] != '\0' && desc_width > 0;
+  bool was_name_drawn = false;
 
   if (is_selected) {
     itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
@@ -5833,7 +5947,28 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
     itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
   }
 
-  itl_menu_append_cell(b, name, name_width, has_description);
+  if (should_highlight && !is_selected && itl_g_highlight_callback != NULL) {
+    tl_highlight_span name_spans[ITL_HIGHLIGHT_MAX_SPANS];
+    tl_highlight hl;
+
+    hl.spans = name_spans;
+    hl.count = 0;
+    hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
+
+    if (itl_g_highlight_callback(name, &hl)) {
+      size_t span_count = hl.count < ITL_HIGHLIGHT_MAX_SPANS
+                              ? hl.count
+                              : ITL_HIGHLIGHT_MAX_SPANS;
+
+      itl_menu_append_colored_cell(b, name, name_width, name_spans, span_count,
+                                   has_description);
+      was_name_drawn = true;
+    }
+  }
+
+  if (!was_name_drawn) {
+    itl_menu_append_cell(b, name, name_width, has_description);
+  }
 
   if (has_description) {
     itl_char_buf_append_byte(b, ' ');
@@ -5941,7 +6076,8 @@ ITL_DEF void itl_menu_close_area(itl_char_buf_t *b, size_t rows_below)
    candidate row leaves the screen untouched. */
 ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
                            size_t window_start, itl_menu_layout layout,
-                           const char *help_title, const char *help_keys)
+                           const char *help_title, const char *help_keys,
+                           bool should_highlight)
 {
   itl_char_buf_t *b = &itl_g_char_buffer;
   size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
@@ -6009,7 +6145,8 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
     if (drawn_rows > 0) {
       itl_char_buf_append_cstr(b, ITL_LF);
     }
-    itl_menu_append_row(b, result, i, name_width, desc_width, i == selected);
+    itl_menu_append_row(b, result, i, name_width, desc_width, i == selected,
+                        should_highlight);
     drawn_rows += 1;
   }
 
@@ -6077,13 +6214,16 @@ typedef bool (*itl_menu_gather_fn)(itl_le_t *le, tl_completion *result);
    list as the line changes. can_descend belongs to a list of paths and reopens
    the menu inside an accepted directory. should_submit_on_enter belongs to a
    list that only extends the line, and Enter then closes the menu and submits
-   what the line already holds. help_title names the source on the first row
-   and help_keys lists the keys it answers beside it. */
+   what the line already holds. should_highlight belongs to a list whose entries
+   are whole commands, and the host colors them the way it colors the line.
+   help_title names the source on the first row and help_keys lists the keys it
+   answers beside it. */
 typedef struct itl_menu_source
 {
   itl_menu_gather_fn gather;
   bool can_descend;
   bool should_submit_on_enter;
+  bool should_highlight;
   const char *help_title;
   const char *help_keys;
 } itl_menu_source;
@@ -6615,7 +6755,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     window_start = itl_menu_window_start(result.count, selected, window_start,
                                          layout.candidate_rows);
     itl_menu_draw(&result, selected, window_start, layout, source->help_title,
-                  source->help_keys);
+                  source->help_keys, source->should_highlight);
 
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
     {
@@ -6843,7 +6983,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
      printed as a static column list. */
   if (itl_g_completion_menu_enabled) {
     static const itl_menu_source completion_source = {
-        itl_menu_regather, true, true, "selecting completions",
+        itl_menu_regather, true, true, false, "selecting completions",
         "enter to run, tab to accept, esc/ctrl-g to cancel"};
 
     *out_code = itl_completion_menu(le, &result, &completion_source);
@@ -6862,8 +7002,8 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
 ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
 {
   static const itl_menu_source history_source = {
-      itl_history_menu_gather, false, false, "incremental history search",
-      "enter to accept, esc/ctrl-g to cancel"};
+      itl_history_menu_gather, false, false, true,
+      "incremental history search", "enter to accept, esc/ctrl-g to cancel"};
 
   tl_completion result;
 
