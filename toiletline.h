@@ -5671,12 +5671,13 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
 #define ITL_MENU_MAX_ROWS         16
 #define ITL_MENU_ROW_PREFIX       "  "
 #define ITL_MENU_ROW_PREFIX_WIDTH 2
-/* The selected row closes with the same width it opens with. The reversed
-   block reads as a button around the entry. */
-#define ITL_MENU_ROW_SUFFIX       "  "
-#define ITL_MENU_ROW_SUFFIX_WIDTH 2
-#define ITL_MENU_SELECTED_SGR    "\x1b[7m"
-#define ITL_MENU_DESCRIPTION_SGR "\x1b[90m"
+/* The reversed block of a selected row opens one column before the entry and
+   closes one column after it. The plain first column of the prefix keeps the
+   row aligned with an unselected one. */
+#define ITL_MENU_SELECTED_MARGIN       " "
+#define ITL_MENU_SELECTED_MARGIN_WIDTH 1
+#define ITL_MENU_SELECTED_SGR          "\x1b[7m"
+#define ITL_MENU_DESCRIPTION_SGR       "\x1b[90m"
 /* The row drawn in place of the candidates once the search has narrowed the
    list away. The menu stays open on it and a backspace brings the list back. */
 #define ITL_MENU_EMPTY_TEXT      "no matches, erase to widen the search"
@@ -5787,9 +5788,12 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
   bool has_description = desc != NULL && desc[0] != '\0' && desc_width > 0;
 
   if (is_selected) {
+    itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
     itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_SGR);
+    itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
+  } else {
+    itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
   }
-  itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
 
   itl_menu_append_cell(b, name, name_width, has_description);
 
@@ -5807,7 +5811,7 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
   }
 
   if (is_selected) {
-    itl_char_buf_append_cstr(b, ITL_MENU_ROW_SUFFIX);
+    itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
     itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
   }
 }
@@ -5908,18 +5912,19 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
     }
   }
 
-  if (name_width + ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_ROW_SUFFIX_WIDTH >=
+  if (name_width + ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_SELECTED_MARGIN_WIDTH >=
       row_cols)
   {
     name_width =
-        row_cols > ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_ROW_SUFFIX_WIDTH
-            ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH - ITL_MENU_ROW_SUFFIX_WIDTH
+        row_cols > ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_SELECTED_MARGIN_WIDTH
+            ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH -
+                  ITL_MENU_SELECTED_MARGIN_WIDTH
             : 1;
   }
   desc_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH + name_width + 1 +
-                              ITL_MENU_ROW_SUFFIX_WIDTH
+                              ITL_MENU_SELECTED_MARGIN_WIDTH
                    ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH - name_width - 1 -
-                         ITL_MENU_ROW_SUFFIX_WIDTH
+                         ITL_MENU_SELECTED_MARGIN_WIDTH
                    : 0;
 
   ITL_CHAR_BUF_CLEAR(b);
