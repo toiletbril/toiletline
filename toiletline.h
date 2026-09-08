@@ -2603,7 +2603,7 @@ ITL_DEF void itl_history_read_fd_invalidate(void)
    and search scans then decode each entry from memory rather than reading the
    file per entry. A failure to open or seek is recorded and not retried until
    the next invalidation. A failure while reading or closing invalidates the
-   buffer, so the following call loads again. Returns true when the buffer holds
+   buffer. The following call loads again. Returns true when the buffer holds
    the file. */
 ITL_DEF bool itl_history_ensure_read_buffer(void)
 {
@@ -3310,8 +3310,8 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
     if (ITL_FILE_IS_BAD(read_file) || !itl_history_scan_fd(read_file)) {
       if (!ITL_FILE_IS_BAD(read_file)) ITL_FILE_CLOSE(read_file);
 
-      /* The entry reached the file and the ring no longer describes it, so the
-         next load has to rebuild instead of trusting the offsets. */
+      /* The entry reached the file and the ring no longer describes it. The
+         next load rebuilds from the file. */
       itl_g_history_file_is_bad = true;
       return false;
     }
@@ -4056,13 +4056,13 @@ ITL_DEF bool itl_win_console_resized(void)
 #if !defined ITL_INJECT_KLEE
 /* Blocks on the console input handle until a keystroke or resize is queued,
    the Windows counterpart to the POSIX poll. The handle wakes the moment any
-   record arrives, so a keypress is served without the latency of a fixed sleep,
-   while the twenty millisecond timeout keeps polling the console size since a
-   resize raises no signal on Windows. A non-character record, a key release, a
-   lone modifier, or a mouse move would keep the handle signaled and spin the
-   wait, so it is consumed here. A resize record marks the line for a redraw and
-   returns to the caller. A real keystroke is left in the buffer for the _getch
-   reader, told apart by _kbhit. */
+   record arrives. A keypress is served without the latency of a fixed sleep.
+   The twenty millisecond timeout keeps polling the console size since a resize
+   raises no signal on Windows. A non-character record, a key release, a lone
+   modifier, or a mouse move would keep the handle signaled and spin the wait.
+   Such a record is consumed here. A resize record marks the line for a redraw
+   and returns to the caller. A real keystroke is left in the buffer for the
+   _getch reader, told apart by _kbhit. */
 ITL_DEF void itl_wait_for_input(void)
 {
   HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
@@ -4586,11 +4586,11 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
   if (itl_g_tty_should_refresh_text) {
     if (is_resize) {
-      /* The terminal reflowed the previous render, so the stored row counts are
-         stale. The cursor sits on the caret's reflowed row, so step up by the
+      /* The terminal reflowed the previous render and the stored row counts are
+         stale. The cursor sits on the caret's reflowed row. Step up by the
          reflowed rows above it to reach the block top, then clear everything
-         below. The input block is the last thing on screen, so nothing below it
-         is lost. */
+         below. Nothing under the block survives a resize, and an open menu
+         draws its own rows again once the block is back. */
       size_t rows_above =
           itl_le_reflow_rows_above_caret(le, itl_g_tty_prev_cols, tty_cols);
       if (rows_above > 0) {
@@ -4888,8 +4888,8 @@ ITL_DEF ITL_THREAD_LOCAL int itl_g_completion_menu_enabled = 0;
 
 TL_DEF void tl_set_completion_menu_enabled(int enabled)
 {
-  /* The menu draws a reversed selection band and dimmed text, so a dumb
-     terminal keeps the plain list whatever the host requests. */
+  /* The menu draws a reversed selection band and dimmed text. A dumb terminal
+     keeps the plain list whatever the host requests. */
   itl_g_completion_menu_enabled = enabled && itl_term_supports_decorations();
 }
 
@@ -5137,10 +5137,10 @@ ITL_DEF void itl_ghost_fill_from_token_text(itl_le_t *le, const char *line_cstr,
   }
 
   {
-    /* The token under the cursor runs from token_start to the end of the line,
-       so its length in codepoints is the line length minus the start.
-       token_start is a codepoint index, so the replacement is measured in
-       codepoints and then walked to its byte offset. */
+    /* The token under the cursor runs from token_start to the end of the line.
+       Its length in codepoints is the line length minus the start. token_start
+       is a codepoint index. The replacement is measured in codepoints and then
+       walked to its byte offset. */
     size_t typed_len = le->line->length - token_start;
     size_t text_len = tl_utf8_strlen(text);
     if (text_len <= typed_len) {
@@ -5666,12 +5666,12 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
 }
 
 /* The selectable candidate menu drawn under the input block. Its rows sit
-   outside the rows the line editor tracks, so the menu clears them itself
-   before every repaint and before it returns. */
+   outside the rows the line editor tracks. The menu clears them itself before
+   every repaint and before it returns. */
 #define ITL_MENU_MAX_ROWS         16
 #define ITL_MENU_ROW_PREFIX       "  "
 #define ITL_MENU_ROW_PREFIX_WIDTH 2
-/* The selected row closes with the same width it opens with, so the reversed
+/* The selected row closes with the same width it opens with. The reversed
    block reads as a button around the entry. */
 #define ITL_MENU_ROW_SUFFIX       "  "
 #define ITL_MENU_ROW_SUFFIX_WIDTH 2
@@ -5683,19 +5683,44 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
 
 ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc);
 
-/* The candidate rows the menu may draw. The input block and the count row are
-   held back so the prompt stays on screen, and the fixed ceiling keeps a long
-   list from filling a tall terminal. At least one row is always offered. */
-ITL_DEF size_t itl_menu_row_budget(size_t tty_rows)
+/* Every row of one menu repaint. The help row and the count row are counted
+   here beside the candidates, and a repaint never draws a row the layout did
+   not grant. */
+typedef struct itl_menu_layout
 {
-  size_t reserved = itl_g_le_prev_total_rows + 1;
-  size_t budget = tty_rows > reserved ? tty_rows - reserved : 1;
+  size_t candidate_rows;
+  bool has_help_row;
+  bool has_count_row;
+} itl_menu_layout;
 
-  if (budget > ITL_MENU_MAX_ROWS) {
-    budget = ITL_MENU_MAX_ROWS;
+/* Divide the rows under the input block between the help row, the candidates,
+   and the count row. The whole block is held back first, since the terminal
+   scrolls the prompt away once the rows below it are overrun. The help row is
+   the first to go and the count row is the second. A block that already fills
+   the terminal leaves nothing, and the menu then draws no rows at all. The
+   fixed ceiling keeps a long list from filling a tall terminal. */
+ITL_DEF itl_menu_layout itl_menu_measure(size_t tty_rows, bool wants_help_row)
+{
+  itl_menu_layout layout;
+  size_t available = tty_rows > itl_g_le_prev_total_rows
+                         ? tty_rows - itl_g_le_prev_total_rows
+                         : 0;
+
+  layout.has_help_row = wants_help_row && available >= 3;
+  layout.has_count_row = available >= 2;
+
+  if (layout.has_help_row) {
+    available -= 1;
   }
 
-  return budget;
+  if (layout.has_count_row) {
+    available -= 1;
+  }
+
+  layout.candidate_rows =
+      available > ITL_MENU_MAX_ROWS ? ITL_MENU_MAX_ROWS : available;
+
+  return layout;
 }
 
 /* The index of the first candidate drawn. The origin is clamped against the end
@@ -5750,9 +5775,8 @@ ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
 }
 
 /* Draw one candidate. The name keeps a fixed column when a description follows
-   it, so every description starts at the same offset, and a row without one
-   ends right after the name. The selected row reverses only the displayed
-   entry. */
+   it. Every description starts at the same offset, and a row without one ends
+   right after the name. The selected row reverses only the displayed entry. */
 ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
                                  size_t index, size_t name_width,
                                  size_t desc_width, bool is_selected)
@@ -5845,12 +5869,13 @@ ITL_DEF void itl_menu_close_area(itl_char_buf_t *b, size_t rows_below)
 }
 
 /* Repaint the menu rows under the input block. The rows are written from the
-   first row below the block downward, and the caret returns to the line, so the
-   editor's own render path never sees them. A help_text of null draws no help
-   row, and any other value takes the first row. An empty list draws the row
-   that says so in place of the candidates. */
+   first row below the block downward, and the caret returns to the line. The
+   editor's own render path never sees them. The layout owns which rows exist,
+   and a help_text of null drops the help row the layout granted. An empty list
+   draws the row that says so in place of the candidates. A layout with no
+   candidate row leaves the screen untouched. */
 ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
-                           size_t window_start, size_t rows,
+                           size_t window_start, itl_menu_layout layout,
                            const char *help_text)
 {
   itl_char_buf_t *b = &itl_g_char_buffer;
@@ -5859,18 +5884,22 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
   size_t text_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH
                           ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH
                           : 1;
-  size_t window_end = window_start + rows;
+  size_t window_end = window_start + layout.candidate_rows;
   size_t name_width = 0;
   size_t desc_width;
   size_t drawn_rows = 0;
   size_t move_down;
   size_t i;
 
+  if (layout.candidate_rows == 0) {
+    return;
+  }
+
   if (window_end > result->count) {
     window_end = result->count;
   }
 
-  /* The name column is measured across the whole list, so the descriptions stay
+  /* The name column is measured across the whole list. The descriptions stay
      in place while the window scrolls. */
   for (i = 0; i < result->count; ++i) {
     size_t width = itl_cstr_display_width(result->candidates[i]);
@@ -5897,7 +5926,7 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
   ITL_TTY_HIDE_CURSOR(b);
   move_down = itl_menu_open_area(b);
 
-  if (help_text != NULL) {
+  if (layout.has_help_row && help_text != NULL) {
     itl_menu_append_dimmed_row(b, help_text, text_width);
     drawn_rows += 1;
   }
@@ -5918,7 +5947,8 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
     drawn_rows += 1;
   }
 
-  if (window_start > 0 || window_end < result->count) {
+  if (layout.has_count_row && (window_start > 0 || window_end < result->count))
+  {
     if (drawn_rows > 0) {
       itl_char_buf_append_cstr(b, ITL_LF);
     }
@@ -5992,7 +6022,7 @@ typedef struct itl_menu_source
 } itl_menu_source;
 
 /* Ask the host for the candidates of the line as it stands now. The host keeps
-   its storage valid until the next call, so a fresh result replaces the one the
+   its storage valid until the next call. A fresh result replaces the one the
    menu held and the previous candidates are dropped. */
 ITL_DEF bool itl_menu_regather(itl_le_t *le, tl_completion *result)
 {
@@ -6056,9 +6086,9 @@ ITL_DEF bool itl_ascii_contains_casefold(const char *haystack,
 }
 
 /* Fill the menu candidates with the history entries that contain the line,
-   newest first. The line is the search query, so the whole of it is replaced
-   when a row is accepted. An entry already gathered is dropped, so a command
-   run many times takes one row. */
+   newest first. The line is the search query. The whole of it is replaced when
+   a row is accepted. An entry already gathered is dropped. A command run many
+   times takes one row. */
 ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
 {
   char query[ITL_STRING_MAX_LEN];
@@ -6160,10 +6190,10 @@ ITL_DEF bool itl_menu_candidate_is_directory(const char *candidate)
   return last == '/';
 }
 
-/* Show the highlighted candidate as ghost text on the line the menu opened on,
-   so the line above the rows reads as the line that accepting it produces. The
-   ghost only appends, so a candidate that does not extend the typed token
-   leaves the line bare. */
+/* Show the highlighted candidate as ghost text on the line the menu opened on.
+   The line above the rows reads as the line that accepting it produces. The
+   ghost only appends. A candidate that does not extend the typed token leaves
+   the line bare. */
 ITL_DEF void itl_menu_ghost_preview(itl_le_t *le, const tl_completion *result,
                                     size_t selected)
 {
@@ -6222,7 +6252,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
      the first pass fills the preview, and a regather puts it back there. */
   size_t previewed = (size_t) -1;
 
-  /* Typing and walking into a directory both edit the line, so the line as it
+  /* Typing and walking into a directory both edit the line. The line as it
      stands is kept for a cancel to restore. A line too long for the buffer
      keeps no copy and cancels in place. */
   char original_line[ITL_STRING_MAX_LEN];
@@ -6236,18 +6266,18 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 
   for (;;) {
     size_t tty_rows;
-    size_t rows;
+    itl_menu_layout layout;
     uint8_t byte;
     int key, kind;
 
-    /* A resize invalidates the block the rows are measured against, so the line
-       is repainted first and the new size feeds the row budget. */
+    /* A resize invalidates the block the rows are measured against. The line is
+       repainted first and the new size feeds the layout. */
     if (itl_g_tty_changed_size != 0) {
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
     }
 
-    /* The ghost follows the highlighted row, so the preview is refilled and the
+    /* The ghost follows the highlighted row. The preview is refilled and the
        line above the rows is repainted whenever the highlight moves. The first
        pass also takes the ghost of the typed line off the screen. */
     if (previewed != selected) {
@@ -6258,17 +6288,11 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     }
 
     tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
-    rows = itl_menu_row_budget(tty_rows);
+    layout = itl_menu_measure(tty_rows, source->help_text != NULL);
 
-    /* The help row takes one of the rows the budget grants, so the candidates
-       below it stay inside the terminal. */
-    if (source->help_text != NULL && rows > 1) {
-      rows -= 1;
-    }
-
-    window_start =
-        itl_menu_window_start(result.count, selected, window_start, rows);
-    itl_menu_draw(&result, selected, window_start, rows, source->help_text);
+    window_start = itl_menu_window_start(result.count, selected, window_start,
+                                         layout.candidate_rows);
+    itl_menu_draw(&result, selected, window_start, layout, source->help_text);
 
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
     {
@@ -6346,7 +6370,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 
     itl_menu_erase();
     itl_g_tty_should_refresh_text = true;
-    /* The preview belongs to the rows that were just erased, so no path out of
+    /* The preview belongs to the rows that were just erased. No path out of
        the menu keeps it on the line. */
     itl_ghost_clear();
 
@@ -6448,8 +6472,8 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
   itl_ghost_clear();
   itl_g_ghost_sticky_target[0] = '\0';
   if (!itl_completion_handled || result.count == 0) {
-    /* A dumb terminal cannot render the repaint the flash draws, so the key is
-       still handled but no flash is attempted. */
+    /* A dumb terminal cannot render the repaint the flash draws. The key is
+       still handled and no flash is attempted. */
     if (itl_term_supports_decorations()) {
       itl_g_tty_flash_active = true;
       itl_g_tty_should_refresh_text = true;
@@ -6462,9 +6486,9 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     return true;
   }
 
-  /* A lone candidate is the full replacement for the token, so it goes in even
-     when it is no longer than what the user typed, which covers a glob token
-     that resolves to a single match. */
+  /* A lone candidate is the full replacement for the token. It goes in even
+     when it is no longer than what the user typed. A glob token that resolves
+     to a single match reaches this path. */
   if (result.count == 1) {
     itl_completion_replace_token(le, &result, result.candidates[0]);
     itl_g_tty_should_refresh_text = true;
@@ -6486,13 +6510,14 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     return true;
   }
 
-  /* The prefix did not grow the token, so a second TAB presents the candidates.
+  /* The prefix did not grow the token. A second TAB presents the candidates.
      The menu owns the keys until it closes. Without it the candidates are
      printed as a static column list. */
   if (itl_g_completion_menu_enabled) {
     static const itl_menu_source completion_source = {
         itl_menu_regather, true, true,
-        "selecting completions, tab accepts, enter runs the line, esc cancels"};
+        "selecting completions. enter to run, tab to accept, "
+        "esc/ctrl-g to cancel"};
 
     *out_code = itl_completion_menu(le, &result, &completion_source);
     return true;
@@ -6503,15 +6528,15 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
 }
 
 /* List the history entries that match the line and let the menu keys pick one.
-   The line is the search query, so typing narrows the list in place and
-   accepting replaces the whole line with the entry. An empty history and a
-   query nothing matches both leave the line alone. Returns the status the
-   caller must return. */
+   The line is the search query. Typing narrows the list in place and accepting
+   replaces the whole line with the entry. An empty history and a query nothing
+   matches both leave the line alone. Returns the status the caller must
+   return. */
 ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
 {
   static const itl_menu_source history_source = {
       itl_history_menu_gather, false, false,
-      "incremental history search, enter accepts, esc cancels"};
+      "incremental history search. enter to accept, esc/ctrl-g to cancel"};
 
   tl_completion result;
 

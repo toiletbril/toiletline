@@ -936,8 +936,8 @@ test_history_unterminated_line(void)
   return ok;
 }
 
-/* Both readers decode a record the same way, so a lone carriage return survives
-   as data and a CRLF ending is dropped on either path. */
+/* Both readers decode a record the same way. A lone carriage return survives as
+   data and a CRLF ending is dropped on either path. */
 static bool
 test_history_carriage_return_rule(void)
 {
@@ -1010,8 +1010,8 @@ test_history_carriage_return_rule(void)
 }
 
 /* A history write drops the entries the limit no longer reaches and shifts the
-   offsets that remain, so the resulting state has to equal a scan of the
-   shortened file. */
+   offsets that remain. The resulting state equals a scan of the shortened
+   file. */
 static bool
 test_history_offset_shift_matches_scan(void)
 {
