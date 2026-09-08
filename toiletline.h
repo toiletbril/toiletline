@@ -5677,6 +5677,9 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
 #define ITL_MENU_ROW_SUFFIX_WIDTH 2
 #define ITL_MENU_SELECTED_SGR    "\x1b[7m"
 #define ITL_MENU_DESCRIPTION_SGR "\x1b[90m"
+/* The row drawn in place of the candidates once the search has narrowed the
+   list away. The menu stays open on it and a backspace brings the list back. */
+#define ITL_MENU_EMPTY_TEXT      "no matches, erase to widen the search"
 
 ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc);
 
@@ -5800,6 +5803,18 @@ ITL_DEF void itl_menu_append_summary(itl_char_buf_t *b, size_t first,
   itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
 }
 
+/* Draw a dimmed row of plain text, which is the help row naming the active
+   source and the row standing in for an empty list. The text is cut at the row
+   width and never wraps. */
+ITL_DEF void itl_menu_append_dimmed_row(itl_char_buf_t *b, const char *text,
+                                        size_t width)
+{
+  itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
+  itl_char_buf_append_cstr(b, ITL_MENU_DESCRIPTION_SGR);
+  itl_menu_append_cell(b, text, width, false);
+  itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+}
+
 /* Step to the first row below the input block and clear everything under it,
    the same accounting tl_emit_newlines uses. Returns the rows stepped over so
    the caller can walk back up to the caret. */
@@ -5831,13 +5846,19 @@ ITL_DEF void itl_menu_close_area(itl_char_buf_t *b, size_t rows_below)
 
 /* Repaint the menu rows under the input block. The rows are written from the
    first row below the block downward, and the caret returns to the line, so the
-   editor's own render path never sees them. */
+   editor's own render path never sees them. A help_text of null draws no help
+   row, and any other value takes the first row. An empty list draws the row
+   that says so in place of the candidates. */
 ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
-                           size_t window_start, size_t rows)
+                           size_t window_start, size_t rows,
+                           const char *help_text)
 {
   itl_char_buf_t *b = &itl_g_char_buffer;
   size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
   size_t row_cols = tty_cols > 1 ? tty_cols - 1 : 1;
+  size_t text_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH
+                          ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH
+                          : 1;
   size_t window_end = window_start + rows;
   size_t name_width = 0;
   size_t desc_width;
@@ -5875,6 +5896,19 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
   ITL_CHAR_BUF_CLEAR(b);
   ITL_TTY_HIDE_CURSOR(b);
   move_down = itl_menu_open_area(b);
+
+  if (help_text != NULL) {
+    itl_menu_append_dimmed_row(b, help_text, text_width);
+    drawn_rows += 1;
+  }
+
+  if (result->count == 0) {
+    if (drawn_rows > 0) {
+      itl_char_buf_append_cstr(b, ITL_LF);
+    }
+    itl_menu_append_dimmed_row(b, ITL_MENU_EMPTY_TEXT, text_width);
+    drawn_rows += 1;
+  }
 
   for (i = window_start; i < window_end; ++i) {
     if (drawn_rows > 0) {
@@ -5942,6 +5976,20 @@ ITL_DEF bool itl_refresh_after_wake(itl_le_t *le)
    menu takes one of these so a second list, such as history, drives the same
    loop the completion candidates do. */
 typedef bool (*itl_menu_gather_fn)(itl_le_t *le, tl_completion *result);
+
+/* Everything that separates one menu source from another. gather refills the
+   list as the line changes. can_descend belongs to a list of paths and reopens
+   the menu inside an accepted directory. should_submit_on_enter belongs to a
+   list that only extends the line, and Enter then closes the menu and submits
+   what the line already holds. help_text names the source and its keys on the
+   first row. */
+typedef struct itl_menu_source
+{
+  itl_menu_gather_fn gather;
+  bool can_descend;
+  bool should_submit_on_enter;
+  const char *help_text;
+} itl_menu_source;
 
 /* Ask the host for the candidates of the line as it stands now. The host keeps
    its storage valid until the next call, so a fresh result replaces the one the
@@ -6139,21 +6187,32 @@ ITL_DEF void itl_menu_ghost_preview(itl_le_t *le, const tl_completion *result,
   itl_g_ghost_width = itl_cstr_display_width(itl_g_ghost);
 }
 
+/* Drop every candidate while the menu stays open. A failed gather has already
+   released the storage the host lent for the previous list. The pointers go
+   with the count. The token span is kept, and a backspace still reaches the
+   character that narrowed the list away. */
+ITL_DEF void itl_menu_empty_candidates(tl_completion *result)
+{
+  result->candidates = NULL;
+  result->count = 0;
+  result->descriptions = NULL;
+  result->longest_common_prefix = NULL;
+}
+
 /* Run the candidate menu until the user accepts a candidate, dismisses it, or
-   presses a key the menu does not own. Tab and the down arrow step forward, the
-   up arrow steps back, Enter accepts the highlighted candidate, and escape or
-   ctrl-g cancels and puts back the line the menu opened on. A printable key and
-   backspace narrow and widen the list in place, and accepting a directory walks
-   into it, so the menu stays open while the host still offers candidates. Any
-   other key closes the menu and then does its own work on the line, so the menu
-   never swallows a keystroke. Returns the status the caller must return, which
-   carries a terminating key such as Enter on an unhighlighted menu back to the
-   host. gather refills the list as the line changes, and can_descend belongs to
-   a list of paths, where accepting a directory reopens the menu inside it. */
+   presses a key the menu does not own. The down arrow steps forward, the up
+   arrow and shift tab step back, Tab accepts the highlighted candidate, and
+   escape or ctrl-g cancels and puts back the line the menu opened on. A
+   printable key and backspace narrow and widen the list in place. A search that
+   matches nothing keeps the menu open on a row that says so, and a backspace
+   brings the list back. Accepting a directory walks into it and the menu stays
+   open while the host still offers candidates. Any other key closes the menu
+   and then does its own work on the line. The returned status is the one the
+   caller must return, and it carries a terminating key back to the host. The
+   source holds everything that separates one candidate list from another. */
 ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
                                            const tl_completion *initial,
-                                           itl_menu_gather_fn gather,
-                                           bool can_descend)
+                                           const itl_menu_source *source)
 {
   tl_completion result = *initial;
   size_t selected = 0;
@@ -6200,9 +6259,16 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 
     tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
     rows = itl_menu_row_budget(tty_rows);
+
+    /* The help row takes one of the rows the budget grants, so the candidates
+       below it stay inside the terminal. */
+    if (source->help_text != NULL && rows > 1) {
+      rows -= 1;
+    }
+
     window_start =
         itl_menu_window_start(result.count, selected, window_start, rows);
-    itl_menu_draw(&result, selected, window_start, rows);
+    itl_menu_draw(&result, selected, window_start, rows, source->help_text);
 
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
     {
@@ -6252,14 +6318,29 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     kind = key & TL_MASK_KEY;
 
     if (kind == TL_KEY_DOWN) {
-      selected = selected + 1 < result.count ? selected + 1 : 0;
+      if (result.count > 0) {
+        selected = selected + 1 < result.count ? selected + 1 : 0;
+      }
+
       continue;
     }
 
     if (kind == TL_KEY_UP ||
         (kind == TL_KEY_TAB && (key & TL_MOD_SHIFT) != 0))
     {
-      selected = selected > 0 ? selected - 1 : result.count - 1;
+      if (result.count > 0) {
+        selected = selected > 0 ? selected - 1 : result.count - 1;
+      }
+
+      continue;
+    }
+
+    /* An empty list has no row to accept. The keys that would take one are
+       swallowed and the menu waits for the erase that brings the list back. */
+    if (result.count == 0 &&
+        (kind == TL_KEY_TAB ||
+         (kind == TL_KEY_ENTER && !source->should_submit_on_enter)))
+    {
       continue;
     }
 
@@ -6269,16 +6350,18 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
        the menu keeps it on the line. */
     itl_ghost_clear();
 
-    if (kind == TL_KEY_ENTER || kind == TL_KEY_TAB) {
+    if (kind == TL_KEY_TAB ||
+        (kind == TL_KEY_ENTER && !source->should_submit_on_enter))
+    {
       const char *candidate = result.candidates[selected];
       bool is_directory =
-          can_descend && itl_menu_candidate_is_directory(candidate);
+          source->can_descend && itl_menu_candidate_is_directory(candidate);
 
       if (!itl_completion_replace_token(le, &result, candidate)) {
         return TL_SUCCESS;
       }
 
-      if (is_directory && gather(le, &result)) {
+      if (is_directory && source->gather(le, &result)) {
         selected = 0;
         window_start = 0;
         previewed = (size_t) -1;
@@ -6303,29 +6386,27 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     if (kind == TL_KEY_CHAR) {
       itl_le_insert(le, itl_utf8_parse(byte));
 
-      if (gather(le, &result)) {
-        selected = 0;
-        window_start = 0;
-        previewed = (size_t) -1;
-        continue;
+      if (!source->gather(le, &result)) {
+        itl_menu_empty_candidates(&result);
       }
 
-      itl_ghost_update(le);
-      return TL_SUCCESS;
+      selected = 0;
+      window_start = 0;
+      previewed = (size_t) -1;
+      continue;
     }
 
     if (key == TL_KEY_BACKSPACE && le->cursor_position > result.token_start) {
       ITL_LE_ERASE_BACKWARD(le, 1);
 
-      if (gather(le, &result)) {
-        selected = 0;
-        window_start = 0;
-        previewed = (size_t) -1;
-        continue;
+      if (!source->gather(le, &result)) {
+        itl_menu_empty_candidates(&result);
       }
 
-      itl_ghost_update(le);
-      return TL_SUCCESS;
+      selected = 0;
+      window_start = 0;
+      previewed = (size_t) -1;
+      continue;
     }
 
     itl_undo_close_insert_run();
@@ -6409,7 +6490,11 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
      The menu owns the keys until it closes. Without it the candidates are
      printed as a static column list. */
   if (itl_g_completion_menu_enabled) {
-    *out_code = itl_completion_menu(le, &result, itl_menu_regather, true);
+    static const itl_menu_source completion_source = {
+        itl_menu_regather, true, true,
+        "selecting completions, tab accepts, enter runs the line, esc cancels"};
+
+    *out_code = itl_completion_menu(le, &result, &completion_source);
     return true;
   }
 
@@ -6424,6 +6509,10 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
    caller must return. */
 ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
 {
+  static const itl_menu_source history_source = {
+      itl_history_menu_gather, false, false,
+      "incremental history search, enter accepts, esc cancels"};
+
   tl_completion result;
 
   memset(&result, 0, sizeof(result));
@@ -6432,7 +6521,7 @@ ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
     return TL_SUCCESS;
   }
 
-  return itl_completion_menu(le, &result, itl_history_menu_gather, false);
+  return itl_completion_menu(le, &result, &history_source);
 }
 
 ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
