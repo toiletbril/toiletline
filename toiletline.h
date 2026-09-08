@@ -325,6 +325,15 @@ TL_DEF void tl_set_ghost_enabled(int enabled);
 TL_DEF void tl_set_completion_menu_enabled(int enabled);
 
 /*
+ * Enables or disables the colored parts of what the editor draws. Enabled by
+ * default. The host owns the decision, since an environment variable such as
+ * NO_COLOR is read by the host and not by the editor. The reversed selection
+ * band of the menu survives a disabled setting, since reverse video carries no
+ * color of its own.
+ */
+TL_DEF void tl_set_colors_enabled(int enabled);
+
+/*
  * The ghost history validation callback. It receives a history entry the ghost
  * is about to suggest and returns nonzero to accept it, zero to skip it. NULL
  * accepts every entry.
@@ -3600,6 +3609,11 @@ ITL_DEF int itl_esc_parse(uint8_t byte)
   case 26: return TL_KEY_SUSPEND;  /* ctrl z */
 
   case 9: return TL_KEY_TAB;
+#if !defined ITL_WIN32
+  /* A terminal sends a null byte for ctrl space. The Windows console gives the
+     same byte as the lead of a legacy scan code pair. */
+  case 0: return TL_KEY_TAB;
+#endif
   case 12: return TL_KEY_CLEAR; /* ctrl l */
 
   case 18: return TL_KEY_HISTORY_SEARCH; /* ctrl r */
@@ -3802,6 +3816,20 @@ ITL_DEF ITL_THREAD_LOCAL tl_wake_fn itl_g_wake_callback = NULL;
 /* The reset that closes every colored span, matching the ghost text's own
    reset. Each span carries its own opening SGR from the host. */
 #define ITL_HIGHLIGHT_RESET "\x1b[0m"
+
+/* The grey of every secondary text the editor writes for itself, the ghost
+   suggestion, a candidate description, and the menu rows. */
+#define ITL_DIM_SGR "\x1b[90m"
+
+/* Whether the colored parts of the editor output are written. The host clears
+   it for a session that refuses color. */
+ITL_DEF ITL_THREAD_LOCAL int itl_g_colors_enabled = 1;
+
+/* The escape sequence to write, or the empty string once color is refused. */
+ITL_DEF const char *itl_color_sequence(const char *sequence)
+{
+  return itl_g_colors_enabled ? sequence : "";
+}
 
 /* The empty-completion flash, bright grey over a grey tint. */
 #define ITL_FLASH_TINT_ON  "\x1b[38;5;250;48;5;238m"
@@ -4551,9 +4579,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
       }
       ITL_TTY_CLEAR_TO_END(fb);
       if (itl_g_ghost_len > 0 && m.cursor_col + itl_g_ghost_width < cols) {
-        itl_char_buf_append_cstr(fb, "\x1b[90m");
+        itl_char_buf_append_cstr(fb, itl_color_sequence(ITL_DIM_SGR));
         itl_char_buf_append_cstr(fb, itl_g_ghost);
-        itl_char_buf_append_cstr(fb, "\x1b[0m");
+        itl_char_buf_append_cstr(fb, itl_color_sequence(ITL_HIGHLIGHT_RESET));
         ITL_TTY_CLEAR_TO_END(fb);
         ITL_TTY_MOVE_TO_COLUMN(fb, m.cursor_col + 1);
       }
@@ -4740,9 +4768,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     if (itl_g_ghost_len > 0 && le->cursor_position == le->line->length &&
         col + itl_g_ghost_width < cols)
     {
-      itl_char_buf_append_cstr(b, "\x1b[90m");
+      itl_char_buf_append_cstr(b, itl_color_sequence(ITL_DIM_SGR));
       itl_char_buf_append_cstr(b, itl_g_ghost);
-      itl_char_buf_append_cstr(b, "\x1b[0m");
+      itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
       ITL_TTY_CLEAR_TO_END(b);
     }
 
@@ -4891,6 +4919,11 @@ TL_DEF void tl_set_completion_menu_enabled(int enabled)
   /* The menu draws a reversed selection band and dimmed text. A dumb terminal
      keeps the plain list whatever the host requests. */
   itl_g_completion_menu_enabled = enabled && itl_term_supports_decorations();
+}
+
+TL_DEF void tl_set_colors_enabled(int enabled)
+{
+  itl_g_colors_enabled = enabled != 0;
 }
 
 /* The host ghost validation callback, or NULL when every history entry is
@@ -5548,7 +5581,7 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
         for (pad = len; pad < column_width; ++pad) {
           itl_char_buf_append_byte(b, ' ');
         }
-        itl_char_buf_append_cstr(b, "\x1b[90m");
+        itl_char_buf_append_cstr(b, itl_color_sequence(ITL_DIM_SGR));
         /* One word at a time. A word that no longer fits the line opens a
            continuation line indented under the description column. A word
            wider than the room is emitted whole and overflows rather than
@@ -5581,7 +5614,7 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
           }
           line_len += word_len;
         }
-        itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+        itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
       }
       itl_char_buf_append_cstr(b, ITL_LF);
     }
@@ -5677,7 +5710,12 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
 #define ITL_MENU_SELECTED_MARGIN       " "
 #define ITL_MENU_SELECTED_MARGIN_WIDTH 1
 #define ITL_MENU_SELECTED_SGR          "\x1b[7m"
-#define ITL_MENU_DESCRIPTION_SGR       "\x1b[90m"
+#define ITL_MENU_DESCRIPTION_SGR       ITL_DIM_SGR
+/* The phrase naming the active source opens the help row in yellow. The keys
+   listed after it keep the dim of every other secondary text. */
+#define ITL_MENU_TITLE_SGR             "\x1b[33m"
+#define ITL_MENU_TITLE_SEPARATOR       ", "
+#define ITL_MENU_TITLE_SEPARATOR_WIDTH 2
 /* The row drawn in place of the candidates once the search has narrowed the
    list away. The menu stays open on it and a backspace brings the list back. */
 #define ITL_MENU_EMPTY_TEXT      "no matches, erase to widen the search"
@@ -5800,13 +5838,13 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
   if (has_description) {
     itl_char_buf_append_byte(b, ' ');
     if (!is_selected) {
-      itl_char_buf_append_cstr(b, ITL_MENU_DESCRIPTION_SGR);
+      itl_char_buf_append_cstr(b, itl_color_sequence(ITL_MENU_DESCRIPTION_SGR));
     }
 
     itl_menu_append_cell(b, desc, desc_width, false);
 
     if (!is_selected) {
-      itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+      itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
     }
   }
 
@@ -5821,26 +5859,49 @@ ITL_DEF void itl_menu_append_summary(itl_char_buf_t *b, size_t first,
                                      size_t last, size_t count)
 {
   itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
-  itl_char_buf_append_cstr(b, ITL_MENU_DESCRIPTION_SGR);
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_MENU_DESCRIPTION_SGR));
   itl_char_buf_append_cstr(b, "showing ");
   itl_char_buf_append_size_t(b, first);
   itl_char_buf_append_byte(b, '-');
   itl_char_buf_append_size_t(b, last);
   itl_char_buf_append_cstr(b, " of ");
   itl_char_buf_append_size_t(b, count);
-  itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
 }
 
-/* Draw a dimmed row of plain text, which is the help row naming the active
-   source and the row standing in for an empty list. The text is cut at the row
-   width and never wraps. */
+/* Draw the dimmed row that stands in for an empty list. The text is cut at the
+   row width and never wraps. */
 ITL_DEF void itl_menu_append_dimmed_row(itl_char_buf_t *b, const char *text,
                                         size_t width)
 {
   itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
-  itl_char_buf_append_cstr(b, ITL_MENU_DESCRIPTION_SGR);
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_MENU_DESCRIPTION_SGR));
   itl_menu_append_cell(b, text, width, false);
-  itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+}
+
+/* Draw the help row of the menu. The phrase naming the active source is
+   yellow, and the keys it answers follow it in the dim of every other
+   secondary text. Both texts are cut at the row width and never wrap. */
+ITL_DEF void itl_menu_append_help_row(itl_char_buf_t *b, const char *title,
+                                      const char *keys, size_t width)
+{
+  size_t drawn;
+
+  itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_MENU_TITLE_SGR));
+  drawn = itl_menu_append_cell(b, title, width, false);
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+
+  if (keys == NULL || drawn + ITL_MENU_TITLE_SEPARATOR_WIDTH >= width) {
+    return;
+  }
+
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_MENU_DESCRIPTION_SGR));
+  itl_char_buf_append_cstr(b, ITL_MENU_TITLE_SEPARATOR);
+  itl_menu_append_cell(b, keys, width - drawn - ITL_MENU_TITLE_SEPARATOR_WIDTH,
+                       false);
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
 }
 
 /* Step to the first row below the input block and clear everything under it,
@@ -5875,12 +5936,12 @@ ITL_DEF void itl_menu_close_area(itl_char_buf_t *b, size_t rows_below)
 /* Repaint the menu rows under the input block. The rows are written from the
    first row below the block downward, and the caret returns to the line. The
    editor's own render path never sees them. The layout owns which rows exist,
-   and a help_text of null drops the help row the layout granted. An empty list
-   draws the row that says so in place of the candidates. A layout with no
+   and a help_title of null drops the help row the layout granted. An empty
+   list draws the row that says so in place of the candidates. A layout with no
    candidate row leaves the screen untouched. */
 ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
                            size_t window_start, itl_menu_layout layout,
-                           const char *help_text)
+                           const char *help_title, const char *help_keys)
 {
   itl_char_buf_t *b = &itl_g_char_buffer;
   size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
@@ -5931,8 +5992,8 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
   ITL_TTY_HIDE_CURSOR(b);
   move_down = itl_menu_open_area(b);
 
-  if (layout.has_help_row && help_text != NULL) {
-    itl_menu_append_dimmed_row(b, help_text, text_width);
+  if (layout.has_help_row && help_title != NULL) {
+    itl_menu_append_help_row(b, help_title, help_keys, text_width);
     drawn_rows += 1;
   }
 
@@ -6016,14 +6077,15 @@ typedef bool (*itl_menu_gather_fn)(itl_le_t *le, tl_completion *result);
    list as the line changes. can_descend belongs to a list of paths and reopens
    the menu inside an accepted directory. should_submit_on_enter belongs to a
    list that only extends the line, and Enter then closes the menu and submits
-   what the line already holds. help_text names the source and its keys on the
-   first row. */
+   what the line already holds. help_title names the source on the first row
+   and help_keys lists the keys it answers beside it. */
 typedef struct itl_menu_source
 {
   itl_menu_gather_fn gather;
   bool can_descend;
   bool should_submit_on_enter;
-  const char *help_text;
+  const char *help_title;
+  const char *help_keys;
 } itl_menu_source;
 
 /* Ask the host for the candidates of the line as it stands now. The host keeps
@@ -6293,11 +6355,12 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     }
 
     tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
-    layout = itl_menu_measure(tty_rows, source->help_text != NULL);
+    layout = itl_menu_measure(tty_rows, source->help_title != NULL);
 
     window_start = itl_menu_window_start(result.count, selected, window_start,
                                          layout.candidate_rows);
-    itl_menu_draw(&result, selected, window_start, layout, source->help_text);
+    itl_menu_draw(&result, selected, window_start, layout, source->help_title,
+                  source->help_keys);
 
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
     {
@@ -6520,9 +6583,8 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
      printed as a static column list. */
   if (itl_g_completion_menu_enabled) {
     static const itl_menu_source completion_source = {
-        itl_menu_regather, true, true,
-        "selecting completions. enter to run, tab to accept, "
-        "esc/ctrl-g to cancel"};
+        itl_menu_regather, true, true, "selecting completions",
+        "enter to run, tab to accept, esc/ctrl-g to cancel"};
 
     *out_code = itl_completion_menu(le, &result, &completion_source);
     return true;
@@ -6540,8 +6602,8 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
 ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
 {
   static const itl_menu_source history_source = {
-      itl_history_menu_gather, false, false,
-      "incremental history search. enter to accept, esc/ctrl-g to cancel"};
+      itl_history_menu_gather, false, false, "incremental history search",
+      "enter to accept, esc/ctrl-g to cancel"};
 
   tl_completion result;
 
