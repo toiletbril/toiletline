@@ -6127,6 +6127,13 @@ ITL_DEF ITL_THREAD_LOCAL char
 ITL_DEF ITL_THREAD_LOCAL const char
     *itl_g_history_menu_entries[ITL_HISTORY_MENU_MAX_ENTRIES];
 
+/* The same rows in the order the menu lists them, and the rank each row was
+   found with. The scan runs newest first and the order is settled after it. */
+ITL_DEF ITL_THREAD_LOCAL const char
+    *itl_g_history_menu_ordered[ITL_HISTORY_MENU_MAX_ENTRIES];
+ITL_DEF ITL_THREAD_LOCAL unsigned char
+    itl_g_history_menu_ranks[ITL_HISTORY_MENU_MAX_ENTRIES];
+
 /* True when needle appears anywhere in haystack, comparing ASCII letters
    without case. An empty needle matches every entry. */
 ITL_DEF bool itl_ascii_contains_casefold(const char *haystack,
@@ -6152,10 +6159,65 @@ ITL_DEF bool itl_ascii_contains_casefold(const char *haystack,
   return false;
 }
 
-/* Fill the menu candidates with the history entries that contain the line,
-   newest first. The line is the search query. The whole of it is replaced when
-   a row is accepted. An entry already gathered is dropped. A command run many
-   times takes one row. */
+/* True when every byte of needle appears in haystack in order, comparing ASCII
+   letters without case. The bytes between the matched ones are free. An empty
+   needle matches every entry. */
+ITL_DEF bool itl_ascii_subsequence_casefold(const char *haystack,
+                                            size_t haystack_len,
+                                            const char *needle,
+                                            size_t needle_len)
+{
+  size_t taken = 0;
+  size_t position;
+
+  for (position = 0; position < haystack_len && taken < needle_len; ++position)
+  {
+    if (itl_ascii_fold_byte((unsigned char) haystack[position]) ==
+        itl_ascii_fold_byte((unsigned char) needle[taken]))
+    {
+      taken += 1;
+    }
+  }
+
+  return taken == needle_len;
+}
+
+/* How well an entry answers the query. A smaller rank draws earlier. */
+#define ITL_MENU_RANK_PREFIX      0
+#define ITL_MENU_RANK_CONTAINS    1
+#define ITL_MENU_RANK_SUBSEQUENCE 2
+#define ITL_MENU_RANK_NONE        3
+
+/* Rank one entry against the query by where the query sits inside it. An entry
+   opening with the query comes first, one holding it whole comes next, and one
+   whose bytes merely appear in order comes last. An empty query ranks every
+   entry first. */
+ITL_DEF unsigned itl_menu_match_rank(const char *entry, size_t entry_len,
+                                     const char *query, size_t query_len)
+{
+  if (query_len == 0) {
+    return ITL_MENU_RANK_PREFIX;
+  }
+  if (query_len > entry_len) {
+    return ITL_MENU_RANK_NONE;
+  }
+  if (itl_ascii_prefix_matches_casefold(entry, query, query_len)) {
+    return ITL_MENU_RANK_PREFIX;
+  }
+  if (itl_ascii_contains_casefold(entry, entry_len, query, query_len)) {
+    return ITL_MENU_RANK_CONTAINS;
+  }
+  if (itl_ascii_subsequence_casefold(entry, entry_len, query, query_len)) {
+    return ITL_MENU_RANK_SUBSEQUENCE;
+  }
+
+  return ITL_MENU_RANK_NONE;
+}
+
+/* Fill the menu candidates with the history entries the line matches, best
+   match first and newest first inside each group. The line is the search
+   query. The whole of it is replaced when a row is accepted. An entry already
+   gathered is dropped. A command run many times takes one row. */
 ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
 {
   char query[ITL_STRING_MAX_LEN];
@@ -6163,7 +6225,9 @@ ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
   size_t query_len;
   size_t pool_used = 0;
   size_t found_count = 0;
+  size_t placed_count = 0;
   size_t index;
+  unsigned rank;
 
   if (itl_g_history_count == 0 || itl_g_history_path == NULL) {
     return false;
@@ -6180,6 +6244,7 @@ ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
   for (index = itl_g_history_count; index-- > 0;) {
     size_t entry_len;
     size_t gathered;
+    unsigned entry_rank;
     bool is_repeat = false;
 
     if (found_count >= ITL_HISTORY_MENU_MAX_ENTRIES) {
@@ -6191,9 +6256,12 @@ ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
     {
       continue;
     }
-    if (entry_len == 0 ||
-        !itl_ascii_contains_casefold(entry, entry_len, query, query_len))
-    {
+    if (entry_len == 0) {
+      continue;
+    }
+
+    entry_rank = itl_menu_match_rank(entry, entry_len, query, query_len);
+    if (entry_rank >= ITL_MENU_RANK_NONE) {
       continue;
     }
     if (pool_used + entry_len + 1 > sizeof(itl_g_history_menu_pool)) {
@@ -6214,6 +6282,7 @@ ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
     memcpy(itl_g_history_menu_pool + pool_used, entry, entry_len + 1);
     itl_g_history_menu_entries[found_count] =
         itl_g_history_menu_pool + pool_used;
+    itl_g_history_menu_ranks[found_count] = (unsigned char) entry_rank;
     pool_used += entry_len + 1;
     found_count += 1;
   }
@@ -6222,8 +6291,21 @@ ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
     return false;
   }
 
-  result->candidates = itl_g_history_menu_entries;
-  result->count = found_count;
+  /* The rows the query opens come first, then the ones holding it whole, then
+     the ones whose bytes merely appear in order. Each group keeps the newest
+     first order the scan gave it. */
+  for (rank = 0; rank < ITL_MENU_RANK_NONE; ++rank) {
+    for (index = 0; index < found_count; ++index) {
+      if (itl_g_history_menu_ranks[index] == rank) {
+        itl_g_history_menu_ordered[placed_count] =
+            itl_g_history_menu_entries[index];
+        placed_count += 1;
+      }
+    }
+  }
+
+  result->candidates = itl_g_history_menu_ordered;
+  result->count = placed_count;
   result->descriptions = NULL;
   result->longest_common_prefix = NULL;
   result->token_start = 0;
@@ -6296,6 +6378,177 @@ ITL_DEF void itl_menu_empty_candidates(tl_completion *result)
   result->longest_common_prefix = NULL;
 }
 
+/* The entries one narrowing reads, and the rows it may keep. A source hands the
+   menu its whole list once. Every key that follows is answered from that list,
+   and it costs a scan of these bounds and no work from the host. */
+#define ITL_MENU_FILTER_SCAN_MAX 4096
+#define ITL_MENU_FILTER_MAX      512
+
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_menu_filtered[ITL_MENU_FILTER_MAX];
+ITL_DEF ITL_THREAD_LOCAL const char
+    *itl_g_menu_filtered_descriptions[ITL_MENU_FILTER_MAX];
+ITL_DEF ITL_THREAD_LOCAL unsigned char
+    itl_g_menu_ranks[ITL_MENU_FILTER_SCAN_MAX];
+
+/* The list the source last gave and the query it answered. Typing narrows this
+   list in place. The source is asked again only when the line no longer
+   extends the query, or when the local list has no row for it. */
+typedef struct itl_menu_filter_state
+{
+  tl_completion base;
+  char query[ITL_STRING_MAX_LEN];
+  size_t query_len;
+} itl_menu_filter_state;
+
+/* Copy the token bytes a candidate replaces into out. The span is given in
+   codepoints and the line is walked once. Returns false when the span is off
+   the line or the bytes do not fit. */
+ITL_DEF bool itl_menu_query_text(itl_le_t *le, const tl_completion *result,
+                                 char *out, size_t out_size, size_t *out_len)
+{
+  size_t token_end = result->token_end;
+  size_t position;
+  size_t used = 0;
+
+  if (out_size == 0 || result->token_start > le->line->length) {
+    return false;
+  }
+  if (token_end > le->line->length) {
+    token_end = le->line->length;
+  }
+  if (token_end < result->token_start) {
+    return false;
+  }
+
+  for (position = result->token_start; position < token_end; ++position) {
+    itl_utf8_t ch = le->line->chars[position];
+
+    if (used + ch.size >= out_size) {
+      return false;
+    }
+
+    memcpy(out + used, ch.bytes, ch.size);
+    used += ch.size;
+  }
+
+  out[used] = '\0';
+  *out_len = used;
+
+  return true;
+}
+
+/* Narrow the base list to the entries the query matches and hand the rows to
+   the menu. The groups are drawn best match first and each group keeps the
+   order the base gave it. The token span of the result is left alone. Returns
+   false when nothing matches. */
+ITL_DEF bool itl_menu_filter(const tl_completion *base, const char *query,
+                             size_t query_len, tl_completion *result)
+{
+  size_t scanned_count = base->count < ITL_MENU_FILTER_SCAN_MAX
+                             ? base->count
+                             : ITL_MENU_FILTER_SCAN_MAX;
+  size_t kept_count = 0;
+  size_t index;
+  unsigned rank;
+
+  for (index = 0; index < scanned_count; ++index) {
+    const char *entry = base->candidates[index];
+
+    itl_g_menu_ranks[index] = (unsigned char) itl_menu_match_rank(
+        entry, strlen(entry), query, query_len);
+  }
+
+  for (rank = 0; rank < ITL_MENU_RANK_NONE && kept_count < ITL_MENU_FILTER_MAX;
+       ++rank)
+  {
+    for (index = 0; index < scanned_count && kept_count < ITL_MENU_FILTER_MAX;
+         ++index)
+    {
+      if (itl_g_menu_ranks[index] != rank) {
+        continue;
+      }
+
+      itl_g_menu_filtered[kept_count] = base->candidates[index];
+      itl_g_menu_filtered_descriptions[kept_count] =
+          base->descriptions != NULL ? base->descriptions[index] : NULL;
+      kept_count += 1;
+    }
+  }
+
+  if (kept_count == 0) {
+    return false;
+  }
+
+  result->candidates = itl_g_menu_filtered;
+  result->descriptions =
+      base->descriptions != NULL ? itl_g_menu_filtered_descriptions : NULL;
+  result->longest_common_prefix = NULL;
+  result->count = kept_count;
+
+  return true;
+}
+
+/* Take the list the source just gave as the base the narrowing reads, together
+   with the query it answered. A token the line cannot hand back leaves an
+   empty base and the next key reaches the source. */
+ITL_DEF void itl_menu_adopt_base(itl_le_t *le, itl_menu_filter_state *state,
+                                 const tl_completion *result)
+{
+  state->base = *result;
+
+  if (!itl_menu_query_text(le, result, state->query, sizeof(state->query),
+                           &state->query_len))
+  {
+    state->query[0] = '\0';
+    state->query_len = 0;
+    state->base.count = 0;
+  }
+}
+
+/* Ask the source for the line as it stands and adopt what it gives. Returns
+   false when the source has nothing, and the base is emptied. */
+ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
+                             itl_menu_filter_state *state,
+                             tl_completion *result)
+{
+  if (!source->gather(le, result)) {
+    state->query[0] = '\0';
+    state->query_len = 0;
+    state->base.count = 0;
+
+    return false;
+  }
+
+  itl_menu_adopt_base(le, state, result);
+
+  return true;
+}
+
+/* Answer the line as it stands from the base list, and fall back to the source
+   when the base cannot answer. The base holds every row the source offered for
+   a shorter query. A line that only grew is narrowed without touching the host.
+   An erase and a line with no local match both reach the source. Returns false
+   when neither has a row. */
+ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
+                             itl_menu_filter_state *state,
+                             tl_completion *result)
+{
+  char query[ITL_STRING_MAX_LEN];
+  size_t query_len = 0;
+
+  if (state->base.count > 0 &&
+      itl_menu_query_text(le, result, query, sizeof(query), &query_len) &&
+      query_len >= state->query_len &&
+      itl_ascii_prefix_matches_casefold(query, state->query, state->query_len))
+  {
+    if (itl_menu_filter(&state->base, query, query_len, result)) {
+      return true;
+    }
+  }
+
+  return itl_menu_rebase(le, source, state, result);
+}
+
 /* Run the candidate menu until the user accepts a candidate, dismisses it, or
    presses a key the menu does not own. The down arrow steps forward, the up
    arrow and shift tab step back, Tab accepts the highlighted candidate, and
@@ -6312,6 +6565,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
                                            const itl_menu_source *source)
 {
   tl_completion result = *initial;
+  itl_menu_filter_state state;
   size_t selected = 0;
   size_t window_start = 0;
 
@@ -6329,6 +6583,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
       itl_string_to_cstr(le->line, original_line, sizeof(original_line)) ==
       TL_SUCCESS;
 
+  itl_menu_adopt_base(le, &state, &result);
   itl_g_tty_should_refresh_text = true;
 
   for (;;) {
@@ -6453,7 +6708,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
         return TL_SUCCESS;
       }
 
-      if (is_directory && source->gather(le, &result)) {
+      if (is_directory && itl_menu_rebase(le, source, &state, &result)) {
         selected = 0;
         window_start = 0;
         previewed = (size_t) -1;
@@ -6477,8 +6732,9 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 
     if (kind == TL_KEY_CHAR) {
       itl_le_insert(le, itl_utf8_parse(byte));
+      result.token_end += 1;
 
-      if (!source->gather(le, &result)) {
+      if (!itl_menu_narrow(le, source, &state, &result)) {
         itl_menu_empty_candidates(&result);
       }
 
@@ -6491,7 +6747,11 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     if (key == TL_KEY_BACKSPACE && le->cursor_position > result.token_start) {
       ITL_LE_ERASE_BACKWARD(le, 1);
 
-      if (!source->gather(le, &result)) {
+      if (result.token_end > result.token_start) {
+        result.token_end -= 1;
+      }
+
+      if (!itl_menu_narrow(le, source, &state, &result)) {
         itl_menu_empty_candidates(&result);
       }
 
