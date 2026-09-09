@@ -544,22 +544,27 @@ test_find_substring(void)
   bool ok = true;
 
   if (!itl_ascii_contains_casefold(SEARCH_QUERY("Hello WORLD"),
-                                   SEARCH_QUERY("o wo")))
+                                   SEARCH_QUERY("o wo"), 0))
   {
     ok = false;
   }
   if (!itl_ascii_contains_casefold(SEARCH_QUERY("Hello WORLD"),
-                                   SEARCH_QUERY("world")))
+                                   SEARCH_QUERY("world"), 0))
   {
     ok = false;
   }
   if (itl_ascii_contains_casefold(SEARCH_QUERY("Hello WORLD"),
-                                  SEARCH_QUERY("xyz")))
+                                  SEARCH_QUERY("xyz"), 0))
   {
     ok = false;
   }
   if (!itl_ascii_contains_casefold(SEARCH_QUERY("Hello WORLD"),
-                                   SEARCH_QUERY("")))
+                                   SEARCH_QUERY(""), 0))
+  {
+    ok = false;
+  }
+  if (itl_ascii_contains_casefold(SEARCH_QUERY("Hello WORLD"),
+                                  SEARCH_QUERY("hello"), 1))
   {
     ok = false;
   }
@@ -567,7 +572,7 @@ test_find_substring(void)
   /* Case folding covers ASCII letters alone, so a non ASCII rune only matches
      itself. */
   if (itl_ascii_contains_casefold(SEARCH_QUERY("echo \xC3\x84"),
-                                  SEARCH_QUERY("\xC3\xA4")))
+                                  SEARCH_QUERY("\xC3\xA4"), 0))
   {
     ok = false;
   }

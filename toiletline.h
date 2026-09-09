@@ -1236,7 +1236,23 @@ ITL_DEF uint32_t itl_utf8_codepoint(itl_utf8_t ch)
  */
 ITL_DEF size_t itl_char_width(itl_utf8_t ch)
 {
-  uint32_t cp = itl_utf8_codepoint(ch);
+  uint32_t cp;
+
+  /* An ASCII rune is answered without a table search. The zero width table
+     starts at U+0300 and the wide table at U+1100, so neither can hold one. */
+  if (ch.size == 1 && ch.bytes[0] < 0x80) {
+    if (ch.bytes[0] == 0x09) {
+      return 1;
+    }
+
+    if (ch.bytes[0] < 0x20 || ch.bytes[0] == 0x7F) {
+      return 0;
+    }
+
+    return 1;
+  }
+
+  cp = itl_utf8_codepoint(ch);
 
   if (cp == 0x09) {
     return 1;
@@ -2751,19 +2767,18 @@ ITL_DEF bool itl_history_read_entry_buffered(size_t offset, itl_string_t *out)
   return itl_string_from_bytes(out, decoded, decoded_size);
 }
 
+ITL_DEF void itl_char_buf_append_bytes(itl_char_buf_t *cb, const char *data,
+                                       size_t size)
+{
+  itl_char_buf_reserve(cb, cb->size + size);
+
+  memcpy(cb->data + cb->size, data, size);
+  cb->size += size;
+}
+
 ITL_DEF void itl_char_buf_append_cstr(itl_char_buf_t *cb, const char *cstr)
 {
-  /* The length is measured once and the buffer grown once, so a multi-byte
-     escape sequence copies in one memcpy rather than a per-byte capacity check.
-   */
-  size_t len = strlen(cstr);
-
-  while (cb->capacity < cb->size + len) {
-    itl_char_buf_extend(cb);
-  }
-
-  memcpy(cb->data + cb->size, cstr, len);
-  cb->size += len;
+  itl_char_buf_append_bytes(cb, cstr, strlen(cstr));
 }
 
 ITL_DEF void itl_char_buf_append_size_t(itl_char_buf_t *cb, size_t n)
@@ -4034,6 +4049,8 @@ ITL_DEF size_t itl_merge_visual_spans(
 {
   size_t count = 0;
   size_t position = 0;
+  size_t next_syntax = 0;
+  size_t next_selection = 0;
 
   while (position < line_length && count < out_capacity) {
     const char *color = NULL;
@@ -4042,29 +4059,32 @@ ITL_DEF size_t itl_merge_visual_spans(
     size_t selection_end = line_length;
     size_t run_end;
     const char *sgr;
-    size_t s;
 
-    for (s = 0; s < syntax_count; ++s) {
-      if (position >= syntax[s].start && position < syntax[s].end) {
-        color = syntax[s].sgr;
-        color_end = syntax[s].end;
-        break;
-      }
-      if (syntax[s].start > position) {
-        color_end = syntax[s].start;
-        break;
+    while (next_syntax < syntax_count && syntax[next_syntax].end <= position) {
+      next_syntax += 1;
+    }
+
+    if (next_syntax < syntax_count) {
+      if (syntax[next_syntax].start <= position) {
+        color = syntax[next_syntax].sgr;
+        color_end = syntax[next_syntax].end;
+      } else {
+        color_end = syntax[next_syntax].start;
       }
     }
 
-    for (s = 0; s < selection_count; ++s) {
-      if (position >= selection[s].start && position < selection[s].end) {
-        selection_sgr = selection[s].sgr;
-        selection_end = selection[s].end;
-        break;
-      }
-      if (selection[s].start > position) {
-        selection_end = selection[s].start;
-        break;
+    while (next_selection < selection_count &&
+           selection[next_selection].end <= position)
+    {
+      next_selection += 1;
+    }
+
+    if (next_selection < selection_count) {
+      if (selection[next_selection].start <= position) {
+        selection_sgr = selection[next_selection].sgr;
+        selection_end = selection[next_selection].end;
+      } else {
+        selection_end = selection[next_selection].start;
       }
     }
 
@@ -5808,18 +5828,16 @@ ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
 {
   size_t offset = 0;
   size_t drawn = itl_cstr_width_walk(text, width, &offset);
-  size_t i;
 
-  for (i = 0; i < offset; ++i) {
-    itl_char_buf_append_byte(b, (uint8_t) text[i]);
-  }
+  itl_char_buf_reserve(b, b->size + offset + width);
+  itl_char_buf_append_bytes(b, text, offset);
 
   if (!should_pad) {
     return drawn;
   }
 
-  for (i = drawn; i < width; ++i) {
-    itl_char_buf_append_byte(b, ' ');
+  if (drawn < width) {
+    itl_char_buf_append_spaces(b, width - drawn);
   }
 
   return drawn > width ? drawn : width;
@@ -5877,13 +5895,13 @@ ITL_DEF void itl_menu_append_colored_cell(itl_char_buf_t *b, const char *text,
   size_t drawn = 0;
   size_t next_span = 0;
   size_t open_span = span_count;
-  size_t i;
+
+  itl_char_buf_reserve(b, b->size + text_bytes + width);
 
   while (byte_offset < text_bytes && drawn < width) {
     size_t active = span_count;
     size_t step_bytes = 0;
     size_t step_width = 0;
-    size_t j;
 
     while (next_span < span_count && spans[next_span].end <= codepoint_index) {
       next_span += 1;
@@ -5912,9 +5930,7 @@ ITL_DEF void itl_menu_append_colored_cell(itl_char_buf_t *b, const char *text,
       break;
     }
 
-    for (j = 0; j < step_bytes; ++j) {
-      itl_char_buf_append_byte(b, (uint8_t) text[byte_offset + j]);
-    }
+    itl_char_buf_append_bytes(b, text + byte_offset, step_bytes);
 
     byte_offset += step_bytes;
     codepoint_index += 1;
@@ -5929,8 +5945,8 @@ ITL_DEF void itl_menu_append_colored_cell(itl_char_buf_t *b, const char *text,
     return;
   }
 
-  for (i = drawn; i < width; ++i) {
-    itl_char_buf_append_byte(b, ' ');
+  if (drawn < width) {
+    itl_char_buf_append_spaces(b, width - drawn);
   }
 }
 
@@ -6080,16 +6096,35 @@ ITL_DEF void itl_menu_close_area(itl_char_buf_t *b, size_t rows_below)
   ITL_CHAR_BUF_CLEAR(b);
 }
 
+/* The widest candidate of the list, measured in columns. The name column of the
+   menu is this wide before the terminal clips it. */
+ITL_DEF size_t itl_menu_name_width(const tl_completion *result)
+{
+  size_t widest = 0;
+  size_t i;
+
+  for (i = 0; i < result->count; ++i) {
+    size_t width = itl_cstr_display_width(result->candidates[i]);
+
+    if (width > widest) {
+      widest = width;
+    }
+  }
+
+  return widest;
+}
+
 /* Repaint the menu rows under the input block. The rows are written from the
    first row below the block downward, and the caret returns to the line. The
    editor's own render path never sees them. The layout owns which rows exist,
    and a help_title of null drops the help row the layout granted. An empty
    list draws the row that says so in place of the candidates. A layout with no
-   candidate row leaves the screen untouched. */
+   candidate row leaves the screen untouched. The name column is measured by the
+   caller, which holds it across a redraw that changes no candidate. */
 ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
                            size_t window_start, itl_menu_layout layout,
                            const char *help_title, const char *help_keys,
-                           bool should_highlight)
+                           bool should_highlight, size_t name_width)
 {
   itl_char_buf_t *b = &itl_g_char_buffer;
   size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
@@ -6098,7 +6133,6 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
                           ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH
                           : 1;
   size_t window_end = window_start + layout.candidate_rows;
-  size_t name_width = 0;
   size_t desc_width;
   size_t drawn_rows = 0;
   size_t move_down;
@@ -6110,15 +6144,6 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
 
   if (window_end > result->count) {
     window_end = result->count;
-  }
-
-  /* The name column is measured across the whole list. The descriptions stay
-     in place while the window scrolls. */
-  for (i = 0; i < result->count; ++i) {
-    size_t width = itl_cstr_display_width(result->candidates[i]);
-    if (width > name_width) {
-      name_width = width;
-    }
   }
 
   if (name_width + ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_SELECTED_MARGIN_WIDTH >=
@@ -6286,14 +6311,13 @@ ITL_DEF ITL_THREAD_LOCAL const char
 ITL_DEF ITL_THREAD_LOCAL unsigned char
     itl_g_history_menu_ranks[ITL_HISTORY_MENU_MAX_ENTRIES];
 
-/* True when needle appears anywhere in haystack, comparing ASCII letters
-   without case. An empty needle matches every entry. */
+/* True when needle appears in haystack at or after start, comparing ASCII
+   letters without case. An empty needle matches every entry. */
 ITL_DEF bool itl_ascii_contains_casefold(const char *haystack,
                                          size_t haystack_len,
-                                         const char *needle, size_t needle_len)
+                                         const char *needle, size_t needle_len,
+                                         size_t start)
 {
-  size_t start;
-
   if (needle_len == 0) {
     return true;
   }
@@ -6301,7 +6325,7 @@ ITL_DEF bool itl_ascii_contains_casefold(const char *haystack,
     return false;
   }
 
-  for (start = 0; start + needle_len <= haystack_len; ++start) {
+  for (; start + needle_len <= haystack_len; ++start) {
     if (itl_ascii_prefix_matches_casefold(haystack + start, needle, needle_len))
     {
       return true;
@@ -6356,7 +6380,7 @@ ITL_DEF unsigned itl_menu_match_rank(const char *entry, size_t entry_len,
   if (itl_ascii_prefix_matches_casefold(entry, query, query_len)) {
     return ITL_MENU_RANK_PREFIX;
   }
-  if (itl_ascii_contains_casefold(entry, entry_len, query, query_len)) {
+  if (itl_ascii_contains_casefold(entry, entry_len, query, query_len, 1)) {
     return ITL_MENU_RANK_CONTAINS;
   }
   if (itl_ascii_subsequence_casefold(entry, entry_len, query, query_len)) {
@@ -6550,6 +6574,7 @@ typedef struct itl_menu_filter_state
   tl_completion base;
   char query[ITL_STRING_MAX_LEN];
   size_t query_len;
+  size_t name_width;
 } itl_menu_filter_state;
 
 /* Copy the token bytes a candidate replaces into out. The span is given in
@@ -6647,6 +6672,7 @@ ITL_DEF void itl_menu_adopt_base(itl_le_t *le, itl_menu_filter_state *state,
                                  const tl_completion *result)
 {
   state->base = *result;
+  state->name_width = itl_menu_name_width(result);
 
   if (!itl_menu_query_text(le, result, state->query, sizeof(state->query),
                            &state->query_len))
@@ -6667,6 +6693,7 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
     state->query[0] = '\0';
     state->query_len = 0;
     state->base.count = 0;
+    state->name_width = 0;
 
     return false;
   }
@@ -6694,6 +6721,8 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
       itl_ascii_prefix_matches_casefold(query, state->query, state->query_len))
   {
     if (itl_menu_filter(&state->base, query, query_len, result)) {
+      state->name_width = itl_menu_name_width(result);
+
       return true;
     }
   }
@@ -6767,7 +6796,8 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     window_start = itl_menu_window_start(result.count, selected, window_start,
                                          layout.candidate_rows);
     itl_menu_draw(&result, selected, window_start, layout, source->help_title,
-                  source->help_keys, source->should_highlight);
+                  source->help_keys, source->should_highlight,
+                  state.name_width);
 
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
     {
@@ -7490,7 +7520,8 @@ ITL_DEF bool itl_history_candidate_matches(size_t index, const char *query,
     return false;
   }
 
-  if (!itl_ascii_contains_casefold(decoded, decoded_size, query, query_size)) {
+  if (!itl_ascii_contains_casefold(decoded, decoded_size, query, query_size, 0))
+  {
     return false;
   }
 
