@@ -7692,20 +7692,28 @@ ITL_DEF int itl_history_search(itl_le_t *le)
     line3_start = query_start + query->length + 2;
     guide_position = line3_start;
     guide_position =
-        itl_search_append_guide(status, guide_position, "enter", true);
-    guide_position =
-        itl_search_append_guide(status, guide_position, " accept   ", false);
-    guide_position =
-        itl_search_append_guide(status, guide_position, "ctrl-r", true);
+        itl_search_append_guide(status, guide_position, "up", true);
     guide_position =
         itl_search_append_guide(status, guide_position, "/", false);
     guide_position =
-        itl_search_append_guide(status, guide_position, "ctrl-f", true);
-    guide_position = itl_search_append_guide(status, guide_position,
-                                             " back/forward   ", false);
+        itl_search_append_guide(status, guide_position, "down", true);
+    guide_position =
+        itl_search_append_guide(status, guide_position, " to move, ", false);
+    guide_position =
+        itl_search_append_guide(status, guide_position, "enter", true);
+    guide_position =
+        itl_search_append_guide(status, guide_position, "/", false);
+    guide_position =
+        itl_search_append_guide(status, guide_position, "tab", true);
+    guide_position =
+        itl_search_append_guide(status, guide_position, " to accept, ", false);
+    guide_position =
+        itl_search_append_guide(status, guide_position, "esc", true);
+    guide_position =
+        itl_search_append_guide(status, guide_position, "/", false);
     guide_position =
         itl_search_append_guide(status, guide_position, "ctrl-g", true);
-    (void) itl_search_append_guide(status, guide_position, " cancel", false);
+    (void) itl_search_append_guide(status, guide_position, " to cancel", false);
 
     itl_string_from_bytes(display, status->data, status->size);
 
@@ -7727,12 +7735,23 @@ ITL_DEF int itl_history_search(itl_le_t *le)
     {
       int key = itl_esc_parse(byte);
       int kind = key & TL_MASK_KEY;
+      bool is_newer_key = (byte == 6) || (kind == TL_KEY_UP) ||
+                          (kind == TL_KEY_TAB && (key & TL_MOD_SHIFT) != 0);
+      bool is_older_key =
+          (kind == TL_KEY_HISTORY_SEARCH) || (kind == TL_KEY_DOWN);
 
-      if (byte == 6) {
-        /* Ctrl-F steps forward to a newer match, the mirror of ctrl-r. It is
-           caught by raw byte so the arrow keys keep their accept behavior. */
+      if (is_newer_key) {
         size_t from = (match != ITL_HISTORY_NONE) ? match + 1 : 0;
         size_t next = itl_history_find_match_forward(query, from, scratch);
+        if (next != ITL_HISTORY_NONE) {
+          match = next;
+          itl_string_copy(match_str, scratch);
+        }
+      } else if (is_older_key) {
+        size_t from = (match != ITL_HISTORY_NONE)
+                          ? (match > 0 ? match - 1 : ITL_HISTORY_NONE)
+                          : ITL_HISTORY_NEWEST();
+        size_t next = itl_history_find_match(query, from, scratch);
         if (next != ITL_HISTORY_NONE) {
           match = next;
           itl_string_copy(match_str, scratch);
@@ -7743,16 +7762,6 @@ ITL_DEF int itl_history_search(itl_le_t *le)
         found = itl_history_find_match(query, ITL_HISTORY_NEWEST(), scratch);
         match = found;
         if (found != ITL_HISTORY_NONE) {
-          itl_string_copy(match_str, scratch);
-        }
-      } else if (kind == TL_KEY_HISTORY_SEARCH) {
-        /* Search further back, starting just past the current match. */
-        size_t from = (match != ITL_HISTORY_NONE)
-                          ? (match > 0 ? match - 1 : ITL_HISTORY_NONE)
-                          : ITL_HISTORY_NEWEST();
-        size_t next = itl_history_find_match(query, from, scratch);
-        if (next != ITL_HISTORY_NONE) {
-          match = next;
           itl_string_copy(match_str, scratch);
         }
       } else if (kind == TL_KEY_BACKSPACE) {
@@ -7781,7 +7790,8 @@ ITL_DEF int itl_history_search(itl_le_t *le)
         break;
       } else {
         accepted = true;
-        result = (kind == TL_KEY_ENTER) ? TL_KEY_UNKN : key;
+        result =
+            (kind == TL_KEY_ENTER || kind == TL_KEY_TAB) ? TL_KEY_UNKN : key;
         break;
       }
     }
