@@ -1085,14 +1085,6 @@ ITL_DEF uint8_t itl_ascii_fold_byte(uint8_t byte)
   return byte;
 }
 
-ITL_DEF bool itl_utf8_equal_ascii_casefold(itl_utf8_t ch1, itl_utf8_t ch2)
-{
-  if (itl_utf8_equal(ch1, ch2)) return true;
-  if (ch1.size != 1 || ch2.size != 1) return false;
-  return itl_ascii_fold_byte(ch1.bytes[0]) ==
-         itl_ascii_fold_byte(ch2.bytes[0]);
-}
-
 ITL_DEF uint8_t itl_utf8_width(int byte)
 {
   if ((byte & 0x80) == 0)
@@ -1669,35 +1661,6 @@ ITL_DEF void itl_string_join_continuations(itl_string_t *str)
 
   str->length = write_index;
   itl_string_recalc_size(str);
-}
-
-/* Returns true when needle occurs as an ASCII-case-folded contiguous run. */
-ITL_DEF bool itl_string_find_substring_ascii_casefold(
-    const itl_string_t *str, const itl_string_t *needle)
-{
-  size_t i, j;
-
-  if (needle->length == 0) {
-    return true;
-  }
-  if (needle->length > str->length) {
-    return false;
-  }
-
-  for (i = 0; i + needle->length <= str->length; ++i) {
-    for (j = 0; j < needle->length; ++j) {
-      if (!itl_utf8_equal_ascii_casefold(str->chars[i + j],
-                                         needle->chars[j]))
-      {
-        break;
-      }
-    }
-    if (j == needle->length) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 #define ITL_STRING_FREE(str)                                                   \
@@ -3780,6 +3743,8 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_full_refresh_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_metrics_scan_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_line_serialization_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_ghost_history_scan_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_history_candidate_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_search_highlight_count = 0;
 #endif
 
 /* The ghost suggestion drawn dimmed after the cursor, and its byte length.
@@ -7453,11 +7418,40 @@ TL_DEF tl_status_code tl_exit(void)
   return TL_SUCCESS;
 }
 
-/* Walks history backward from start_index toward older entries, reading each
-   one from the file into scratch, returning the index of the first that
-   contains query as a substring or ITL_HISTORY_NONE when none match. */
-ITL_DEF size_t itl_history_find_match(const itl_string_t *query,
-                                      size_t start_index, itl_string_t *scratch)
+/* Decodes the entry at index and reports whether its bytes hold the query with
+   ASCII letters folded. The match is converted into out only after the bytes
+   match, so a rejected candidate costs one decode and one byte scan. An entry
+   that is not valid UTF-8 is rejected. */
+ITL_DEF bool itl_history_candidate_matches(size_t index, const char *query,
+                                           size_t query_size,
+                                           itl_string_t *out)
+{
+  char decoded[ITL_STRING_MAX_LEN + 1];
+  size_t decoded_size;
+
+#if !defined NDEBUG
+  itl_g_debug_history_candidate_count += 1;
+#endif
+
+  if (!itl_history_decode_entry_buffered(itl_history_index_to_offset(index),
+                                         decoded, sizeof(decoded),
+                                         &decoded_size))
+  {
+    return false;
+  }
+
+  if (!itl_ascii_contains_casefold(decoded, decoded_size, query, query_size)) {
+    return false;
+  }
+
+  return itl_string_from_bytes(out, decoded, decoded_size);
+}
+
+/* Walks history backward from start_index toward older entries, returning the
+   index of the first that contains query as a substring or ITL_HISTORY_NONE
+   when none match. The matched entry is written into out. */
+ITL_DEF size_t itl_history_find_match(const char *query, size_t query_size,
+                                      size_t start_index, itl_string_t *out)
 {
   size_t i;
   size_t found = ITL_HISTORY_NONE;
@@ -7478,10 +7472,7 @@ ITL_DEF size_t itl_history_find_match(const itl_string_t *query,
 
   /* Count down from start_index to zero inclusive without underflowing. */
   for (i = start_index + 1; i-- > 0;) {
-    if (itl_history_read_entry_buffered(itl_history_index_to_offset(i),
-                                        scratch) &&
-        itl_string_find_substring_ascii_casefold(scratch, query))
-    {
+    if (itl_history_candidate_matches(i, query, query_size, out)) {
       found = i;
       break;
     }
@@ -7493,9 +7484,10 @@ ITL_DEF size_t itl_history_find_match(const itl_string_t *query,
 /* Walks history forward from start_index toward newer entries, returning the
    index of the first that contains query as a substring or ITL_HISTORY_NONE
    when none match. The mirror of itl_history_find_match. */
-ITL_DEF size_t itl_history_find_match_forward(const itl_string_t *query,
+ITL_DEF size_t itl_history_find_match_forward(const char *query,
+                                              size_t query_size,
                                               size_t start_index,
-                                              itl_string_t *scratch)
+                                              itl_string_t *out)
 {
   size_t i;
   size_t found = ITL_HISTORY_NONE;
@@ -7511,10 +7503,7 @@ ITL_DEF size_t itl_history_find_match_forward(const itl_string_t *query,
   }
 
   for (i = start_index; i < itl_g_history_count; ++i) {
-    if (itl_history_read_entry_buffered(itl_history_index_to_offset(i),
-                                        scratch) &&
-        itl_string_find_substring_ascii_casefold(scratch, query))
-    {
+    if (itl_history_candidate_matches(i, query, query_size, out)) {
       found = i;
       break;
     }
@@ -7562,6 +7551,31 @@ ITL_DEF size_t itl_search_append_guide(itl_char_buf_t *status, size_t position,
   return position + text_length;
 }
 
+/* Flattens the query runes into bytes so one scan can match on bytes. A rune
+   that would not fit is dropped whole, keeping the result valid UTF-8. Returns
+   the byte count written, and the result is always terminated. */
+ITL_DEF size_t itl_search_query_bytes(const itl_string_t *query, char *out,
+                                      size_t capacity)
+{
+  size_t size = 0;
+  size_t i;
+
+  for (i = 0; i < query->length; ++i) {
+    itl_utf8_t ch = query->chars[i];
+
+    if (size + ch.size >= capacity) {
+      break;
+    }
+
+    memcpy(out + size, ch.bytes, ch.size);
+    size += ch.size;
+  }
+
+  out[size] = '\0';
+
+  return size;
+}
+
 /* Runs a reverse incremental history search. The live prompt stays on screen
    and the matched entry, the search term, and the hint are drawn below it as
    one multiline buffer swapped into the line editor. The block carries its own
@@ -7570,21 +7584,43 @@ ITL_DEF size_t itl_search_append_guide(itl_char_buf_t *status, size_t position,
    with no further action. */
 ITL_DEF int itl_history_search(itl_le_t *le)
 {
-  itl_string_t *original = itl_string_alloc();
-  itl_string_t *query = itl_string_alloc();
-  itl_string_t *display = itl_string_alloc();
-  itl_string_t *match_str = itl_string_alloc();
-  itl_string_t *scratch = itl_string_alloc();
-  itl_char_buf_t *status = itl_char_buf_alloc();
+  itl_string_t query;
+  itl_string_t display;
+  itl_string_t match_str;
+  itl_char_buf_t status;
+
+  /* The draft the search started on. The editor points le->line at the search
+     block for the whole loop, so the draft stays untouched in the line
+     buffer. */
+  const itl_string_t *draft = &itl_g_line_buffer;
 
   /* Index of the matched entry, ITL_HISTORY_NONE while nothing matches. The
      matched entry text is kept in match_str for the preview. */
   size_t match = ITL_HISTORY_NONE;
 
-  const char *saved_prompt = le->prompt;
-  size_t saved_prompt_size = le->prompt_size;
+  /* The query flattened to bytes, refreshed once for each query change so a
+     scan never re-serializes it per candidate. */
+  char query_bytes[ITL_STRING_MAX_LEN + 1];
+  size_t query_size = 0;
+
+  /* True while the current match is the newest entry holding the query, which
+     is what lets a longer query resume from the match instead of the newest
+     entry. Any directional key moves off the newest match and clears it. */
+  bool is_narrowable = false;
+
+  /* The clipped preview text and the host spans over it, kept while the match
+     index and the terminal width stay put so a query keystroke redraws without
+     calling the highlighter again. */
+  char match_render[ITL_STRING_MAX_LEN];
+  size_t match_bytes = 0;
+  size_t match_length = 0;
+  tl_highlight_span cached_spans[ITL_HIGHLIGHT_MAX_SPANS];
+  size_t cached_span_count = 0;
+  size_t rendered_match = ITL_HISTORY_NONE;
+  size_t rendered_cols = 0;
+  bool has_rendered_preview = false;
+
   size_t saved_prompt_width = le->prompt_width;
-  size_t saved_prompt_rows = le->prompt_rows;
 
   int result = TL_KEY_UNKN;
   bool accepted = false;
@@ -7593,137 +7629,160 @@ ITL_DEF int itl_history_search(itl_le_t *le)
   bool was_on_draft = (le->history_selected_index == ITL_HISTORY_NONE);
   uint8_t byte;
 
-  itl_string_copy(original, le->line);
+  itl_string_init(&query);
+  itl_string_init(&display);
+  itl_string_init(&match_str);
+  itl_char_buf_init(&status);
+
+  query_bytes[0] = '\0';
 
   /* A draft already typed becomes the initial query, so it moves into the
      search term instead of staying on the prompt line. */
   if (le->line->length > 0) {
-    itl_string_copy(query, le->line);
-    match = itl_history_find_match(query, ITL_HISTORY_NEWEST(), scratch);
-    if (match != ITL_HISTORY_NONE) {
-      itl_string_copy(match_str, scratch);
-    }
+    itl_string_copy(&query, le->line);
+    query_size =
+        itl_search_query_bytes(&query, query_bytes, sizeof(query_bytes));
+    match = itl_history_find_match(query_bytes, query_size,
+                                   ITL_HISTORY_NEWEST(), &match_str);
+    is_narrowable = true;
   }
 
   while (true) {
     /* The matched entry shares line one with the live prompt, then the search
        term and the hint follow on their own rows. The whole block is one
        multiline buffer drawn through the normal refresh. */
-    const itl_string_t *preview =
-        (match != ITL_HISTORY_NONE) ? match_str : original;
     size_t tty_cols = ITL_MAX(itl_g_tty_prev_cols, 1);
-    size_t budget = (tty_cols > saved_prompt_width + 1)
-                        ? tty_cols - saved_prompt_width - 1
-                        : tty_cols;
-    char match_render[ITL_STRING_MAX_LEN];
-    size_t match_bytes = 0;
-    size_t match_length = 0;
-    size_t match_width = 0;
     size_t line2_start, query_start, line3_start, guide_position;
-    size_t pi, pj;
+    size_t s;
 
-    /* Flatten newlines to spaces and clip to the prompt's row remainder so the
-       match never wraps under the prompt. */
-    for (pi = 0; pi < preview->length; ++pi) {
-      itl_utf8_t pch = preview->chars[pi];
-      bool is_newline = ITL_LE_IS_NEWLINE(pch);
-      size_t char_width = is_newline ? 1 : itl_char_width(pch);
+    if (!has_rendered_preview || rendered_match != match ||
+        rendered_cols != tty_cols)
+    {
+      const itl_string_t *preview =
+          (match != ITL_HISTORY_NONE) ? &match_str : draft;
+      size_t budget = (tty_cols > saved_prompt_width + 1)
+                          ? tty_cols - saved_prompt_width - 1
+                          : tty_cols;
+      size_t match_width = 0;
+      size_t pi, pj;
 
-      if (match_width + char_width > budget) {
-        break;
+      match_bytes = 0;
+      match_length = 0;
+
+      /* Flatten newlines to spaces and clip to the prompt's row remainder so
+         the match never wraps under the prompt. */
+      for (pi = 0; pi < preview->length; ++pi) {
+        itl_utf8_t pch = preview->chars[pi];
+        bool is_newline = ITL_LE_IS_NEWLINE(pch);
+        size_t char_width = is_newline ? 1 : itl_char_width(pch);
+
+        if (match_width + char_width > budget) {
+          break;
+        }
+        if (match_bytes + pch.size >= ITL_STRING_MAX_LEN) {
+          break;
+        }
+
+        if (is_newline) {
+          match_render[match_bytes++] = ' ';
+        } else {
+          for (pj = 0; pj < pch.size; ++pj) {
+            match_render[match_bytes++] = (char) pch.bytes[pj];
+          }
+        }
+
+        match_length += 1;
+        match_width += char_width;
       }
-      if (match_bytes + pch.size >= ITL_STRING_MAX_LEN) {
-        break;
-      }
 
-      if (is_newline) {
-        match_render[match_bytes++] = ' ';
-      } else {
-        for (pj = 0; pj < pch.size; ++pj) {
-          match_render[match_bytes++] = (char) pch.bytes[pj];
+      match_render[match_bytes] = '\0';
+      cached_span_count = 0;
+
+      /* Line one, the matched entry highlighted as the command it would
+         become. The match sits at offset zero, so the host's codepoint spans
+         index the display buffer unchanged. */
+      if (itl_g_highlight_callback != NULL) {
+        tl_highlight hl;
+        hl.spans = cached_spans;
+        hl.count = 0;
+        hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
+
+#if !defined NDEBUG
+        itl_g_debug_search_highlight_count += 1;
+#endif
+
+        if (itl_g_highlight_callback(match_render, &hl)) {
+          cached_span_count = ITL_MIN(hl.count, ITL_HIGHLIGHT_MAX_SPANS);
         }
       }
 
-      match_length += 1;
-      match_width += char_width;
+      rendered_match = match;
+      rendered_cols = tty_cols;
+      has_rendered_preview = true;
     }
-    match_render[match_bytes] = '\0';
 
     itl_g_search_span_count = 0;
 
-    /* Line one, the matched entry highlighted as the command it would become.
-       The match sits at offset zero, so the host's codepoint spans index the
-       display buffer unchanged. */
-    if (itl_g_highlight_callback != NULL) {
-      tl_highlight_span match_spans[ITL_HIGHLIGHT_MAX_SPANS];
-      tl_highlight hl;
-      hl.spans = match_spans;
-      hl.count = 0;
-      hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
-      if (itl_g_highlight_callback(match_render, &hl)) {
-        size_t s;
-        for (s = 0; s < hl.count && s < ITL_HIGHLIGHT_MAX_SPANS; ++s) {
-          itl_search_push_span(match_spans[s].start, match_spans[s].end,
-                               match_spans[s].sgr);
-        }
-      }
+    for (s = 0; s < cached_span_count; ++s) {
+      itl_search_push_span(cached_spans[s].start, cached_spans[s].end,
+                           cached_spans[s].sgr);
     }
 
-    ITL_CHAR_BUF_CLEAR(status);
-    itl_char_buf_append_cstr(status, match_render);
-    itl_char_buf_append_byte(status, '\n');
+    ITL_CHAR_BUF_CLEAR(&status);
+    itl_char_buf_append_cstr(&status, match_render);
+    itl_char_buf_append_byte(&status, '\n');
 
     /* Line two, the search label in green and the typed query in yellow. The
        label `(incremental search)` is 20 codepoints and the trailing ` '` is
        two more. */
     line2_start = match_length + 1;
-    itl_char_buf_append_cstr(status, "(incremental search) '");
+    itl_char_buf_append_cstr(&status, "(incremental search) '");
     itl_search_push_span(line2_start, line2_start + 20, ITL_SEARCH_SGR_GREEN);
     query_start = line2_start + 22;
-    if (query->length > 0) {
-      itl_char_buf_append_string(status, query);
-      itl_search_push_span(query_start, query_start + query->length,
+    if (query.length > 0) {
+      itl_char_buf_append_string(&status, &query);
+      itl_search_push_span(query_start, query_start + query.length,
                            ITL_SEARCH_SGR_YELLOW);
     }
-    itl_char_buf_append_byte(status, '\'');
-    itl_char_buf_append_byte(status, '\n');
+    itl_char_buf_append_byte(&status, '\'');
+    itl_char_buf_append_byte(&status, '\n');
 
     /* Line three, the hint with its key tokens bolded. */
-    line3_start = query_start + query->length + 2;
+    line3_start = query_start + query.length + 2;
     guide_position = line3_start;
     guide_position =
-        itl_search_append_guide(status, guide_position, "up", true);
+        itl_search_append_guide(&status, guide_position, "up", true);
     guide_position =
-        itl_search_append_guide(status, guide_position, "/", false);
+        itl_search_append_guide(&status, guide_position, "/", false);
     guide_position =
-        itl_search_append_guide(status, guide_position, "down", true);
+        itl_search_append_guide(&status, guide_position, "down", true);
     guide_position =
-        itl_search_append_guide(status, guide_position, " to move, ", false);
+        itl_search_append_guide(&status, guide_position, " to move, ", false);
     guide_position =
-        itl_search_append_guide(status, guide_position, "enter", true);
+        itl_search_append_guide(&status, guide_position, "enter", true);
     guide_position =
-        itl_search_append_guide(status, guide_position, "/", false);
+        itl_search_append_guide(&status, guide_position, "/", false);
     guide_position =
-        itl_search_append_guide(status, guide_position, "tab", true);
+        itl_search_append_guide(&status, guide_position, "tab", true);
     guide_position =
-        itl_search_append_guide(status, guide_position, " to accept, ", false);
+        itl_search_append_guide(&status, guide_position, " to accept, ", false);
     guide_position =
-        itl_search_append_guide(status, guide_position, "esc", true);
+        itl_search_append_guide(&status, guide_position, "esc", true);
     guide_position =
-        itl_search_append_guide(status, guide_position, "/", false);
+        itl_search_append_guide(&status, guide_position, "/", false);
     guide_position =
-        itl_search_append_guide(status, guide_position, "ctrl-g", true);
-    (void) itl_search_append_guide(status, guide_position, " to cancel", false);
+        itl_search_append_guide(&status, guide_position, "ctrl-g", true);
+    (void) itl_search_append_guide(&status, guide_position, " to cancel", false);
 
-    itl_string_from_bytes(display, status->data, status->size);
+    itl_string_from_bytes(&display, status.data, status.size);
 
     /* The prompt stays drawn with its rows counted, so the block row math
        starts from the prompt's trailing row exactly as the normal render path.
        Only the width is zeroed so the indent is zero and the term and hint rows
        sit flush left under the prompt. */
     le->prompt_width = 0;
-    le->line = display;
-    le->cursor_position = query_start + query->length;
+    le->line = &display;
+    le->cursor_position = query_start + query.length;
     itl_g_search_spans_active = true;
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
@@ -7742,40 +7801,67 @@ ITL_DEF int itl_history_search(itl_le_t *le)
 
       if (is_newer_key) {
         size_t from = (match != ITL_HISTORY_NONE) ? match + 1 : 0;
-        size_t next = itl_history_find_match_forward(query, from, scratch);
+        size_t next = itl_history_find_match_forward(query_bytes, query_size,
+                                                     from, &match_str);
+
+        /* A step off the newest match leaves entries above it unexamined for
+           the next longer query, so the narrowed scan is no longer valid. */
+        is_narrowable = false;
+
         if (next != ITL_HISTORY_NONE) {
           match = next;
-          itl_string_copy(match_str, scratch);
         }
       } else if (is_older_key) {
         size_t from = (match != ITL_HISTORY_NONE)
                           ? (match > 0 ? match - 1 : ITL_HISTORY_NONE)
                           : ITL_HISTORY_NEWEST();
-        size_t next = itl_history_find_match(query, from, scratch);
+        size_t next =
+            itl_history_find_match(query_bytes, query_size, from, &match_str);
+
+        is_narrowable = false;
+
         if (next != ITL_HISTORY_NONE) {
           match = next;
-          itl_string_copy(match_str, scratch);
         }
       } else if (kind == TL_KEY_CHAR) {
-        size_t found;
-        itl_string_insert(query, query->length, itl_utf8_parse(byte));
-        found = itl_history_find_match(query, ITL_HISTORY_NEWEST(), scratch);
-        match = found;
-        if (found != ITL_HISTORY_NONE) {
-          itl_string_copy(match_str, scratch);
+        itl_string_insert(&query, query.length, itl_utf8_parse(byte));
+        query_size =
+            itl_search_query_bytes(&query, query_bytes, sizeof(query_bytes));
+
+        /* An entry rejected by the shorter query cannot hold its extension, so
+           a narrowed match only has to test itself and the entries below it.
+           A narrowed miss stays a miss and needs no scan at all. */
+        if (!is_narrowable) {
+          match = itl_history_find_match(query_bytes, query_size,
+                                         ITL_HISTORY_NEWEST(), &match_str);
+          is_narrowable = true;
+        } else if (match != ITL_HISTORY_NONE) {
+          if (!itl_history_ensure_read_buffer()) {
+            match = ITL_HISTORY_NONE;
+          } else if (!itl_history_candidate_matches(match, query_bytes,
+                                                    query_size, &match_str))
+          {
+            size_t from = (match > 0) ? match - 1 : ITL_HISTORY_NONE;
+
+            match = itl_history_find_match(query_bytes, query_size, from,
+                                           &match_str);
+          }
         }
       } else if (kind == TL_KEY_BACKSPACE) {
-        if (query->length > 0) {
-          itl_string_erase(query, query->length, 1, true);
-          if (query->length > 0) {
-            size_t found =
-                itl_history_find_match(query, ITL_HISTORY_NEWEST(), scratch);
-            match = found;
-            if (found != ITL_HISTORY_NONE) {
-              itl_string_copy(match_str, scratch);
-            }
+        if (query.length > 0) {
+          itl_string_erase(&query, query.length, 1, true);
+          query_size =
+              itl_search_query_bytes(&query, query_bytes, sizeof(query_bytes));
+
+          /* A shorter query can match entries its longer form rejected, so the
+             scan restarts from the newest entry. */
+          if (query.length > 0) {
+            match = itl_history_find_match(query_bytes, query_size,
+                                           ITL_HISTORY_NEWEST(), &match_str);
+            is_narrowable = true;
           } else {
             match = ITL_HISTORY_NONE;
+            is_narrowable = false;
           }
         }
       } else if (kind == TL_KEY_UNKN || kind == TL_KEY_INTERRUPT ||
@@ -7800,12 +7886,11 @@ ITL_DEF int itl_history_search(itl_le_t *le)
   /* Restore the real prompt width and line editor buffer, and stop drawing the
      search spans so the next refresh highlights the line as a command again. */
   itl_g_search_spans_active = false;
-  le->prompt = saved_prompt;
-  le->prompt_size = saved_prompt_size;
   le->prompt_width = saved_prompt_width;
-  le->prompt_rows = saved_prompt_rows;
   le->line = &itl_g_line_buffer;
 
+  /* The draft was never written while the search block was displayed, so a
+     cancelled search needs no restoring copy. */
   if (accepted && match != ITL_HISTORY_NONE) {
     /* Preserve the pre-search draft so stepping down past the newest entry
        restores it rather than a stale draft. */
@@ -7813,29 +7898,26 @@ ITL_DEF int itl_history_search(itl_le_t *le)
       if (itl_g_history_draft == NULL) {
         itl_g_history_draft = itl_string_alloc();
       }
-      itl_string_copy(itl_g_history_draft, original);
+
+      itl_string_copy(itl_g_history_draft, draft);
     }
+
     /* A match longer than the host buffer would fail itl_string_to_cstr on
-       submit and abort the read, so fall back to the pre-search line when the
-       match does not fit. The size plus the null terminator must stay within
+       submit and abort the read, so the pre-search line is kept when the match
+       does not fit. The size plus the null terminator must stay within
        out_size. */
-    if (match_str->size + 1 > le->out_size) {
-      itl_string_copy(le->line, original);
-    } else {
-      itl_string_copy(le->line, match_str);
+    if (match_str.size + 1 <= le->out_size) {
+      itl_string_copy(le->line, &match_str);
       le->history_selected_index = match;
     }
-  } else {
-    itl_string_copy(le->line, original);
   }
+
   le->cursor_position = le->line->length;
 
-  ITL_STRING_FREE(original);
-  ITL_STRING_FREE(query);
-  ITL_STRING_FREE(display);
-  ITL_STRING_FREE(match_str);
-  ITL_STRING_FREE(scratch);
-  ITL_CHAR_BUF_FREE(status);
+  ITL_FREE(query.chars);
+  ITL_FREE(display.chars);
+  ITL_FREE(match_str.chars);
+  ITL_FREE(status.data);
 
   return result;
 }

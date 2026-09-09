@@ -534,35 +534,41 @@ test_metrics(void)
   return true;
 }
 
+/* Expands a string literal into the pointer and byte count the byte level
+   search helpers take. The terminator is excluded. */
+#define SEARCH_QUERY(literal) (literal), (sizeof(literal) - 1)
+
 static bool
 test_find_substring(void)
 {
   bool ok = true;
 
-  itl_string_t *hay = itl_string_alloc();
-  itl_string_t *needle = itl_string_alloc();
+  if (!itl_ascii_contains_casefold(SEARCH_QUERY("Hello WORLD"),
+                                   SEARCH_QUERY("o wo")))
+  {
+    ok = false;
+  }
+  if (!itl_ascii_contains_casefold(SEARCH_QUERY("Hello WORLD"),
+                                   SEARCH_QUERY("world")))
+  {
+    ok = false;
+  }
+  if (itl_ascii_contains_casefold(SEARCH_QUERY("Hello WORLD"),
+                                  SEARCH_QUERY("xyz")))
+  {
+    ok = false;
+  }
+  if (!itl_ascii_contains_casefold(SEARCH_QUERY("Hello WORLD"),
+                                   SEARCH_QUERY("")))
+  {
+    ok = false;
+  }
 
-  ITL_STRING_FROM_CSTR(hay, "Hello WORLD");
-
-  ITL_STRING_FROM_CSTR(needle, "o wo");
-  if (!itl_string_find_substring_ascii_casefold(hay, needle)) {
-    ok = false;
-  }
-  ITL_STRING_FROM_CSTR(needle, "world");
-  if (!itl_string_find_substring_ascii_casefold(hay, needle)) {
-    ok = false;
-  }
-  ITL_STRING_FROM_CSTR(needle, "xyz");
-  if (itl_string_find_substring_ascii_casefold(hay, needle)) {
-    ok = false;
-  }
-  ITL_STRING_FROM_CSTR(needle, "");
-  if (!itl_string_find_substring_ascii_casefold(hay, needle)) {
-    ok = false;
-  }
-  ITL_STRING_FROM_CSTR(hay, "echo \xC3\x84");
-  ITL_STRING_FROM_CSTR(needle, "\xC3\xA4");
-  if (itl_string_find_substring_ascii_casefold(hay, needle)) {
+  /* Case folding covers ASCII letters alone, so a non ASCII rune only matches
+     itself. */
+  if (itl_ascii_contains_casefold(SEARCH_QUERY("echo \xC3\x84"),
+                                  SEARCH_QUERY("\xC3\xA4")))
+  {
     ok = false;
   }
 
@@ -570,8 +576,6 @@ test_find_substring(void)
     TEST_PRINTF("substring match mismatch\n");
   }
 
-  ITL_STRING_FREE(hay);
-  ITL_STRING_FREE(needle);
   return ok;
 }
 
@@ -1127,7 +1131,6 @@ test_history_search(void)
   const char *path = "tl_test_search.txt";
   bool ok = true;
 
-  itl_string_t *query = itl_string_alloc();
   itl_string_t *scratch = itl_string_alloc();
   size_t        match;
 
@@ -1140,8 +1143,8 @@ test_history_search(void)
   hist_append_cstr("make test");
 
   /* Searching backward from the newest finds "git commit" at index 1. */
-  ITL_STRING_FROM_CSTR(query, "gIt");
-  match = itl_history_find_match(query, itl_g_history_count - 1, scratch);
+  match = itl_history_find_match(SEARCH_QUERY("gIt"), itl_g_history_count - 1,
+                                 scratch);
   if (match != 1) {
     TEST_PRINTF("expected match at index 1, got %zu\n", match);
     ok = false;
@@ -1149,7 +1152,7 @@ test_history_search(void)
 
   /* The next older match is "git status" at index 0. */
   if (ok) {
-    match = itl_history_find_match(query, match - 1, scratch);
+    match = itl_history_find_match(SEARCH_QUERY("gIt"), match - 1, scratch);
     if (match != 0) {
       TEST_PRINTF("expected older match at index 0, got %zu\n", match);
       ok = false;
@@ -1160,15 +1163,15 @@ test_history_search(void)
      next forward step finds "git commit" at index 1, the mirror of the
      backward walk. */
   if (ok) {
-    ITL_STRING_FROM_CSTR(query, "GiT");
-    match = itl_history_find_match_forward(query, 0, scratch);
+    match = itl_history_find_match_forward(SEARCH_QUERY("GiT"), 0, scratch);
     if (match != 0) {
       TEST_PRINTF("expected forward match at index 0, got %zu\n", match);
       ok = false;
     }
   }
   if (ok) {
-    match = itl_history_find_match_forward(query, match + 1, scratch);
+    match =
+        itl_history_find_match_forward(SEARCH_QUERY("GiT"), match + 1, scratch);
     if (match != 1) {
       TEST_PRINTF("expected newer forward match at index 1, got %zu\n", match);
       ok = false;
@@ -1177,15 +1180,15 @@ test_history_search(void)
 
   /* A query that matches nothing returns the sentinel either way. */
   if (ok) {
-    ITL_STRING_FROM_CSTR(query, "zzz");
-    match = itl_history_find_match(query, itl_g_history_count - 1, scratch);
+    match = itl_history_find_match(SEARCH_QUERY("zzz"), itl_g_history_count - 1,
+                                   scratch);
     if (match != ITL_HISTORY_NONE) {
       TEST_PRINTF("no match should return the sentinel, got %zu\n", match);
       ok = false;
     }
   }
   if (ok) {
-    match = itl_history_find_match_forward(query, 0, scratch);
+    match = itl_history_find_match_forward(SEARCH_QUERY("zzz"), 0, scratch);
     if (match != ITL_HISTORY_NONE) {
       TEST_PRINTF("no forward match should return the sentinel, got %zu\n",
                   match);
@@ -1194,7 +1197,6 @@ test_history_search(void)
   }
 
   remove(path);
-  ITL_STRING_FREE(query);
   ITL_STRING_FREE(scratch);
   itl_g_history_free();
   itl_g_is_active = false;
@@ -1234,7 +1236,6 @@ test_history_alloc_balance(void)
   bool   ok = true;
   size_t before;
 
-  itl_string_t *query;
   itl_string_t *scratch;
 
   itl_g_is_active = true;
@@ -1248,11 +1249,9 @@ test_history_alloc_balance(void)
   hist_append_cstr("beta two");
   hist_append_cstr("alpha three");
 
-  query = itl_string_alloc();
   scratch = itl_string_alloc();
-  ITL_STRING_FROM_CSTR(query, "alpha");
-  (void) itl_history_find_match(query, itl_g_history_count - 1, scratch);
-  ITL_STRING_FREE(query);
+  (void) itl_history_find_match(SEARCH_QUERY("alpha"), itl_g_history_count - 1,
+                                scratch);
   ITL_STRING_FREE(scratch);
 
   itl_g_history_free();
