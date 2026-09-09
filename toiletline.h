@@ -5711,9 +5711,6 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
 #define ITL_MENU_SELECTED_MARGIN_WIDTH 1
 #define ITL_MENU_SELECTED_SGR          "\x1b[7m"
 #define ITL_MENU_DESCRIPTION_SGR       ITL_DIM_SGR
-/* The phrase naming the active source opens the help row in yellow. The keys
-   listed after it keep the dim of every other secondary text. */
-#define ITL_MENU_TITLE_SGR             "\x1b[33m"
 #define ITL_MENU_TITLE_SEPARATOR       ", "
 #define ITL_MENU_TITLE_SEPARATOR_WIDTH 2
 /* The row drawn in place of the candidates once the search has narrowed the
@@ -6015,16 +6012,16 @@ ITL_DEF void itl_menu_append_dimmed_row(itl_char_buf_t *b, const char *text,
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
 }
 
-/* Draw the help row of the menu. The phrase naming the active source is
-   yellow, and the keys it answers follow it in the dim of every other
-   secondary text. Both texts are cut at the row width and never wrap. */
+/* Draw the help row of the menu. The phrase naming the active source and the
+   keys it answers both carry the dim of every other secondary text. Both texts
+   are cut at the row width and never wrap. */
 ITL_DEF void itl_menu_append_help_row(itl_char_buf_t *b, const char *title,
                                       const char *keys, size_t width)
 {
   size_t drawn;
 
   itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
-  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_MENU_TITLE_SGR));
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_MENU_DESCRIPTION_SGR));
   drawn = itl_menu_append_cell(b, title, width, false);
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
 
