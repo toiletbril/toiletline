@@ -284,6 +284,241 @@ test_char_buf(void)
 }
 
 static bool
+test_string_shift_directions(void)
+{
+  size_t        i;
+  char          filler[65];
+  char          out_buffer[BUFFER_SIZE];
+  itl_string_t *str = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(str, "abcdefgh");
+  itl_string_shift(str, 3, 2, true);
+  itl_string_recalc_size(str);
+
+  if (itl_string_to_cstr(str, out_buffer, BUFFER_SIZE) != TL_SUCCESS ||
+      strcmp(out_buffer, "adefgh") != 0 || str->length != 6)
+  {
+    TEST_PRINTF("overlapping backward shift gave '%s', length %zu\n",
+                out_buffer, str->length);
+    ITL_STRING_FREE(str);
+    return false;
+  }
+
+  ITL_STRING_FROM_CSTR(str, "abcdef");
+  itl_string_shift(str, 2, 3, false);
+  itl_string_recalc_size(str);
+
+  if (itl_string_to_cstr(str, out_buffer, BUFFER_SIZE) != TL_SUCCESS ||
+      strcmp(out_buffer, "abcdecdef") != 0 || str->length != 9)
+  {
+    TEST_PRINTF("overlapping forward shift gave '%s', length %zu\n",
+                out_buffer, str->length);
+    ITL_STRING_FREE(str);
+    return false;
+  }
+
+  ITL_STRING_FROM_CSTR(str, "x\xC3\xA9y");
+  itl_string_shift(str, 1, 1, false);
+  itl_string_recalc_size(str);
+
+  if (itl_string_to_cstr(str, out_buffer, BUFFER_SIZE) != TL_SUCCESS ||
+      strcmp(out_buffer, "x\xC3\xA9\xC3\xA9y") != 0 || str->size != 6)
+  {
+    TEST_PRINTF("multibyte forward shift gave '%s', size %zu\n", out_buffer,
+                str->size);
+    ITL_STRING_FREE(str);
+    return false;
+  }
+
+  for (i = 0; i < ITL_STRING_INIT_SIZE; ++i) {
+    filler[i] = 'a';
+  }
+  filler[ITL_STRING_INIT_SIZE] = '\0';
+
+  ITL_STRING_FROM_CSTR(str, filler);
+  itl_string_shift(str, 0, 1, false);
+  itl_string_recalc_size(str);
+
+  if (str->length != ITL_STRING_INIT_SIZE + 1 ||
+      str->capacity < ITL_STRING_INIT_SIZE + 1 ||
+      str->size != ITL_STRING_INIT_SIZE + 1)
+  {
+    TEST_PRINTF("boundary forward shift gave length %zu, capacity %zu\n",
+                str->length, str->capacity);
+    ITL_STRING_FREE(str);
+    return false;
+  }
+
+  for (i = 0; i < str->length; ++i) {
+    if (str->chars[i].size != 1 || str->chars[i].bytes[0] != 'a') {
+      TEST_PRINTF("boundary forward shift corrupted rune %zu\n", i);
+      ITL_STRING_FREE(str);
+      return false;
+    }
+  }
+
+  ITL_STRING_FREE(str);
+
+  return true;
+}
+
+static bool
+test_string_copy_uses_live_range(void)
+{
+  size_t        i;
+  size_t        source_capacity;
+  char          filler[201];
+  char          out_buffer[BUFFER_SIZE];
+  itl_string_t *src = itl_string_alloc();
+  itl_string_t *dst = itl_string_alloc();
+
+  for (i = 0; i < 200; ++i) {
+    filler[i] = 'a';
+  }
+  filler[200] = '\0';
+
+  ITL_STRING_FROM_CSTR(src, filler);
+  itl_string_erase(src, src->length, 195, true);
+  source_capacity = src->capacity;
+
+  itl_string_copy(dst, src);
+
+  if (dst->length != 5 || dst->size != 5 ||
+      itl_string_to_cstr(dst, out_buffer, BUFFER_SIZE) != TL_SUCCESS ||
+      strcmp(out_buffer, "aaaaa") != 0 || dst->capacity >= source_capacity)
+  {
+    TEST_PRINTF("copy from a sparse source gave '%s', capacity %zu/%zu\n",
+                out_buffer, dst->capacity, source_capacity);
+    ITL_STRING_FREE(src);
+    ITL_STRING_FREE(dst);
+    return false;
+  }
+
+  ITL_STRING_FROM_CSTR(src, "\xD0\xBF\xD1\x80\xD0\xB8");
+  itl_string_copy(dst, src);
+
+  if (dst->length != 3 || dst->size != 6 ||
+      itl_string_to_cstr(dst, out_buffer, BUFFER_SIZE) != TL_SUCCESS ||
+      strcmp(out_buffer, "\xD0\xBF\xD1\x80\xD0\xB8") != 0)
+  {
+    TEST_PRINTF("multibyte copy gave '%s', length %zu, size %zu\n", out_buffer,
+                dst->length, dst->size);
+    ITL_STRING_FREE(src);
+    ITL_STRING_FREE(dst);
+    return false;
+  }
+
+  ITL_STRING_FREE(src);
+  ITL_STRING_FREE(dst);
+
+  return true;
+}
+
+static bool
+test_string_to_cstr_limits(void)
+{
+  char          exact[7];
+  char          split[3];
+  char          empty[1];
+  itl_string_t *str = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(str, "h\xC3\xA9llo");
+
+  if (itl_string_to_cstr(str, exact, sizeof(exact)) != TL_SUCCESS ||
+      strcmp(exact, "h\xC3\xA9llo") != 0)
+  {
+    TEST_PRINTF("exact output buffer gave '%s'\n", exact);
+    ITL_STRING_FREE(str);
+    return false;
+  }
+
+  ITL_STRING_FROM_CSTR(str, "h\xC3\xA9");
+
+  if (itl_string_to_cstr(str, split, sizeof(split)) != TL_ERROR_SIZE ||
+      strcmp(split, "h") != 0)
+  {
+    TEST_PRINTF("short output buffer gave '%s'\n", split);
+    ITL_STRING_FREE(str);
+    return false;
+  }
+
+  empty[0] = 'Z';
+
+  if (itl_string_to_cstr(str, empty, 0) != TL_ERROR_SIZE || empty[0] != 'Z') {
+    TEST_PRINTF("zero-size output buffer was written\n");
+    ITL_STRING_FREE(str);
+    return false;
+  }
+
+  ITL_STRING_FREE(str);
+
+  return true;
+}
+
+static bool
+test_char_buf_growth_boundary(void)
+{
+  size_t          i;
+  size_t          escaped_position;
+  size_t          spaces_position;
+  char            run[250];
+  itl_char_buf_t  zero_capacity = ITL_ZERO_INIT;
+  itl_string_t   *str = itl_string_alloc();
+  itl_char_buf_t *cb = itl_char_buf_alloc();
+
+  for (i = 0; i < sizeof(run); ++i) {
+    run[i] = 'a';
+  }
+
+  itl_char_buf_append_bytes(cb, run, sizeof(run));
+  escaped_position = cb->size;
+
+  ITL_STRING_FROM_CSTR(str, "a\nb\\c");
+  itl_char_buf_append_string_escaped(cb, str);
+  spaces_position = cb->size;
+
+  itl_char_buf_append_spaces(cb, 300);
+  itl_char_buf_append_cstr(cb, "end");
+
+  if (cb->size != sizeof(run) + 7 + 300 + 3 || cb->capacity < cb->size ||
+      memcmp(cb->data, run, sizeof(run)) != 0 ||
+      memcmp(cb->data + escaped_position, "a\\nb\\\\c", 7) != 0 ||
+      memcmp(cb->data + cb->size - 3, "end", 3) != 0)
+  {
+    TEST_PRINTF("character buffer boundary gave size %zu, capacity %zu\n",
+                cb->size, cb->capacity);
+    ITL_STRING_FREE(str);
+    ITL_CHAR_BUF_FREE(cb);
+    return false;
+  }
+
+  for (i = spaces_position; i < spaces_position + 300; ++i) {
+    if (cb->data[i] != ' ') {
+      TEST_PRINTF("padding byte %zu is not a space\n", i);
+      ITL_STRING_FREE(str);
+      ITL_CHAR_BUF_FREE(cb);
+      return false;
+    }
+  }
+
+  itl_char_buf_append_spaces(&zero_capacity, 3);
+
+  if (zero_capacity.size != 3 || memcmp(zero_capacity.data, "   ", 3) != 0) {
+    TEST_PRINTF("padding an empty buffer gave size %zu\n", zero_capacity.size);
+    ITL_FREE(zero_capacity.data);
+    ITL_STRING_FREE(str);
+    ITL_CHAR_BUF_FREE(cb);
+    return false;
+  }
+
+  ITL_FREE(zero_capacity.data);
+  ITL_STRING_FREE(str);
+  ITL_CHAR_BUF_FREE(cb);
+
+  return true;
+}
+
+static bool
 test_parse_size(void)
 {
   size_t     i, diff, offset, result = 0;
@@ -1209,6 +1444,379 @@ test_history_search(void)
 }
 
 static bool
+search_match_is(const itl_string_t *found, const char *expected)
+{
+  char buffer[BUFFER_SIZE];
+
+  return itl_string_to_cstr(found, buffer, sizeof(buffer)) == TL_SUCCESS &&
+         strcmp(buffer, expected) == 0;
+}
+
+static bool
+test_history_search_matching(void)
+{
+  const char *path = "tl_test_search_matching.txt";
+  bool ok = true;
+
+  itl_string_t *found = itl_string_alloc();
+  size_t        match;
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+
+  hist_append_cstr("echo alpha");
+  hist_append_cstr("line one\nline two");
+  hist_append_cstr("echo \xC3\x84");
+  hist_append_cstr("ECHO BETA");
+
+  match =
+      itl_history_find_match(SEARCH_QUERY("echo"), ITL_HISTORY_NEWEST(), found);
+  if (match != 3 || !search_match_is(found, "ECHO BETA")) {
+    TEST_PRINTF("the newest folded match was %zu\n", match);
+    ok = false;
+  }
+
+  if (ok) {
+    match = itl_history_find_match(SEARCH_QUERY("echo a"), ITL_HISTORY_NEWEST(),
+                                   found);
+    if (match != 0 || !search_match_is(found, "echo alpha")) {
+      TEST_PRINTF("the oldest match was %zu\n", match);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    match = itl_history_find_match(SEARCH_QUERY("one\nline"),
+                                   ITL_HISTORY_NEWEST(), found);
+    if (match != 1 || !search_match_is(found, "line one\nline two")) {
+      TEST_PRINTF("the multiline match was %zu\n", match);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    match = itl_history_find_match(SEARCH_QUERY("\xC3\x84"),
+                                   ITL_HISTORY_NEWEST(), found);
+    if (match != 2) {
+      TEST_PRINTF("the non-ASCII match was %zu\n", match);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    match = itl_history_find_match(SEARCH_QUERY("\xC3\xA4"),
+                                   ITL_HISTORY_NEWEST(), found);
+    if (match != ITL_HISTORY_NONE) {
+      TEST_PRINTF("a folded non-ASCII query matched %zu\n", match);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    match = itl_history_find_match(SEARCH_QUERY(""), ITL_HISTORY_NEWEST(),
+                                   found);
+    if (match != 3) {
+      TEST_PRINTF("the empty backward query matched %zu\n", match);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    match = itl_history_find_match_forward(SEARCH_QUERY(""), 0, found);
+    if (match != 0) {
+      TEST_PRINTF("the empty forward query matched %zu\n", match);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    match = itl_history_find_match_forward(SEARCH_QUERY("echo"), 1, found);
+    if (match != 2) {
+      TEST_PRINTF("the forward folded match was %zu\n", match);
+      ok = false;
+    }
+  }
+
+  ITL_STRING_FREE(found);
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
+static bool
+hist_write_raw(const char *path, const char *bytes, size_t size)
+{
+  FILE *file = fopen(path, "wb");
+  bool  was_written;
+
+  if (file == NULL) {
+    return false;
+  }
+
+  was_written = fwrite(bytes, 1, size, file) == size;
+  fclose(file);
+
+  return was_written;
+}
+
+static bool
+test_history_search_rejects_malformed_entry(void)
+{
+  static const char content[] = "echo \xC3 broken\nplain entry\n";
+  const char       *path = "tl_test_search_malformed.txt";
+  bool              ok = true;
+
+  itl_string_t *found = itl_string_alloc();
+  size_t        match;
+
+  itl_g_is_active = true;
+  remove(path);
+  if (!hist_write_raw(path, content, sizeof(content) - 1)) {
+    TEST_PRINTF("could not write the malformed history file\n");
+    ok = false;
+  }
+
+  if (ok) {
+    tl_history_load(path);
+    if (itl_g_history_count != 2) {
+      TEST_PRINTF("the scan found %zu entries\n", itl_g_history_count);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    match = itl_history_find_match(SEARCH_QUERY("echo"), ITL_HISTORY_NEWEST(),
+                                   found);
+    if (match != ITL_HISTORY_NONE) {
+      TEST_PRINTF("the malformed entry matched at %zu\n", match);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    match = itl_history_find_match(SEARCH_QUERY("plain"), ITL_HISTORY_NEWEST(),
+                                   found);
+    if (match != 1 || !search_match_is(found, "plain entry")) {
+      TEST_PRINTF("the valid neighbour matched at %zu\n", match);
+      ok = false;
+    }
+  }
+
+  ITL_STRING_FREE(found);
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
+static bool
+test_history_search_narrowing(void)
+{
+  const char *path = "tl_test_search_narrowing.txt";
+  bool ok = true;
+
+  itl_string_t *found = itl_string_alloc();
+  size_t        match;
+  size_t        rescan;
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+
+  hist_append_cstr("aaa target");
+  hist_append_cstr("aaa filler one");
+  hist_append_cstr("aaa filler two");
+  hist_append_cstr("aaa filler three");
+  hist_append_cstr("aaa filler four");
+
+  itl_g_debug_history_candidate_count = 0;
+  match = itl_history_narrow_match(SEARCH_QUERY("z"), ITL_HISTORY_NONE, false,
+                                   found);
+  match = itl_history_narrow_match(SEARCH_QUERY("zz"), match, true, found);
+  match = itl_history_narrow_match(SEARCH_QUERY("zzz"), match, true, found);
+
+  if (match != ITL_HISTORY_NONE || itl_g_debug_history_candidate_count != 5) {
+    TEST_PRINTF("the growing miss ended at %zu after %zu candidates\n", match,
+                itl_g_debug_history_candidate_count);
+    ok = false;
+  }
+
+  if (ok) {
+    itl_g_debug_history_candidate_count = 0;
+    match = itl_history_narrow_match(SEARCH_QUERY("aaa"), ITL_HISTORY_NONE,
+                                     false, found);
+    match = itl_history_narrow_match(SEARCH_QUERY("aaa t"), match, true, found);
+    match = itl_history_narrow_match(SEARCH_QUERY("aaa ta"), match, true, found);
+    match =
+        itl_history_narrow_match(SEARCH_QUERY("aaa tar"), match, true, found);
+
+    if (match != 0 || !search_match_is(found, "aaa target")) {
+      TEST_PRINTF("the growing hit ended at %zu\n", match);
+      ok = false;
+    }
+    if (ok && itl_g_debug_history_candidate_count != 8) {
+      TEST_PRINTF("the growing hit decoded %zu candidates\n",
+                  itl_g_debug_history_candidate_count);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    itl_g_debug_history_candidate_count = 0;
+    rescan = itl_history_narrow_match(SEARCH_QUERY("aaa targ"), match, false,
+                                      found);
+
+    if (rescan != 0 || itl_g_debug_history_candidate_count != 5) {
+      TEST_PRINTF("the rescan ended at %zu after %zu candidates\n", rescan,
+                  itl_g_debug_history_candidate_count);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    match = itl_history_narrow_match(SEARCH_QUERY("aaa"), ITL_HISTORY_NONE,
+                                     false, found);
+    match = itl_history_narrow_match(SEARCH_QUERY("aaa t"), match, true, found);
+    rescan = itl_history_find_match(SEARCH_QUERY("aaa t"), ITL_HISTORY_NEWEST(),
+                                    found);
+
+    if (match != rescan) {
+      TEST_PRINTF("narrowing gave %zu and the rescan gave %zu\n", match,
+                  rescan);
+      ok = false;
+    }
+  }
+
+  ITL_STRING_FREE(found);
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
+#if defined ITL_POSIX
+static int
+test_search_highlight_callback(const char *buffer, tl_highlight *out)
+{
+  (void) buffer;
+
+  if (out->capacity == 0) {
+    return 0;
+  }
+
+  out->spans[0].start = 0;
+  out->spans[0].end = 1;
+  out->spans[0].sgr = "\x1b[31m";
+  out->count = 1;
+
+  return 1;
+}
+
+static size_t
+search_highlight_calls(const char *keys, size_t key_count)
+{
+  char out_buffer[BUFFER_SIZE];
+  int  pipe_descriptors[2] = {-1, -1};
+  int  null_descriptor = -1;
+  int  saved_stdin = -1;
+  int  saved_stdout = -1;
+  size_t calls = (size_t) -1;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+  if (write(pipe_descriptors[1], keys, key_count) != (ssize_t) key_count) {
+    goto cleanup;
+  }
+  close(pipe_descriptors[1]);
+  pipe_descriptors[1] = -1;
+
+  null_descriptor = open("/dev/null", O_WRONLY);
+  if (null_descriptor < 0) goto cleanup;
+
+  saved_stdin = dup(STDIN_FILENO);
+  saved_stdout = dup(STDOUT_FILENO);
+  if (saved_stdin < 0 || saved_stdout < 0) goto cleanup;
+  if (dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
+      dup2(null_descriptor, STDOUT_FILENO) < 0)
+  {
+    goto cleanup;
+  }
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  itl_g_debug_search_highlight_count = 0;
+  tl_set_highlight_callback(test_search_highlight_callback);
+
+  (void) itl_history_search(&le);
+
+  calls = itl_g_debug_search_highlight_count;
+  tl_set_highlight_callback(NULL);
+  itl_g_search_spans_active = false;
+
+cleanup:
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (saved_stdout >= 0) {
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+  }
+  if (null_descriptor >= 0) close(null_descriptor);
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+
+  ITL_STRING_FREE(line);
+  itl_g_tty_changed_size = 1;
+
+  return calls;
+}
+
+static bool
+test_history_search_preview_cache(void)
+{
+  const char *path = "tl_test_search_preview.txt";
+  bool ok = true;
+
+  size_t query_only_calls;
+  size_t moving_calls;
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+
+  hist_append_cstr("aaa older entry");
+  hist_append_cstr("aaa newer entry");
+
+  query_only_calls = search_highlight_calls("aaa", 3);
+  if (query_only_calls != 2) {
+    TEST_PRINTF("a query-only redraw highlighted %zu times\n",
+                query_only_calls);
+    ok = false;
+  }
+
+  if (ok) {
+    moving_calls = search_highlight_calls("aaa\x12", 4);
+    if (moving_calls != 3) {
+      TEST_PRINTF("a moving redraw highlighted %zu times\n", moving_calls);
+      ok = false;
+    }
+  }
+
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+#endif
+
+static bool
 test_history_short_entry_skipped(void)
 {
   const char *path = "tl_test_short.txt";
@@ -1379,6 +1987,460 @@ test_alt_arrows_use_word_movement(void)
 
   ITL_STRING_FREE(line);
   return left_matches && right_matches && ghost_was_not_accepted;
+}
+
+typedef struct menu_rank_test_case menu_rank_test_case_t;
+
+struct menu_rank_test_case
+{
+  const char *entry;
+  const char *query;
+  unsigned    rank;
+};
+
+static bool
+test_menu_match_rank(void)
+{
+  static const menu_rank_test_case_t cases[] = {
+      {"alpha", "", ITL_MENU_RANK_PREFIX},
+      {"al", "alpha", ITL_MENU_RANK_NONE},
+      {"ALPHA", "al", ITL_MENU_RANK_PREFIX},
+      {"aab", "ab", ITL_MENU_RANK_CONTAINS},
+      {"unALPHAed", "alpha", ITL_MENU_RANK_CONTAINS},
+      {"abcdefg", "adg", ITL_MENU_RANK_SUBSEQUENCE},
+      {"abc", "xyz", ITL_MENU_RANK_NONE},
+      {"\xC3\x84nder", "\xC3\xA4n", ITL_MENU_RANK_NONE},
+      {"\xC3\xA4nder", "\xC3\xA4n", ITL_MENU_RANK_PREFIX},
+  };
+  size_t i;
+
+  for (i = 0; i < countof(cases); ++i) {
+    unsigned rank = itl_menu_match_rank(cases[i].entry, strlen(cases[i].entry),
+                                        cases[i].query, strlen(cases[i].query));
+
+    if (rank != cases[i].rank) {
+      TEST_PRINTF("'%s' against '%s' ranked %u, expected %u\n", cases[i].entry,
+                  cases[i].query, rank, cases[i].rank);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static bool
+test_menu_filter_groups(void)
+{
+  static const char *candidates[] = {
+      "alpha", "beta",  "malt",
+      "abcl",  "ALIEN", "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E"};
+  static const char *descriptions[] = {"one",  "two",  "three",
+                                       "four", "five", "six"};
+  static const char *expected_names[] = {"alpha", "ALIEN", "malt", "abcl"};
+  static const char *expected_descriptions[] = {"one", "five", "three", "four"};
+  size_t        i;
+  tl_completion base = ITL_ZERO_INIT;
+  tl_completion result = ITL_ZERO_INIT;
+
+  base.candidates = candidates;
+  base.descriptions = descriptions;
+  base.count = countof(candidates);
+
+  if (!itl_menu_filter(&base, "al", 2, &result)) {
+    TEST_PRINTF("a matching query kept nothing\n");
+    return false;
+  }
+
+  if (result.count != countof(expected_names) ||
+      result.longest_common_prefix != NULL)
+  {
+    TEST_PRINTF("filtering kept %zu rows\n", result.count);
+    return false;
+  }
+
+  for (i = 0; i < result.count; ++i) {
+    if (strcmp(result.candidates[i], expected_names[i]) != 0 ||
+        strcmp(result.descriptions[i], expected_descriptions[i]) != 0)
+    {
+      TEST_PRINTF("row %zu is '%s' with '%s'\n", i, result.candidates[i],
+                  result.descriptions[i]);
+      return false;
+    }
+  }
+
+  if (itl_menu_name_width(&result) != 5) {
+    TEST_PRINTF("narrowed name width is %zu\n", itl_menu_name_width(&result));
+    return false;
+  }
+
+  if (itl_menu_filter(&base, "zzq", 3, &result)) {
+    TEST_PRINTF("a query matching nothing kept %zu rows\n", result.count);
+    return false;
+  }
+
+  if (!itl_menu_filter(&base, "", 0, &result) || result.count != base.count) {
+    TEST_PRINTF("an empty query kept %zu rows\n", result.count);
+    return false;
+  }
+
+  for (i = 0; i < result.count; ++i) {
+    if (strcmp(result.candidates[i], candidates[i]) != 0) {
+      TEST_PRINTF("an empty query moved row %zu to '%s'\n", i,
+                  result.candidates[i]);
+      return false;
+    }
+  }
+
+  if (itl_menu_name_width(&result) != 6) {
+    TEST_PRINTF("wide name width is %zu\n", itl_menu_name_width(&result));
+    return false;
+  }
+
+  base.descriptions = NULL;
+
+  if (!itl_menu_filter(&base, "al", 2, &result) || result.descriptions != NULL)
+  {
+    TEST_PRINTF("a base without descriptions produced some\n");
+    return false;
+  }
+
+  return true;
+}
+
+static size_t test_menu_gather_calls;
+static bool   test_menu_gather_has_rows = true;
+
+static bool
+test_menu_gather(itl_le_t *le, tl_completion *result)
+{
+  static const char *candidates[] = {"alpha", "album", "beta"};
+
+  test_menu_gather_calls += 1;
+
+  if (!test_menu_gather_has_rows) {
+    return false;
+  }
+
+  result->candidates = candidates;
+  result->descriptions = NULL;
+  result->longest_common_prefix = NULL;
+  result->count = countof(candidates);
+  result->token_start = 0;
+  result->token_end = le->line->length;
+
+  return true;
+}
+
+static bool
+test_menu_narrow_reuses_base(void)
+{
+  char                   out_buffer[BUFFER_SIZE];
+  itl_le_t               le = ITL_ZERO_INIT;
+  itl_menu_source        source = ITL_ZERO_INIT;
+  itl_menu_filter_state  state = ITL_ZERO_INIT;
+  tl_completion          result = ITL_ZERO_INIT;
+  itl_string_t          *line = itl_string_alloc();
+
+  source.gather = test_menu_gather;
+  test_menu_gather_calls = 0;
+  test_menu_gather_has_rows = true;
+
+  ITL_STRING_FROM_CSTR(line, "al");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+
+  if (!itl_menu_rebase(&le, &source, &state, &result) || result.count != 3 ||
+      state.query_len != 2 || state.name_width != 5)
+  {
+    TEST_PRINTF("the first gather kept %zu rows at width %zu\n", result.count,
+                state.name_width);
+    ITL_STRING_FREE(line);
+    return false;
+  }
+
+  itl_le_insert(&le, itl_utf8_parse('b'));
+  result.token_end += 1;
+
+  if (!itl_menu_narrow(&le, &source, &state, &result) || result.count != 1 ||
+      strcmp(result.candidates[0], "album") != 0 ||
+      test_menu_gather_calls != 1)
+  {
+    TEST_PRINTF("a grown query kept %zu rows after %zu gathers\n", result.count,
+                test_menu_gather_calls);
+    ITL_STRING_FREE(line);
+    return false;
+  }
+
+  ITL_LE_ERASE_BACKWARD(&le, 1);
+  itl_le_insert(&le, itl_utf8_parse('z'));
+
+  if (!itl_menu_narrow(&le, &source, &state, &result) || result.count != 3 ||
+      test_menu_gather_calls != 2 || state.query_len != 3)
+  {
+    TEST_PRINTF("a diverged query kept %zu rows after %zu gathers\n",
+                result.count, test_menu_gather_calls);
+    ITL_STRING_FREE(line);
+    return false;
+  }
+
+  ITL_LE_ERASE_BACKWARD(&le, 1);
+  result.token_end -= 1;
+
+  if (!itl_menu_narrow(&le, &source, &state, &result) || result.count != 3 ||
+      test_menu_gather_calls != 3 || state.query_len != 2)
+  {
+    TEST_PRINTF("a widened query kept %zu rows after %zu gathers\n",
+                result.count, test_menu_gather_calls);
+    ITL_STRING_FREE(line);
+    return false;
+  }
+
+  test_menu_gather_has_rows = false;
+
+  if (itl_menu_rebase(&le, &source, &state, &result) || state.base.count != 0 ||
+      state.name_width != 0 || state.query_len != 0)
+  {
+    TEST_PRINTF("an empty source left %zu rows at width %zu\n",
+                state.base.count, state.name_width);
+    ITL_STRING_FREE(line);
+    return false;
+  }
+
+  ITL_STRING_FREE(line);
+
+  return true;
+}
+
+static bool
+test_menu_cells(void)
+{
+  static const char *red = "\x1b[31m";
+  size_t             drawn;
+  tl_highlight_span  spans[1];
+  int                was_colors_enabled = itl_g_colors_enabled;
+  itl_char_buf_t    *b = itl_char_buf_alloc();
+
+  itl_g_colors_enabled = 1;
+
+  drawn = itl_menu_append_cell(b, "ab", 5, true);
+
+  if (drawn != 5 || b->size != 5 || memcmp(b->data, "ab   ", 5) != 0) {
+    TEST_PRINTF("a padded cell drew %zu columns in %zu bytes\n", drawn,
+                b->size);
+    goto failed;
+  }
+
+  b->size = 0;
+  drawn = itl_menu_append_cell(b, "ab", 5, false);
+
+  if (drawn != 2 || b->size != 2 || memcmp(b->data, "ab", 2) != 0) {
+    TEST_PRINTF("an unpadded cell drew %zu columns in %zu bytes\n", drawn,
+                b->size);
+    goto failed;
+  }
+
+  b->size = 0;
+  drawn = itl_menu_append_cell(b, "abcdef", 3, true);
+
+  if (drawn != 3 || b->size != 3 || memcmp(b->data, "abc", 3) != 0) {
+    TEST_PRINTF("a clipped cell drew %zu columns in %zu bytes\n", drawn,
+                b->size);
+    goto failed;
+  }
+
+  b->size = 0;
+  drawn = itl_menu_append_cell(b, "\xE6\x97\xA5\xE6\x9C\xAC", 3, true);
+
+  if (drawn != 4 || b->size != 6 ||
+      memcmp(b->data, "\xE6\x97\xA5\xE6\x9C\xAC", 6) != 0)
+  {
+    TEST_PRINTF("a straddling cell drew %zu columns in %zu bytes\n", drawn,
+                b->size);
+    goto failed;
+  }
+
+  b->size = 0;
+  drawn = itl_menu_append_cell(b, "\xE6\x97\xA5\xE6\x9C\xAC", 6, true);
+
+  if (drawn != 6 || b->size != 8 ||
+      memcmp(b->data, "\xE6\x97\xA5\xE6\x9C\xAC  ", 8) != 0)
+  {
+    TEST_PRINTF("a wide padded cell drew %zu columns in %zu bytes\n", drawn,
+                b->size);
+    goto failed;
+  }
+
+  b->size = 0;
+  spans[0].start = 1;
+  spans[0].end = 3;
+  spans[0].sgr = red;
+  itl_menu_append_colored_cell(b, "abcdef", 6, spans, 1, false);
+
+  if (b->size != 15 || memcmp(b->data, "a\x1b[31mbc\x1b[0mdef", 15) != 0) {
+    TEST_PRINTF("a colored cell wrote %zu bytes\n", b->size);
+    goto failed;
+  }
+
+  b->size = 0;
+  spans[0].end = 6;
+  itl_menu_append_colored_cell(b, "abcdef", 3, spans, 1, true);
+
+  if (b->size != 12 || memcmp(b->data, "a\x1b[31mbc\x1b[0m", 12) != 0) {
+    TEST_PRINTF("a clipped colored cell wrote %zu bytes\n", b->size);
+    goto failed;
+  }
+
+  b->size = 0;
+  itl_menu_append_colored_cell(b, "a\xE6\x97\xA5\xE6\x9C\xAC", 4, NULL, 0,
+                               true);
+
+  if (b->size != 5 || memcmp(b->data, "a\xE6\x97\xA5 ", 5) != 0) {
+    TEST_PRINTF("a straddling colored cell wrote %zu bytes\n", b->size);
+    goto failed;
+  }
+
+  itl_g_colors_enabled = 0;
+  b->size = 0;
+  spans[0].end = 3;
+  itl_menu_append_colored_cell(b, "abcdef", 6, spans, 1, false);
+
+  if (b->size != 6 || memcmp(b->data, "abcdef", 6) != 0) {
+    TEST_PRINTF("a colorless cell wrote %zu bytes\n", b->size);
+    goto failed;
+  }
+
+  itl_g_colors_enabled = was_colors_enabled;
+  ITL_CHAR_BUF_FREE(b);
+
+  return true;
+
+failed:
+  itl_g_colors_enabled = was_colors_enabled;
+  ITL_CHAR_BUF_FREE(b);
+
+  return false;
+}
+
+static bool
+merged_spans_are(const tl_highlight_span *out, size_t count,
+                 const tl_highlight_span *expected, size_t expected_count)
+{
+  size_t i;
+
+  if (count != expected_count) {
+    return false;
+  }
+
+  for (i = 0; i < count; ++i) {
+    if (out[i].start != expected[i].start || out[i].end != expected[i].end ||
+        out[i].sgr != expected[i].sgr)
+    {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static bool
+test_merge_visual_spans(void)
+{
+  static const char *first = "\x1b[31m";
+  static const char *second = "\x1b[32m";
+  static const char *inverse = "\x1b[7m";
+  tl_highlight_span  syntax[3];
+  tl_highlight_span  selection[1];
+  tl_highlight_span  expected[3];
+  tl_highlight_span  out[8];
+  size_t             count;
+
+  syntax[0].start = 0;
+  syntax[0].end = 3;
+  syntax[0].sgr = first;
+  syntax[1].start = 3;
+  syntax[1].end = 6;
+  syntax[1].sgr = second;
+  count = itl_merge_visual_spans(syntax, 2, NULL, 0, 6, out, countof(out));
+  expected[0] = syntax[0];
+  expected[1] = syntax[1];
+
+  if (!merged_spans_are(out, count, expected, 2)) {
+    TEST_PRINTF("two syntax runs merged into %zu spans\n", count);
+    return false;
+  }
+
+  syntax[1].sgr = first;
+  count = itl_merge_visual_spans(syntax, 2, NULL, 0, 6, out, countof(out));
+  expected[0].start = 0;
+  expected[0].end = 6;
+  expected[0].sgr = first;
+
+  if (!merged_spans_are(out, count, expected, 1)) {
+    TEST_PRINTF("two adjacent runs merged into %zu spans\n", count);
+    return false;
+  }
+
+  selection[0].start = 2;
+  selection[0].end = 4;
+  selection[0].sgr = inverse;
+  count = itl_merge_visual_spans(NULL, 0, selection, 1, 6, out, countof(out));
+  expected[0] = selection[0];
+
+  if (!merged_spans_are(out, count, expected, 1)) {
+    TEST_PRINTF("a lone selection merged into %zu spans\n", count);
+    return false;
+  }
+
+  syntax[0].start = 0;
+  syntax[0].end = 6;
+  count = itl_merge_visual_spans(syntax, 1, selection, 1, 6, out, countof(out));
+  expected[0].start = 0;
+  expected[0].end = 2;
+  expected[0].sgr = first;
+  expected[1] = selection[0];
+  expected[2].start = 4;
+  expected[2].end = 6;
+  expected[2].sgr = first;
+
+  if (!merged_spans_are(out, count, expected, 3)) {
+    TEST_PRINTF("a selection over syntax merged into %zu spans\n", count);
+    return false;
+  }
+
+  syntax[0].start = 1;
+  syntax[0].end = 2;
+  count = itl_merge_visual_spans(syntax, 1, NULL, 0, 4, out, countof(out));
+  expected[0] = syntax[0];
+
+  if (!merged_spans_are(out, count, expected, 1)) {
+    TEST_PRINTF("a gapped run merged into %zu spans\n", count);
+    return false;
+  }
+
+  syntax[0].start = 0;
+  syntax[0].end = 1;
+  syntax[1].start = 1;
+  syntax[1].end = 2;
+  syntax[1].sgr = second;
+  syntax[2].start = 2;
+  syntax[2].end = 3;
+  syntax[2].sgr = first;
+  count = itl_merge_visual_spans(syntax, 3, NULL, 0, 3, out, 2);
+  expected[0] = syntax[0];
+  expected[1] = syntax[1];
+
+  if (!merged_spans_are(out, count, expected, 2)) {
+    TEST_PRINTF("an exhausted output holds %zu spans\n", count);
+    return false;
+  }
+
+  count = itl_merge_visual_spans(NULL, 0, NULL, 0, 5, out, countof(out));
+
+  if (count != 0) {
+    TEST_PRINTF("an uncolored line merged into %zu spans\n", count);
+    return false;
+  }
+
+  return true;
 }
 
 #if defined ITL_POSIX
@@ -1563,6 +2625,280 @@ test_ghost_prefers_recent_history(void)
   return ok;
 }
 
+static int
+test_cased_completion_callback(const char *buffer, size_t cursor,
+                               tl_completion *completion, int for_listing)
+{
+  static const char *candidates[] = {"Tailscale"};
+
+  (void) buffer;
+  (void) cursor;
+  (void) for_listing;
+  completion->candidates = candidates;
+  completion->count = 1;
+  completion->longest_common_prefix = "Tailscale";
+  completion->token_start = 0;
+  completion->token_end = 4;
+
+  return 1;
+}
+
+static bool
+test_ghost_history_corrects_case(void)
+{
+  const char   *path = "tl_test_ghost_case.txt";
+  char          out_buffer[BUFFER_SIZE];
+  char          line_buffer[BUFFER_SIZE];
+  bool          ok = true;
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_g_is_active = true;
+  itl_g_tty_plain_append_pending = false;
+  remove(path);
+  tl_history_load(path);
+
+  if (!hist_append_cstr("Tailscale Status --Json")) ok = false;
+
+  ITL_STRING_FROM_CSTR(line, "tail");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_undo_reset();
+  itl_ghost_update(&le);
+
+  if (strcmp(itl_g_ghost, "scale Status --Json") != 0 ||
+      !itl_g_ghost_should_replace_line ||
+      strcmp(itl_g_ghost_sticky_target, "Tailscale Status --Json") != 0)
+  {
+    TEST_PRINTF("case-correcting ghost was '%s', target '%s'\n", itl_g_ghost,
+                itl_g_ghost_sticky_target);
+    ok = false;
+  }
+
+  itl_ghost_accept(&le);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+
+  if (strcmp(line_buffer, "Tailscale Status --Json") != 0) {
+    TEST_PRINTF("accepted line was '%s'\n", line_buffer);
+    ok = false;
+  }
+
+  itl_undo_close_insert_run();
+
+  if (!itl_undo_pop(&le)) {
+    TEST_PRINTF("the accept pushed no undo snapshot\n");
+    ok = false;
+  }
+
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+
+  if (strcmp(line_buffer, "tail") != 0 || le.cursor_position != 4) {
+    TEST_PRINTF("undo restored '%s' at %zu\n", line_buffer,
+                le.cursor_position);
+    ok = false;
+  }
+
+  itl_undo_reset();
+  itl_ghost_clear();
+  itl_g_ghost_sticky_target[0] = '\0';
+  ITL_STRING_FREE(line);
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+
+  return ok;
+}
+
+static bool
+test_ghost_completion_corrects_case(void)
+{
+  const char   *path = "tl_test_ghost_completion_case.txt";
+  char          out_buffer[BUFFER_SIZE];
+  char          line_buffer[BUFFER_SIZE];
+  bool          ok = true;
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_g_is_active = true;
+  itl_g_tty_plain_append_pending = false;
+  remove(path);
+  tl_history_load(path);
+
+  ITL_STRING_FROM_CSTR(line, "tail");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_undo_reset();
+  tl_set_complete_callback(test_cased_completion_callback);
+  itl_ghost_update(&le);
+
+  if (strcmp(itl_g_ghost, "scale") != 0 || !itl_g_ghost_should_replace_line ||
+      strcmp(itl_g_ghost_sticky_target, "Tailscale") != 0)
+  {
+    TEST_PRINTF("completion ghost was '%s', target '%s'\n", itl_g_ghost,
+                itl_g_ghost_sticky_target);
+    ok = false;
+  }
+
+  itl_ghost_accept(&le);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+
+  if (strcmp(line_buffer, "Tailscale") != 0) {
+    TEST_PRINTF("accepted completion line was '%s'\n", line_buffer);
+    ok = false;
+  }
+
+  itl_undo_close_insert_run();
+
+  if (!itl_undo_pop(&le)) {
+    TEST_PRINTF("the completion accept pushed no undo snapshot\n");
+    ok = false;
+  }
+
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+
+  if (strcmp(line_buffer, "tail") != 0) {
+    TEST_PRINTF("undo after a completion accept restored '%s'\n", line_buffer);
+    ok = false;
+  }
+
+  tl_set_complete_callback(NULL);
+  itl_undo_reset();
+  itl_ghost_clear();
+  itl_g_ghost_sticky_target[0] = '\0';
+  ITL_STRING_FREE(line);
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+
+  return ok;
+}
+
+static bool
+test_ghost_sticky_target_continues(void)
+{
+  const char   *path = "tl_test_ghost_sticky.txt";
+  char          out_buffer[BUFFER_SIZE];
+  bool          ok = true;
+  int           previous_enabled = itl_g_ghost_enabled;
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_g_is_active = true;
+  itl_g_tty_plain_append_pending = false;
+  remove(path);
+  tl_history_load(path);
+
+  ITL_STRING_FROM_CSTR(line, "tails");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  memcpy(itl_g_ghost_sticky_target, "Tailscale Status", 17);
+  itl_ghost_update(&le);
+
+  if (strcmp(itl_g_ghost, "cale Status") != 0 ||
+      !itl_g_ghost_should_replace_line)
+  {
+    TEST_PRINTF("sticky continuation gave '%s'\n", itl_g_ghost);
+    ok = false;
+  }
+
+  ITL_STRING_FROM_CSTR(line, "tailX");
+  le.cursor_position = line->length;
+  itl_ghost_update(&le);
+
+  if (itl_g_ghost_len != 0 || itl_g_ghost_sticky_target[0] != '\0') {
+    TEST_PRINTF("a diverging line kept the target '%s'\n",
+                itl_g_ghost_sticky_target);
+    ok = false;
+  }
+
+  ITL_STRING_FROM_CSTR(line, "tail");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  memcpy(itl_g_ghost_sticky_target, "Tailscale Status", 17);
+  le.cursor_position = 1;
+  itl_ghost_update(&le);
+
+  if (itl_g_ghost_len != 0) {
+    TEST_PRINTF("a mid-line cursor still drew '%s'\n", itl_g_ghost);
+    ok = false;
+  }
+
+  le.cursor_position = line->length;
+  itl_g_ghost_enabled = 0;
+  itl_ghost_update(&le);
+  itl_g_ghost_enabled = previous_enabled;
+
+  if (itl_g_ghost_len != 0) {
+    TEST_PRINTF("a disabled ghost still drew '%s'\n", itl_g_ghost);
+    ok = false;
+  }
+
+  itl_string_clear(line);
+  le.cursor_position = 0;
+  itl_ghost_update(&le);
+
+  if (itl_g_ghost_len != 0 || itl_g_ghost_sticky_target[0] != '\0') {
+    TEST_PRINTF("an emptied line kept the target '%s'\n",
+                itl_g_ghost_sticky_target);
+    ok = false;
+  }
+
+  itl_ghost_clear();
+  itl_g_ghost_sticky_target[0] = '\0';
+  ITL_STRING_FREE(line);
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+
+  return ok;
+}
+
+static bool
+test_ghost_clips_multiline_suggestion(void)
+{
+  const char   *path = "tl_test_ghost_multiline.txt";
+  char          out_buffer[BUFFER_SIZE];
+  bool          ok = true;
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_g_is_active = true;
+  itl_g_tty_plain_append_pending = false;
+  remove(path);
+  tl_history_load(path);
+
+  if (!hist_append_cstr("echo one\necho two")) ok = false;
+
+  ITL_STRING_FROM_CSTR(line, "echo o");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_ghost_update(&le);
+
+  if (strcmp(itl_g_ghost, "ne") != 0 || itl_g_ghost_len != 2 ||
+      strcmp(itl_g_ghost_sticky_target, "echo one") != 0)
+  {
+    TEST_PRINTF("clipped ghost was '%s', target '%s'\n", itl_g_ghost,
+                itl_g_ghost_sticky_target);
+    ok = false;
+  }
+
+  if (!hist_append_cstr("date\nsleep 1")) ok = false;
+
+  ITL_STRING_FROM_CSTR(line, "date");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_ghost_update(&le);
+
+  if (itl_g_ghost_len != 0 || itl_g_ghost_sticky_target[0] != '\0') {
+    TEST_PRINTF("a suggestion starting with a newline gave '%s'\n",
+                itl_g_ghost);
+    ok = false;
+  }
+
+  itl_ghost_clear();
+  itl_g_ghost_sticky_target[0] = '\0';
+  ITL_STRING_FREE(line);
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+
+  return ok;
+}
+
 static bool
 test_tab_clears_stale_ghost_target(void)
 {
@@ -1639,6 +2975,13 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_string_erase),
                                    DEFINE_TEST_CASE(test_string_insert),
                                    DEFINE_TEST_CASE(test_char_buf),
+                                   DEFINE_TEST_CASE(
+                                       test_string_shift_directions),
+                                   DEFINE_TEST_CASE(
+                                       test_string_copy_uses_live_range),
+                                   DEFINE_TEST_CASE(test_string_to_cstr_limits),
+                                   DEFINE_TEST_CASE(
+                                       test_char_buf_growth_boundary),
                                    DEFINE_TEST_CASE(test_parse_size),
                                    DEFINE_TEST_CASE(test_utf8_strlen),
                                    DEFINE_TEST_CASE(
@@ -1664,6 +3007,16 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_history_offset_shift_matches_scan),
                                    DEFINE_TEST_CASE(test_history_search),
+                                   DEFINE_TEST_CASE(
+                                       test_history_search_matching),
+                                   DEFINE_TEST_CASE(
+                                       test_history_search_rejects_malformed_entry),
+                                   DEFINE_TEST_CASE(
+                                       test_history_search_narrowing),
+#if defined ITL_POSIX
+                                   DEFINE_TEST_CASE(
+                                       test_history_search_preview_cache),
+#endif
                                    DEFINE_TEST_CASE(test_history_short_entry_skipped),
                                    DEFINE_TEST_CASE(test_history_alloc_balance),
                                    DEFINE_TEST_CASE(test_history_concurrent_merge),
@@ -1671,6 +3024,12 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_completion_replacement_is_atomic),
                                    DEFINE_TEST_CASE(
                                        test_alt_arrows_use_word_movement),
+                                   DEFINE_TEST_CASE(test_menu_match_rank),
+                                   DEFINE_TEST_CASE(test_menu_filter_groups),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_narrow_reuses_base),
+                                   DEFINE_TEST_CASE(test_menu_cells),
+                                   DEFINE_TEST_CASE(test_merge_visual_spans),
 #if defined ITL_POSIX
                                    DEFINE_TEST_CASE(
                                        test_alt_backspace_sequences),
@@ -1679,6 +3038,14 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
 #endif
                                    DEFINE_TEST_CASE(
                                        test_ghost_prefers_recent_history),
+                                   DEFINE_TEST_CASE(
+                                       test_ghost_history_corrects_case),
+                                   DEFINE_TEST_CASE(
+                                       test_ghost_completion_corrects_case),
+                                   DEFINE_TEST_CASE(
+                                       test_ghost_sticky_target_continues),
+                                   DEFINE_TEST_CASE(
+                                       test_ghost_clips_multiline_suggestion),
                                    DEFINE_TEST_CASE(
                                        test_tab_clears_stale_ghost_target),
                                    DEFINE_TEST_CASE(
