@@ -1492,6 +1492,29 @@ ITL_DEF bool itl_string_equal(const itl_string_t *str1,
          str1->length;
 }
 
+/* Compares a string with the raw bytes of a decoded entry, so a caller that
+   already holds bytes does not have to build a string to compare it. */
+ITL_DEF bool itl_string_equal_bytes(const itl_string_t *str, const char *data,
+                                    size_t size)
+{
+  size_t i;
+  size_t position = 0;
+
+  if (str->size != size) {
+    return false;
+  }
+
+  for (i = 0; i < str->length; ++i) {
+    if (memcmp(str->chars[i].bytes, data + position, str->chars[i].size) != 0) {
+      return false;
+    }
+
+    position += str->chars[i].size;
+  }
+
+  return true;
+}
+
 ITL_DEF void itl_string_copy(itl_string_t *dst, const itl_string_t *src)
 {
   TL_ASSERT(dst != NULL);
@@ -2079,16 +2102,16 @@ ITL_DEF size_t itl_history_index_to_offset(size_t index)
                                (TL_HISTORY_MAX_SIZE)];
 }
 
-/* Reads the entry that starts at byte offset from the history file into out,
-   decoding the backslash escapes the dumper wrote, a backslash n into a newline
-   and a doubled backslash into one backslash. The decoded length is capped at
-   ITL_STRING_MAX_LEN so one huge command cannot grow the read. Returns false
-   when the file cannot be read. */
-ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
-                                       itl_string_t *out)
+/* Decodes the entry that starts at byte offset in the history file into
+   decoded, turning the backslash escapes the dumper wrote back into their
+   bytes, a backslash n into a newline and a doubled backslash into one
+   backslash. The decoded length is capped at capacity so one huge command
+   cannot grow the read. Returns false when the file cannot be read. */
+ITL_DEF bool itl_history_decode_entry_fd(ITL_FILE file, size_t offset,
+                                         char *decoded, size_t capacity,
+                                         size_t *decoded_size_out)
 {
   char chunk[ITL_HISTORY_FILE_BUFFER_SIZE];
-  char decoded[ITL_STRING_MAX_LEN];
   size_t decoded_size = 0;
   bool escape_pending = false;
   bool carriage_return_pending = false;
@@ -2123,7 +2146,7 @@ ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
 
         /* The record was written with CRLF endings. A carriage return anywhere
            else is entry data. */
-        if (decoded_size < ITL_STRING_MAX_LEN) {
+        if (decoded_size < capacity) {
           decoded[decoded_size++] = '\r';
         } else {
           was_truncated = true;
@@ -2139,7 +2162,7 @@ ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
         } else if (ch != '\\') {
           /* An unknown escape keeps the leading backslash, then the byte falls
              through to be appended on its own. */
-          if (decoded_size < ITL_STRING_MAX_LEN) {
+          if (decoded_size < capacity) {
             decoded[decoded_size++] = '\\';
           } else {
             was_truncated = true;
@@ -2156,7 +2179,7 @@ ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
         continue;
       }
 
-      if (decoded_size < ITL_STRING_MAX_LEN) {
+      if (decoded_size < capacity) {
         decoded[decoded_size++] = (char) ch;
       } else {
         was_truncated = true;
@@ -2166,7 +2189,7 @@ ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
   }
 
   if (carriage_return_pending) {
-    if (decoded_size < ITL_STRING_MAX_LEN) {
+    if (decoded_size < capacity) {
       decoded[decoded_size++] = '\r';
     } else {
       was_truncated = true;
@@ -2174,8 +2197,28 @@ ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
   }
 
   if (was_truncated) {
-    ITL_TRACELN("history entry at offset %zu truncated to %d bytes\n", offset,
-                (int) ITL_STRING_MAX_LEN);
+    ITL_TRACELN("history entry at offset %zu truncated to %zu bytes\n", offset,
+                capacity);
+  }
+
+  *decoded_size_out = decoded_size;
+
+  return true;
+}
+
+/* Reads the entry that starts at byte offset from the history file into out.
+   Returns false when the file cannot be read or the entry is not valid
+   UTF-8. */
+ITL_DEF bool itl_history_read_entry_fd(ITL_FILE file, size_t offset,
+                                       itl_string_t *out)
+{
+  char decoded[ITL_STRING_MAX_LEN];
+  size_t decoded_size;
+
+  if (!itl_history_decode_entry_fd(file, offset, decoded, sizeof(decoded),
+                                   &decoded_size))
+  {
+    return false;
   }
 
   return itl_string_from_bytes(out, decoded, decoded_size);
@@ -3155,7 +3198,7 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
 {
   ITL_FILE read_file;
   ITL_FILE append_file;
-  itl_char_buf_t *buffer;
+  itl_char_buf_t buffer;
   long real_end;
   long actual_end;
   size_t new_offset;
@@ -3202,14 +3245,15 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
     }
     /* Skip a command identical to the most recent entry. */
     if (itl_g_history_count > 0) {
-      itl_string_t *newest = itl_string_alloc();
-      if (itl_history_read_entry_fd(
+      char newest[ITL_STRING_MAX_LEN];
+      size_t newest_size;
+
+      if (itl_history_decode_entry_fd(
               read_file, itl_history_index_to_offset(itl_g_history_count - 1),
-              newest))
+              newest, sizeof(newest), &newest_size))
       {
-        is_duplicate = itl_string_equal(newest, str);
+        is_duplicate = itl_string_equal_bytes(str, newest, newest_size);
       }
-      ITL_STRING_FREE(newest);
     }
     ITL_FILE_CLOSE(read_file);
   }
@@ -3218,23 +3262,28 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
     return true;
   }
 
-  buffer = itl_char_buf_alloc();
+  /* The escaped entry and its two separators are the whole record, so the
+     encode grows the buffer at most once. */
+  itl_char_buf_init(&buffer);
+  itl_char_buf_reserve(&buffer, str->size * 2 + 2);
+
   /* When the file does not end on a newline, write a separator first so the new
      entry starts its own physical line instead of gluing onto the previous one.
    */
   had_unterminated_tail = !itl_g_history_ends_with_newline;
   if (had_unterminated_tail) {
-    itl_char_buf_append_byte(buffer, '\n');
+    itl_char_buf_append_byte(&buffer, '\n');
   }
-  itl_char_buf_append_string_escaped(buffer, str);
-  itl_char_buf_append_byte(buffer, '\n');
+
+  itl_char_buf_append_string_escaped(&buffer, str);
+  itl_char_buf_append_byte(&buffer, '\n');
 
   append_file = ITL_FILE_OPEN_FOR_APPEND(itl_g_history_path);
   if (ITL_FILE_IS_BAD(append_file)) {
     ITL_TRACELN("could not open history file for append (%s): %s\n",
                 itl_g_history_path, strerror(errno));
     itl_g_history_file_is_bad = true;
-    ITL_CHAR_BUF_FREE(buffer);
+    ITL_FREE(buffer.data);
     return false;
   }
 
@@ -3249,8 +3298,8 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
 
   {
     size_t total_written =
-        itl_history_write_all(append_file, buffer->data, buffer->size);
-    if (total_written < buffer->size) {
+        itl_history_write_all(append_file, buffer.data, buffer.size);
+    if (total_written < buffer.size) {
       ITL_TRACELN("could not append to history file (%s): %s\n",
                   itl_g_history_path, strerror(errno));
       itl_g_history_file_is_bad = true;
@@ -3261,12 +3310,12 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
       itl_g_history_ends_with_newline = false;
     } else {
       actual_end = ITL_FILE_TELL(append_file);
-      if (actual_end < 0) actual_end = real_end + (long) buffer->size;
-      new_offset = (size_t) actual_end - buffer->size +
-                   (had_unterminated_tail ? 1 : 0);
-      should_rescan = had_unterminated_tail ||
-                      (size_t) actual_end !=
-                          (size_t) real_end + buffer->size;
+      if (actual_end < 0) actual_end = real_end + (long) buffer.size;
+      new_offset =
+          (size_t) actual_end - buffer.size + (had_unterminated_tail ? 1 : 0);
+      should_rescan =
+          had_unterminated_tail ||
+          (size_t) actual_end != (size_t) real_end + buffer.size;
       itl_g_history_file_size = (size_t) actual_end;
       itl_g_history_ends_with_newline = true;
       if (!should_rescan) {
@@ -3274,8 +3323,8 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
         itl_g_history_total_count += 1;
         itl_g_last_history_event_number = itl_g_history_total_count;
       }
-      itl_history_append_read_buffer((size_t) real_end, buffer->data,
-                                     buffer->size);
+      itl_history_append_read_buffer((size_t) real_end, buffer.data,
+                                     buffer.size);
       ITL_TRACELN("appended history entry at offset %zu, %zu entries now\n",
                   new_offset, itl_g_history_count);
     }
@@ -3285,7 +3334,8 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
     itl_g_history_file_is_bad = true;
     ok = false;
   }
-  ITL_CHAR_BUF_FREE(buffer);
+
+  ITL_FREE(buffer.data);
 
   if (ok && should_rescan) {
     size_t index;
@@ -3764,8 +3814,9 @@ ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_width = 0;
 
-ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost_case_fix[ITL_STRING_MAX_LEN] = {0};
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_case_fix_len = 0;
+/* True when the sticky target corrects the case of what is typed, so accepting
+   the ghost rewrites the whole line instead of appending the suffix. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_ghost_should_replace_line = false;
 
 ITL_DEF int itl_ascii_prefix_matches_casefold(const char *entry,
                                               const char *typed, size_t length)
@@ -4970,8 +5021,7 @@ ITL_DEF void itl_ghost_clear(void)
   itl_g_ghost_len = 0;
   itl_g_ghost_width = 0;
   itl_g_ghost[0] = '\0';
-  itl_g_ghost_case_fix_len = 0;
-  itl_g_ghost_case_fix[0] = '\0';
+  itl_g_ghost_should_replace_line = false;
 }
 
 TL_DEF tl_status_code tl_set_signal_keys(int enabled)
@@ -5078,7 +5128,14 @@ TL_DEF tl_status_code tl_end_external_screen(void)
 
 ITL_DEF void itl_ghost_accept(itl_le_t *le)
 {
-  if (itl_g_ghost_case_fix_len > 0) {
+  if (itl_g_ghost_should_replace_line) {
+    /* itl_le_clear_line drops the sticky target, so the corrected line is taken
+       aside before the line is cleared. */
+    char target[ITL_STRING_MAX_LEN];
+
+    memcpy(target, itl_g_ghost_sticky_target,
+           strlen(itl_g_ghost_sticky_target) + 1);
+
     /* The dispatch closed the insert run, so clear_line would otherwise erase
        the typed prefix before any snapshot captures it. Push the pre-accept
        line and open the run first, mirroring the plain accept path where the
@@ -5086,7 +5143,7 @@ ITL_DEF void itl_ghost_accept(itl_le_t *le)
     itl_undo_push(le);
     itl_g_undo_insert_run_open = true;
     itl_le_clear_line(le);
-    itl_le_insert_cstr(le, itl_g_ghost_case_fix);
+    itl_le_insert_cstr(le, target);
   } else {
     itl_le_insert_cstr(le, itl_g_ghost);
   }
@@ -5198,11 +5255,11 @@ ITL_DEF void itl_ghost_fill_from_token_text(itl_le_t *le, const char *line_cstr,
           int differs =
               skip_offset != typed_byte_len ||
               memcmp(text, line_cstr + token_start_bytes, typed_byte_len) != 0;
-          if (differs && fixed_len < sizeof(itl_g_ghost_case_fix)) {
-            memcpy(itl_g_ghost_case_fix, line_cstr, token_start_bytes);
-            memcpy(itl_g_ghost_case_fix + token_start_bytes, text,
+          if (differs && fixed_len < sizeof(itl_g_ghost_sticky_target)) {
+            memcpy(itl_g_ghost_sticky_target, line_cstr, token_start_bytes);
+            memcpy(itl_g_ghost_sticky_target + token_start_bytes, text,
                    text_byte_len + 1);
-            itl_g_ghost_case_fix_len = fixed_len;
+            itl_g_ghost_should_replace_line = true;
           }
         }
       }
@@ -5325,14 +5382,13 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr,
       itl_g_ghost[suffix_len] = '\0';
       itl_g_ghost_len = suffix_len;
       if (memcmp(entry_cstr, line_cstr, line_byte_len) != 0 &&
-          entry_len < sizeof(itl_g_ghost_case_fix))
+          entry_len < sizeof(itl_g_ghost_sticky_target))
       {
-        memcpy(itl_g_ghost_case_fix, entry_cstr, entry_len);
-        itl_g_ghost_case_fix[entry_len] = '\0';
-        itl_g_ghost_case_fix_len = entry_len;
+        memcpy(itl_g_ghost_sticky_target, entry_cstr, entry_len);
+        itl_g_ghost_sticky_target[entry_len] = '\0';
+        itl_g_ghost_should_replace_line = true;
       } else {
-        itl_g_ghost_case_fix[0] = '\0';
-        itl_g_ghost_case_fix_len = 0;
+        itl_g_ghost_should_replace_line = false;
       }
       found_match = true;
       break;
@@ -5410,9 +5466,6 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
     return;
   }
 
-  itl_g_ghost_case_fix_len = 0;
-  itl_g_ghost_case_fix[0] = '\0';
-
   /* Stay on the target already suggested while the input is still a strict
      prefix of it, whichever source first produced it. Typing further into a
      suggestion keeps it rather than flipping as the candidate set shifts
@@ -5435,17 +5488,9 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
           itl_g_ghost_len = suffix_len;
           /* The typed prefix differs in case from the target, so accepting the
              ghost rewrites the whole line to the target's casing. */
-          if (memcmp(itl_g_ghost_sticky_target, line_cstr, line_byte_len) !=
-                  0 &&
-              target_len < sizeof(itl_g_ghost_case_fix))
-          {
-            memcpy(itl_g_ghost_case_fix, itl_g_ghost_sticky_target, target_len);
-            itl_g_ghost_case_fix[target_len] = '\0';
-            itl_g_ghost_case_fix_len = target_len;
-          } else {
-            itl_g_ghost_case_fix_len = 0;
-            itl_g_ghost_case_fix[0] = '\0';
-          }
+          itl_g_ghost_should_replace_line =
+              memcmp(itl_g_ghost_sticky_target, line_cstr, line_byte_len) != 0;
+
           itl_g_ghost_width = itl_cstr_display_width(itl_g_ghost);
           return;
         }
@@ -5471,6 +5516,7 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
       itl_g_ghost_len = (size_t) (newline - itl_g_ghost);
       if (itl_g_ghost_len == 0) {
         itl_ghost_clear();
+        itl_g_ghost_sticky_target[0] = '\0';
       }
     }
   }
@@ -5479,20 +5525,13 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
   /* A source that produced a suggestion records the whole line-plus-ghost as
      the sticky target, so the next keystroke keeps it while the input stays a
      prefix of it rather than re-running the sources and flipping. */
-  if (itl_g_ghost_len > 0) {
-    if (itl_g_ghost_case_fix_len > 0 &&
-        itl_g_ghost_case_fix_len + 1 <= sizeof(itl_g_ghost_sticky_target))
+  if (itl_g_ghost_len > 0 && !itl_g_ghost_should_replace_line) {
+    if (line_byte_len + itl_g_ghost_len + 1 <=
+        sizeof(itl_g_ghost_sticky_target))
     {
-      memcpy(itl_g_ghost_sticky_target, itl_g_ghost_case_fix,
-             itl_g_ghost_case_fix_len + 1);
-    } else {
-      if (line_byte_len + itl_g_ghost_len + 1 <=
-          sizeof(itl_g_ghost_sticky_target))
-      {
-        memcpy(itl_g_ghost_sticky_target, line_cstr, line_byte_len);
-        memcpy(itl_g_ghost_sticky_target + line_byte_len, itl_g_ghost,
-               itl_g_ghost_len + 1);
-      }
+      memcpy(itl_g_ghost_sticky_target, line_cstr, line_byte_len);
+      memcpy(itl_g_ghost_sticky_target + line_byte_len, itl_g_ghost,
+             itl_g_ghost_len + 1);
     }
   }
 }
