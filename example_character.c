@@ -5,7 +5,6 @@
 
 /* Character buffer can be as large as 4 bytes, with \0 at the end */
 #define CHAR_BUF_SIZE 5
-#define MAX_CHARS     20
 
 int
 main(void)

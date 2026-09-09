@@ -447,8 +447,8 @@ test_char_width(void)
     return false;
   }
 
-  if (itl_strn_display_width(invalid, sizeof(invalid)) != 3 ||
-      itl_strn_display_width(truncated, sizeof(truncated)) != 2)
+  if (itl_strn_width_walk(invalid, sizeof(invalid), (size_t) -1, NULL) != 3 ||
+      itl_strn_width_walk(truncated, sizeof(truncated), (size_t) -1, NULL) != 2)
   {
     return false;
   }

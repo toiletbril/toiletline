@@ -1150,8 +1150,6 @@ ITL_DEF itl_utf8_t itl_utf8_parse(uint8_t first_byte)
   return itl_utf8_new(bytes, size);
 }
 
-#define ITL_UTF8_FREE(c) itl_free(c)
-
 #define ITL_COUNTOF(a) (sizeof(a) / sizeof((a)[0]))
 
 typedef struct itl_cp_interval itl_cp_interval_t;
@@ -1378,11 +1376,6 @@ ITL_DEF size_t itl_cstr_display_width(const char *cstr)
   return itl_cstr_width_walk(cstr, (size_t) -1, NULL);
 }
 
-ITL_DEF size_t itl_strn_display_width(const char *cstr, size_t byte_length)
-{
-  return itl_strn_width_walk(cstr, byte_length, (size_t) -1, NULL);
-}
-
 /* The display width of the prompt's last row and, through out_rows, the count
    of newlines before it. A single-row prompt reports its whole width and
    zero rows, so the caller's existing math is unchanged, while a multi-row
@@ -1479,33 +1472,25 @@ ITL_DEF void itl_string_extend(itl_string_t *str)
                                           str->capacity * sizeof(itl_utf8_t));
 }
 
-ITL_DEF size_t itl_string_prefix_with_offset(const itl_string_t *str1,
-                                             size_t start, size_t end,
-                                             const itl_string_t *str2)
-{
-  size_t i, k, actual_end = ITL_MIN(end, str1->length);
-
-  TL_ASSERT(start <= actual_end);
-
-  for (i = start, k = 0; i < actual_end && k < str2->length; ++i, ++k) {
-    if (!itl_utf8_equal(str1->chars[i], str2->chars[k])) {
-      break;
-    }
-  }
-  return k;
-}
-
 ITL_DEF bool itl_string_equal(const itl_string_t *str1,
                               const itl_string_t *str2)
 {
+  size_t i;
+
   if (str1->size != str2->size) {
     return false;
   }
   if (str1->size == 0) {
     return true;
   }
-  return itl_string_prefix_with_offset(str1, 0, str1->length, str2) ==
-         str1->length;
+
+  for (i = 0; i < str1->length && i < str2->length; ++i) {
+    if (!itl_utf8_equal(str1->chars[i], str2->chars[i])) {
+      return false;
+    }
+  }
+
+  return i == str1->length;
 }
 
 /* Compares a string with the raw bytes of a decoded entry, so a caller that
@@ -3002,13 +2987,12 @@ ITL_DEF void itl_history_push_offset(size_t offset)
 {
   if (itl_g_history_limit == 0) return;
 
+  itl_g_history_offsets[(itl_g_history_head + itl_g_history_count) %
+                        (TL_HISTORY_MAX_SIZE)] = offset;
+
   if (itl_g_history_count < itl_g_history_limit) {
-    itl_g_history_offsets[(itl_g_history_head + itl_g_history_count) %
-                          (TL_HISTORY_MAX_SIZE)] = offset;
     itl_g_history_count += 1;
   } else {
-    itl_g_history_offsets[(itl_g_history_head + itl_g_history_count) %
-                          (TL_HISTORY_MAX_SIZE)] = offset;
     itl_g_history_head = (itl_g_history_head + 1) % (TL_HISTORY_MAX_SIZE);
   }
 }

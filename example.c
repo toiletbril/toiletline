@@ -5,7 +5,6 @@
 
 #define LINE_BUF_SIZE 1024
 #define HISTORY_FILE  "example_history.txt"
-#define MAX_MESSAGES  10
 
 int
 main(void)
