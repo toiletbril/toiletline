@@ -1064,8 +1064,6 @@ ITL_DEF itl_utf8_t itl_utf8_new(const uint8_t *bytes, uint8_t size)
   return ch;
 }
 
-#define ITL_UTF8_COPY(dst, src) memcpy(dst, src, sizeof(itl_utf8_t))
-
 ITL_DEF bool itl_utf8_equal(itl_utf8_t ch1, itl_utf8_t ch2)
 {
   TL_ASSERT(ch1.size <= 4 && ch2.size <= 4);
@@ -1496,17 +1494,14 @@ ITL_DEF bool itl_string_equal(const itl_string_t *str1,
 
 ITL_DEF void itl_string_copy(itl_string_t *dst, const itl_string_t *src)
 {
-  size_t i;
-
   TL_ASSERT(dst != NULL);
   TL_ASSERT(src != NULL);
 
-  while (dst->capacity < src->capacity) {
+  while (dst->capacity < src->length) {
     itl_string_extend(dst);
   }
-  for (i = 0; i < src->length; ++i) {
-    ITL_UTF8_COPY(&dst->chars[i], &src->chars[i]);
-  }
+
+  memcpy(dst->chars, src->chars, src->length * sizeof(itl_utf8_t));
 
   dst->length = src->length;
   dst->size = src->size;
@@ -1551,33 +1546,32 @@ ITL_DEF void itl_string_clear(itl_string_t *str)
 ITL_DEF void itl_string_shift(itl_string_t *str, size_t position,
                               size_t shift_by, bool backwards)
 {
-  size_t i;
+  size_t moved_count;
 
   TL_ASSERT(position <= str->length);
 
-  /* When shifting back, loop from the specified position towards end and move
-     characters back by shift_by. If shifting forward, loop from the end back
-     to the position. */
+  /* The tail after `position` keeps its order in both directions, so one
+     overlapping move carries it. */
   if (backwards) {
-    for (i = position; i < str->length; ++i) {
-      str->chars[i - shift_by] = str->chars[i];
-    }
+    moved_count = str->length - position;
+
+    memmove(str->chars + position - shift_by, str->chars + position,
+            moved_count * sizeof(itl_utf8_t));
 
     TL_ASSERT(str->length >= shift_by);
     str->length -= shift_by;
   } else {
     str->length += shift_by;
+
     while (str->capacity < str->length) {
       itl_string_extend(str);
     }
 
     TL_ASSERT(str->length >= shift_by + 1);
-    for (i = str->length - shift_by - 1; i >= position; --i) {
-      str->chars[i + shift_by] = str->chars[i];
-      if (i == 0) {
-        break; /* avoid wrapping */
-      }
-    }
+    moved_count = str->length - shift_by - position;
+
+    memmove(str->chars + position + shift_by, str->chars + position,
+            moved_count * sizeof(itl_utf8_t));
   }
 }
 
@@ -1680,7 +1674,7 @@ ITL_DEF void itl_string_join_continuations(itl_string_t *str)
 ITL_DEF tl_status_code itl_string_to_cstr(const itl_string_t *str, char *cstr,
                                           size_t cstr_size)
 {
-  size_t i, j, k;
+  size_t i, k;
 
   /* A zero size buffer has no room for even the null terminator, so writing it
      would land past the end. */
@@ -1692,10 +1686,11 @@ ITL_DEF tl_status_code itl_string_to_cstr(const itl_string_t *str, char *cstr,
     if (k + 1 >= cstr_size || cstr_size - k - 1 < str->chars[i].size) {
       break;
     }
-    for (j = 0; j < str->chars[i].size; ++j, ++k) {
-      cstr[k] = (char) str->chars[i].bytes[j];
-    }
+
+    memcpy(cstr + k, str->chars[i].bytes, str->chars[i].size);
+    k += str->chars[i].size;
   }
+
   cstr[k] = '\0';
 
   if (k != str->size) {
@@ -1709,6 +1704,7 @@ ITL_DEF bool itl_string_from_bytes(itl_string_t *str, const char *data,
                                     size_t size)
 {
   size_t i, j, k;
+  size_t rune_count = 0;
   uint8_t rune_width;
   uint32_t codepoint;
 
@@ -1748,24 +1744,24 @@ ITL_DEF bool itl_string_from_bytes(itl_string_t *str, const char *data,
       return false;
     }
     k += rune_width;
+    rune_count += 1;
+  }
+
+  while (str->capacity < rune_count) {
+    itl_string_extend(str);
   }
 
   for (i = 0, k = 0; k < size; ++i) {
     rune_width = itl_utf8_width((uint8_t) data[k]);
 
-    while (str->capacity < i + 1) {
-      itl_string_extend(str);
-    }
-
     str->chars[i].size = rune_width;
+    memcpy(str->chars[i].bytes, data + k, rune_width);
 
-    for (j = 0; j < rune_width; ++j, ++k) {
-      str->chars[i].bytes[j] = (uint8_t) data[k];
-    }
+    k += rune_width;
   }
 
-  str->length = i;
-  itl_string_recalc_size(str);
+  str->length = rune_count;
+  str->size = size;
 
   return true;
 }
@@ -2619,7 +2615,12 @@ ITL_DEF bool itl_history_ensure_read_buffer(void)
   itl_g_debug_history_buffer_load_count += 1;
 #endif
   itl_g_history_read_buffer = itl_char_buf_alloc();
-  itl_char_buf_reserve(itl_g_history_read_buffer, retained_size + 1);
+
+  /* The retained bytes and one spare are the whole load, so the cache is sized
+     to them exactly. Doubling would hold up to twice the file. */
+  itl_g_history_read_buffer->capacity = retained_size + 1;
+  itl_g_history_read_buffer->data = (char *) itl_realloc(
+      itl_g_history_read_buffer->data, itl_g_history_read_buffer->capacity);
 
   while (total_read < retained_size) {
     int read_amount =
@@ -2845,22 +2846,32 @@ ITL_DEF void itl_char_buf_append_spaces(itl_char_buf_t *cb, size_t count)
 ITL_DEF void itl_char_buf_append_string_escaped(itl_char_buf_t *cb,
                                                 const itl_string_t *str)
 {
-  size_t i, j;
+  size_t i;
+  size_t position;
+
+  /* Only a single byte rune is ever escaped, so twice the byte count is the
+     worst case and one reservation covers the whole append. */
+  itl_char_buf_reserve(cb, cb->size + str->size * 2);
+  position = cb->size;
 
   for (i = 0; i < str->length; ++i) {
     itl_utf8_t ch = str->chars[i];
+
     if (ITL_LE_IS_NEWLINE(ch)) {
-      itl_char_buf_append_byte(cb, '\\');
-      itl_char_buf_append_byte(cb, 'n');
+      cb->data[position] = '\\';
+      cb->data[position + 1] = 'n';
+      position += 2;
     } else if (ITL_LE_IS_BACKSLASH(ch)) {
-      itl_char_buf_append_byte(cb, '\\');
-      itl_char_buf_append_byte(cb, '\\');
+      cb->data[position] = '\\';
+      cb->data[position + 1] = '\\';
+      position += 2;
     } else {
-      for (j = 0; j < ch.size; ++j) {
-        itl_char_buf_append_byte(cb, ch.bytes[j]);
-      }
+      memcpy(cb->data + position, ch.bytes, ch.size);
+      position += ch.size;
     }
   }
+
+  cb->size = position;
 }
 
 #define ITL_CHAR_BUF_CLEAR(cb) (cb)->size = 0
