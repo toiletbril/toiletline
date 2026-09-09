@@ -2593,8 +2593,15 @@ ITL_DEF void itl_char_buf_reserve(itl_char_buf_t *cb, size_t needed)
   if (cb->capacity >= needed) {
     return;
   }
-  while (cb->capacity < needed)
+
+  if (cb->capacity == 0) {
+    cb->capacity = ITL_CHAR_BUFFER_INIT_SIZE;
+  }
+
+  while (cb->capacity < needed) {
     cb->capacity = ITL_CHAR_BUF_REALLOC_CAPACITY(cb->capacity);
+  }
+
   cb->data = (char *) itl_realloc(cb->data, cb->capacity);
 }
 
@@ -2876,9 +2883,7 @@ ITL_DEF void itl_char_buf_append_spaces(itl_char_buf_t *cb, size_t count)
 {
   /* The padding for a wrapped continuation row grows the buffer once and fills
      with one memset rather than a per-space capacity check. */
-  while (cb->capacity < cb->size + count) {
-    itl_char_buf_extend(cb);
-  }
+  itl_char_buf_reserve(cb, cb->size + count);
 
   memset(cb->data + cb->size, ' ', count);
   cb->size += count;
@@ -6080,8 +6085,6 @@ ITL_DEF void itl_menu_close_area(itl_char_buf_t *b, size_t rows_below)
   ITL_CHAR_BUF_CLEAR(b);
 }
 
-/* The widest candidate of the list, measured in columns. The name column of the
-   menu is this wide before the terminal clips it. */
 ITL_DEF size_t itl_menu_name_width(const tl_completion *result)
 {
   size_t widest = 0;
@@ -6103,8 +6106,7 @@ ITL_DEF size_t itl_menu_name_width(const tl_completion *result)
    editor's own render path never sees them. The layout owns which rows exist,
    and a help_title of null drops the help row the layout granted. An empty
    list draws the row that says so in place of the candidates. A layout with no
-   candidate row leaves the screen untouched. The name column is measured by the
-   caller, which holds it across a redraw that changes no candidate. */
+   candidate row leaves the screen untouched. */
 ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
                            size_t window_start, itl_menu_layout layout,
                            const char *help_title, const char *help_keys,
@@ -7582,6 +7584,36 @@ ITL_DEF size_t itl_history_find_match_forward(const char *query,
 #define ITL_HISTORY_NEWEST()                                                   \
   (itl_g_history_count > 0 ? itl_g_history_count - 1 : ITL_HISTORY_NONE)
 
+/* An entry rejected by the shorter query cannot hold its extension, so a
+   narrowed match only has to test itself and the entries below it. A narrowed
+   miss stays a miss and needs no scan at all. */
+ITL_DEF size_t itl_history_narrow_match(const char *query, size_t query_size,
+                                        size_t match, bool is_narrowable,
+                                        itl_string_t *out)
+{
+  size_t from;
+
+  if (!is_narrowable) {
+    return itl_history_find_match(query, query_size, ITL_HISTORY_NEWEST(), out);
+  }
+
+  if (match == ITL_HISTORY_NONE) {
+    return ITL_HISTORY_NONE;
+  }
+
+  if (!itl_history_ensure_read_buffer()) {
+    return ITL_HISTORY_NONE;
+  }
+
+  if (itl_history_candidate_matches(match, query, query_size, out)) {
+    return match;
+  }
+
+  from = (match > 0) ? match - 1 : ITL_HISTORY_NONE;
+
+  return itl_history_find_match(query, query_size, from, out);
+}
+
 #define ITL_SEARCH_SGR_GREEN  "\x1b[32m"
 #define ITL_SEARCH_SGR_YELLOW "\x1b[33m"
 #define ITL_SEARCH_SGR_BOLD   "\x1b[1m"
@@ -7893,25 +7925,9 @@ ITL_DEF int itl_history_search(itl_le_t *le)
         query_size =
             itl_search_query_bytes(&query, query_bytes, sizeof(query_bytes));
 
-        /* An entry rejected by the shorter query cannot hold its extension, so
-           a narrowed match only has to test itself and the entries below it.
-           A narrowed miss stays a miss and needs no scan at all. */
-        if (!is_narrowable) {
-          match = itl_history_find_match(query_bytes, query_size,
-                                         ITL_HISTORY_NEWEST(), &match_str);
-          is_narrowable = true;
-        } else if (match != ITL_HISTORY_NONE) {
-          if (!itl_history_ensure_read_buffer()) {
-            match = ITL_HISTORY_NONE;
-          } else if (!itl_history_candidate_matches(match, query_bytes,
-                                                    query_size, &match_str))
-          {
-            size_t from = (match > 0) ? match - 1 : ITL_HISTORY_NONE;
-
-            match = itl_history_find_match(query_bytes, query_size, from,
-                                           &match_str);
-          }
-        }
+        match = itl_history_narrow_match(query_bytes, query_size, match,
+                                         is_narrowable, &match_str);
+        is_narrowable = true;
       } else if (kind == TL_KEY_BACKSPACE) {
         if (query.length > 0) {
           itl_string_erase(&query, query.length, 1, true);
