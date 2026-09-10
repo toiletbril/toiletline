@@ -4065,6 +4065,47 @@ ITL_DEF bool itl_le_prev_spans_append_compatible(
   return true;
 }
 
+/* Drops an empty, out-of-bounds, or unpainted span. The source and the
+   destination may be the same array, since a kept span never lands past the one
+   being read. */
+ITL_DEF size_t itl_spans_keep_valid(const tl_highlight_span *source,
+                                    size_t source_count,
+                                    tl_highlight_span *destination,
+                                    size_t line_length)
+{
+  size_t kept_count = 0;
+  size_t s;
+
+  for (s = 0; s < source_count; ++s) {
+    if (source[s].start < source[s].end && source[s].end <= line_length &&
+        source[s].sgr != NULL)
+    {
+      destination[kept_count++] = source[s];
+    }
+  }
+
+  return kept_count;
+}
+
+ITL_DEF size_t itl_le_collect_highlight(const char *render,
+                                        tl_highlight_span *destination,
+                                        size_t line_length)
+{
+  tl_highlight hl;
+
+  hl.spans = destination;
+  hl.count = 0;
+  hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
+
+  if (!itl_g_highlight_callback(render, &hl)) {
+    return 0;
+  }
+
+  return itl_spans_keep_valid(destination,
+                              ITL_MIN(hl.count, ITL_HIGHLIGHT_MAX_SPANS),
+                              destination, line_length);
+}
+
 ITL_DEF size_t itl_merge_visual_spans(
     const tl_highlight_span *syntax, size_t syntax_count,
     const tl_highlight_span *selection, size_t selection_count,
@@ -4239,6 +4280,15 @@ ITL_DEF void itl_le_invalidate_prev_frame(void)
   itl_g_le_prev_length = 0;
   itl_g_le_prev_ghost_len = 0;
   itl_g_le_prev_spans_usable = false;
+}
+
+/* The recorded caret row counts from one at the block's first row, so the
+   topmost row needs no move. */
+ITL_DEF void itl_le_tty_move_to_block_top(itl_char_buf_t *b)
+{
+  if (itl_g_le_prev_cursor_row > 1) {
+    ITL_TTY_MOVE_UP(b, itl_g_le_prev_cursor_row - 1);
+  }
 }
 
 /* Columns each wrapped or continuation row is padded by so the text lines up
@@ -4654,22 +4704,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
          itl_g_multicursor_active) &&
         have_cur_render && itl_should_run_highlight())
     {
-      tl_highlight hl;
-      size_t syntax_count = 0;
-      hl.spans = itl_syntax_spans;
-      hl.count = 0;
-      hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
-      if (itl_g_highlight_callback(itl_cur_render, &hl)) {
-        size_t s;
-        for (s = 0; s < hl.count && s < ITL_HIGHLIGHT_MAX_SPANS; ++s) {
-          if (itl_syntax_spans[s].start < itl_syntax_spans[s].end &&
-              itl_syntax_spans[s].end <= le->line->length &&
-              itl_syntax_spans[s].sgr != NULL)
-          {
-            itl_syntax_spans[syntax_count++] = itl_syntax_spans[s];
-          }
-        }
-      }
+      size_t syntax_count = itl_le_collect_highlight(
+          itl_cur_render, itl_syntax_spans, le->line->length);
+
       span_count = itl_merge_visual_spans(
           itl_syntax_spans, syntax_count, itl_g_search_spans,
           itl_g_search_span_count, le->line->length, itl_spans,
@@ -4677,30 +4714,12 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     } else if (itl_g_search_spans_active) {
       /* The reverse search prebuilt its spans for the whole block, so the host
          callback is skipped and those spans are validated and drawn. */
-      size_t s;
-      for (s = 0; s < itl_g_search_span_count; ++s) {
-        if (itl_g_search_spans[s].start < itl_g_search_spans[s].end &&
-            itl_g_search_spans[s].end <= le->line->length &&
-            itl_g_search_spans[s].sgr != NULL)
-        {
-          itl_spans[span_count++] = itl_g_search_spans[s];
-        }
-      }
+      span_count = itl_spans_keep_valid(itl_g_search_spans,
+                                        itl_g_search_span_count, itl_spans,
+                                        le->line->length);
     } else if (have_cur_render && itl_should_run_highlight()) {
-      tl_highlight hl;
-      hl.spans = itl_spans;
-      hl.count = 0;
-      hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
-      if (itl_g_highlight_callback(itl_cur_render, &hl)) {
-        size_t s;
-        for (s = 0; s < hl.count && s < ITL_HIGHLIGHT_MAX_SPANS; ++s) {
-          if (itl_spans[s].start < itl_spans[s].end &&
-              itl_spans[s].end <= le->line->length && itl_spans[s].sgr != NULL)
-          {
-            itl_spans[span_count++] = itl_spans[s];
-          }
-        }
-      }
+      span_count = itl_le_collect_highlight(itl_cur_render, itl_spans,
+                                            le->line->length);
     }
   }
 
@@ -4771,9 +4790,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
       ITL_TTY_CLEAR_BELOW(b);
     } else {
       /* Park at the top-left of the previous render. */
-      if (itl_g_le_prev_cursor_row > 1) {
-        ITL_TTY_MOVE_UP(b, itl_g_le_prev_cursor_row - 1);
-      }
+      itl_le_tty_move_to_block_top(b);
 
       /* Clear every row the previous render occupied, leaving rows we do not
          own untouched. */
@@ -6281,9 +6298,7 @@ ITL_DEF bool itl_refresh_after_wake(itl_le_t *le)
   }
 
   wake_buf = &itl_g_char_buffer;
-  if (itl_g_le_prev_cursor_row > 1) {
-    ITL_TTY_MOVE_UP(wake_buf, itl_g_le_prev_cursor_row - 1);
-  }
+  itl_le_tty_move_to_block_top(wake_buf);
   ITL_TTY_MOVE_TO_COLUMN(wake_buf, 1);
   ITL_TTY_CLEAR_BELOW(wake_buf);
   ITL_CHAR_BUF_DUMP(wake_buf);
