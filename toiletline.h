@@ -1328,6 +1328,16 @@ ITL_DEF size_t itl_strn_width_walk(const char *cstr, size_t byte_length,
       continue;
     }
 
+    if ((uint8_t) cstr[i] >= 0x20 && (uint8_t) cstr[i] < 0x7F) {
+      if (width >= stop_after) {
+        break;
+      }
+
+      width += 1;
+      i += 1;
+      continue;
+    }
+
     uint8_t rune_width = itl_utf8_width((uint8_t) cstr[i]);
     itl_utf8_t ch;
     uint8_t j;
