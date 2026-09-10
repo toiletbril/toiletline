@@ -3800,6 +3800,7 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_length = 0;
 /* Whether the previous refresh left the cursor at the line end. The append fast
    path fires only then, otherwise a mid-line caret forces the full redraw. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_cursor_at_end = false;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_ghost_len = 0;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_plain_append_pending = false;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_plain_append_width = 0;
 #if !defined NDEBUG
@@ -4171,6 +4172,30 @@ struct itl_le_metrics
   size_t cursor_col; /* 0-based visual column of the cursor */
 };
 
+/* Record whether this frame, text or cursor-only, parked the caret at the line
+   end, so the append fast path on the next keystroke knows the physical cursor
+   sits at the append point. */
+ITL_DEF void itl_le_commit_geometry(itl_le_metrics_t m, bool is_cursor_at_end)
+{
+  itl_g_le_prev_total_rows = m.total_rows;
+  itl_g_le_prev_cursor_row = m.cursor_row + 1;
+  itl_g_le_prev_cursor_col = m.cursor_col;
+  itl_g_le_prev_cursor_at_end = is_cursor_at_end;
+}
+
+/* Remember the line and the spans this text refresh drew, so the next
+   keystroke can take the append fast path. */
+ITL_DEF void itl_le_commit_render(const char *render, size_t render_len,
+                                  size_t line_length,
+                                  const tl_highlight_span *spans,
+                                  size_t span_count)
+{
+  memcpy(itl_g_le_prev_render, render, render_len);
+  itl_g_le_prev_render_len = render_len;
+  itl_g_le_prev_length = line_length;
+  itl_le_save_prev_spans(spans, span_count);
+}
+
 /* Columns each wrapped or continuation row is padded by so the text lines up
    under the first row. Falls back to no padding when the prompt fills the row.
  */
@@ -4426,6 +4451,31 @@ ITL_DEF void itl_vi_sync_cursor_shape(itl_char_buf_t *b)
   itl_char_buf_append_byte(b, 'q');
 }
 
+/* Draw the ghost suggestion dimmed after the line. It is shown only when the
+   cursor sits at the very end of the buffer and the suggestion fits on the
+   current row without wrapping, so it never pushes a line break and the caller's
+   cursor restore lands on the real caret. A second clear erases a longer ghost
+   left from a previous frame. */
+ITL_DEF bool itl_le_tty_draw_ghost(itl_char_buf_t *b, bool is_cursor_at_end,
+                                   size_t cursor_col, size_t cols)
+{
+  itl_g_le_prev_ghost_len = 0;
+
+  if (!is_cursor_at_end || itl_g_ghost_len == 0 ||
+      cursor_col + itl_g_ghost_width >= cols)
+  {
+    return false;
+  }
+
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_DIM_SGR));
+  itl_char_buf_append_cstr(b, itl_g_ghost);
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+  ITL_TTY_CLEAR_TO_END(b);
+  itl_g_le_prev_ghost_len = itl_g_ghost_len;
+
+  return true;
+}
+
 /* NOTE: Hottest function in the library. */
 ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 {
@@ -4614,20 +4664,12 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         itl_char_buf_append_cstr(fb, ITL_HIGHLIGHT_RESET);
       }
       ITL_TTY_CLEAR_TO_END(fb);
-      if (itl_g_ghost_len > 0 && m.cursor_col + itl_g_ghost_width < cols) {
-        itl_char_buf_append_cstr(fb, itl_color_sequence(ITL_DIM_SGR));
-        itl_char_buf_append_cstr(fb, itl_g_ghost);
-        itl_char_buf_append_cstr(fb, itl_color_sequence(ITL_HIGHLIGHT_RESET));
-        ITL_TTY_CLEAR_TO_END(fb);
+      if (itl_le_tty_draw_ghost(fb, true, m.cursor_col, cols)) {
         ITL_TTY_MOVE_TO_COLUMN(fb, m.cursor_col + 1);
       }
-      memcpy(itl_g_le_prev_render, itl_cur_render, cur_len);
-      itl_g_le_prev_render_len = cur_len;
-      itl_g_le_prev_length = le->line->length;
-      itl_g_le_prev_total_rows = m.total_rows;
-      itl_g_le_prev_cursor_row = m.cursor_row + 1;
-      itl_g_le_prev_cursor_col = m.cursor_col;
-      itl_g_le_prev_cursor_at_end = true;
+      itl_le_commit_geometry(m, true);
+      itl_le_commit_render(itl_cur_render, cur_len, le->line->length, itl_spans,
+                           span_count);
 #if !defined NDEBUG
       itl_g_debug_append_refresh_count += 1;
 #endif
@@ -4795,20 +4837,8 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     }
     ITL_TTY_CLEAR_TO_END(b);
 
-    /* Draw the ghost suggestion dimmed after the line. It is shown only when
-       the cursor sits at the very end of the buffer and the suggestion fits on
-       the current row without wrapping, so it never pushes a line break and the
-       cursor restore below lands on the real caret. A second clear erases a
-       longer ghost left from a previous frame, then the cursor is parked back
-       on the real caret column. */
-    if (itl_g_ghost_len > 0 && le->cursor_position == le->line->length &&
-        col + itl_g_ghost_width < cols)
-    {
-      itl_char_buf_append_cstr(b, itl_color_sequence(ITL_DIM_SGR));
-      itl_char_buf_append_cstr(b, itl_g_ghost);
-      itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
-      ITL_TTY_CLEAR_TO_END(b);
-    }
+    (void) itl_le_tty_draw_ghost(
+        b, le->cursor_position == le->line->length, col, cols);
 
     /* Move from the end of the rendered text up to the cursor's row. */
     move_up = (m.total_rows - 1) - m.cursor_row;
@@ -4827,30 +4857,19 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
   ITL_TTY_MOVE_TO_COLUMN(b, m.cursor_col + 1);
 
-  itl_g_le_prev_total_rows = m.total_rows;
-  itl_g_le_prev_cursor_row = m.cursor_row + 1;
-  itl_g_le_prev_cursor_col = m.cursor_col;
-  /* Record whether this frame, text or cursor-only, parked the caret at the
-     line end, so the append fast path on the next keystroke knows the physical
-     cursor sits at the append point. */
-  itl_g_le_prev_cursor_at_end = (le->cursor_position == le->line->length);
+  itl_le_commit_geometry(m, le->cursor_position == le->line->length);
 
-  /* Remember the line and the spans this text refresh drew, so the next
-     keystroke can take the append fast path. A cursor-only refresh leaves the
-     line untouched and keeps the stored render. A failed conversion forces a
-     full redraw next time. */
+  /* A cursor-only refresh leaves the line untouched and keeps the stored
+     render. A failed conversion forces a full redraw next time. */
   if (itl_g_tty_should_refresh_text) {
     if (have_cur_render) {
       /* A successful itl_string_to_cstr wrote exactly the line's byte size, so
          the length is read off the line rather than recounted with strlen. */
-      itl_g_le_prev_render_len = le->line->size;
-      itl_g_le_prev_length = le->line->length;
-      memcpy(itl_g_le_prev_render, itl_cur_render, itl_g_le_prev_render_len);
+      itl_le_commit_render(itl_cur_render, le->line->size, le->line->length,
+                           itl_spans, span_count);
     } else {
-      itl_g_le_prev_render_len = 0;
-      itl_g_le_prev_length = 0;
+      itl_le_commit_render(itl_cur_render, 0, 0, itl_spans, span_count);
     }
-    itl_le_save_prev_spans(itl_spans, span_count);
   }
 
   itl_g_tty_prev_rows = tty_rows;
@@ -5033,6 +5052,27 @@ ITL_DEF void itl_ghost_clear(void)
   itl_g_ghost_should_replace_line = false;
 }
 
+/* Hand the line back to the host with no ghost left anywhere. itl_ghost_clear
+   only drops the recorded text, so a ghost that reached the screen also needs
+   one forced text refresh to erase it. With nothing drawn the line on screen is
+   already correct and the repaint is skipped, which avoids a full-block flicker
+   on a multiline submit. */
+ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
+{
+  bool was_ghost_drawn = itl_g_le_prev_ghost_len > 0;
+
+  itl_ghost_clear();
+
+  if (was_ghost_drawn) {
+    itl_g_tty_should_refresh_text = true;
+    itl_le_tty_refresh(le);
+  }
+
+  itl_le_clear_line(le);
+
+  return code;
+}
+
 TL_DEF tl_status_code tl_set_signal_keys(int enabled)
 {
 #if defined ITL_POSIX
@@ -5129,6 +5169,7 @@ TL_DEF tl_status_code tl_end_external_screen(void)
   itl_g_le_prev_render_len = 0;
   itl_g_le_prev_length = 0;
   itl_g_le_prev_cursor_at_end = false;
+  itl_g_le_prev_ghost_len = 0;
   itl_g_le_prev_spans_usable = false;
   itl_ghost_clear();
   itl_g_ghost_sticky_target[0] = '\0';
@@ -9813,6 +9854,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
   itl_g_le_prev_render_len = 0;
   itl_g_le_prev_length = 0;
   itl_g_le_prev_cursor_at_end = false;
+  itl_g_le_prev_ghost_len = 0;
   itl_le_tty_refresh(le);
 
   while (true) {
@@ -9937,29 +9979,25 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
       if (select_code != TL_SUCCESS) {
-        itl_le_clear_line(le);
-        return select_code;
+        return itl_le_finish_input(le, select_code);
       }
       if (after_search != TL_KEY_UNKN) {
         code = itl_le_key_handle(le, after_search);
         if (code != TL_SUCCESS) {
-          itl_le_clear_line(le);
-          return code;
+          return itl_le_finish_input(le, code);
         }
       }
     } else if (input_byte == 22 && itl_g_edit_mode == TL_EDIT_MODE_EMACS) {
       itl_ghost_clear();
       code = itl_emacs_multicursor_loop(le);
       if (code != TL_SUCCESS) {
-        itl_le_clear_line(le);
-        return code;
+        return itl_le_finish_input(le, code);
       }
     } else if (input_byte == 22 && itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND) {
       itl_ghost_clear();
       code = itl_vi_block_loop(le, itl_g_edit_mode);
       if (code != TL_SUCCESS) {
-        itl_le_clear_line(le);
-        return code;
+        return itl_le_finish_input(le, code);
       }
     } else if (itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND ||
                itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL)
@@ -9967,8 +10005,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       itl_ghost_clear();
       code = itl_vi_command_dispatch(le, input_byte, input_type);
       if (code != TL_SUCCESS) {
-        itl_le_clear_line(le);
-        return code;
+        return itl_le_finish_input(le, code);
       }
     } else if (input_type != TL_KEY_CHAR) {
       /* Any non-character key edits or moves, so the stale ghost is dropped
@@ -9981,25 +10018,12 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
                             (input_type & TL_MASK_KEY) == TL_KEY_END) &&
                            le->cursor_position == le->line->length &&
                            itl_g_ghost_len > 0;
-      /* Whether a dimmed ghost is on screen before it is cleared below, so the
-         terminating-key path knows if a repaint is needed to erase it. */
-      bool ghost_was_on_screen = itl_g_ghost_len > 0;
       if (!is_tab && !accepts_ghost) {
         itl_ghost_clear();
       }
       code = itl_le_key_handle(le, input_type);
       if (code != TL_SUCCESS) {
-        /* A terminating key such as Enter leaves the loop before the refresh at
-           the bottom runs. When a dimmed ghost was on screen it must be erased,
-           so one forced text refresh redraws the line without it. With no ghost
-           the line on screen is already correct, so the repaint is skipped,
-           which avoids a full-block flicker on a multiline submit. */
-        if (ghost_was_on_screen) {
-          itl_g_tty_should_refresh_text = true;
-          itl_le_tty_refresh(le);
-        }
-        itl_le_clear_line(le);
-        return code;
+        return itl_le_finish_input(le, code);
       }
       /* After tab grew the line, offer a fresh ghost for the new token. */
       if (is_tab && le->line->length > line_length_before_key) {

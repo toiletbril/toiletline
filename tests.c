@@ -2957,6 +2957,96 @@ test_external_screen_requires_raw_mode(void)
   return begin_refused && end_refused;
 }
 
+#if defined ITL_POSIX && !defined NDEBUG
+static int
+test_whole_line_highlight_callback(const char *buffer, tl_highlight *out)
+{
+  if (out->capacity == 0) {
+    return 0;
+  }
+
+  out->spans[0].start = 0;
+  out->spans[0].end = tl_utf8_strlen(buffer);
+  out->spans[0].sgr = "\x1b[32m";
+  out->count = out->spans[0].end > 0 ? 1 : 0;
+
+  return 1;
+}
+
+static bool
+test_append_path_keeps_spans(void)
+{
+  const char *keys = "abcd";
+  char        out_buffer[BUFFER_SIZE];
+  int         null_descriptor = -1;
+  int         saved_stdout = -1;
+  size_t      key_index;
+  bool        ok = false;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  null_descriptor = open("/dev/null", O_WRONLY);
+  if (null_descriptor < 0) goto cleanup;
+
+  saved_stdout = dup(STDOUT_FILENO);
+  if (saved_stdout < 0) goto cleanup;
+  if (dup2(null_descriptor, STDOUT_FILENO) < 0) goto cleanup;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  itl_g_tty_first_render = true;
+  itl_g_le_prev_total_rows = 1;
+  itl_g_le_prev_cursor_row = 1;
+  itl_g_le_prev_cursor_col = 0;
+  itl_g_le_prev_render_len = 0;
+  itl_g_le_prev_length = 0;
+  itl_g_le_prev_cursor_at_end = false;
+  itl_g_le_prev_spans_usable = false;
+  itl_g_le_prev_ghost_len = 0;
+  itl_g_tty_plain_append_pending = false;
+  itl_g_debug_append_refresh_count = 0;
+  itl_g_debug_full_refresh_count = 0;
+  tl_set_highlight_callback(test_whole_line_highlight_callback);
+
+  for (key_index = 0; keys[key_index] != '\0'; ++key_index) {
+    itl_utf8_t appended_character =
+        itl_utf8_parse((uint8_t) keys[key_index]);
+
+    itl_g_tty_plain_append_pending = le.cursor_position == le.line->length;
+    itl_g_tty_plain_append_width = itl_char_width(appended_character);
+    itl_le_insert(&le, appended_character);
+    itl_g_tty_should_refresh_text = true;
+    itl_le_tty_refresh(&le);
+  }
+
+  ok = itl_g_debug_append_refresh_count == 3 &&
+       itl_g_debug_full_refresh_count == 1;
+
+cleanup:
+  if (saved_stdout >= 0) {
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+  }
+  if (null_descriptor >= 0) close(null_descriptor);
+
+  tl_set_highlight_callback(NULL);
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  ITL_STRING_FREE(line);
+
+  if (!ok) {
+    TEST_PRINTF("append %zu, full %zu, expected 3 and 1\n",
+                itl_g_debug_append_refresh_count,
+                itl_g_debug_full_refresh_count);
+  }
+
+  return ok;
+}
+#endif
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -3051,7 +3141,12 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_tab_clears_stale_ghost_target),
                                    DEFINE_TEST_CASE(
-                                       test_external_screen_requires_raw_mode)};
+                                       test_external_screen_requires_raw_mode),
+#if defined ITL_POSIX && !defined NDEBUG
+                                   DEFINE_TEST_CASE(
+                                       test_append_path_keeps_spans),
+#endif
+};
 
 int
 main(void)
