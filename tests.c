@@ -4,6 +4,10 @@
 
 #include <stdio.h>
 
+#if defined ITL_POSIX
+#include <sys/wait.h>
+#endif
+
 #define BUFFER_SIZE 128
 
 #define TEST_PRINTF(...)                                                       \
@@ -2446,6 +2450,70 @@ test_merge_visual_spans(void)
 }
 
 #if defined ITL_POSIX
+static bool
+test_write_all_resumes_a_partial_write(void)
+{
+  const size_t span_length = (size_t) 1 << 20;
+  char        *data;
+  int          pipe_fds[2];
+  pid_t        child;
+  size_t       written;
+  int          child_status = 0;
+  bool         ok;
+
+  data = (char *) malloc(span_length);
+
+  if (data == NULL) {
+    TEST_PRINTF("could not allocate %zu bytes\n", span_length);
+    return false;
+  }
+
+  memset(data, 'x', span_length);
+
+  if (pipe(pipe_fds) != 0) {
+    TEST_PRINTF("could not create a pipe\n");
+    free(data);
+    return false;
+  }
+
+  child = fork();
+
+  if (child < 0) {
+    TEST_PRINTF("could not fork a reader\n");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    free(data);
+    return false;
+  }
+
+  if (child == 0) {
+    char sink[4096];
+
+    close(pipe_fds[1]);
+
+    while (read(pipe_fds[0], sink, sizeof(sink)) > 0) {
+      continue;
+    }
+
+    close(pipe_fds[0]);
+    _exit(0);
+  }
+
+  close(pipe_fds[0]);
+  written = itl_write_all(pipe_fds[1], data, span_length);
+  close(pipe_fds[1]);
+  waitpid(child, &child_status, 0);
+  free(data);
+
+  ok = written == span_length;
+
+  if (!ok) {
+    TEST_PRINTF("wrote %zu of %zu bytes\n", written, span_length);
+  }
+
+  return ok;
+}
+
 static volatile sig_atomic_t test_alarm_fired;
 
 static void
@@ -3587,6 +3655,70 @@ test_colors_disabled_drop_span_escapes(void)
 
   return ok;
 }
+
+static bool
+test_submit_erases_the_drawn_ghost(void)
+{
+  static const char GHOST[] = "hoing";
+  char              out_buffer[BUFFER_SIZE];
+  bool              was_ghost_drawn;
+  bool              was_ghost_recorded;
+  bool              was_ghost_erased;
+  bool              is_ghost_cleared;
+  bool              was_quiet_without_ghost;
+  bool              ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  ITL_STRING_FROM_CSTR(line, "ec");
+  le.cursor_position = line->length;
+
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  itl_g_debug_frame_sink = test_frame_capture_sink;
+
+  memcpy(itl_g_ghost, GHOST, sizeof(GHOST));
+  itl_g_ghost_len = sizeof(GHOST) - 1;
+  itl_g_ghost_width = sizeof(GHOST) - 1;
+
+  test_frame_capture_refresh(&le);
+  was_ghost_drawn = test_frame_capture_has(GHOST);
+  was_ghost_recorded = itl_g_le_prev_ghost_len == sizeof(GHOST) - 1;
+
+  test_frame_capture_size = 0;
+  itl_le_finish_input(&le, TL_PRESSED_ENTER);
+  was_ghost_erased = test_frame_capture_size > 0 && !test_frame_capture_has(GHOST);
+  is_ghost_cleared = itl_g_ghost_len == 0;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  ITL_STRING_FROM_CSTR(line, "ec");
+  le.cursor_position = line->length;
+
+  test_frame_capture_refresh(&le);
+  test_frame_capture_size = 0;
+  itl_le_finish_input(&le, TL_PRESSED_ENTER);
+  was_quiet_without_ghost = test_frame_capture_size == 0;
+
+  itl_g_debug_frame_sink = NULL;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  ITL_STRING_FREE(line);
+
+  ok = was_ghost_drawn && was_ghost_recorded && was_ghost_erased &&
+       is_ghost_cleared && was_quiet_without_ghost;
+
+  if (!ok) {
+    TEST_PRINTF("drawn %d, recorded %d, erased %d, cleared %d, quiet %d\n",
+                (int) was_ghost_drawn, (int) was_ghost_recorded,
+                (int) was_ghost_erased, (int) is_ghost_cleared,
+                (int) was_quiet_without_ghost);
+  }
+
+  return ok;
+}
 #endif
 
 static bool
@@ -3739,6 +3871,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_alt_backspace_sequences),
                                    DEFINE_TEST_CASE(
                                        test_pending_resize_wakes_input_wait),
+                                   DEFINE_TEST_CASE(
+                                       test_write_all_resumes_a_partial_write),
 #endif
                                    DEFINE_TEST_CASE(
                                        test_ghost_prefers_recent_history),
@@ -3772,6 +3906,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_drawn_metrics_match_the_walk),
                                    DEFINE_TEST_CASE(
                                        test_colors_disabled_drop_span_escapes),
+                                   DEFINE_TEST_CASE(
+                                       test_submit_erases_the_drawn_ghost),
 #endif
 };
 
