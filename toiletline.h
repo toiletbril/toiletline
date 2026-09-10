@@ -4004,8 +4004,8 @@ ITL_DEF void itl_flash_sleep(void)
    owned copy, since the host's pointer is only stable for one render. */
 typedef struct itl_prev_span_t
 {
-  size_t start;
-  size_t end;
+  uint32_t start;
+  uint32_t end;
   char sgr[ITL_PREV_SPAN_SGR_MAX];
 } itl_prev_span_t;
 
@@ -4040,8 +4040,8 @@ ITL_DEF void itl_le_save_prev_spans(const tl_highlight_span *spans,
       itl_g_le_prev_spans_usable = false;
       return;
     }
-    itl_g_le_prev_spans[s].start = spans[s].start;
-    itl_g_le_prev_spans[s].end = spans[s].end;
+    itl_g_le_prev_spans[s].start = (uint32_t) spans[s].start;
+    itl_g_le_prev_spans[s].end = (uint32_t) spans[s].end;
     memcpy(itl_g_le_prev_spans[s].sgr, spans[s].sgr, sgr_len + 1);
   }
 }
@@ -4061,9 +4061,11 @@ ITL_DEF bool itl_le_prev_spans_append_compatible(
     {
       return false;
     }
+
     if (spans[s].end == itl_g_le_prev_spans[s].end) {
       continue;
     }
+
     if (s + 1 != count ||
         itl_g_le_prev_spans[s].end != itl_g_le_prev_length ||
         spans[s].end != current_length)
