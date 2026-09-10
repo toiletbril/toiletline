@@ -3082,6 +3082,116 @@ test_reflow_agrees_with_metrics(void)
   return ok;
 }
 
+static itl_le_metrics_t
+test_reference_metrics(const itl_le_t *le, size_t tty_cols)
+{
+  itl_le_metrics_t m = ITL_ZERO_INIT;
+  size_t           cols = tty_cols > 1 ? tty_cols : 1;
+  size_t           indent = itl_le_prompt_indent(le, cols);
+  size_t           row = le->prompt_rows;
+  size_t           col = indent;
+  size_t           i;
+
+  for (i = 0; i <= le->line->length; ++i) {
+    if (i == le->cursor_position) {
+      m.cursor_row = row;
+      m.cursor_col = col;
+    }
+
+    if (i == le->line->length) {
+      break;
+    }
+
+    if (ITL_LE_IS_NEWLINE(le->line->chars[i])) {
+      row += 1;
+      col = indent;
+    } else {
+      size_t char_width = itl_char_width(le->line->chars[i]);
+
+      if (char_width == 2 && col + 1 >= cols) {
+        row += 1;
+        col = indent;
+      }
+
+      col += char_width;
+
+      if (col >= cols) {
+        row += 1;
+        col = indent;
+      }
+    }
+  }
+
+  m.total_rows = row + 1;
+
+  return m;
+}
+
+static bool
+test_wrap_predicates_agree_with_reference(void)
+{
+  static const char wide[] = {(char) 0xE4, (char) 0xBD, (char) 0xA0};
+  char              text[32];
+  char              out_buffer[BUFFER_SIZE];
+  size_t            insert_position;
+  size_t            cols;
+  bool              ok = true;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "ab> ");
+
+  for (insert_position = 0; insert_position <= 12 && ok; ++insert_position) {
+    size_t length = 0;
+    size_t filler;
+
+    for (filler = 0; filler < insert_position; ++filler) {
+      text[length++] = 'a';
+    }
+
+    memcpy(text + length, wide, sizeof(wide));
+    length += sizeof(wide);
+
+    for (filler = insert_position; filler < 12; ++filler) {
+      text[length++] = 'b';
+    }
+
+    text[length] = '\0';
+    ITL_STRING_FROM_CSTR(line, text);
+
+    for (cols = 1; cols <= 16 && ok; ++cols) {
+      size_t position;
+
+      for (position = 0; position <= line->length; ++position) {
+        itl_le_metrics_t expected;
+        itl_le_metrics_t actual;
+
+        le.cursor_position = position;
+        expected = test_reference_metrics(&le, cols);
+        actual = itl_le_compute_metrics(&le, cols);
+
+        if (expected.cursor_row != actual.cursor_row ||
+            expected.cursor_col != actual.cursor_col ||
+            expected.total_rows != actual.total_rows)
+        {
+          TEST_PRINTF("wide at %zu, %zu cols, caret %zu gave %zu %zu %zu "
+                      "against %zu %zu %zu\n",
+                      insert_position, cols, position, actual.cursor_row,
+                      actual.cursor_col, actual.total_rows, expected.cursor_row,
+                      expected.cursor_col, expected.total_rows);
+          ok = false;
+          break;
+        }
+      }
+    }
+  }
+
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 static bool
 test_bytes_have(const char *data, size_t size, const char *needle)
 {
@@ -3349,6 +3459,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_external_screen_requires_raw_mode),
                                    DEFINE_TEST_CASE(
                                        test_reflow_agrees_with_metrics),
+                                   DEFINE_TEST_CASE(
+                                       test_wrap_predicates_agree_with_reference),
                                    DEFINE_TEST_CASE(test_csi_sequences),
                                    DEFINE_TEST_CASE(
                                        test_menu_band_survives_disabled_colors),

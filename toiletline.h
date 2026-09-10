@@ -4256,6 +4256,17 @@ ITL_DEF size_t itl_le_prompt_indent(const itl_le_t *le, size_t cols)
 
 #define ITL_LE_INDENT(le, cols) itl_le_prompt_indent((le), (cols))
 
+/* A double-width glyph is never split across the right edge. */
+ITL_DEF bool itl_wrap_is_early_break(size_t col, size_t char_width, size_t cols)
+{
+  return char_width == 2 && col + 1 >= cols;
+}
+
+ITL_DEF bool itl_wrap_is_break_after(size_t col, size_t cols)
+{
+  return col >= cols;
+}
+
 /* Walks the buffer once and computes the cursor's visual row and column plus
    the total number of visual rows. It accounts for the prompt width on the
    first row, per-character display width, soft wrapping at tty_cols, a wide
@@ -4290,13 +4301,15 @@ ITL_DEF itl_le_metrics_t itl_le_compute_metrics(const itl_le_t *le,
       col = indent;
     } else {
       size_t char_width = itl_char_width(le->line->chars[i]);
-      /* A double-width glyph is never split across the right edge. */
-      if (char_width == 2 && col + 1 >= cols) {
+
+      if (itl_wrap_is_early_break(col, char_width, cols)) {
         row += 1;
         col = indent;
       }
+
       col += char_width;
-      if (col >= cols) {
+
+      if (itl_wrap_is_break_after(col, cols)) {
         row += 1;
         col = indent;
       }
@@ -4339,12 +4352,15 @@ ITL_DEF size_t itl_le_reflow_rows_above_caret(const itl_le_t *le,
       col = indent;
     } else {
       size_t char_width = itl_char_width(le->line->chars[i]);
-      if (char_width == 2 && col + 1 >= ocols) {
+
+      if (itl_wrap_is_early_break(col, char_width, ocols)) {
         rows_above += ITL_MAX((size_t) 1, (col + ncols - 1) / ncols);
         col = indent;
       }
+
       col += char_width;
-      if (col >= ocols) {
+
+      if (itl_wrap_is_break_after(col, ocols)) {
         rows_above += ITL_MAX((size_t) 1, (col + ncols - 1) / ncols);
         col = indent;
       }
@@ -4390,12 +4406,15 @@ ITL_DEF size_t itl_le_index_at_visual(const itl_le_t *le, size_t tty_cols,
       col = indent;
     } else {
       size_t char_width = itl_char_width(le->line->chars[i]);
-      if (char_width == 2 && col + 1 >= cols) {
+
+      if (itl_wrap_is_early_break(col, char_width, cols)) {
         row += 1;
         col = indent;
       }
+
       col += char_width;
-      if (col >= cols) {
+
+      if (itl_wrap_is_break_after(col, cols)) {
         row += 1;
         col = indent;
       }
@@ -4479,6 +4498,24 @@ ITL_DEF void itl_vi_sync_cursor_shape(itl_char_buf_t *b)
   itl_char_buf_append_byte(b, (uint8_t) ('0' + desired));
   itl_char_buf_append_byte(b, ' ');
   itl_char_buf_append_byte(b, 'q');
+}
+
+ITL_DEF size_t itl_le_tty_break_row(itl_char_buf_t *b, bool is_span_open,
+                                    bool should_suppress_pad,
+                                    const char *open_sgr, size_t indent)
+{
+  if (is_span_open && should_suppress_pad) {
+    itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+  }
+
+  itl_char_buf_append_cstr(b, ITL_LF);
+  itl_char_buf_append_spaces(b, indent);
+
+  if (is_span_open && should_suppress_pad) {
+    itl_char_buf_append_cstr(b, open_sgr);
+  }
+
+  return indent;
 }
 
 /* Draw the ghost suggestion dimmed after the line. It is shown only when the
@@ -4810,43 +4847,27 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
           itl_char_buf_append_byte(b, ' ');
           itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
           in_span = false;
-        } else if (in_span && suppress_pad) {
-          itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
         }
-        itl_char_buf_append_cstr(b, ITL_LF);
-        itl_char_buf_append_spaces(b, indent);
-        col = indent;
-        if (in_span && suppress_pad) {
-          itl_char_buf_append_cstr(b, open_sgr);
-        }
+
+        col = itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent);
+
         continue;
       }
 
       {
         size_t char_width = itl_char_width(ch);
-        if (char_width == 2 && col + 1 >= cols) {
-          if (in_span && suppress_pad) {
-            itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
-          }
-          itl_char_buf_append_cstr(b, ITL_LF);
-          itl_char_buf_append_spaces(b, indent);
-          col = indent;
-          if (in_span && suppress_pad) {
-            itl_char_buf_append_cstr(b, open_sgr);
-          }
+
+        if (itl_wrap_is_early_break(col, char_width, cols)) {
+          col =
+              itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent);
         }
+
         itl_char_buf_append_bytes(b, (const char *) ch.bytes, ch.size);
         col += char_width;
-        if (col >= cols) {
-          if (in_span && suppress_pad) {
-            itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
-          }
-          itl_char_buf_append_cstr(b, ITL_LF);
-          itl_char_buf_append_spaces(b, indent);
-          col = indent;
-          if (in_span && suppress_pad) {
-            itl_char_buf_append_cstr(b, open_sgr);
-          }
+
+        if (itl_wrap_is_break_after(col, cols)) {
+          col =
+              itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent);
         }
       }
     }
