@@ -6064,7 +6064,8 @@ ITL_DEF void itl_menu_step_codepoint(const char *text, size_t byte_length,
   *out_bytes = 1;
   *out_width = 1;
 
-  if (rune_width == 0 || (size_t) rune_width > byte_length) {
+  if (rune_width == 0 || rune_width > sizeof ch.bytes ||
+      (size_t) rune_width > byte_length) {
     return;
   }
 
@@ -6076,10 +6077,11 @@ ITL_DEF void itl_menu_step_codepoint(const char *text, size_t byte_length,
     return;
   }
 
-  for (j = 0; j < rune_width; ++j) {
-    ch.bytes[j] = (uint8_t) text[j];
-  }
-  ch.size = j;
+  ch.bytes[0] = (uint8_t) text[0];
+  if (rune_width > 1) ch.bytes[1] = (uint8_t) text[1];
+  if (rune_width > 2) ch.bytes[2] = (uint8_t) text[2];
+  if (rune_width > 3) ch.bytes[3] = (uint8_t) text[3];
+  ch.size = rune_width;
 
   *out_bytes = rune_width;
   *out_width = itl_char_width(ch);
