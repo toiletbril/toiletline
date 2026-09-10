@@ -2972,33 +2972,38 @@ ITL_DEF bool itl_char_buf_flush(itl_char_buf_t *cb)
 #define ITL_TTY_SHOW_CURSOR(buffer)                                            \
   itl_char_buf_append_cstr(buffer, "\x1b[?25h")
 
+ITL_DEF void itl_char_buf_append_csi(itl_char_buf_t *cb, size_t parameter,
+                                     char final_byte)
+{
+  char   sequence[24];
+  size_t begin = sizeof(sequence) - 1;
+
+  sequence[begin] = final_byte;
+
+  do {
+    begin -= 1;
+    sequence[begin] = (char) ('0' + parameter % 10);
+    parameter /= 10;
+  } while (parameter > 0);
+
+  begin -= 2;
+  sequence[begin] = '\x1b';
+  sequence[begin + 1] = '[';
+
+  itl_char_buf_append_bytes(cb, sequence + begin, sizeof(sequence) - begin);
+}
+
 #define ITL_TTY_MOVE_TO_COLUMN(buffer, col)                                    \
-  do {                                                                         \
-    itl_char_buf_append_cstr(buffer, "\x1b[");                                 \
-    itl_char_buf_append_size_t(buffer, (size_t) col);                          \
-    itl_char_buf_append_byte(buffer, 'G');                                     \
-  } while (0)
+  itl_char_buf_append_csi(buffer, (size_t) (col), 'G')
 
 #define ITL_TTY_MOVE_FORWARD(buffer, steps)                                    \
-  do {                                                                         \
-    itl_char_buf_append_cstr(buffer, "\x1b[");                                 \
-    itl_char_buf_append_size_t(buffer, (size_t) steps);                        \
-    itl_char_buf_append_byte(buffer, 'C');                                     \
-  } while (0)
+  itl_char_buf_append_csi(buffer, (size_t) (steps), 'C')
 
 #define ITL_TTY_MOVE_UP(buffer, rows)                                          \
-  do {                                                                         \
-    itl_char_buf_append_cstr(buffer, "\x1b[");                                 \
-    itl_char_buf_append_size_t(buffer, (size_t) rows);                         \
-    itl_char_buf_append_byte(buffer, 'A');                                     \
-  } while (0)
+  itl_char_buf_append_csi(buffer, (size_t) (rows), 'A')
 
 #define ITL_TTY_MOVE_DOWN(buffer, rows)                                        \
-  do {                                                                         \
-    itl_char_buf_append_cstr(buffer, "\x1b[");                                 \
-    itl_char_buf_append_size_t(buffer, (size_t) rows);                         \
-    itl_char_buf_append_byte(buffer, 'B');                                     \
-  } while (0)
+  itl_char_buf_append_csi(buffer, (size_t) (rows), 'B')
 
 #define ITL_TTY_CLEAR_WHOLE_LINE(buffer)                                       \
   itl_char_buf_append_cstr(buffer, "\r\x1b[0K")
@@ -4504,7 +4509,7 @@ ITL_DEF bool itl_le_tty_draw_ghost(itl_char_buf_t *b, bool is_cursor_at_end,
 /* NOTE: Hottest function in the library. */
 ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 {
-  size_t i, j, tty_rows, tty_cols, cols, indent;
+  size_t i, tty_rows, tty_cols, cols, indent;
   size_t col, move_up;
   itl_le_metrics_t m;
   bool has_resize;
@@ -4678,13 +4683,11 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
                itl_g_le_prev_render_len) == 0)
     {
       itl_char_buf_t *fb = &itl_g_char_buffer;
-      size_t k;
       if (append_tail_sgr != NULL) {
         itl_char_buf_append_cstr(fb, append_tail_sgr);
       }
-      for (k = itl_g_le_prev_render_len; k < cur_len; ++k) {
-        itl_char_buf_append_byte(fb, (uint8_t) itl_cur_render[k]);
-      }
+      itl_char_buf_append_bytes(fb, itl_cur_render + itl_g_le_prev_render_len,
+                                cur_len - itl_g_le_prev_render_len);
       if (append_tail_sgr != NULL) {
         itl_char_buf_append_cstr(fb, ITL_HIGHLIGHT_RESET);
       }
@@ -4734,7 +4737,6 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
       if (itl_g_le_prev_cursor_row > 1) {
         ITL_TTY_MOVE_UP(b, itl_g_le_prev_cursor_row - 1);
       }
-      ITL_TTY_MOVE_TO_COLUMN(b, 1);
 
       /* Clear every row the previous render occupied, leaving rows we do not
          own untouched. */
@@ -4833,9 +4835,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
             itl_char_buf_append_cstr(b, open_sgr);
           }
         }
-        for (j = 0; j < ch.size; ++j) {
-          itl_char_buf_append_byte(b, ch.bytes[j]);
-        }
+        itl_char_buf_append_bytes(b, (const char *) ch.bytes, ch.size);
         col += char_width;
         if (col >= cols) {
           if (in_span && suppress_pad) {
@@ -5690,11 +5690,7 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
             itl_char_buf_append_byte(b, ' ');
             line_len += 1;
           }
-          {
-            size_t k;
-            for (k = 0; k < word_len; ++k)
-              itl_char_buf_append_byte(b, (uint8_t) word[k]);
-          }
+          itl_char_buf_append_bytes(b, word, word_len);
           line_len += word_len;
         }
         itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));

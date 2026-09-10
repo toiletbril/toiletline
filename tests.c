@@ -3183,6 +3183,38 @@ test_colors_disabled_drop_span_escapes(void)
 #endif
 
 static bool
+test_csi_sequences(void)
+{
+  static const char *const expected[] = {"\x1b[1G", "\x1b[12C", "\x1b[7A",
+                                         "\x1b[4096B"};
+  itl_char_buf_t          *b = itl_char_buf_alloc();
+  size_t                   index;
+  bool                     ok = true;
+
+  ITL_TTY_MOVE_TO_COLUMN(b, 1);
+  ITL_TTY_MOVE_FORWARD(b, 12);
+  ITL_TTY_MOVE_UP(b, 7);
+  ITL_TTY_MOVE_DOWN(b, 4096);
+
+  for (index = 0; index < countof(expected); ++index) {
+    if (!test_bytes_have(b->data, b->size, expected[index])) {
+      TEST_PRINTF("%s is missing from %zu bytes\n", expected[index] + 1,
+                  b->size);
+      ok = false;
+    }
+  }
+
+  if (ok && b->size != 4 + 5 + 4 + 7) {
+    TEST_PRINTF("four sequences wrote %zu bytes\n", b->size);
+    ok = false;
+  }
+
+  ITL_CHAR_BUF_FREE(b);
+
+  return ok;
+}
+
+static bool
 test_menu_band_survives_disabled_colors(void)
 {
   static const char *const names[] = {"alpha"};
@@ -3317,6 +3349,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_external_screen_requires_raw_mode),
                                    DEFINE_TEST_CASE(
                                        test_reflow_agrees_with_metrics),
+                                   DEFINE_TEST_CASE(test_csi_sequences),
                                    DEFINE_TEST_CASE(
                                        test_menu_band_survives_disabled_colors),
 #if defined ITL_POSIX && !defined NDEBUG
