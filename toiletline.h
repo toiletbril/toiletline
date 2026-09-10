@@ -4217,6 +4217,18 @@ ITL_DEF void itl_le_commit_render(const char *render, size_t render_len,
   itl_le_save_prev_spans(spans, span_count);
 }
 
+ITL_DEF void itl_le_invalidate_prev_frame(void)
+{
+  itl_g_le_prev_total_rows = 1;
+  itl_g_le_prev_cursor_row = 1;
+  itl_g_le_prev_cursor_col = 0;
+  itl_g_le_prev_cursor_at_end = false;
+  itl_g_le_prev_render_len = 0;
+  itl_g_le_prev_length = 0;
+  itl_g_le_prev_ghost_len = 0;
+  itl_g_le_prev_spans_usable = false;
+}
+
 /* Columns each wrapped or continuation row is padded by so the text lines up
    under the first row. Falls back to no padding when the prompt fills the row.
  */
@@ -5169,14 +5181,7 @@ TL_DEF tl_status_code tl_end_external_screen(void)
   itl_g_tty_first_render = true;
   itl_g_tty_should_refresh_text = true;
   itl_g_tty_plain_append_pending = false;
-  itl_g_le_prev_total_rows = 1;
-  itl_g_le_prev_cursor_row = 1;
-  itl_g_le_prev_cursor_col = 0;
-  itl_g_le_prev_render_len = 0;
-  itl_g_le_prev_length = 0;
-  itl_g_le_prev_cursor_at_end = false;
-  itl_g_le_prev_ghost_len = 0;
-  itl_g_le_prev_spans_usable = false;
+  itl_le_invalidate_prev_frame();
   itl_ghost_clear();
   itl_g_ghost_sticky_target[0] = '\0';
   return TL_SUCCESS;
@@ -5713,9 +5718,7 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
   ITL_CHAR_BUF_CLEAR(b);
 
   /* The line is redrawn fresh below the list, so forget the old block. */
-  itl_g_le_prev_total_rows = 1;
-  itl_g_le_prev_cursor_row = 1;
-  itl_g_le_prev_cursor_col = 0;
+  itl_le_invalidate_prev_frame();
   itl_g_tty_should_refresh_text = true;
 }
 
@@ -6263,12 +6266,7 @@ ITL_DEF bool itl_refresh_after_wake(itl_le_t *le)
   ITL_CHAR_BUF_CLEAR(wake_buf);
   itl_g_wake_callback(1);
   itl_g_tty_first_render = true;
-  itl_g_le_prev_total_rows = 1;
-  itl_g_le_prev_cursor_row = 1;
-  itl_g_le_prev_cursor_col = 0;
-  itl_g_le_prev_render_len = 0;
-  itl_g_le_prev_length = 0;
-  itl_g_le_prev_cursor_at_end = false;
+  itl_le_invalidate_prev_frame();
   itl_g_tty_should_refresh_text = true;
   itl_le_tty_refresh(le);
   return true;
@@ -9856,16 +9854,11 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
      not carry over, and predefined input is shown as the user's own text. */
   itl_ghost_clear();
 
-  /* Avoid clearing lines that don't belong to us. */
-  itl_g_le_prev_total_rows = 1;
-  itl_g_le_prev_cursor_row = 1;
-  /* The incremental-append fast path keys off the previous render, so its state
-     is reset with the row counts, otherwise the first refresh of this line
-     could compare against the previous command's render. */
-  itl_g_le_prev_render_len = 0;
-  itl_g_le_prev_length = 0;
-  itl_g_le_prev_cursor_at_end = false;
-  itl_g_le_prev_ghost_len = 0;
+  /* Avoid clearing lines that don't belong to us. The incremental-append fast
+     path keys off the previous render, so its state is reset with the row
+     counts, otherwise the first refresh of this line could compare against the
+     previous command's render. */
+  itl_le_invalidate_prev_frame();
   itl_le_tty_refresh(le);
 
   while (true) {
