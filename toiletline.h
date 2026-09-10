@@ -2924,8 +2924,47 @@ ITL_DEF void itl_char_buf_append_string_escaped(itl_char_buf_t *cb,
 
 #define ITL_CHAR_BUF_CLEAR(cb) (cb)->size = 0
 
-#define ITL_CHAR_BUF_DUMP(cb)                                                  \
-  (void) ITL_WRITE(ITL_STDOUT, (cb)->data, (cb)->size)
+/* Writes the whole span, retrying an interrupted call and resuming a partial
+   write. The returned count is short only when the write failed. */
+ITL_DEF size_t itl_write_all(ITL_FILE file, const char *data, size_t size)
+{
+  size_t total_written = 0;
+
+  while (total_written < size) {
+    int written =
+        (int) ITL_WRITE(file, data + total_written, size - total_written);
+    if (written < 0 && errno == EINTR) continue;
+    if (written <= 0) break;
+    total_written += (size_t) written;
+  }
+
+  return total_written;
+}
+
+#if !defined NDEBUG
+typedef void (*itl_debug_frame_sink_fn)(const char *data, size_t size);
+ITL_DEF ITL_THREAD_LOCAL itl_debug_frame_sink_fn itl_g_debug_frame_sink = NULL;
+#endif
+
+/* Sends one finished frame to the terminal. An empty frame writes nothing,
+   because a zero-length write carries no meaning here. */
+ITL_DEF bool itl_char_buf_flush(itl_char_buf_t *cb)
+{
+  if (cb->size == 0) {
+    return true;
+  }
+
+#if !defined NDEBUG
+  if (itl_g_debug_frame_sink != NULL) {
+    itl_g_debug_frame_sink(cb->data, cb->size);
+    return true;
+  }
+#endif
+
+  return itl_write_all(ITL_STDOUT, cb->data, cb->size) == cb->size;
+}
+
+#define ITL_CHAR_BUF_DUMP(cb) (void) itl_char_buf_flush(cb)
 
 #define ITL_TTY_HIDE_CURSOR(buffer)                                            \
   itl_char_buf_append_cstr(buffer, "\x1b[?25l")
@@ -3031,24 +3070,6 @@ ITL_DEF void itl_history_offsets_shift(size_t removed_byte_count)
 
   itl_g_history_file_size -= removed_byte_count;
   itl_history_read_fd_invalidate();
-}
-
-/* Writes the whole span, retrying an interrupted call and resuming a partial
-   write. The returned count is short only when the write failed. */
-ITL_DEF size_t itl_history_write_all(ITL_FILE file, const char *data,
-                                     size_t size)
-{
-  size_t total_written = 0;
-
-  while (total_written < size) {
-    int written =
-        (int) ITL_WRITE(file, data + total_written, size - total_written);
-    if (written < 0 && errno == EINTR) continue;
-    if (written <= 0) break;
-    total_written += (size_t) written;
-  }
-
-  return total_written;
 }
 
 /* Scans the open file from the start, rebuilding the offset ring, the recorded
@@ -3302,7 +3323,7 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
 
   {
     size_t total_written =
-        itl_history_write_all(append_file, buffer.data, buffer.size);
+        itl_write_all(append_file, buffer.data, buffer.size);
     if (total_written < buffer.size) {
       ITL_TRACELN("could not append to history file (%s): %s\n",
                   itl_g_history_path, strerror(errno));
@@ -3424,7 +3445,7 @@ ITL_DEF tl_status_code itl_history_dump_to_file(const char *path)
     if (read_amount == 0) break;
 
     total_written =
-        itl_history_write_all(out_file, file_buffer, (size_t) read_amount);
+        itl_write_all(out_file, file_buffer, (size_t) read_amount);
     if (total_written < (size_t) read_amount) {
       ret = TL_ERROR;
       break;
