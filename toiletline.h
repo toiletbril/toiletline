@@ -1229,6 +1229,11 @@ ITL_DEF uint32_t itl_utf8_codepoint(itl_utf8_t ch)
   }
 }
 
+ITL_DEF bool itl_utf8_is_plain_ascii(itl_utf8_t ch)
+{
+  return ch.size == 1 && ch.bytes[0] >= 0x20 && ch.bytes[0] < 0x7F;
+}
+
 /* Returns the terminal column width of a character, which is 0, 1, or 2. Tab is
    counted as a single column. A newline is handled by the renderer, not here.
  */
@@ -4364,6 +4369,69 @@ ITL_DEF bool itl_wrap_is_break_after(size_t col, size_t cols)
   return col >= cols;
 }
 
+ITL_DEF size_t itl_wrap_advance_plain_run(size_t col, size_t run_length,
+                                          size_t cols, size_t indent,
+                                          size_t *row)
+{
+  size_t first_row_fit = col < cols ? cols - col : 0;
+  size_t per_row = indent < cols ? cols - indent : 1;
+  size_t remaining;
+
+  if (run_length < first_row_fit) {
+    return col + run_length;
+  }
+
+  remaining = run_length - first_row_fit;
+  *row += 1 + remaining / per_row;
+
+  return indent + remaining % per_row;
+}
+
+ITL_DEF void itl_wrap_walk_range(const itl_string_t *line, size_t from,
+                                 size_t to, size_t cols, size_t indent,
+                                 size_t *row, size_t *col)
+{
+  size_t i = from;
+
+  while (i < to) {
+    size_t run_start = i;
+    size_t char_width;
+
+    while (i < to && itl_utf8_is_plain_ascii(line->chars[i])) {
+      i += 1;
+    }
+
+    if (i > run_start) {
+      *col =
+          itl_wrap_advance_plain_run(*col, i - run_start, cols, indent, row);
+      continue;
+    }
+
+    if (ITL_LE_IS_NEWLINE(line->chars[i])) {
+      *row += 1;
+      *col = indent;
+      i += 1;
+      continue;
+    }
+
+    char_width = itl_char_width(line->chars[i]);
+
+    if (itl_wrap_is_early_break(*col, char_width, cols)) {
+      *row += 1;
+      *col = indent;
+    }
+
+    *col += char_width;
+
+    if (itl_wrap_is_break_after(*col, cols)) {
+      *row += 1;
+      *col = indent;
+    }
+
+    i += 1;
+  }
+}
+
 /* Walks the buffer once and computes the cursor's visual row and column plus
    the total number of visual rows. It accounts for the prompt width on the
    first row, per-character display width, soft wrapping at tty_cols, a wide
@@ -4381,36 +4449,19 @@ ITL_DEF itl_le_metrics_t itl_le_compute_metrics(const itl_le_t *le,
      the unchanged starting row. */
   size_t row = le->prompt_rows;
   size_t col = indent;
-  size_t i;
+  size_t length = le->line->length;
 
-  for (i = 0; i <= le->line->length; ++i) {
-    /* The caret sits to the left of chars[i], so record before consuming it. */
-    if (i == le->cursor_position) {
-      m.cursor_row = row;
-      m.cursor_col = col;
-    }
-    if (i == le->line->length) {
-      break;
-    }
-
-    if (ITL_LE_IS_NEWLINE(le->line->chars[i])) {
-      row += 1;
-      col = indent;
-    } else {
-      size_t char_width = itl_char_width(le->line->chars[i]);
-
-      if (itl_wrap_is_early_break(col, char_width, cols)) {
-        row += 1;
-        col = indent;
-      }
-
-      col += char_width;
-
-      if (itl_wrap_is_break_after(col, cols)) {
-        row += 1;
-        col = indent;
-      }
-    }
+  /* The caret sits to the left of chars[cursor_position], so the walk stops
+     there and records before consuming it. */
+  if (le->cursor_position <= length) {
+    itl_wrap_walk_range(le->line, 0, le->cursor_position, cols, indent, &row,
+                        &col);
+    m.cursor_row = row;
+    m.cursor_col = col;
+    itl_wrap_walk_range(le->line, le->cursor_position, length, cols, indent,
+                        &row, &col);
+  } else {
+    itl_wrap_walk_range(le->line, 0, length, cols, indent, &row, &col);
   }
 
   m.total_rows = row + 1;
