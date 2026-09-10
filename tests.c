@@ -3047,6 +3047,41 @@ cleanup:
 }
 #endif
 
+static bool
+test_reflow_agrees_with_metrics(void)
+{
+  const char *prompt = "one\ntwo\n> ";
+  const char *text = "alpha\nbeta gamma delta epsilon zeta\nomega";
+  char        out_buffer[BUFFER_SIZE];
+  size_t      position;
+  bool        ok = true;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), prompt);
+  ITL_STRING_FROM_CSTR(line, text);
+
+  for (position = 0; position <= line->length; ++position) {
+    size_t rows_above;
+    itl_le_metrics_t m;
+
+    le.cursor_position = position;
+    m = itl_le_compute_metrics(&le, 20);
+    rows_above = itl_le_reflow_rows_above_caret(&le, 20, 20);
+
+    if (rows_above != m.cursor_row) {
+      TEST_PRINTF("at %zu reflow gave %zu, metrics gave %zu\n", position,
+                  rows_above, m.cursor_row);
+      ok = false;
+      break;
+    }
+  }
+
+  ITL_STRING_FREE(line);
+  return ok;
+}
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -3142,6 +3177,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_tab_clears_stale_ghost_target),
                                    DEFINE_TEST_CASE(
                                        test_external_screen_requires_raw_mode),
+                                   DEFINE_TEST_CASE(
+                                       test_reflow_agrees_with_metrics),
 #if defined ITL_POSIX && !defined NDEBUG
                                    DEFINE_TEST_CASE(
                                        test_append_path_keeps_spans),

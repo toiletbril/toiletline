@@ -4295,7 +4295,10 @@ ITL_DEF size_t itl_le_reflow_rows_above_caret(const itl_le_t *le,
   size_t ncols = ITL_MAX(new_cols, 1);
   size_t indent = ITL_LE_INDENT(le, ocols);
   size_t col = indent;
-  size_t rows_above = 0;
+  /* The rows count from prompt_rows the way itl_le_compute_metrics counts them,
+     so the caret is stepped past a multi-row prompt to the true top of the
+     block. */
+  size_t rows_above = le->prompt_rows;
   size_t i;
 
   for (i = 0; i <= le->line->length; ++i) {
