@@ -6686,6 +6686,17 @@ ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
   return true;
 }
 
+ITL_DEF bool itl_byte_is_path_separator(uint8_t byte)
+{
+#if defined ITL_WIN32
+  if (byte == '\\') {
+    return true;
+  }
+#endif
+
+  return byte == '/';
+}
+
 /* A filesystem candidate closes with the path separator when it names a
    directory. A quoted candidate closes with its quote, which is stepped over. */
 ITL_DEF bool itl_menu_candidate_is_directory(const char *candidate)
@@ -7112,7 +7123,11 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
       itl_le_insert(le, itl_utf8_parse(byte));
       result.token_end += 1;
 
-      if (!itl_menu_narrow(le, source, &state, &result)) {
+      if (source->can_descend && itl_byte_is_path_separator(byte)) {
+        if (!itl_menu_rebase(le, source, &state, &result)) {
+          itl_menu_empty_candidates(&result);
+        }
+      } else if (!itl_menu_narrow(le, source, &state, &result)) {
         itl_menu_empty_candidates(&result);
       }
 
@@ -7241,7 +7256,8 @@ ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
 {
   static const itl_menu_source history_source = {
       itl_history_menu_gather, false, false, true,
-      "incremental history search", "enter to accept, esc/ctrl-g to cancel"};
+      "incremental history search",
+      "enter/tab to accept, esc/ctrl-g to cancel"};
 
   tl_completion result;
 
