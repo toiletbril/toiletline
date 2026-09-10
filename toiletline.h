@@ -4077,9 +4077,6 @@ ITL_DEF bool itl_le_prev_spans_append_compatible(
   return true;
 }
 
-/* Drops an empty, out-of-bounds, or unpainted span. The source and the
-   destination may be the same array, since a kept span never lands past the one
-   being read. */
 ITL_DEF size_t itl_spans_keep_valid(const tl_highlight_span *source,
                                     size_t source_count,
                                     tl_highlight_span *destination,
@@ -4282,6 +4279,46 @@ ITL_DEF void itl_le_commit_render(const char *render, size_t render_len,
   itl_le_save_prev_spans(spans, span_count);
 }
 
+ITL_DEF bool itl_le_serialize_line(itl_le_t *le)
+{
+  if (itl_g_serialized_line_ready) {
+    return true;
+  }
+
+  if (itl_g_tty_plain_append_pending && itl_g_le_prev_cursor_at_end &&
+      le->cursor_position == le->line->length && le->line->length > 0)
+  {
+    const itl_utf8_t *appended = &le->line->chars[le->line->length - 1];
+
+    if (itl_g_le_prev_render_len + appended->size == le->line->size &&
+        le->line->size < sizeof(itl_g_serialized_line))
+    {
+      memcpy(itl_g_serialized_line, itl_g_le_prev_render,
+             itl_g_le_prev_render_len);
+      memcpy(itl_g_serialized_line + itl_g_le_prev_render_len, appended->bytes,
+             appended->size);
+      itl_g_serialized_line[le->line->size] = '\0';
+      itl_g_serialized_line_ready = true;
+
+      return true;
+    }
+  }
+
+#if !defined NDEBUG
+  itl_g_debug_line_serialization_count += 1;
+#endif
+
+  if (itl_string_to_cstr(le->line, itl_g_serialized_line,
+                         sizeof(itl_g_serialized_line)) != TL_SUCCESS)
+  {
+    return false;
+  }
+
+  itl_g_serialized_line_ready = true;
+
+  return true;
+}
+
 ITL_DEF void itl_le_invalidate_prev_frame(void)
 {
   itl_g_le_prev_total_rows = 1;
@@ -4294,8 +4331,6 @@ ITL_DEF void itl_le_invalidate_prev_frame(void)
   itl_g_le_prev_spans_usable = false;
 }
 
-/* The recorded caret row counts from one at the block's first row, so the
-   topmost row needs no move. */
 ITL_DEF void itl_le_tty_move_to_block_top(itl_char_buf_t *b)
 {
   if (itl_g_le_prev_cursor_row > 1) {
@@ -4691,25 +4726,14 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
      and the metrics pass that placed the cursor never sees them, the same
      zero-width handling the ghost text relies on. Out-of-bounds or empty spans
      are dropped here. */
-  char itl_cur_render_storage[ITL_STRING_MAX_LEN];
-  const char *itl_cur_render = itl_cur_render_storage;
+  const char *itl_cur_render = itl_g_serialized_line;
   bool have_cur_render = false;
   tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
   tl_highlight_span itl_syntax_spans[ITL_HIGHLIGHT_MAX_SPANS];
   size_t span_count = 0;
   const char *append_tail_sgr = NULL;
   if (itl_g_tty_should_refresh_text) {
-    if (itl_g_serialized_line_ready) {
-      itl_cur_render = itl_g_serialized_line;
-      have_cur_render = true;
-    } else {
-#if !defined NDEBUG
-      itl_g_debug_line_serialization_count += 1;
-#endif
-      have_cur_render =
-          itl_string_to_cstr(le->line, itl_cur_render_storage,
-                             sizeof(itl_cur_render_storage)) == TL_SUCCESS;
-    }
+    have_cur_render = itl_le_serialize_line(le);
     itl_g_serialized_line_ready = false;
     if (itl_g_search_spans_active &&
         (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
@@ -5528,7 +5552,6 @@ ITL_DEF void itl_ghost_fill_from_history(const char *line_cstr,
 ITL_DEF void itl_ghost_update(itl_le_t *le)
 {
   const char *line_cstr = itl_g_serialized_line;
-  bool did_extend_serialized_line = false;
   size_t line_byte_len;
 
   itl_ghost_clear();
@@ -5536,6 +5559,10 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
   if (!itl_g_tty_plain_append_pending) {
     itl_g_ghost_completion_miss_prefix[0] = '\0';
     itl_g_ghost_completion_miss_prefix_length = 0;
+  }
+
+  if (!itl_le_serialize_line(le)) {
+    return;
   }
 
   /* The host turned the ghost off, so no source fills it. */
@@ -5548,34 +5575,7 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
   if (le->cursor_position != le->line->length) {
     return;
   }
-  if (itl_g_tty_plain_append_pending && itl_g_le_prev_cursor_at_end &&
-      le->line->length > 0)
-  {
-    const itl_utf8_t *appended = &le->line->chars[le->line->length - 1];
-    if (itl_g_le_prev_render_len + appended->size == le->line->size &&
-        le->line->size < sizeof(itl_g_serialized_line))
-    {
-      size_t byte_position;
-      memcpy(itl_g_serialized_line, itl_g_le_prev_render,
-             itl_g_le_prev_render_len);
-      for (byte_position = 0; byte_position < appended->size; byte_position++)
-        itl_g_serialized_line[itl_g_le_prev_render_len + byte_position] =
-            (char) appended->bytes[byte_position];
-      itl_g_serialized_line[le->line->size] = '\0';
-      did_extend_serialized_line = true;
-    }
-  }
-  if (!did_extend_serialized_line) {
-#if !defined NDEBUG
-    itl_g_debug_line_serialization_count += 1;
-#endif
-    if (itl_string_to_cstr(le->line, itl_g_serialized_line,
-                           sizeof(itl_g_serialized_line)) != TL_SUCCESS)
-    {
-      return;
-    }
-  }
-  itl_g_serialized_line_ready = true;
+
   line_byte_len = le->line->size;
   /* An empty line has nothing to extend, and it ends any sticky suggestion so a
      line cleared back to empty does not keep the previous target. */
