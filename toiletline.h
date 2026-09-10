@@ -4381,28 +4381,8 @@ ITL_DEF size_t itl_le_index_at_visual(const itl_le_t *le, size_t tty_cols,
   return has_best ? best_index : le->line->length;
 }
 
-/* Returns the index of the first character of the logical line the cursor is
+/* Returns the index of the first character of the logical line the position is
    on, where logical lines are split by newline characters. */
-ITL_DEF size_t itl_le_logical_line_start(const itl_le_t *le)
-{
-  size_t p = le->cursor_position;
-  while (p > 0 && !ITL_LE_IS_NEWLINE(le->line->chars[p - 1])) {
-    p -= 1;
-  }
-  return p;
-}
-
-/* Returns the index one past the last character of the cursor's logical line.
- */
-ITL_DEF size_t itl_le_logical_line_end(const itl_le_t *le)
-{
-  size_t q = le->cursor_position;
-  while (q < le->line->length && !ITL_LE_IS_NEWLINE(le->line->chars[q])) {
-    q += 1;
-  }
-  return q;
-}
-
 ITL_DEF size_t itl_le_line_start_of(const itl_le_t *le, size_t position)
 {
   size_t p = position;
@@ -4412,6 +4392,8 @@ ITL_DEF size_t itl_le_line_start_of(const itl_le_t *le, size_t position)
   return p;
 }
 
+/* Returns the index one past the last character of the position's logical line.
+ */
 ITL_DEF size_t itl_le_line_end_of(const itl_le_t *le, size_t position)
 {
   size_t q = position;
@@ -7225,7 +7207,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
   } break;
 
   case TL_KEY_END: {
-    size_t line_end = itl_le_logical_line_end(le);
+    size_t line_end = itl_le_line_end_of(le, le->cursor_position);
     /* At the end of the line, End accepts the ghost suggestion the same way
        Right does. */
     if (le->cursor_position == le->line->length && itl_g_ghost_len > 0) {
@@ -7239,7 +7221,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
   } break;
 
   case TL_KEY_HOME: {
-    size_t line_start = itl_le_logical_line_start(le);
+    size_t line_start = itl_le_line_start_of(le, le->cursor_position);
     itl_le_move_left(le, le->cursor_position - line_start);
     itl_g_tty_should_refresh_text = false;
   } break;
@@ -7309,11 +7291,13 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
   } break;
 
   case TL_KEY_KILL_LINE: {
-    ITL_LE_ERASE_FORWARD(le, itl_le_logical_line_end(le) - le->cursor_position);
+    size_t line_end = itl_le_line_end_of(le, le->cursor_position);
+    ITL_LE_ERASE_FORWARD(le, line_end - le->cursor_position);
   } break;
 
   case TL_KEY_KILL_LINE_BEFORE: {
-    ITL_LE_ERASE_BACKWARD(le, le->cursor_position - itl_le_logical_line_start(le));
+    size_t line_start = itl_le_line_start_of(le, le->cursor_position);
+    ITL_LE_ERASE_BACKWARD(le, le->cursor_position - line_start);
   } break;
 
   case TL_KEY_SUSPEND: {
@@ -8321,17 +8305,18 @@ ITL_DEF size_t itl_vi_resolve_motion(itl_le_t *le, int motion_key,
     }
     break;
 
-  case '0': target = itl_le_logical_line_start(le); break;
+  case '0': target = itl_le_line_start_of(le, le->cursor_position); break;
 
-  case '$':
-    target = itl_le_logical_line_end(le);
-    if (!is_for_operator && target > itl_le_logical_line_start(le)) {
+  case '$': {
+    size_t line_start = itl_le_line_start_of(le, le->cursor_position);
+    target = itl_le_line_end_of(le, le->cursor_position);
+    if (!is_for_operator && target > line_start) {
       target -= 1;
     }
-    break;
+  } break;
 
   case '^': {
-    size_t i = itl_le_logical_line_start(le);
+    size_t i = itl_le_line_start_of(le, le->cursor_position);
     while (i < line->length && !ITL_LE_IS_NEWLINE(line->chars[i]) &&
            itl_vi_char_class(line->chars[i], false) == 0)
     {
@@ -8537,8 +8522,8 @@ ITL_DEF void itl_vi_operator_line(itl_le_t *le, itl_vi_operator_kind op,
                                   int doubled_key, size_t count)
 {
   itl_utf8_t none = ITL_ZERO_INIT;
-  size_t start = itl_le_logical_line_start(le);
-  size_t end = itl_le_logical_line_end(le);
+  size_t start = itl_le_line_start_of(le, le->cursor_position);
+  size_t end = itl_le_line_end_of(le, le->cursor_position);
   size_t reg_index = itl_vi_register_index(itl_g_vi_pending_register);
   itl_string_t *reg = itl_vi_register_at(reg_index);
   size_t i;
@@ -8665,7 +8650,7 @@ ITL_DEF void itl_vi_paste_lines(itl_le_t *le, const char *line_text,
   size_t i;
 
   if (is_before) {
-    first = itl_le_logical_line_start(le);
+    first = itl_le_line_start_of(le, le->cursor_position);
     le->cursor_position = first;
     for (i = 0; i < count; ++i) {
       itl_le_insert_cstr(le, line_text);
@@ -8675,7 +8660,7 @@ ITL_DEF void itl_vi_paste_lines(itl_le_t *le, const char *line_text,
   }
 
   {
-    size_t line_end = itl_le_logical_line_end(le);
+    size_t line_end = itl_le_line_end_of(le, le->cursor_position);
 
     if (line_end < le->line->length) {
       first = line_end + 1;
@@ -8756,7 +8741,9 @@ ITL_DEF tl_status_code itl_vi_repeat_last_change(itl_le_t *le)
         itl_le_move_right(le, 1);
       }
       break;
-    case 'A': le->cursor_position = itl_le_logical_line_end(le); break;
+    case 'A':
+      le->cursor_position = itl_le_line_end_of(le, le->cursor_position);
+      break;
     case 'I': {
       itl_utf8_t none = ITL_ZERO_INIT;
       bool is_inclusive, is_valid;
@@ -9716,7 +9703,7 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
     itl_vi_begin_insert(true, 'a');
     break;
   case 'A':
-    le->cursor_position = itl_le_logical_line_end(le);
+    le->cursor_position = itl_le_line_end_of(le, le->cursor_position);
     itl_vi_begin_insert(true, 'A');
     break;
 
