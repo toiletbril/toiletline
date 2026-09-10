@@ -978,6 +978,7 @@ test_windows_ghost_does_not_require_term(void)
 {
   const char *term = getenv("TERM");
   char       *saved_term = term != NULL ? _strdup(term) : NULL;
+  int         previous_ghost_enabled = itl_g_ghost_enabled;
   bool        enabled_without_term;
   bool        dumb_term_disables;
   bool        explicit_disable_works;
@@ -1000,6 +1001,7 @@ test_windows_ghost_does_not_require_term(void)
   _putenv_s("TERM", saved_term != NULL ? saved_term : "");
   free(saved_term);
   itl_g_supports_decorations = -1;
+  itl_g_ghost_enabled = previous_ghost_enabled;
 
   return enabled_without_term && dumb_term_disables && explicit_disable_works;
 }
