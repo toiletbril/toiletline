@@ -3045,6 +3045,107 @@ cleanup:
 
   return ok;
 }
+
+static bool
+test_drawn_metrics_match_the_walk(void)
+{
+  static const char wide[] = {(char) 0xE4, (char) 0xBD, (char) 0xA0};
+  char              text[16];
+  char              out_buffer[BUFFER_SIZE];
+  int               null_descriptor = -1;
+  int               saved_stdout = -1;
+  size_t            length = 0;
+  size_t            cols;
+  size_t            failed_cols = 0;
+  size_t            failed_position = 0;
+  itl_le_metrics_t  failed_expected = ITL_ZERO_INIT;
+  bool              ok = true;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  null_descriptor = open("/dev/null", O_WRONLY);
+  if (null_descriptor < 0) {
+    ok = false;
+    goto cleanup;
+  }
+
+  saved_stdout = dup(STDOUT_FILENO);
+  if (saved_stdout < 0) {
+    ok = false;
+    goto cleanup;
+  }
+  if (dup2(null_descriptor, STDOUT_FILENO) < 0) {
+    ok = false;
+    goto cleanup;
+  }
+
+  text[length++] = 'a';
+  text[length++] = 'b';
+  memcpy(text + length, wide, sizeof(wide));
+  length += sizeof(wide);
+  text[length++] = '\n';
+  text[length++] = 'c';
+  text[length++] = 'd';
+  text[length] = '\0';
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  ITL_STRING_FROM_CSTR(line, text);
+
+  for (cols = 4; cols <= 12 && ok; ++cols) {
+    size_t position;
+
+    for (position = 0; position <= line->length && ok; ++position) {
+      itl_le_metrics_t expected;
+
+      itl_le_invalidate_prev_frame();
+      itl_g_tty_changed_size = 0;
+      itl_g_tty_prev_rows = 24;
+      itl_g_tty_prev_cols = cols;
+      itl_g_tty_first_render = false;
+      itl_g_tty_plain_append_pending = false;
+      itl_g_tty_should_refresh_text = true;
+      itl_g_debug_metrics_scan_count = 0;
+
+      le.cursor_position = position;
+      expected = itl_le_compute_metrics(&le, cols);
+      itl_le_tty_refresh(&le);
+
+      if (itl_g_debug_metrics_scan_count != 0 ||
+          itl_g_le_prev_total_rows != expected.total_rows ||
+          itl_g_le_prev_cursor_row != expected.cursor_row + 1 ||
+          itl_g_le_prev_cursor_col != expected.cursor_col)
+      {
+        failed_cols = cols;
+        failed_position = position;
+        failed_expected = expected;
+        ok = false;
+      }
+    }
+  }
+
+cleanup:
+  if (saved_stdout >= 0) {
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+  }
+  if (null_descriptor >= 0) close(null_descriptor);
+
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  ITL_STRING_FREE(line);
+
+  if (!ok) {
+    TEST_PRINTF("%zu cols, caret %zu, scans %zu, drew %zu %zu %zu against "
+                "%zu %zu %zu\n",
+                failed_cols, failed_position, itl_g_debug_metrics_scan_count,
+                itl_g_le_prev_total_rows, itl_g_le_prev_cursor_row,
+                itl_g_le_prev_cursor_col, failed_expected.total_rows,
+                failed_expected.cursor_row + 1, failed_expected.cursor_col);
+  }
+
+  return ok;
+}
 #endif
 
 static bool
@@ -3467,6 +3568,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
 #if defined ITL_POSIX && !defined NDEBUG
                                    DEFINE_TEST_CASE(
                                        test_append_path_keeps_spans),
+                                   DEFINE_TEST_CASE(
+                                       test_drawn_metrics_match_the_walk),
                                    DEFINE_TEST_CASE(
                                        test_colors_disabled_drop_span_escapes),
 #endif

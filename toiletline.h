@@ -4599,7 +4599,8 @@ ITL_DEF void itl_vi_sync_cursor_shape(itl_char_buf_t *b)
 
 ITL_DEF size_t itl_le_tty_break_row(itl_char_buf_t *b, bool is_span_open,
                                     bool should_suppress_pad,
-                                    const char *open_sgr, size_t indent)
+                                    const char *open_sgr, size_t indent,
+                                    size_t *row)
 {
   if (is_span_open && should_suppress_pad) {
     itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
@@ -4611,6 +4612,8 @@ ITL_DEF size_t itl_le_tty_break_row(itl_char_buf_t *b, bool is_span_open,
   if (is_span_open && should_suppress_pad) {
     itl_char_buf_append_cstr(b, open_sgr);
   }
+
+  *row += 1;
 
   return indent;
 }
@@ -4644,8 +4647,9 @@ ITL_DEF bool itl_le_tty_draw_ghost(itl_char_buf_t *b, bool is_cursor_at_end,
 ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 {
   size_t i, tty_rows, tty_cols, cols, indent;
-  size_t col, move_up;
-  itl_le_metrics_t m;
+  size_t col, row, move_up;
+  itl_le_metrics_t m = ITL_ZERO_INIT;
+  bool is_metrics_ready = false;
   bool has_resize;
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
   sigset_t previous_signals;
@@ -4707,11 +4711,17 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     m.cursor_row = itl_g_le_prev_cursor_row - 1;
     m.cursor_col =
         itl_g_le_prev_cursor_col + itl_g_tty_plain_append_width;
-  } else {
+    is_metrics_ready = true;
+  } else if (!itl_g_tty_should_refresh_text ||
+             (!is_resize && !itl_g_tty_first_render &&
+              itl_g_le_prev_cursor_at_end &&
+              le->cursor_position == le->line->length))
+  {
 #if !defined NDEBUG
     itl_g_debug_metrics_scan_count += 1;
 #endif
     m = itl_le_compute_metrics(le, tty_cols);
+    is_metrics_ready = true;
   }
 
   ITL_TRACELN("refresh: total %zu, crow %zu, ccol %zu, curp %zu\n",
@@ -4761,8 +4771,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
   bool spans_are_append_compatible = itl_le_prev_spans_append_compatible(
       itl_spans, span_count, le->line->length, &append_tail_sgr);
-  if (itl_g_tty_should_refresh_text && !is_resize && !itl_g_tty_first_render &&
-      have_cur_render && m.total_rows == itl_g_le_prev_total_rows &&
+  if (is_metrics_ready && itl_g_tty_should_refresh_text && !is_resize &&
+      !itl_g_tty_first_render && have_cur_render &&
+      m.total_rows == itl_g_le_prev_total_rows &&
       m.cursor_row + 1 == itl_g_le_prev_cursor_row &&
       le->cursor_position == le->line->length && itl_g_le_prev_cursor_at_end &&
       spans_are_append_compatible)
@@ -4867,6 +4878,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     const char *open_sgr = NULL;
     bool suppress_pad = itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL;
     col = indent;
+    row = le->prompt_rows;
     /* The flash repaints the whole line in one tone. It opens that SGR once and
        the loop below skips the per-span color. */
     if (itl_g_tty_flash_active) {
@@ -4874,6 +4886,11 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     }
     for (i = 0; i < le->line->length; ++i) {
       itl_utf8_t ch = le->line->chars[i];
+
+      if (!is_metrics_ready && i == le->cursor_position) {
+        m.cursor_row = row;
+        m.cursor_col = col;
+      }
 
       if (!itl_g_tty_flash_active) {
         if (in_span && i == open_end) {
@@ -4902,7 +4919,8 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
           in_span = false;
         }
 
-        col = itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent);
+        col = itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent,
+                                   &row);
 
         continue;
       }
@@ -4911,19 +4929,30 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         size_t char_width = itl_char_width(ch);
 
         if (itl_wrap_is_early_break(col, char_width, cols)) {
-          col =
-              itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent);
+          col = itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent,
+                                     &row);
         }
 
         itl_char_buf_append_bytes(b, (const char *) ch.bytes, ch.size);
         col += char_width;
 
         if (itl_wrap_is_break_after(col, cols)) {
-          col =
-              itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent);
+          col = itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent,
+                                     &row);
         }
       }
     }
+
+    if (!is_metrics_ready) {
+      if (le->cursor_position == le->line->length) {
+        m.cursor_row = row;
+        m.cursor_col = col;
+      }
+
+      m.total_rows = row + 1;
+      is_metrics_ready = true;
+    }
+
     /* A span that runs to the end of the line never hit its close in the loop,
        so its reset is emitted here. */
     if (in_span) {
