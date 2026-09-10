@@ -3082,6 +3082,144 @@ test_reflow_agrees_with_metrics(void)
   return ok;
 }
 
+static bool
+test_bytes_have(const char *data, size_t size, const char *needle)
+{
+  size_t needle_length = strlen(needle);
+  size_t start;
+
+  if (needle_length > size) {
+    return false;
+  }
+
+  for (start = 0; start + needle_length <= size; ++start) {
+    if (memcmp(data + start, needle, needle_length) == 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+#if defined ITL_POSIX && !defined NDEBUG
+static char   test_frame_capture[8192];
+static size_t test_frame_capture_size = 0;
+
+static void
+test_frame_capture_sink(const char *data, size_t size)
+{
+  size_t room = sizeof(test_frame_capture) - test_frame_capture_size;
+  size_t taken = size < room ? size : room;
+
+  memcpy(test_frame_capture + test_frame_capture_size, data, taken);
+  test_frame_capture_size += taken;
+}
+
+static bool
+test_frame_capture_has(const char *needle)
+{
+  return test_bytes_have(test_frame_capture, test_frame_capture_size, needle);
+}
+
+static void
+test_frame_capture_refresh(itl_le_t *le)
+{
+  itl_g_tty_first_render = true;
+  itl_g_tty_plain_append_pending = false;
+  itl_le_invalidate_prev_frame();
+  itl_g_tty_should_refresh_text = true;
+  test_frame_capture_size = 0;
+  itl_le_tty_refresh(le);
+}
+
+static bool
+test_colors_disabled_drop_span_escapes(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool was_colored_seen;
+  bool is_colored_seen;
+  bool is_text_seen;
+  bool ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  ITL_STRING_FROM_CSTR(line, "abc");
+  le.cursor_position = line->length;
+
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  itl_g_debug_frame_sink = test_frame_capture_sink;
+  tl_set_highlight_callback(test_whole_line_highlight_callback);
+
+  tl_set_colors_enabled(1);
+  test_frame_capture_refresh(&le);
+  was_colored_seen = test_frame_capture_has("\x1b[32m");
+
+  tl_set_colors_enabled(0);
+  test_frame_capture_refresh(&le);
+  is_colored_seen = test_frame_capture_has("\x1b[32m");
+  is_text_seen = test_frame_capture_has("abc");
+
+  itl_g_debug_frame_sink = NULL;
+  tl_set_highlight_callback(NULL);
+  tl_set_colors_enabled(1);
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  ITL_STRING_FREE(line);
+
+  ok = was_colored_seen && !is_colored_seen && is_text_seen;
+
+  if (!ok) {
+    TEST_PRINTF("colored %d, still colored %d, text %d\n",
+                (int) was_colored_seen, (int) is_colored_seen,
+                (int) is_text_seen);
+  }
+
+  return ok;
+}
+#endif
+
+static bool
+test_menu_band_survives_disabled_colors(void)
+{
+  static const char *const names[] = {"alpha"};
+  static const char *const descriptions[] = {"the first letter"};
+  tl_completion            result = ITL_ZERO_INIT;
+  int                      was_colors_enabled = itl_g_colors_enabled;
+  itl_char_buf_t          *b = itl_char_buf_alloc();
+  bool                     is_band_seen;
+  bool                     is_description_seen;
+  bool                     ok;
+
+  result.candidates = names;
+  result.descriptions = descriptions;
+  result.count = 1;
+
+  itl_g_colors_enabled = 0;
+  itl_menu_append_row(b, &result, 0, 8, 20, true, true);
+  is_band_seen = test_bytes_have(b->data, b->size, ITL_MENU_SELECTED_SGR);
+
+  ITL_CHAR_BUF_CLEAR(b);
+  itl_menu_append_row(b, &result, 0, 8, 20, false, true);
+  is_description_seen =
+      test_bytes_have(b->data, b->size, ITL_MENU_DESCRIPTION_SGR);
+
+  itl_g_colors_enabled = was_colors_enabled;
+  ITL_CHAR_BUF_FREE(b);
+
+  ok = is_band_seen && !is_description_seen;
+
+  if (!ok) {
+    TEST_PRINTF("band %d, description %d\n", (int) is_band_seen,
+                (int) is_description_seen);
+  }
+
+  return ok;
+}
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -3179,9 +3317,13 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_external_screen_requires_raw_mode),
                                    DEFINE_TEST_CASE(
                                        test_reflow_agrees_with_metrics),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_band_survives_disabled_colors),
 #if defined ITL_POSIX && !defined NDEBUG
                                    DEFINE_TEST_CASE(
                                        test_append_path_keeps_spans),
+                                   DEFINE_TEST_CASE(
+                                       test_colors_disabled_drop_span_escapes),
 #endif
 };
 

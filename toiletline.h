@@ -3884,6 +3884,11 @@ ITL_DEF const char *itl_color_sequence(const char *sequence)
   return itl_g_colors_enabled ? sequence : "";
 }
 
+ITL_DEF bool itl_should_run_highlight(void)
+{
+  return itl_g_colors_enabled != 0 && itl_g_highlight_callback != NULL;
+}
+
 /* The empty-completion flash, bright grey over a grey tint. */
 #define ITL_FLASH_TINT_ON  "\x1b[38;5;250;48;5;238m"
 #define ITL_FLASH_TINT_OFF "\x1b[39;49m"
@@ -3941,13 +3946,15 @@ ITL_DEF int itl_term_supports_decorations(void)
    where the bright set is supported and the normal white on black otherwise. */
 ITL_DEF const char *itl_flash_sgr_on(void)
 {
-  return itl_term_supports_256_color() ? ITL_FLASH_TINT_ON
-                                       : ITL_FLASH_REVERSE_ON;
+  return itl_g_colors_enabled && itl_term_supports_256_color()
+             ? ITL_FLASH_TINT_ON
+             : ITL_FLASH_REVERSE_ON;
 }
 ITL_DEF const char *itl_flash_sgr_off(void)
 {
-  return itl_term_supports_256_color() ? ITL_FLASH_TINT_OFF
-                                       : ITL_FLASH_REVERSE_OFF;
+  return itl_g_colors_enabled && itl_term_supports_256_color()
+             ? ITL_FLASH_TINT_OFF
+             : ITL_FLASH_REVERSE_OFF;
 }
 
 /* The flash hold, matching fish's 100ms, long enough to perceive and short
@@ -4603,7 +4610,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     if (itl_g_search_spans_active &&
         (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
          itl_g_multicursor_active) &&
-        have_cur_render && itl_g_highlight_callback != NULL)
+        have_cur_render && itl_should_run_highlight())
     {
       tl_highlight hl;
       size_t syntax_count = 0;
@@ -4637,7 +4644,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
           itl_spans[span_count++] = itl_g_search_spans[s];
         }
       }
-    } else if (have_cur_render && itl_g_highlight_callback != NULL) {
+    } else if (have_cur_render && itl_should_run_highlight()) {
       tl_highlight hl;
       hl.spans = itl_spans;
       hl.count = 0;
@@ -6014,7 +6021,7 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
     itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
   }
 
-  if (should_highlight && !is_selected && itl_g_highlight_callback != NULL) {
+  if (should_highlight && !is_selected && itl_should_run_highlight()) {
     tl_highlight_span name_spans[ITL_HIGHLIGHT_MAX_SPANS];
     tl_highlight hl;
 
@@ -7671,6 +7678,10 @@ ITL_DEF size_t itl_history_narrow_match(const char *query, size_t query_size,
    refresh draws it. */
 ITL_DEF void itl_search_push_span(size_t start, size_t end, const char *sgr)
 {
+  if (!itl_g_colors_enabled) {
+    return;
+  }
+
   if (start < end && itl_g_search_span_count < ITL_HIGHLIGHT_MAX_SPANS) {
     itl_g_search_spans[itl_g_search_span_count].start = start;
     itl_g_search_spans[itl_g_search_span_count].end = end;
@@ -7845,7 +7856,7 @@ ITL_DEF int itl_history_search(itl_le_t *le)
       /* Line one, the matched entry highlighted as the command it would
          become. The match sits at offset zero, so the host's codepoint spans
          index the display buffer unchanged. */
-      if (itl_g_highlight_callback != NULL) {
+      if (itl_should_run_highlight()) {
         tl_highlight hl;
         hl.spans = cached_spans;
         hl.count = 0;
