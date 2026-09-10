@@ -4468,6 +4468,29 @@ ITL_DEF itl_le_metrics_t itl_le_compute_metrics(const itl_le_t *le,
   return m;
 }
 
+ITL_DEF size_t itl_reflow_row_count(size_t col, size_t ncols)
+{
+  return ITL_MAX((size_t) 1, (col + ncols - 1) / ncols);
+}
+
+ITL_DEF size_t itl_reflow_advance_plain_run(size_t col, size_t run_length,
+                                            size_t ocols, size_t ncols,
+                                            size_t indent, size_t *rows_above)
+{
+  size_t first_row_fit = col < ocols ? ocols - col : 0;
+  size_t per_row = indent < ocols ? ocols - indent : 1;
+  size_t remaining;
+
+  if (run_length < first_row_fit) {
+    return col + run_length;
+  }
+
+  remaining = run_length - first_row_fit;
+  *rows_above += (1 + remaining / per_row) * itl_reflow_row_count(ocols, ncols);
+
+  return indent + remaining % per_row;
+}
+
 /* On a resize the terminal reflows each row the previous render emitted to the
    new width independently, since each was terminated by our own newline. This
    returns how many reflowed rows sit above the caret, so the renderer can step
@@ -4484,37 +4507,48 @@ ITL_DEF size_t itl_le_reflow_rows_above_caret(const itl_le_t *le,
      so the caret is stepped past a multi-row prompt to the true top of the
      block. */
   size_t rows_above = le->prompt_rows;
-  size_t i;
+  size_t stop = ITL_MIN(le->cursor_position, le->line->length);
+  size_t i = 0;
 
-  for (i = 0; i <= le->line->length; ++i) {
-    if (i == le->cursor_position) {
-      /* The caret sits on sub-row col / ncols of its own emitted row. */
-      return rows_above + col / ncols;
+  while (i < stop) {
+    size_t run_start = i;
+    size_t char_width;
+
+    while (i < stop && itl_utf8_is_plain_ascii(le->line->chars[i])) {
+      i += 1;
     }
-    if (i == le->line->length) {
-      break;
+
+    if (i > run_start) {
+      col = itl_reflow_advance_plain_run(col, i - run_start, ocols, ncols,
+                                         indent, &rows_above);
+      continue;
     }
 
     if (ITL_LE_IS_NEWLINE(le->line->chars[i])) {
-      rows_above += ITL_MAX((size_t) 1, (col + ncols - 1) / ncols);
+      rows_above += itl_reflow_row_count(col, ncols);
       col = indent;
-    } else {
-      size_t char_width = itl_char_width(le->line->chars[i]);
-
-      if (itl_wrap_is_early_break(col, char_width, ocols)) {
-        rows_above += ITL_MAX((size_t) 1, (col + ncols - 1) / ncols);
-        col = indent;
-      }
-
-      col += char_width;
-
-      if (itl_wrap_is_break_after(col, ocols)) {
-        rows_above += ITL_MAX((size_t) 1, (col + ncols - 1) / ncols);
-        col = indent;
-      }
+      i += 1;
+      continue;
     }
+
+    char_width = itl_char_width(le->line->chars[i]);
+
+    if (itl_wrap_is_early_break(col, char_width, ocols)) {
+      rows_above += itl_reflow_row_count(col, ncols);
+      col = indent;
+    }
+
+    col += char_width;
+
+    if (itl_wrap_is_break_after(col, ocols)) {
+      rows_above += itl_reflow_row_count(col, ncols);
+      col = indent;
+    }
+
+    i += 1;
   }
 
+  /* The caret sits on sub-row col / ncols of its own emitted row. */
   return rows_above + col / ncols;
 }
 

@@ -3183,6 +3183,127 @@ test_reflow_agrees_with_metrics(void)
   return ok;
 }
 
+static size_t
+test_reference_reflow(const itl_le_t *le, size_t old_cols, size_t new_cols)
+{
+  size_t ocols = old_cols > 1 ? old_cols : 1;
+  size_t ncols = new_cols > 1 ? new_cols : 1;
+  size_t indent = itl_le_prompt_indent(le, ocols);
+  size_t col = indent;
+  size_t rows_above = le->prompt_rows;
+  size_t i;
+
+  for (i = 0; i <= le->line->length; ++i) {
+    size_t char_width;
+
+    if (i == le->cursor_position) {
+      return rows_above + col / ncols;
+    }
+
+    if (i == le->line->length) {
+      break;
+    }
+
+    if (ITL_LE_IS_NEWLINE(le->line->chars[i])) {
+      rows_above += (col + ncols - 1) / ncols > 0 ? (col + ncols - 1) / ncols : 1;
+      col = indent;
+      continue;
+    }
+
+    char_width = itl_char_width(le->line->chars[i]);
+
+    if (char_width == 2 && col + 1 >= ocols) {
+      rows_above +=
+          (col + ncols - 1) / ncols > 0 ? (col + ncols - 1) / ncols : 1;
+      col = indent;
+    }
+
+    col += char_width;
+
+    if (col >= ocols) {
+      rows_above +=
+          (col + ncols - 1) / ncols > 0 ? (col + ncols - 1) / ncols : 1;
+      col = indent;
+    }
+  }
+
+  return rows_above + col / ncols;
+}
+
+static bool
+test_reflow_agrees_with_reference(void)
+{
+  static const char        wide[] = {(char) 0xE4, (char) 0xBD, (char) 0xA0};
+  static const char *const PROMPTS[] = {"", "> ", "one\ntwo\nkosh> "};
+  char                     text[160];
+  char                     out_buffer[BUFFER_SIZE];
+  size_t                   prompt_index;
+  bool                     ok = true;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  for (prompt_index = 0;
+       prompt_index < sizeof(PROMPTS) / sizeof(PROMPTS[0]) && ok; ++prompt_index)
+  {
+    size_t wide_position;
+
+    itl_le_init(&le, line, out_buffer, sizeof(out_buffer),
+                PROMPTS[prompt_index]);
+
+    for (wide_position = 0; wide_position <= 24 && ok; ++wide_position) {
+      size_t length = 0;
+      size_t filler;
+      size_t old_cols;
+
+      for (filler = 0; filler < wide_position; ++filler) {
+        text[length++] = 'a';
+      }
+
+      memcpy(text + length, wide, sizeof(wide));
+      length += sizeof(wide);
+      text[length++] = '\n';
+
+      for (filler = wide_position; filler < 24; ++filler) {
+        text[length++] = 'b';
+      }
+
+      text[length] = '\0';
+      ITL_STRING_FROM_CSTR(line, text);
+
+      for (old_cols = 1; old_cols <= 16 && ok; ++old_cols) {
+        size_t new_cols;
+
+        for (new_cols = 1; new_cols <= 16 && ok; ++new_cols) {
+          size_t position;
+
+          for (position = 0; position <= line->length + 1; ++position) {
+            size_t expected;
+            size_t actual;
+
+            le.cursor_position = position;
+            expected = test_reference_reflow(&le, old_cols, new_cols);
+            actual = itl_le_reflow_rows_above_caret(&le, old_cols, new_cols);
+
+            if (expected != actual) {
+              TEST_PRINTF("prompt %zu, wide %zu, %zu to %zu cols, caret %zu "
+                          "gave %zu against %zu\n",
+                          prompt_index, wide_position, old_cols, new_cols,
+                          position, actual, expected);
+              ok = false;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 static itl_le_metrics_t
 test_reference_metrics(const itl_le_t *le, size_t tty_cols)
 {
@@ -3635,6 +3756,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_external_screen_requires_raw_mode),
                                    DEFINE_TEST_CASE(
                                        test_reflow_agrees_with_metrics),
+                                   DEFINE_TEST_CASE(
+                                       test_reflow_agrees_with_reference),
                                    DEFINE_TEST_CASE(
                                        test_wrap_predicates_agree_with_reference),
                                    DEFINE_TEST_CASE(
