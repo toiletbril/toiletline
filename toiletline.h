@@ -6447,16 +6447,18 @@ typedef bool (*itl_menu_gather_fn)(itl_le_t *le, tl_completion *result);
 
 /* Everything that separates one menu source from another. gather refills the
    list as the line changes. can_descend belongs to a list of paths and reopens
-   the menu inside an accepted directory. should_submit_on_enter belongs to a
-   list that only extends the line, and Enter then closes the menu and submits
-   what the line already holds. should_highlight belongs to a list whose entries
-   are whole commands, and the host colors them the way it colors the line.
-   help_title names the source on the first row and help_keys lists the keys it
-   answers beside it. */
+   the menu inside an accepted directory. should_regather_new_words belongs to
+   a list whose meaning changes at word boundaries. should_submit_on_enter
+   belongs to a list that only extends the line, and Enter then closes the menu
+   and submits what the line already holds. should_highlight belongs to a list
+   whose entries are whole commands, and the host colors them the way it colors
+   the line. help_title names the source on the first row and help_keys lists
+   the keys it answers beside it. */
 typedef struct itl_menu_source
 {
   itl_menu_gather_fn gather;
   bool can_descend;
+  bool should_regather_new_words;
   bool should_submit_on_enter;
   bool should_highlight;
   const char *help_title;
@@ -7122,10 +7124,16 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     }
 
     if (kind == TL_KEY_CHAR) {
+      bool should_regather = source->should_regather_new_words &&
+                             (state.query_len == 0 ||
+                              ITL_CHAR_IS_SPACE(byte));
+
       itl_le_insert(le, itl_utf8_parse(byte));
       result.token_end += 1;
 
-      if (source->can_descend && itl_byte_is_path_separator(byte)) {
+      if (should_regather ||
+          (source->can_descend && itl_byte_is_path_separator(byte)))
+      {
         if (!itl_menu_rebase(le, source, &state, &result)) {
           itl_menu_empty_candidates(&result);
         }
@@ -7252,7 +7260,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
      printed as a static column list. */
   if (itl_g_completion_menu_enabled) {
     static const itl_menu_source completion_source = {
-        itl_menu_regather, true, true, false, "selecting completions",
+        itl_menu_regather, true, true, true, false, "selecting completions",
         "enter to run, tab to accept, esc/ctrl-g to cancel"};
 
     *out_code = itl_completion_menu(le, &result, &completion_source);
@@ -7271,7 +7279,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
 ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
 {
   static const itl_menu_source history_source = {
-      itl_history_menu_gather, false, false, true,
+      itl_history_menu_gather, false, false, false, true,
       "incremental history search",
       "enter/tab to accept, esc/ctrl-g to cancel"};
 
