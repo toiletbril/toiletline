@@ -296,6 +296,18 @@ typedef int (*tl_history_select_fn)(const char *const *entries, size_t count,
 TL_DEF void tl_set_history_select_callback(tl_history_select_fn callback);
 
 /**
+ * The history search snapshot callback. The host returns a complete encoded
+ * history snapshot whose bytes stay valid until the next callback. A nonzero
+ * result uses that snapshot for ctrl-R without changing ordinary history.
+ */
+typedef int (*tl_history_search_snapshot_fn)(const char **out_contents,
+                                             size_t *out_size);
+
+/** Register the snapshot callback, or NULL to search ordinary history. */
+TL_DEF void tl_set_history_search_snapshot_callback(
+    tl_history_search_snapshot_fn callback);
+
+/**
  * Temporarily hand the terminal to an interactive program while tl_get_input()
  * is active. The begin call clears the editor-owned input block and restores
  * cooked mode. The end call re-enters raw mode and invalidates the saved render
@@ -1827,6 +1839,21 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_file_size = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_limit = TL_HISTORY_MAX_SIZE;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_enabled = true;
 
+typedef struct itl_history_search_snapshot
+{
+  const char *contents;
+  size_t size;
+  size_t offsets[TL_HISTORY_MAX_SIZE];
+  size_t head;
+  size_t count;
+  bool is_active;
+} itl_history_search_snapshot;
+
+ITL_DEF ITL_THREAD_LOCAL tl_history_search_snapshot_fn
+    itl_g_history_search_snapshot_callback = NULL;
+ITL_DEF ITL_THREAD_LOCAL itl_history_search_snapshot
+    itl_g_history_search_snapshot = {NULL, 0, {0}, 0, 0, false};
+
 struct itl_char_buf;
 ITL_DEF ITL_THREAD_LOCAL struct itl_char_buf *itl_g_history_read_buffer = NULL;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_read_buffer_loaded = false;
@@ -2714,21 +2741,38 @@ ITL_DEF bool itl_history_ensure_read_buffer(void)
   return true;
 }
 
+ITL_DEF bool itl_history_decode_entry_bytes(const char *buffer_data,
+                                            size_t buffer_size, size_t offset,
+                                            char *decoded, size_t capacity,
+                                            size_t *decoded_size_out);
+
 ITL_DEF bool itl_history_decode_entry_buffered(size_t offset, char *decoded,
                                                size_t capacity,
                                                size_t *decoded_size_out)
 {
-  size_t decoded_size = 0;
-  bool escape_pending = false;
-  size_t i;
   size_t buffer_size = itl_g_history_read_buffer->size;
   const char *buffer_data = itl_g_history_read_buffer->data;
 
-  if (capacity == 0) return false;
   if (offset < itl_g_history_read_buffer_offset) return false;
   offset -= itl_g_history_read_buffer_offset;
   if (offset < itl_g_history_read_buffer_start || offset > buffer_size)
     return false;
+
+  return itl_history_decode_entry_bytes(buffer_data, buffer_size, offset,
+                                        decoded, capacity, decoded_size_out);
+}
+
+ITL_DEF bool itl_history_decode_entry_bytes(const char *buffer_data,
+                                            size_t buffer_size, size_t offset,
+                                            char *decoded, size_t capacity,
+                                            size_t *decoded_size_out)
+{
+  size_t decoded_size = 0;
+  bool escape_pending = false;
+  size_t i;
+
+  if (capacity == 0) return false;
+  if (offset > buffer_size) return false;
 
   for (i = offset; i < buffer_size; ++i) {
     uint8_t ch = (uint8_t) buffer_data[i];
@@ -3192,6 +3236,113 @@ ITL_DEF bool itl_history_scan_fd(ITL_FILE file)
   itl_g_history_limit = retained_limit;
 
   return true;
+}
+
+ITL_DEF bool itl_history_search_snapshot_scan(const char *contents, size_t size)
+{
+  bool escape_pending = false;
+  size_t entry_start = 0;
+  size_t position;
+
+  itl_g_history_search_snapshot.contents = contents;
+  itl_g_history_search_snapshot.size = size;
+  itl_g_history_search_snapshot.head = 0;
+  itl_g_history_search_snapshot.count = 0;
+
+  for (position = 0; position < size; ++position) {
+    uint8_t ch = (uint8_t) contents[position];
+
+    if (escape_pending) {
+      escape_pending = false;
+      continue;
+    }
+    if (ch == '\\') {
+      escape_pending = true;
+      continue;
+    }
+    if (ch == '\n') {
+      if (itl_g_history_limit > 0) {
+        size_t slot = (itl_g_history_search_snapshot.head +
+                       itl_g_history_search_snapshot.count) %
+                      TL_HISTORY_MAX_SIZE;
+        itl_g_history_search_snapshot.offsets[slot] = entry_start;
+        if (itl_g_history_search_snapshot.count < itl_g_history_limit) {
+          itl_g_history_search_snapshot.count += 1;
+        } else {
+          itl_g_history_search_snapshot.head =
+              (itl_g_history_search_snapshot.head + 1) % TL_HISTORY_MAX_SIZE;
+        }
+      }
+      entry_start = position + 1;
+      continue;
+    }
+    if (ch == '\r') continue;
+    if ((ch < 0x20 && ch != '\t' && ch != '\v' && ch != '\f') || ch == 0x7f)
+      return false;
+  }
+
+  return true;
+}
+
+ITL_DEF void itl_history_search_snapshot_begin(void)
+{
+  const char *contents = NULL;
+  size_t size = 0;
+
+  itl_g_history_search_snapshot.is_active = false;
+  if (itl_g_history_search_snapshot_callback == NULL) return;
+  if (!itl_g_history_search_snapshot_callback(&contents, &size)) return;
+  if (contents == NULL && size != 0) return;
+  if (!itl_history_search_snapshot_scan(contents, size)) return;
+
+  itl_g_history_search_snapshot.is_active = true;
+}
+
+ITL_DEF void itl_history_search_snapshot_end(void)
+{
+  itl_g_history_search_snapshot.contents = NULL;
+  itl_g_history_search_snapshot.size = 0;
+  itl_g_history_search_snapshot.head = 0;
+  itl_g_history_search_snapshot.count = 0;
+  itl_g_history_search_snapshot.is_active = false;
+}
+
+ITL_DEF size_t itl_history_search_count(void)
+{
+  return itl_g_history_search_snapshot.is_active
+             ? itl_g_history_search_snapshot.count
+             : itl_g_history_count;
+}
+
+ITL_DEF size_t itl_history_search_index_to_offset(size_t index)
+{
+  if (!itl_g_history_search_snapshot.is_active)
+    return itl_history_index_to_offset(index);
+
+  TL_ASSERT(index < itl_g_history_search_snapshot.count);
+  return itl_g_history_search_snapshot.offsets
+      [(itl_g_history_search_snapshot.head + index) % TL_HISTORY_MAX_SIZE];
+}
+
+ITL_DEF bool itl_history_search_prepare(void)
+{
+  return itl_g_history_search_snapshot.is_active
+             ? true
+             : itl_history_ensure_read_buffer();
+}
+
+ITL_DEF bool itl_history_search_decode_entry(size_t offset, char *decoded,
+                                             size_t capacity,
+                                             size_t *decoded_size_out)
+{
+  if (!itl_g_history_search_snapshot.is_active)
+    return itl_history_decode_entry_buffered(offset, decoded, capacity,
+                                             decoded_size_out);
+
+  return itl_history_decode_entry_bytes(
+      itl_g_history_search_snapshot.contents,
+      itl_g_history_search_snapshot.size, offset, decoded, capacity,
+      decoded_size_out);
 }
 
 /* Returns TL_SUCCESS or TL_ERROR, sets errno on failure. The loader scans the
@@ -5183,6 +5334,12 @@ TL_DEF void tl_set_history_select_callback(tl_history_select_fn callback)
   itl_g_history_select_callback = callback;
 }
 
+TL_DEF void tl_set_history_search_snapshot_callback(
+    tl_history_search_snapshot_fn callback)
+{
+  itl_g_history_search_snapshot_callback = callback;
+}
+
 /* Whether the dimmed ghost suggestion is offered at all. A host that wants no
    inline hint, such as one started with a no-completion flag, turns it off so
    neither the completion nor the history source fills it. */
@@ -6619,22 +6776,25 @@ ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
   size_t pool_used = 0;
   size_t found_count = 0;
   size_t placed_count = 0;
+  size_t history_count = itl_history_search_count();
   size_t index;
   unsigned rank;
 
-  if (itl_g_history_count == 0 || itl_g_history_path == NULL) {
+  if (history_count == 0 ||
+      (!itl_g_history_search_snapshot.is_active && itl_g_history_path == NULL))
+  {
     return false;
   }
   if (itl_string_to_cstr(le->line, query, sizeof(query)) != TL_SUCCESS) {
     return false;
   }
-  if (!itl_history_ensure_read_buffer()) {
+  if (!itl_history_search_prepare()) {
     return false;
   }
 
   query_len = le->line->size;
 
-  for (index = itl_g_history_count; index-- > 0;) {
+  for (index = history_count; index-- > 0;) {
     size_t entry_len;
     size_t gathered;
     unsigned entry_rank;
@@ -6644,8 +6804,9 @@ ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
       break;
     }
 
-    if (!itl_history_decode_entry_buffered(itl_history_index_to_offset(index),
-                                           entry, sizeof(entry), &entry_len))
+    if (!itl_history_search_decode_entry(
+            itl_history_search_index_to_offset(index), entry, sizeof(entry),
+            &entry_len))
     {
       continue;
     }
@@ -7301,6 +7462,13 @@ ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
       "enter/tab to accept, esc/ctrl-g to cancel"};
 
   tl_completion result;
+  char original_line[ITL_STRING_MAX_LEN];
+  char resulting_line[ITL_STRING_MAX_LEN];
+  size_t original_size = le->line->size;
+  bool has_original_line =
+      itl_string_to_cstr(le->line, original_line, sizeof(original_line)) ==
+      TL_SUCCESS;
+  tl_status_code status;
 
   memset(&result, 0, sizeof(result));
 
@@ -7308,7 +7476,17 @@ ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
     return TL_SUCCESS;
   }
 
-  return itl_completion_menu(le, &result, &history_source);
+  status = itl_completion_menu(le, &result, &history_source);
+  if (itl_g_history_search_snapshot.is_active && has_original_line &&
+      itl_string_to_cstr(le->line, resulting_line, sizeof(resulting_line)) ==
+          TL_SUCCESS &&
+      (le->line->size != original_size ||
+       memcmp(original_line, resulting_line, original_size) != 0))
+  {
+    le->history_selected_index = ITL_HISTORY_NONE;
+  }
+
+  return status;
 }
 
 ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
@@ -7768,9 +7946,8 @@ ITL_DEF bool itl_history_candidate_matches(size_t index, const char *query,
   itl_g_debug_history_candidate_count += 1;
 #endif
 
-  if (!itl_history_decode_entry_buffered(itl_history_index_to_offset(index),
-                                         decoded, sizeof(decoded),
-                                         &decoded_size))
+  if (!itl_history_search_decode_entry(itl_history_search_index_to_offset(index),
+                                       decoded, sizeof(decoded), &decoded_size))
   {
     return false;
   }
@@ -7792,17 +7969,17 @@ ITL_DEF size_t itl_history_find_match(const char *query, size_t query_size,
   size_t i;
   size_t found = ITL_HISTORY_NONE;
 
-  if (itl_g_history_count == 0 || start_index == ITL_HISTORY_NONE ||
-      itl_g_history_path == NULL)
+  if (itl_history_search_count() == 0 || start_index == ITL_HISTORY_NONE ||
+      (!itl_g_history_search_snapshot.is_active && itl_g_history_path == NULL))
   {
     return ITL_HISTORY_NONE;
   }
 
-  TL_ASSERT(start_index < itl_g_history_count);
+  TL_ASSERT(start_index < itl_history_search_count());
 
   /* One search keystroke can walk every navigable entry, decoded from the
      in-memory file buffer rather than a read per entry. */
-  if (!itl_history_ensure_read_buffer()) {
+  if (!itl_history_search_prepare()) {
     return ITL_HISTORY_NONE;
   }
 
@@ -7828,17 +8005,18 @@ ITL_DEF size_t itl_history_find_match_forward(const char *query,
   size_t i;
   size_t found = ITL_HISTORY_NONE;
 
-  if (itl_g_history_count == 0 || start_index == ITL_HISTORY_NONE ||
-      start_index >= itl_g_history_count || itl_g_history_path == NULL)
+  if (itl_history_search_count() == 0 || start_index == ITL_HISTORY_NONE ||
+      start_index >= itl_history_search_count() ||
+      (!itl_g_history_search_snapshot.is_active && itl_g_history_path == NULL))
   {
     return ITL_HISTORY_NONE;
   }
 
-  if (!itl_history_ensure_read_buffer()) {
+  if (!itl_history_search_prepare()) {
     return ITL_HISTORY_NONE;
   }
 
-  for (i = start_index; i < itl_g_history_count; ++i) {
+  for (i = start_index; i < itl_history_search_count(); ++i) {
     if (itl_history_candidate_matches(i, query, query_size, out)) {
       found = i;
       break;
@@ -7851,7 +8029,8 @@ ITL_DEF size_t itl_history_find_match_forward(const char *query,
 /* The newest navigable entry index, or ITL_HISTORY_NONE when history is empty.
  */
 #define ITL_HISTORY_NEWEST()                                                   \
-  (itl_g_history_count > 0 ? itl_g_history_count - 1 : ITL_HISTORY_NONE)
+  (itl_history_search_count() > 0 ? itl_history_search_count() - 1             \
+                                  : ITL_HISTORY_NONE)
 
 /* An entry rejected by the shorter query cannot hold its extension, so a
    narrowed match only has to test itself and the entries below it. A narrowed
@@ -7870,7 +8049,7 @@ ITL_DEF size_t itl_history_narrow_match(const char *query, size_t query_size,
     return ITL_HISTORY_NONE;
   }
 
-  if (!itl_history_ensure_read_buffer()) {
+  if (!itl_history_search_prepare()) {
     return ITL_HISTORY_NONE;
   }
 
@@ -8262,7 +8441,9 @@ ITL_DEF int itl_history_search(itl_le_t *le)
        out_size. */
     if (match_str.size + 1 <= le->out_size) {
       itl_string_copy(le->line, &match_str);
-      le->history_selected_index = match;
+      le->history_selected_index = itl_g_history_search_snapshot.is_active
+                                       ? ITL_HISTORY_NONE
+                                       : match;
     }
   }
 
@@ -8283,7 +8464,10 @@ ITL_DEF int itl_history_search(itl_le_t *le)
    caller to dispatch, and writes the status the caller must return. */
 ITL_DEF int itl_history_select(itl_le_t *le, tl_status_code *out_code)
 {
+  int result = TL_KEY_UNKN;
+
   *out_code = TL_SUCCESS;
+  itl_history_search_snapshot_begin();
 
   if (itl_g_history_select_callback != NULL) {
     tl_completion entries;
@@ -8296,22 +8480,29 @@ ITL_DEF int itl_history_select(itl_le_t *le, tl_status_code *out_code)
           entries.candidates, entries.count, &chosen);
 
       if (host_result != 0) {
-        if (host_result > 0 && chosen != NULL) {
-          itl_completion_replace_token(le, &entries, chosen);
+        if (host_result > 0 && chosen != NULL &&
+            itl_completion_replace_token(le, &entries, chosen) &&
+            itl_g_history_search_snapshot.is_active)
+        {
+          le->history_selected_index = ITL_HISTORY_NONE;
         }
 
         itl_g_tty_should_refresh_text = true;
-        return TL_KEY_UNKN;
+        goto done;
       }
     }
   }
 
   if (itl_g_completion_menu_enabled) {
     *out_code = itl_history_menu(le);
-    return TL_KEY_UNKN;
+    goto done;
   }
 
-  return itl_history_search(le);
+  result = itl_history_search(le);
+
+done:
+  itl_history_search_snapshot_end();
+  return result;
 }
 
 ITL_DEF size_t itl_vi_register_index(char name)

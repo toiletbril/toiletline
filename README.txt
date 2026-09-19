@@ -56,7 +56,8 @@ word motion.
 Ctrl-R starts a reverse incremental history search. Enter accepts the
 highlighted match into the line and leaves the search without running it.
 Ctrl-G cancels the search, and the line is restored to its state from before
-the search began.
+the search began. A registered history search snapshot callback supplies the
+encoded entries for one search without changing ordinary history.
 
 A vi editing mode is selected through tl_set_edit_mode. Each line begins in
 insert mode, where the Emacs controls and the history search stay available.
@@ -308,6 +309,15 @@ the ghost suggestion. The callback receives the current line and the cursor
 position in codepoints and fills a `tl_completion` with the candidates, their
 count, the longest common prefix, and the token span to replace. Pass `NULL` to
 turn completion off, which is the default.
+
+
+void tl_set_history_search_snapshot_callback(tl_history_search_snapshot_fn callback);
+-------------------------------------------------------------------------------------
+Registers the callback Ctrl-R calls once before gathering its entries. The
+callback returns nonzero after setting the complete encoded history byte span.
+Those bytes must remain valid until the next callback. The snapshot is used
+only by that search and does not change ordinary history, recall, or event
+numbers. Pass `NULL` to search ordinary history, which is the default.
 
 
 void tl_set_highlight_callback(tl_highlight_fn callback);

@@ -1458,6 +1458,95 @@ search_match_is(const itl_string_t *found, const char *expected)
          strcmp(buffer, expected) == 0;
 }
 
+static const char *history_search_snapshot_contents;
+static size_t      history_search_snapshot_size;
+
+static int
+provide_history_search_snapshot(const char **out_contents, size_t *out_size)
+{
+  *out_contents = history_search_snapshot_contents;
+  *out_size = history_search_snapshot_size;
+  return 1;
+}
+
+static bool
+test_history_search_snapshot(void)
+{
+  static const char shared[] = "peer old\npeer new\nunfinished";
+  static const char invalid[] = "bad\001entry\n";
+  const char       *path = "tl_test_search_snapshot.txt";
+  itl_string_t     *found = itl_string_alloc();
+  itl_string_t     *query = itl_string_alloc();
+  itl_le_t          le;
+  tl_completion     entries;
+  size_t            private_count;
+  size_t            private_offset;
+  size_t            match;
+  bool              ok = true;
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+  hist_append_cstr("private only");
+  private_count = itl_g_history_count;
+  private_offset = itl_history_index_to_offset(0);
+
+  history_search_snapshot_contents = shared;
+  history_search_snapshot_size = sizeof(shared) - 1;
+  tl_set_history_search_snapshot_callback(provide_history_search_snapshot);
+  itl_history_search_snapshot_begin();
+
+  memset(&le, 0, sizeof(le));
+  memset(&entries, 0, sizeof(entries));
+  ITL_STRING_FROM_CSTR(query, "peer");
+  le.line = query;
+
+  match = itl_history_find_match(SEARCH_QUERY("peer"), ITL_HISTORY_NEWEST(),
+                                 found);
+  if (!itl_g_history_search_snapshot.is_active ||
+      itl_history_search_count() != 2 || match != 1 ||
+      !search_match_is(found, "peer new") ||
+      itl_g_history_count != private_count ||
+      itl_history_index_to_offset(0) != private_offset ||
+      !hist_entry_is(0, "private only"))
+  {
+    TEST_PRINTF("the shared snapshot changed private history\n");
+    ok = false;
+  }
+  if (ok && (!itl_history_menu_gather(&le, &entries) || entries.count != 2 ||
+             strcmp(entries.candidates[0], "peer new") != 0 ||
+             strcmp(entries.candidates[1], "peer old") != 0))
+  {
+    TEST_PRINTF("the history menu did not use the shared snapshot\n");
+    ok = false;
+  }
+
+  itl_history_search_snapshot_end();
+  match = itl_history_find_match(SEARCH_QUERY("private"),
+                                 ITL_HISTORY_NEWEST(), found);
+  if (ok && (match != 0 || !search_match_is(found, "private only"))) {
+    TEST_PRINTF("private search was not restored\n");
+    ok = false;
+  }
+
+  history_search_snapshot_contents = invalid;
+  history_search_snapshot_size = sizeof(invalid) - 1;
+  itl_history_search_snapshot_begin();
+  if (ok && itl_g_history_search_snapshot.is_active) {
+    TEST_PRINTF("an invalid shared snapshot became active\n");
+    ok = false;
+  }
+
+  itl_history_search_snapshot_end();
+  tl_set_history_search_snapshot_callback(NULL);
+  remove(path);
+  ITL_STRING_FREE(found);
+  ITL_STRING_FREE(query);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
 static bool
 test_history_search_matching(void)
 {
@@ -3855,6 +3944,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_history_offset_shift_matches_scan),
                                    DEFINE_TEST_CASE(test_history_search),
+                                   DEFINE_TEST_CASE(
+                                       test_history_search_snapshot),
                                    DEFINE_TEST_CASE(
                                        test_history_search_matching),
                                    DEFINE_TEST_CASE(
