@@ -1887,7 +1887,7 @@ test_history_alloc_balance(void)
 }
 
 static bool
-test_history_concurrent_merge(void)
+test_history_private_branch(void)
 {
   const char *path = "tl_test_merge.txt";
   bool  ok = true;
@@ -1909,27 +1909,39 @@ test_history_concurrent_merge(void)
   fputs("second two\n", other);
   fclose(other);
 
-  /* Our next append must merge in the other session's entry before writing. */
+  /* Our next append persists without merging the other session's entry. */
   hist_append_cstr("third three");
 
-  if (itl_g_history_total_count != 3 ||
-      itl_g_last_history_event_number != 3)
+  if (itl_g_history_total_count != 2 ||
+      itl_g_last_history_event_number != 2)
   {
-    TEST_PRINTF("merged total %zu and last %zu\n",
+    TEST_PRINTF("private total %zu and last %zu\n",
                 itl_g_history_total_count,
                 itl_g_last_history_event_number);
     ok = false;
   }
 
-  if (itl_g_history_count != 3) {
-    TEST_PRINTF("expected 3 merged entries, got %zu\n", itl_g_history_count);
+  if (itl_g_history_count != 2) {
+    TEST_PRINTF("expected 2 private entries, got %zu\n", itl_g_history_count);
+    ok = false;
+  }
+  if (ok && (!hist_entry_is(0, "first one") ||
+             !hist_entry_is(1, "third three")))
+  {
+    TEST_PRINTF("private entries are out of order or wrong\n");
+    ok = false;
+  }
+
+  if (ok && tl_history_load(path) != TL_SUCCESS) {
+    TEST_PRINTF("could not reload the durable history\n");
     ok = false;
   }
   if (ok &&
-      (!hist_entry_is(0, "first one") || !hist_entry_is(1, "second two") ||
+      (itl_g_history_count != 3 || !hist_entry_is(0, "first one") ||
+       !hist_entry_is(1, "second two") ||
        !hist_entry_is(2, "third three")))
   {
-    TEST_PRINTF("merged entries are out of order or wrong\n");
+    TEST_PRINTF("reloaded entries are out of order or wrong\n");
     ok = false;
   }
 
@@ -3855,7 +3867,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
 #endif
                                    DEFINE_TEST_CASE(test_history_short_entry_skipped),
                                    DEFINE_TEST_CASE(test_history_alloc_balance),
-                                   DEFINE_TEST_CASE(test_history_concurrent_merge),
+                                   DEFINE_TEST_CASE(test_history_private_branch),
                                    DEFINE_TEST_CASE(
                                        test_completion_replacement_is_atomic),
                                    DEFINE_TEST_CASE(

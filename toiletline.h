@@ -444,7 +444,7 @@ TL_DEF void tl_set_edit_mode(int mode);
 #define ITL_FILE_OPEN_FOR_WRITE(path)                                          \
   _open(path, O_WRONLY | O_CREAT | O_TRUNC | _O_BINARY, _S_IREAD | _S_IWRITE)
 #define ITL_FILE_OPEN_FOR_APPEND(path)                                         \
-  _open(path, O_WRONLY | O_CREAT | O_APPEND | _O_BINARY, _S_IREAD | _S_IWRITE)
+  _open(path, O_RDWR | O_CREAT | O_APPEND | _O_BINARY, _S_IREAD | _S_IWRITE)
 #define ITL_FILE_IS_BAD(file) (file < 0)
 #define ITL_FILE_CLOSE        _close
 #define ITL_FILE_SEEK(file, offset)                                            \
@@ -499,7 +499,7 @@ TL_DEF void tl_set_edit_mode(int mode);
 #define ITL_FILE_OPEN_FOR_WRITE(path)                                          \
   open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR)
 #define ITL_FILE_OPEN_FOR_APPEND(path)                                         \
-  open(path, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR)
+  open(path, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR)
 #define ITL_FILE_IS_BAD(file) (file < 0)
 #define ITL_FILE_CLOSE        close
 #define ITL_FILE_SEEK(file, offset)                                            \
@@ -537,7 +537,7 @@ TL_DEF void tl_set_edit_mode(int mode);
 
 #define ITL_FILE_OPEN_FOR_READ(path)   fopen(path, "rb")
 #define ITL_FILE_OPEN_FOR_WRITE(path)  fopen(path, "wb")
-#define ITL_FILE_OPEN_FOR_APPEND(path) fopen(path, "ab")
+#define ITL_FILE_OPEN_FOR_APPEND(path) fopen(path, "a+b")
 #define ITL_FILE_IS_BAD(file)          (file == NULL)
 #define ITL_FILE_CLOSE                 fclose
 #define ITL_FILE_SEEK(file, offset)                                            \
@@ -1817,6 +1817,8 @@ ITL_DEF bool itl_string_from_bytes(itl_string_t *str, const char *data,
 
 ITL_DEF ITL_THREAD_LOCAL char *itl_g_history_path = NULL;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_offsets[TL_HISTORY_MAX_SIZE];
+ITL_DEF ITL_THREAD_LOCAL size_t
+    itl_g_history_durable_offsets[TL_HISTORY_MAX_SIZE];
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_head = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_total_count = 0;
@@ -2087,8 +2089,8 @@ ITL_DEF void itl_vi_free(void)
   itl_undo_reset();
 }
 
-/* Releases the in-memory history state. Entries themselves live in the file, so
-   only the path, the draft, and the offset ring counters are reset. */
+/* Releases the private in-memory history snapshot, its path, draft, and offset
+   ring counters. */
 ITL_DEF void itl_g_history_free(void)
 {
   itl_history_read_fd_invalidate();
@@ -2668,7 +2670,8 @@ ITL_DEF bool itl_history_ensure_read_buffer(void)
   }
   retained_offset = itl_g_history_count > 0
                         ? itl_history_index_to_offset(0)
-                        : (size_t) file_size;
+                        : (itl_g_history_ends_with_newline ? (size_t) file_size
+                                                           : 0);
   if (retained_offset > (size_t) file_size ||
       !ITL_FILE_SEEK(file, retained_offset))
   {
@@ -3047,12 +3050,15 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_file_is_bad = false;
 
 /* Records the byte offset of one entry in the ring, evicting the oldest when
    the configured limit is full. */
-ITL_DEF void itl_history_push_offset(size_t offset)
+ITL_DEF void itl_history_push_offset(size_t offset, size_t durable_offset)
 {
+  size_t slot;
+
   if (itl_g_history_limit == 0) return;
 
-  itl_g_history_offsets[(itl_g_history_head + itl_g_history_count) %
-                        (TL_HISTORY_MAX_SIZE)] = offset;
+  slot = (itl_g_history_head + itl_g_history_count) % (TL_HISTORY_MAX_SIZE);
+  itl_g_history_offsets[slot] = offset;
+  itl_g_history_durable_offsets[slot] = durable_offset;
 
   if (itl_g_history_count < itl_g_history_limit) {
     itl_g_history_count += 1;
@@ -3094,8 +3100,7 @@ ITL_DEF void itl_history_offsets_shift(size_t removed_byte_count)
 
 /* Scans the open file from the start, rebuilding the offset ring, the recorded
    file size, and the trailing-newline flag. Returns false on a read error or a
-   non-text byte. Touches neither the path nor the draft, so it is safe to call
-   mid-session to pick up entries that other sessions appended. */
+   non-text byte. Touches neither the path nor the draft. */
 ITL_DEF bool itl_history_scan_fd(ITL_FILE file)
 {
   char file_buffer[ITL_HISTORY_FILE_BUFFER_SIZE];
@@ -3146,7 +3151,7 @@ ITL_DEF bool itl_history_scan_fd(ITL_FILE file)
       }
 
       if (ch == '\n') {
-        itl_history_push_offset(entry_start);
+        itl_history_push_offset(entry_start, entry_start);
         itl_g_history_total_count += 1;
         entry_start = file_pos + 1;
         continue;
@@ -3190,9 +3195,8 @@ ITL_DEF bool itl_history_scan_fd(ITL_FILE file)
 }
 
 /* Returns TL_SUCCESS or TL_ERROR, sets errno on failure. The loader scans the
-   file once and keeps only the byte offset of each entry, capped to the most
-   recent TL_HISTORY_MAX_SIZE, so it never holds entry text and a large history
-   file stays cheap to load. */
+   file once, keeps the most recent entry offsets, and freezes the encoded bytes
+   into the shell's private snapshot. */
 ITL_DEF tl_status_code itl_history_load_from_file(const char *path)
 {
   ITL_FILE file;
@@ -3241,16 +3245,20 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
                                         bool should_require_terminal,
                                         bool should_allow_duplicate)
 {
-  ITL_FILE read_file;
   ITL_FILE append_file;
   itl_char_buf_t buffer;
+  itl_char_buf_t durable_buffer;
+  const char *durable_data;
+  size_t durable_size;
   long real_end;
   long actual_end;
+  size_t private_end;
+  size_t unterminated_offset;
   size_t new_offset;
-  bool ok = true;
   bool is_duplicate = false;
-  bool should_rescan = false;
-  bool had_unterminated_tail;
+  bool had_private_unterminated_tail;
+  bool has_durable_buffer = false;
+  bool needs_durable_separator = false;
 
   itl_g_last_history_event_number = 0;
   if (itl_g_history_path == NULL || itl_g_history_file_is_bad ||
@@ -3275,37 +3283,30 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
     return false;
   }
 
-  /* Reload the file when another session has grown it since we last looked, the
-     way fish merges its history on save. This lets navigation, search, and the
-     duplicate check below see commands other sessions wrote. */
-  read_file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
-  if (!ITL_FILE_IS_BAD(read_file)) {
-    long disk_size = ITL_FILE_SEEK_END(read_file);
-    if (disk_size >= 0 && (size_t) disk_size != itl_g_history_file_size) {
-      if (!itl_history_scan_fd(read_file)) {
-        itl_g_history_file_is_bad = true;
-        ITL_FILE_CLOSE(read_file);
-        return false;
-      }
-    }
-    /* Skip a command identical to the most recent entry. */
-    if (itl_g_history_count > 0) {
-      char newest[ITL_STRING_MAX_LEN];
-      size_t newest_size;
+  /* The private snapshot, not the durable file tail, owns duplicate
+     suppression and event numbering for this shell. */
+  if (itl_g_history_count > 0) {
+    char newest[ITL_STRING_MAX_LEN];
+    size_t newest_size;
 
-      if (itl_history_decode_entry_fd(
-              read_file, itl_history_index_to_offset(itl_g_history_count - 1),
-              newest, sizeof(newest), &newest_size))
-      {
-        is_duplicate = itl_string_equal_bytes(str, newest, newest_size);
-      }
+    if (!itl_history_ensure_read_buffer()) return false;
+    if (itl_history_decode_entry_buffered(
+            itl_history_index_to_offset(itl_g_history_count - 1), newest,
+            sizeof(newest), &newest_size))
+    {
+      is_duplicate = itl_string_equal_bytes(str, newest, newest_size);
     }
-    ITL_FILE_CLOSE(read_file);
   }
   if (is_duplicate && !should_allow_duplicate) {
     itl_g_last_history_event_number = itl_g_history_total_count;
     return true;
   }
+
+  private_end =
+      itl_g_history_read_buffer == NULL
+          ? 0
+          : itl_g_history_read_buffer_offset + itl_g_history_read_buffer->size;
+  unterminated_offset = private_end;
 
   /* The escaped entry and its two separators are the whole record, so the
      encode grows the buffer at most once. */
@@ -3315,8 +3316,23 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
   /* When the file does not end on a newline, write a separator first so the new
      entry starts its own physical line instead of gluing onto the previous one.
    */
-  had_unterminated_tail = !itl_g_history_ends_with_newline;
-  if (had_unterminated_tail) {
+  had_private_unterminated_tail = !itl_g_history_ends_with_newline;
+  if (had_private_unterminated_tail) {
+    size_t position;
+    bool escape_pending = false;
+
+    unterminated_offset = itl_g_history_read_buffer_offset;
+    for (position = 0; position < itl_g_history_read_buffer->size; ++position) {
+      uint8_t ch = (uint8_t) itl_g_history_read_buffer->data[position];
+
+      if (escape_pending) {
+        escape_pending = false;
+      } else if (ch == '\\') {
+        escape_pending = true;
+      } else if (ch == '\n') {
+        unterminated_offset = itl_g_history_read_buffer_offset + position + 1;
+      }
+    }
     itl_char_buf_append_byte(&buffer, '\n');
   }
 
@@ -3332,84 +3348,85 @@ ITL_DEF bool itl_history_append_to_file(const itl_string_t *str,
     return false;
   }
 
-  /* Take the offset from the real end of the file rather than a tracked size,
-     so a concurrent append from another session does not misplace this entry.
-     The entry itself starts after the optional separator byte. */
+  /* Persist at the real shared-file end, while the navigable offset belongs to
+     this shell's private encoded snapshot. */
   real_end = ITL_FILE_SEEK_END(append_file);
   if (real_end < 0) {
-    real_end = (long) itl_g_history_file_size;
-  }
-  new_offset = (size_t) real_end + (itl_g_history_ends_with_newline ? 0 : 1);
-
-  {
-    size_t total_written =
-        itl_write_all(append_file, buffer.data, buffer.size);
-    if (total_written < buffer.size) {
-      ITL_TRACELN("could not append to history file (%s): %s\n",
-                  itl_g_history_path, strerror(errno));
-      itl_g_history_file_is_bad = true;
-      ok = false;
-    }
-    if (!ok) {
-      itl_g_history_file_size = (size_t) real_end + total_written;
-      itl_g_history_ends_with_newline = false;
-    } else {
-      actual_end = ITL_FILE_TELL(append_file);
-      if (actual_end < 0) actual_end = real_end + (long) buffer.size;
-      new_offset =
-          (size_t) actual_end - buffer.size + (had_unterminated_tail ? 1 : 0);
-      should_rescan =
-          had_unterminated_tail ||
-          (size_t) actual_end != (size_t) real_end + buffer.size;
-      itl_g_history_file_size = (size_t) actual_end;
-      itl_g_history_ends_with_newline = true;
-      if (!should_rescan) {
-        itl_history_push_offset(new_offset);
-        itl_g_history_total_count += 1;
-        itl_g_last_history_event_number = itl_g_history_total_count;
-      }
-      itl_history_append_read_buffer((size_t) real_end, buffer.data,
-                                     buffer.size);
-      ITL_TRACELN("appended history entry at offset %zu, %zu entries now\n",
-                  new_offset, itl_g_history_count);
-    }
-  }
-
-  if (ITL_FILE_CLOSE(append_file) != 0) {
+    ITL_FILE_CLOSE(append_file);
+    ITL_FREE(buffer.data);
     itl_g_history_file_is_bad = true;
-    ok = false;
+    return false;
+  }
+  if (real_end > 0) {
+    char last_byte;
+
+    if (!ITL_FILE_SEEK(append_file, (size_t) real_end - 1) ||
+        ITL_READ(append_file, &last_byte, 1) != 1 ||
+        ITL_FILE_SEEK_END(append_file) != real_end)
+    {
+      ITL_FILE_CLOSE(append_file);
+      ITL_FREE(buffer.data);
+      itl_g_history_file_is_bad = true;
+      return false;
+    }
+    needs_durable_separator = last_byte != '\n';
+  }
+  new_offset = private_end + (had_private_unterminated_tail ? 1 : 0);
+
+  durable_data = buffer.data;
+  durable_size = buffer.size;
+  if (needs_durable_separator != had_private_unterminated_tail) {
+    size_t private_record_offset = had_private_unterminated_tail ? 1 : 0;
+
+    itl_char_buf_init(&durable_buffer);
+    has_durable_buffer = true;
+    itl_char_buf_reserve(&durable_buffer, buffer.size + 1);
+    if (needs_durable_separator)
+      itl_char_buf_append_byte(&durable_buffer, '\n');
+    itl_char_buf_append_bytes(&durable_buffer,
+                              buffer.data + private_record_offset,
+                              buffer.size - private_record_offset);
+    durable_data = durable_buffer.data;
+    durable_size = durable_buffer.size;
   }
 
+  if (itl_write_all(append_file, durable_data, durable_size) < durable_size) {
+    ITL_TRACELN("could not append to history file (%s): %s\n",
+                itl_g_history_path, strerror(errno));
+    ITL_FILE_CLOSE(append_file);
+    if (has_durable_buffer) ITL_FREE(durable_buffer.data);
+    ITL_FREE(buffer.data);
+    itl_g_history_file_is_bad = true;
+    return false;
+  }
+
+  actual_end = ITL_FILE_TELL(append_file);
+  if (actual_end < 0) actual_end = real_end + (long) durable_size;
+  if (ITL_FILE_CLOSE(append_file) != 0) {
+    if (has_durable_buffer) ITL_FREE(durable_buffer.data);
+    ITL_FREE(buffer.data);
+    itl_g_history_file_is_bad = true;
+    return false;
+  }
+
+  itl_g_history_file_size = (size_t) actual_end;
+  itl_g_history_ends_with_newline = true;
+  if (had_private_unterminated_tail && private_end > unterminated_offset) {
+    itl_history_push_offset(unterminated_offset, unterminated_offset);
+    itl_g_history_total_count += 1;
+  }
+  itl_history_push_offset(new_offset, (size_t) real_end +
+                                          (needs_durable_separator ? 1 : 0));
+  itl_g_history_total_count += 1;
+  itl_g_last_history_event_number = itl_g_history_total_count;
+  itl_history_append_read_buffer(private_end, buffer.data, buffer.size);
+  ITL_TRACELN("appended history entry at offset %zu, %zu entries now\n",
+              new_offset, itl_g_history_count);
+
+  if (has_durable_buffer) ITL_FREE(durable_buffer.data);
   ITL_FREE(buffer.data);
 
-  if (ok && should_rescan) {
-    size_t index;
-    read_file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
-    if (ITL_FILE_IS_BAD(read_file) || !itl_history_scan_fd(read_file)) {
-      if (!ITL_FILE_IS_BAD(read_file)) ITL_FILE_CLOSE(read_file);
-
-      /* The entry reached the file and the ring no longer describes it. The
-         next load rebuilds from the file. */
-      itl_g_history_file_is_bad = true;
-      return false;
-    }
-    ITL_FILE_CLOSE(read_file);
-
-    itl_g_last_history_event_number = 0;
-    for (index = 0; index < itl_g_history_count; ++index) {
-      if (itl_history_index_to_offset(index) == new_offset) {
-        itl_g_last_history_event_number =
-            itl_g_history_total_count - itl_g_history_count + index + 1;
-        break;
-      }
-    }
-    if (itl_g_last_history_event_number == 0) {
-      itl_g_history_file_is_bad = true;
-      return false;
-    }
-  }
-
-  return ok;
+  return true;
 }
 
 /* History persists on append, so dump only flushes. When the target path is the
@@ -10314,7 +10331,21 @@ TL_DEF tl_status_code tl_get_character(char *char_buffer,
 
 TL_DEF tl_status_code tl_history_load(const char *file_path)
 {
-  return itl_history_load_from_file(file_path);
+  tl_status_code status = itl_history_load_from_file(file_path);
+
+  if (status != TL_SUCCESS) return status;
+  if (!itl_history_ensure_read_buffer()) {
+    int history_errno = errno == ENOENT ? ENOENT : EIO;
+    itl_history_offsets_reset();
+    itl_g_last_history_event_number = 0;
+    itl_g_history_file_size = 0;
+    itl_g_history_ends_with_newline = true;
+    itl_g_history_file_is_bad = history_errno != ENOENT;
+    errno = history_errno;
+    return TL_ERROR;
+  }
+
+  return TL_SUCCESS;
 }
 
 TL_DEF void tl_set_history_enabled(bool enabled)
@@ -10336,7 +10367,6 @@ TL_DEF void tl_set_history_limit(size_t entry_count)
   itl_g_history_head =
       (itl_g_history_head + removed_count) % (TL_HISTORY_MAX_SIZE);
   itl_g_history_count = entry_count;
-  itl_history_read_fd_invalidate();
 }
 
 TL_DEF tl_status_code tl_history_dump(const char *file_path)
