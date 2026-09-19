@@ -7139,11 +7139,25 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
       continue;
     }
 
-    if (key == TL_KEY_BACKSPACE && le->cursor_position > result.token_start) {
-      ITL_LE_ERASE_BACKWARD(le, 1);
+    if (kind == TL_KEY_BACKSPACE && le->cursor_position > result.token_start) {
+      size_t cursor_before = le->cursor_position;
+      size_t erased_count;
+      size_t token_length;
+      tl_status_code erase_code = itl_le_key_handle(le, key);
 
-      if (result.token_end > result.token_start) {
-        result.token_end -= 1;
+      if (erase_code != TL_SUCCESS) {
+        return erase_code;
+      }
+
+      erased_count = cursor_before - le->cursor_position;
+      token_length = result.token_end > result.token_start
+                         ? result.token_end - result.token_start
+                         : 0;
+
+      if (erased_count >= token_length) {
+        result.token_end = result.token_start;
+      } else {
+        result.token_end -= erased_count;
       }
 
       if (!itl_menu_narrow(le, source, &state, &result)) {
