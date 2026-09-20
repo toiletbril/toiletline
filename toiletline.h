@@ -7114,6 +7114,8 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
     itl_menu_layout layout =
         itl_menu_measure(tty_rows, source->help_title != NULL);
 
+    itl_g_tty_should_refresh_text = true;
+    itl_le_tty_refresh(le);
     itl_menu_draw(&loading, 0, 0, layout, source->help_title,
                   source->help_keys, source->should_highlight, 0,
                   ITL_MENU_LOADING_TEXT);
