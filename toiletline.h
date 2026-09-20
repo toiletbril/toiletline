@@ -3006,7 +3006,31 @@ ITL_DEF size_t itl_write_all(ITL_FILE file, const char *data, size_t size)
 #if !defined NDEBUG
 typedef void (*itl_debug_frame_sink_fn)(const char *data, size_t size);
 ITL_DEF ITL_THREAD_LOCAL itl_debug_frame_sink_fn itl_g_debug_frame_sink = NULL;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_output_drain_count = 0;
 #endif
+
+/* Wait until a loading-only frame has left the terminal output queue before
+   synchronous result gathering can enqueue the replacement frame. Terminal
+   drain failures do not make completion fail. */
+ITL_DEF void itl_terminal_drain_output(void)
+{
+#if !defined NDEBUG
+  itl_g_debug_output_drain_count += 1;
+  if (itl_g_debug_frame_sink != NULL) {
+    return;
+  }
+#endif
+
+#if defined ITL_POSIX
+  int previous_errno = errno;
+  int result;
+
+  do {
+    result = tcdrain(STDOUT_FILENO);
+  } while (result < 0 && errno == EINTR);
+  errno = previous_errno;
+#endif
+}
 
 /* Sends one finished frame to the terminal. An empty frame writes nothing,
    because a zero-length write carries no meaning here. */
@@ -6968,6 +6992,7 @@ typedef struct itl_menu_filter_state
   char query[ITL_STRING_MAX_LEN];
   size_t query_len;
   size_t name_width;
+  bool should_regather;
 } itl_menu_filter_state;
 
 /* Copy the token bytes a candidate replaces into out. The span is given in
@@ -7066,6 +7091,7 @@ ITL_DEF void itl_menu_adopt_base(itl_le_t *le, itl_menu_filter_state *state,
 {
   state->base = *result;
   state->name_width = itl_menu_name_width(result);
+  state->should_regather = false;
 
   if (!itl_menu_query_text(le, result, state->query, sizeof(state->query),
                            &state->query_len))
@@ -7091,6 +7117,7 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
     itl_menu_draw(&loading, 0, 0, layout, source->help_title,
                   source->help_keys, source->should_highlight, 0,
                   ITL_MENU_LOADING_TEXT);
+    itl_terminal_drain_output();
   }
 
   if (!source->gather(le, result)) {
@@ -7102,6 +7129,7 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
     }
     state->base.count = 0;
     state->name_width = 0;
+    state->should_regather = false;
 
     return false;
   }
@@ -7122,6 +7150,10 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
 {
   char query[ITL_STRING_MAX_LEN];
   size_t query_len = 0;
+
+  if (state->should_regather) {
+    return itl_menu_rebase(le, source, state, result);
+  }
 
   if (itl_menu_query_text(le, result, query, sizeof(query), &query_len) &&
       query_len >= state->query_len &&
@@ -7350,11 +7382,20 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
       continue;
     }
 
-    if (kind == TL_KEY_BACKSPACE && le->cursor_position > result.token_start) {
-      size_t cursor_before = le->cursor_position;
+    if (kind == TL_KEY_BACKSPACE) {
+      size_t cursor_before;
       size_t erased_count;
       size_t token_length;
-      tl_status_code erase_code = itl_le_key_handle(le, key);
+      bool did_cross_token_start;
+      tl_status_code erase_code;
+
+      if (le->cursor_position == 0) {
+        previewed = (size_t) -1;
+        continue;
+      }
+
+      cursor_before = le->cursor_position;
+      erase_code = itl_le_key_handle(le, key);
 
       if (erase_code != TL_SUCCESS) {
         return erase_code;
@@ -7364,15 +7405,21 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
       token_length = result.token_end > result.token_start
                          ? result.token_end - result.token_start
                          : 0;
+      did_cross_token_start = cursor_before <= result.token_start ||
+                              le->cursor_position < result.token_start;
 
-      if (erased_count >= token_length) {
-        result.token_end = result.token_start;
+      if (did_cross_token_start) {
+        if (!itl_menu_rebase(le, source, &state, &result)) {
+          itl_menu_empty_candidates(&result);
+          state.should_regather = true;
+        }
       } else {
-        result.token_end -= erased_count;
-      }
-
-      if (!itl_menu_narrow(le, source, &state, &result)) {
-        itl_menu_empty_candidates(&result);
+        result.token_end = erased_count >= token_length
+                               ? result.token_start
+                               : result.token_end - erased_count;
+        if (!itl_menu_narrow(le, source, &state, &result)) {
+          itl_menu_empty_candidates(&result);
+        }
       }
 
       selected = 0;
@@ -7424,6 +7471,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     itl_menu_draw(&loading, 0, 0, layout, "selecting completions",
                   "enter to run, tab to accept, esc/ctrl-g to cancel", false, 0,
                   ITL_MENU_LOADING_TEXT);
+    itl_terminal_drain_output();
     is_loading_drawn = true;
   }
   int itl_completion_handled =

@@ -3720,6 +3720,72 @@ test_frame_capture_refresh(itl_le_t *le)
   itl_le_tty_refresh(le);
 }
 
+static size_t test_loading_gather_drain_count;
+
+static bool
+test_loading_gather(itl_le_t *le, tl_completion *result)
+{
+  test_loading_gather_drain_count = itl_g_debug_output_drain_count;
+  return test_menu_gather(le, result);
+}
+
+static bool
+test_loading_frame_drains_before_gather(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool did_rebase;
+  bool ok;
+  int previous_errno;
+  int preserved_errno;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_menu_source source = ITL_ZERO_INIT;
+  itl_menu_filter_state state = ITL_ZERO_INIT;
+  tl_completion result = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  source.gather = test_loading_gather;
+  source.should_show_loading = true;
+  test_menu_gather_calls = 0;
+  test_menu_gather_has_rows = true;
+  ITL_STRING_FROM_CSTR(line, "al");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  itl_g_debug_frame_sink = test_frame_capture_sink;
+  itl_g_debug_output_drain_count = 0;
+  test_loading_gather_drain_count = 0;
+  test_frame_capture_size = 0;
+
+  did_rebase = itl_menu_rebase(&le, &source, &state, &result);
+  ok = did_rebase && test_menu_gather_calls == 1 &&
+       itl_g_debug_output_drain_count == 1 &&
+       test_loading_gather_drain_count == 1 &&
+       test_frame_capture_has(ITL_MENU_LOADING_TEXT);
+
+  if (!ok) {
+    TEST_PRINTF("loading=%d gathers=%zu drains=%zu observed=%zu bytes=%zu\n",
+                test_frame_capture_has(ITL_MENU_LOADING_TEXT),
+                test_menu_gather_calls, itl_g_debug_output_drain_count,
+                test_loading_gather_drain_count, test_frame_capture_size);
+  }
+
+  itl_g_debug_frame_sink = NULL;
+  previous_errno = errno;
+  errno = EDOM;
+  itl_terminal_drain_output();
+  preserved_errno = errno;
+  errno = previous_errno;
+  ok = ok && preserved_errno == EDOM;
+  itl_g_debug_output_drain_count = 0;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 static bool
 test_colors_disabled_drop_span_escapes(void)
 {
@@ -4015,6 +4081,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_menu_band_survives_disabled_colors),
 #if defined ITL_POSIX && !defined NDEBUG
+                                   DEFINE_TEST_CASE(
+                                       test_loading_frame_drains_before_gather),
                                    DEFINE_TEST_CASE(
                                        test_append_path_keeps_spans),
                                    DEFINE_TEST_CASE(
