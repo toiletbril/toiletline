@@ -6907,31 +6907,6 @@ ITL_DEF bool itl_byte_is_path_separator(uint8_t byte)
   return byte == '/';
 }
 
-/* A filesystem candidate closes with the path separator when it names a
-   directory. A quoted candidate closes with its quote, which is stepped over. */
-ITL_DEF bool itl_menu_candidate_is_directory(const char *candidate)
-{
-  size_t length = strlen(candidate);
-  char last;
-
-  if (length == 0) {
-    return false;
-  }
-
-  last = candidate[length - 1];
-  if ((last == '"' || last == '\'') && length > 1) {
-    last = candidate[length - 2];
-  }
-
-#if defined ITL_WIN32
-  if (last == '\\') {
-    return true;
-  }
-#endif
-
-  return last == '/';
-}
-
 /* Show the highlighted candidate as ghost text on the line the menu opened on.
    The line above the rows reads as the line that accepting it produces. The
    ghost only appends. A candidate that does not extend the typed token leaves
@@ -7176,15 +7151,16 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
 
 /* Run the candidate menu until the user accepts a candidate, dismisses it, or
    presses a key the menu does not own. The down arrow steps forward, the up
-   arrow and shift tab step back, Tab accepts the highlighted candidate, and
-   escape or ctrl-g cancels and puts back the line the menu opened on. A
+   arrow and shift tab step back, Tab accepts and closes, Right accepts and
+   continues completing, and escape or ctrl-g cancels and puts back the line
+   the menu opened on. A
    printable key and backspace narrow and widen the list in place. A search that
    matches nothing keeps the menu open on a row that says so, and a backspace
-   brings the list back. Accepting a directory walks into it and the menu stays
-   open while the host still offers candidates. Any other key closes the menu
-   and then does its own work on the line. The returned status is the one the
-   caller must return, and it carries a terminating key back to the host. The
-   source holds everything that separates one candidate list from another. */
+   brings the list back. Right keeps the menu open while the host still offers
+   candidates. Any other key closes the menu and then does its own work on the
+   line. The returned status is the one the caller must return, and it carries a
+   terminating key back to the host. The source holds everything that separates
+   one candidate list from another. */
 ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
                                            const tl_completion *initial,
                                            const itl_menu_source *source)
@@ -7217,6 +7193,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     itl_menu_layout layout;
     uint8_t byte;
     int key, kind;
+    bool should_continue_completion;
 
     /* A resize invalidates the block the rows are measured against. The line is
        repainted first and the new size feeds the layout. */
@@ -7290,6 +7267,10 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 
     key = itl_esc_parse(byte);
     kind = key & TL_MASK_KEY;
+    should_continue_completion =
+        kind == TL_KEY_RIGHT &&
+        (key & (TL_MOD_CTRL | TL_MOD_SHIFT | TL_MOD_ALT)) == 0 &&
+        source->should_submit_on_enter;
 
     if (kind == TL_KEY_DOWN) {
       if (result.count > 0) {
@@ -7324,18 +7305,18 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
        the menu keeps it on the line. */
     itl_ghost_clear();
 
-    if (kind == TL_KEY_TAB ||
+    if (kind == TL_KEY_TAB || should_continue_completion ||
         (kind == TL_KEY_ENTER && !source->should_submit_on_enter))
     {
       const char *candidate = result.candidates[selected];
-      bool is_directory =
-          source->can_descend && itl_menu_candidate_is_directory(candidate);
 
       if (!itl_completion_replace_token(le, &result, candidate)) {
         return TL_SUCCESS;
       }
 
-      if (is_directory && itl_menu_rebase(le, source, &state, &result)) {
+      if (should_continue_completion &&
+          itl_menu_rebase(le, source, &state, &result))
+      {
         selected = 0;
         window_start = 0;
         previewed = (size_t) -1;
