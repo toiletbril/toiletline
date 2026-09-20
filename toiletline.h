@@ -6131,6 +6131,7 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
 /* The row drawn in place of the candidates once the search has narrowed the
    list away. The menu stays open on it and a backspace brings the list back. */
 #define ITL_MENU_EMPTY_TEXT      "no matches, erase to widen the search"
+#define ITL_MENU_LOADING_TEXT    "loading..."
 
 ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc);
 
@@ -6503,7 +6504,8 @@ ITL_DEF size_t itl_menu_name_width(const tl_completion *result)
 ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
                            size_t window_start, itl_menu_layout layout,
                            const char *help_title, const char *help_keys,
-                           bool should_highlight, size_t name_width)
+                           bool should_highlight, size_t name_width,
+                           const char *empty_text)
 {
   itl_char_buf_t *b = &itl_g_char_buffer;
   size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
@@ -6553,7 +6555,7 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
     if (drawn_rows > 0) {
       itl_char_buf_append_cstr(b, ITL_LF);
     }
-    itl_menu_append_dimmed_row(b, ITL_MENU_EMPTY_TEXT, text_width);
+    itl_menu_append_dimmed_row(b, empty_text, text_width);
     drawn_rows += 1;
   }
 
@@ -6622,7 +6624,8 @@ typedef bool (*itl_menu_gather_fn)(itl_le_t *le, tl_completion *result);
 /* Everything that separates one menu source from another. gather refills the
    list as the line changes. can_descend belongs to a list of paths and reopens
    the menu inside an accepted directory. should_regather_new_words belongs to
-   a list whose meaning changes at word boundaries. should_submit_on_enter
+   a list whose meaning changes at word boundaries. should_show_loading belongs
+   to a source whose gather may take noticeable time. should_submit_on_enter
    belongs to a list that only extends the line, and Enter then closes the menu
    and submits what the line already holds. should_highlight belongs to a list
    whose entries are whole commands, and the host colors them the way it colors
@@ -6633,6 +6636,7 @@ typedef struct itl_menu_source
   itl_menu_gather_fn gather;
   bool can_descend;
   bool should_regather_new_words;
+  bool should_show_loading;
   bool should_submit_on_enter;
   bool should_highlight;
   const char *help_title;
@@ -7078,9 +7082,24 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
                              itl_menu_filter_state *state,
                              tl_completion *result)
 {
+  if (source->should_show_loading) {
+    tl_completion loading = ITL_ZERO_INIT;
+    size_t tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
+    itl_menu_layout layout =
+        itl_menu_measure(tty_rows, source->help_title != NULL);
+
+    itl_menu_draw(&loading, 0, 0, layout, source->help_title,
+                  source->help_keys, source->should_highlight, 0,
+                  ITL_MENU_LOADING_TEXT);
+  }
+
   if (!source->gather(le, result)) {
-    state->query[0] = '\0';
-    state->query_len = 0;
+    if (!itl_menu_query_text(le, result, state->query,
+                             sizeof(state->query), &state->query_len))
+    {
+      state->query[0] = '\0';
+      state->query_len = 0;
+    }
     state->base.count = 0;
     state->name_width = 0;
 
@@ -7104,11 +7123,13 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
   char query[ITL_STRING_MAX_LEN];
   size_t query_len = 0;
 
-  if (state->base.count > 0 &&
-      itl_menu_query_text(le, result, query, sizeof(query), &query_len) &&
+  if (itl_menu_query_text(le, result, query, sizeof(query), &query_len) &&
       query_len >= state->query_len &&
       itl_ascii_prefix_matches_casefold(query, state->query, state->query_len))
   {
+    if (state->base.count == 0) {
+      return false;
+    }
     if (itl_menu_filter(&state->base, query, query_len, result)) {
       state->name_width = itl_menu_name_width(result);
 
@@ -7138,6 +7159,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
   itl_menu_filter_state state;
   size_t selected = 0;
   size_t window_start = 0;
+  bool should_regather_first_character = false;
 
   /* The row the ghost was filled from. It starts outside the candidate range so
      the first pass fills the preview, and a regather puts it back there. */
@@ -7186,7 +7208,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
                                          layout.candidate_rows);
     itl_menu_draw(&result, selected, window_start, layout, source->help_title,
                   source->help_keys, source->should_highlight,
-                  state.name_width);
+                  state.name_width, ITL_MENU_EMPTY_TEXT);
 
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
     {
@@ -7302,9 +7324,10 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     }
 
     if (kind == TL_KEY_CHAR) {
+      bool is_word_boundary = ITL_CHAR_IS_SPACE(byte);
       bool should_regather = source->should_regather_new_words &&
-                             (state.query_len == 0 ||
-                              ITL_CHAR_IS_SPACE(byte));
+                             (should_regather_first_character ||
+                              is_word_boundary);
 
       itl_le_insert(le, itl_utf8_parse(byte));
       result.token_end += 1;
@@ -7319,6 +7342,8 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
         itl_menu_empty_candidates(&result);
       }
 
+      should_regather_first_character =
+          source->should_regather_new_words && is_word_boundary;
       selected = 0;
       window_start = 0;
       previewed = (size_t) -1;
@@ -7379,6 +7404,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
   char line_cstr[ITL_STRING_MAX_LEN];
   tl_completion result;
   size_t token_len, lcp_len;
+  bool is_loading_drawn = false;
 
   memset(&result, 0, sizeof(result));
   *out_code = TL_SUCCESS;
@@ -7390,11 +7416,24 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
   {
     return false;
   }
+  if (itl_g_completion_menu_enabled) {
+    tl_completion loading = ITL_ZERO_INIT;
+    size_t tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
+    itl_menu_layout layout = itl_menu_measure(tty_rows, true);
+
+    itl_menu_draw(&loading, 0, 0, layout, "selecting completions",
+                  "enter to run, tab to accept, esc/ctrl-g to cancel", false, 0,
+                  ITL_MENU_LOADING_TEXT);
+    is_loading_drawn = true;
+  }
   int itl_completion_handled =
       itl_g_complete_callback(line_cstr, le->cursor_position, &result, 1);
   itl_ghost_clear();
   itl_g_ghost_sticky_target[0] = '\0';
   if (!itl_completion_handled || result.count == 0) {
+    if (is_loading_drawn) {
+      itl_menu_erase();
+    }
     /* A dumb terminal cannot render the repaint the flash draws. The key is
        still handled and no flash is attempted. */
     if (itl_term_supports_decorations()) {
@@ -7413,6 +7452,9 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
      when it is no longer than what the user typed. A glob token that resolves
      to a single match reaches this path. */
   if (result.count == 1) {
+    if (is_loading_drawn) {
+      itl_menu_erase();
+    }
     itl_completion_replace_token(le, &result, result.candidates[0]);
     itl_g_tty_should_refresh_text = true;
     return true;
@@ -7428,6 +7470,9 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
   /* Replace the token with the common prefix when that prefix is longer than
      the token, which grows the token toward the candidates. */
   if (lcp_len > token_len) {
+    if (is_loading_drawn) {
+      itl_menu_erase();
+    }
     itl_completion_replace_token(le, &result, result.longest_common_prefix);
     itl_g_tty_should_refresh_text = true;
     return true;
@@ -7438,7 +7483,8 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
      printed as a static column list. */
   if (itl_g_completion_menu_enabled) {
     static const itl_menu_source completion_source = {
-        itl_menu_regather, true, true, true, false, "selecting completions",
+        itl_menu_regather, true, true, true, true, false,
+        "selecting completions",
         "enter to run, tab to accept, esc/ctrl-g to cancel"};
 
     *out_code = itl_completion_menu(le, &result, &completion_source);
@@ -7457,7 +7503,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
 ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
 {
   static const itl_menu_source history_source = {
-      itl_history_menu_gather, false, false, false, true,
+      itl_history_menu_gather, false, false, false, false, true,
       "incremental history search",
       "enter/tab to accept, esc/ctrl-g to cancel"};
 

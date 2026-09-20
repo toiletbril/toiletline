@@ -2304,10 +2304,22 @@ test_menu_narrow_reuses_base(void)
   test_menu_gather_has_rows = false;
 
   if (itl_menu_rebase(&le, &source, &state, &result) || state.base.count != 0 ||
-      state.name_width != 0 || state.query_len != 0)
+      state.name_width != 0 || state.query_len != 2)
   {
-    TEST_PRINTF("an empty source left %zu rows at width %zu\n",
-                state.base.count, state.name_width);
+    TEST_PRINTF("an empty source left %zu rows at width %zu for %zu bytes\n",
+                state.base.count, state.name_width, state.query_len);
+    ITL_STRING_FREE(line);
+    return false;
+  }
+
+  itl_le_insert(&le, itl_utf8_parse('z'));
+  result.token_end += 1;
+
+  if (itl_menu_narrow(&le, &source, &state, &result) ||
+      test_menu_gather_calls != 4 || state.query_len != 2)
+  {
+    TEST_PRINTF("an extended empty query ran %zu gathers for %zu bytes\n",
+                test_menu_gather_calls, state.query_len);
     ITL_STRING_FREE(line);
     return false;
   }
