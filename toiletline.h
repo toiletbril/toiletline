@@ -7309,14 +7309,26 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
         (kind == TL_KEY_ENTER && !source->should_submit_on_enter))
     {
       const char *candidate = result.candidates[selected];
+      size_t candidate_length = strlen(candidate);
+      bool should_descend = source->can_descend && candidate_length > 0 &&
+                            itl_byte_is_path_separator(
+                                (uint8_t) candidate[candidate_length - 1]);
 
       if (!itl_completion_replace_token(le, &result, candidate)) {
         return TL_SUCCESS;
       }
 
-      if (should_continue_completion &&
+      if ((should_continue_completion || should_descend) &&
           itl_menu_rebase(le, source, &state, &result))
       {
+        selected = 0;
+        window_start = 0;
+        previewed = (size_t) -1;
+        continue;
+      }
+
+      if (should_descend) {
+        itl_menu_empty_candidates(&result);
         selected = 0;
         window_start = 0;
         previewed = (size_t) -1;
