@@ -6148,6 +6148,17 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
   }
 }
 
+ITL_DEF bool itl_byte_is_path_separator(uint8_t byte)
+{
+#if defined ITL_WIN32
+  if (byte == '\\') {
+    return true;
+  }
+#endif
+
+  return byte == '/';
+}
+
 ITL_DEF void itl_completion_append_space(itl_le_t *le)
 {
   if (!itl_g_space_after_completion ||
@@ -6155,7 +6166,10 @@ ITL_DEF void itl_completion_append_space(itl_le_t *le)
     return;
 
   itl_utf8_t last = le->line->chars[le->line->length - 1];
-  if (last.size == 1 && isspace(last.bytes[0])) return;
+  if (last.size == 1 &&
+      (isspace(last.bytes[0]) ||
+       itl_byte_is_path_separator((uint8_t) last.bytes[0])))
+    return;
   itl_le_insert(le, itl_utf8_parse(' '));
 }
 
@@ -6916,17 +6930,6 @@ ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
   result->token_end = le->line->length;
 
   return true;
-}
-
-ITL_DEF bool itl_byte_is_path_separator(uint8_t byte)
-{
-#if defined ITL_WIN32
-  if (byte == '\\') {
-    return true;
-  }
-#endif
-
-  return byte == '/';
 }
 
 /* Show the highlighted candidate as ghost text on the line the menu opened on.
