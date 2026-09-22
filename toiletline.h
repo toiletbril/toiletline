@@ -7473,6 +7473,10 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
    unless the menu re-dispatched a key that terminates the line. */
 ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
 {
+  static const itl_menu_source completion_source = {
+      itl_menu_regather, true, true, true, true, false,
+      "selecting completions",
+      "enter to run, tab to accept, esc to close, ctrl-g to restore"};
   char line_cstr[ITL_STRING_MAX_LEN];
   tl_completion result;
   size_t token_len, lcp_len;
@@ -7525,10 +7529,28 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
      when it is no longer than what the user typed. A glob token that resolves
      to a single match reaches this path. */
   if (result.count == 1) {
+    const char *candidate = result.candidates[0];
+    size_t candidate_length = strlen(candidate);
+    bool should_descend = candidate_length > 0 &&
+                          itl_byte_is_path_separator(
+                              (uint8_t) candidate[candidate_length - 1]);
+
     if (is_loading_drawn) {
       itl_menu_erase();
     }
-    itl_completion_replace_token(le, &result, result.candidates[0]);
+    if (!itl_completion_replace_token(le, &result, candidate)) {
+      return true;
+    }
+    if (should_descend && itl_g_completion_menu_enabled) {
+      tl_completion descended = ITL_ZERO_INIT;
+
+      if (!itl_menu_regather(le, &descended)) {
+        descended.token_start = le->cursor_position;
+        descended.token_end = le->cursor_position;
+      }
+      *out_code = itl_completion_menu(le, &descended, &completion_source);
+      return true;
+    }
     itl_completion_append_space(le);
     itl_g_tty_should_refresh_text = true;
     return true;
@@ -7556,11 +7578,6 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
      The menu owns the keys until it closes. Without it the candidates are
      printed as a static column list. */
   if (itl_g_completion_menu_enabled) {
-    static const itl_menu_source completion_source = {
-        itl_menu_regather, true, true, true, true, false,
-        "selecting completions",
-        "enter to run, tab to accept, esc to close, ctrl-g to restore"};
-
     *out_code = itl_completion_menu(le, &result, &completion_source);
     return true;
   }
