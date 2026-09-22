@@ -7174,9 +7174,9 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
 /* Run the candidate menu until the user accepts a candidate, dismisses it, or
    presses a key the menu does not own. The down arrow steps forward, the up
    arrow and shift tab step back, Tab accepts and closes, Right accepts and
-   continues completing, and escape or ctrl-g cancels and puts back the line
-   the menu opened on. A
-   printable key and backspace narrow and widen the list in place. A search that
+   continues completing. Escape closes the menu with the current edit, while
+   ctrl-g cancels and puts back the line the menu opened on. A printable key
+   and backspace narrow and widen the list in place. A search that
    matches nothing keeps the menu open on a row that says so, and a backspace
    brings the list back. Right keeps the menu open while the host still offers
    candidates. Any other key closes the menu and then does its own work on the
@@ -7198,8 +7198,8 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
   size_t previewed = (size_t) -1;
 
   /* Typing and walking into a directory both edit the line. The line as it
-     stands is kept for a cancel to restore. A line too long for the buffer
-     keeps no copy and cancels in place. */
+     stands is kept for ctrl-g to restore. A line too long for the buffer keeps
+     no copy and cancels in place. */
   char original_line[ITL_STRING_MAX_LEN];
   size_t original_line_size = le->line->size;
   size_t original_cursor = le->cursor_position;
@@ -7215,6 +7215,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     itl_menu_layout layout;
     uint8_t byte;
     int key, kind;
+    bool is_escape;
     bool should_continue_completion;
 
     /* A resize invalidates the block the rows are measured against. The line is
@@ -7287,6 +7288,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
       break;
     }
 
+    is_escape = byte == 27;
     key = itl_esc_parse(byte);
     kind = key & TL_MASK_KEY;
     should_continue_completion =
@@ -7364,7 +7366,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     }
 
     if (kind == TL_KEY_UNKN) {
-      if (has_original_line) {
+      if (!is_escape && has_original_line) {
         itl_string_from_bytes(le->line, original_line, original_line_size);
         le->cursor_position = original_cursor <= le->line->length
                                   ? original_cursor
@@ -7489,8 +7491,8 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     itl_menu_layout layout = itl_menu_measure(tty_rows, true);
 
     itl_menu_draw(&loading, 0, 0, layout, "selecting completions",
-                  "enter to run, tab to accept, esc/ctrl-g to cancel", false, 0,
-                  ITL_MENU_LOADING_TEXT);
+                  "enter to run, tab to accept, esc to close, ctrl-g to restore",
+                  false, 0, ITL_MENU_LOADING_TEXT);
     itl_terminal_drain_output();
     is_loading_drawn = true;
   }
@@ -7554,7 +7556,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     static const itl_menu_source completion_source = {
         itl_menu_regather, true, true, true, true, false,
         "selecting completions",
-        "enter to run, tab to accept, esc/ctrl-g to cancel"};
+        "enter to run, tab to accept, esc to close, ctrl-g to restore"};
 
     *out_code = itl_completion_menu(le, &result, &completion_source);
     return true;
