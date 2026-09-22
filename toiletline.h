@@ -329,6 +329,9 @@ TL_DEF tl_status_code tl_set_signal_keys(int enabled);
  */
 TL_DEF void tl_set_ghost_enabled(int enabled);
 
+/** Append a space after a complete non-directory completion when enabled. */
+TL_DEF void tl_set_space_after_completion(int enabled);
+
 /*
  * Enables or disables the selectable candidate menu opened under the prompt
  * when a second TAB finds several candidates. Disabled by default, which keeps
@@ -5380,11 +5383,19 @@ TL_DEF void tl_set_ghost_enabled(int enabled)
    printed list, or that drives another selector of its own, leaves it off. */
 ITL_DEF ITL_THREAD_LOCAL int itl_g_completion_menu_enabled = 0;
 
+/* Whether accepted complete candidates receive a trailing separator. */
+ITL_DEF ITL_THREAD_LOCAL int itl_g_space_after_completion = 0;
+
 TL_DEF void tl_set_completion_menu_enabled(int enabled)
 {
   /* The menu draws a reversed selection band and dimmed text. A dumb terminal
      keeps the plain list whatever the host requests. */
   itl_g_completion_menu_enabled = enabled && itl_term_supports_decorations();
+}
+
+TL_DEF void tl_set_space_after_completion(int enabled)
+{
+  itl_g_space_after_completion = enabled != 0;
 }
 
 TL_DEF void tl_set_colors_enabled(int enabled)
@@ -6135,6 +6146,17 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
     ITL_LE_ERASE_FORWARD(le, token_len);
     return itl_le_insert_cstr(le, text);
   }
+}
+
+ITL_DEF void itl_completion_append_space(itl_le_t *le)
+{
+  if (!itl_g_space_after_completion ||
+      le->cursor_position != le->line->length || le->line->length == 0)
+    return;
+
+  itl_utf8_t last = le->line->chars[le->line->length - 1];
+  if (last.size == 1 && isspace(last.bytes[0])) return;
+  itl_le_insert(le, itl_utf8_parse(' '));
 }
 
 /* The selectable candidate menu drawn under the input block. Its rows sit
@@ -7335,6 +7357,9 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
         continue;
       }
 
+      if (kind == TL_KEY_TAB)
+        itl_completion_append_space(le);
+
       return TL_SUCCESS;
     }
 
@@ -7499,6 +7524,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
       itl_menu_erase();
     }
     itl_completion_replace_token(le, &result, result.candidates[0]);
+    itl_completion_append_space(le);
     itl_g_tty_should_refresh_text = true;
     return true;
   }
