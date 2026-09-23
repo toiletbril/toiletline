@@ -7534,6 +7534,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     bool should_descend = candidate_length > 0 &&
                           itl_byte_is_path_separator(
                               (uint8_t) candidate[candidate_length - 1]);
+    bool did_insert_next_token_space = false;
 
     if (is_loading_drawn) {
       itl_menu_erase();
@@ -7541,15 +7542,36 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     if (!itl_completion_replace_token(le, &result, candidate)) {
       return true;
     }
-    if (should_descend && itl_g_completion_menu_enabled) {
-      tl_completion descended = ITL_ZERO_INIT;
+    if (itl_g_completion_menu_enabled && !should_descend &&
+        le->cursor_position == le->line->length && le->line->length > 0)
+    {
+      itl_utf8_t last = le->line->chars[le->line->length - 1];
 
-      if (!itl_menu_regather(le, &descended)) {
-        descended.token_start = le->cursor_position;
-        descended.token_end = le->cursor_position;
+      if (last.size == 1 && !isspace(last.bytes[0])) {
+        itl_le_insert(le, itl_utf8_parse(' '));
+        did_insert_next_token_space = true;
       }
-      *out_code = itl_completion_menu(le, &descended, &completion_source);
-      return true;
+    }
+    if (itl_g_completion_menu_enabled &&
+        (should_descend || did_insert_next_token_space))
+    {
+      tl_completion following = ITL_ZERO_INIT;
+
+      if (itl_menu_regather(le, &following)) {
+        *out_code =
+            itl_completion_menu(le, &following, &completion_source);
+        return true;
+      }
+      if (should_descend) {
+        following.token_start = le->cursor_position;
+        following.token_end = le->cursor_position;
+        *out_code =
+            itl_completion_menu(le, &following, &completion_source);
+        return true;
+      }
+      if (did_insert_next_token_space) {
+        ITL_LE_ERASE_BACKWARD(le, 1);
+      }
     }
     itl_completion_append_space(le);
     itl_g_tty_should_refresh_text = true;
