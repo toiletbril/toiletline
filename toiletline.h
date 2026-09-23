@@ -7542,7 +7542,8 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     if (!itl_completion_replace_token(le, &result, candidate)) {
       return true;
     }
-    if (itl_g_completion_menu_enabled && !should_descend &&
+    if (itl_g_completion_menu_enabled && itl_g_space_after_completion &&
+        !should_descend &&
         le->cursor_position == le->line->length && le->line->length > 0)
     {
       itl_utf8_t last = le->line->chars[le->line->length - 1];
