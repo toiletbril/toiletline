@@ -2544,14 +2544,25 @@ ITL_DEF void itl_history_restore_draft(itl_le_t *le)
   le->history_selected_index = ITL_HISTORY_NONE;
 }
 
-/* Replaces the editor line with the currently selected history entry, read from
-   the file on demand. */
+ITL_DEF bool itl_history_ensure_read_buffer(void);
+ITL_DEF bool itl_history_decode_entry_buffered(size_t offset, char *decoded,
+                                               size_t capacity,
+                                               size_t *decoded_size_out);
+
+/* Replaces the editor line with the currently selected entry from the private
+   history snapshot. */
 ITL_DEF void itl_history_show_selected(itl_le_t *le)
 {
   size_t offset = itl_history_index_to_offset(le->history_selected_index);
+  char decoded[ITL_STRING_MAX_LEN + 1];
+  size_t decoded_size = 0;
 
   itl_le_clear_line(le);
-  if (itl_history_read_entry(offset, le->line)) {
+  if (itl_history_ensure_read_buffer() &&
+      itl_history_decode_entry_buffered(offset, decoded, sizeof(decoded),
+                                        &decoded_size) &&
+      itl_string_from_bytes(le->line, decoded, decoded_size))
+  {
     le->cursor_position = le->line->length;
   } else {
     /* The entry could not be read, so fall back to the draft instead of leaving
