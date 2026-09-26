@@ -6295,6 +6295,37 @@ ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
   return drawn > width ? drawn : width;
 }
 
+/* Return a single-line display copy without changing the candidate used for
+   matching or acceptance. */
+ITL_DEF const char *itl_menu_display_name(const char *name, char *storage,
+                                         size_t storage_size)
+{
+  const char *line_break = strpbrk(name, "\r\n");
+  size_t prefix_length;
+
+  if (line_break == NULL) {
+    return name;
+  }
+  if (storage_size == 0) {
+    return "";
+  }
+  if (storage_size <= 3) {
+    prefix_length = storage_size - 1;
+    memcpy(storage, "...", prefix_length);
+    storage[prefix_length] = '\0';
+    return storage;
+  }
+
+  prefix_length = (size_t) (line_break - name);
+  if (prefix_length + 3 >= storage_size) {
+    prefix_length = storage_size > 4 ? storage_size - 4 : 0;
+  }
+
+  memcpy(storage, name, prefix_length);
+  memcpy(storage + prefix_length, "...", 4);
+  return storage;
+}
+
 /* Report the byte length and the column width of the codepoint that starts the
    text. A byte that begins no valid sequence counts as one byte of one column,
    the way the width walker counts it. The host counts its spans over the same
@@ -6415,7 +6446,10 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
                                  size_t desc_width, bool is_selected,
                                  bool should_highlight)
 {
-  const char *name = result->candidates[index];
+  char display_name_storage[ITL_STRING_MAX_LEN + 1];
+  const char *name = itl_menu_display_name(result->candidates[index],
+                                           display_name_storage,
+                                           sizeof(display_name_storage));
   const char *desc =
       result->descriptions != NULL ? result->descriptions[index] : NULL;
   bool has_description = desc != NULL && desc[0] != '\0' && desc_width > 0;
@@ -6552,11 +6586,15 @@ ITL_DEF void itl_menu_close_area(itl_char_buf_t *b, size_t rows_below)
 
 ITL_DEF size_t itl_menu_name_width(const tl_completion *result)
 {
+  char display_name_storage[ITL_STRING_MAX_LEN + 1];
   size_t widest = 0;
   size_t i;
 
   for (i = 0; i < result->count; ++i) {
-    size_t width = itl_cstr_display_width(result->candidates[i]);
+    const char *name = itl_menu_display_name(result->candidates[i],
+                                             display_name_storage,
+                                             sizeof(display_name_storage));
+    size_t width = itl_cstr_display_width(name);
 
     if (width > widest) {
       widest = width;
@@ -6950,7 +6988,9 @@ ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
 ITL_DEF void itl_menu_ghost_preview(itl_le_t *le, const tl_completion *result,
                                     size_t selected)
 {
+  char display_name_storage[ITL_STRING_MAX_LEN + 1];
   char line_cstr[ITL_STRING_MAX_LEN];
+  const char *name;
 
   itl_ghost_clear();
 
@@ -6964,9 +7004,12 @@ ITL_DEF void itl_menu_ghost_preview(itl_le_t *le, const tl_completion *result,
     return;
   }
 
+  name = itl_menu_display_name(result->candidates[selected],
+                               display_name_storage,
+                               sizeof(display_name_storage));
   itl_ghost_fill_from_token_text(le, line_cstr, le->line->size,
                                  result->token_start,
-                                 result->candidates[selected]);
+                                 name);
   itl_g_ghost_width = itl_cstr_display_width(itl_g_ghost);
 }
 

@@ -18,6 +18,8 @@
 
 #define countof(a) (sizeof(a) / sizeof((a)[0]))
 
+static bool test_bytes_have(const char *data, size_t size, const char *needle);
+
 typedef struct string_test_case string_test_case_t;
 
 struct string_test_case
@@ -2461,6 +2463,41 @@ merged_spans_are(const tl_highlight_span *out, size_t count,
 }
 
 static bool
+test_history_menu_multiline_display(void)
+{
+  static const char *const names[] = {"line one\nline two", "plain\rnext"};
+  tl_completion result = ITL_ZERO_INIT;
+  char          display[32];
+  itl_char_buf_t *b = itl_char_buf_alloc();
+  bool            ok = true;
+
+  result.candidates = names;
+  result.count = countof(names);
+
+  if (strcmp(itl_menu_display_name(names[0], display, sizeof(display)),
+             "line one...") != 0 ||
+      strcmp(names[0], "line one\nline two") != 0 ||
+      strcmp(itl_menu_display_name(names[1], display, sizeof(display)),
+             "plain...") != 0 ||
+      itl_menu_name_width(&result) != 11)
+  {
+    TEST_PRINTF("multiline menu display was not truncated correctly\n");
+    ok = false;
+  }
+
+  itl_menu_append_row(b, &result, 0, 11, 0, false, false);
+  if (!test_bytes_have(b->data, b->size, "line one...") ||
+      test_bytes_have(b->data, b->size, "line two"))
+  {
+    TEST_PRINTF("multiline menu row still carried a second line\n");
+    ok = false;
+  }
+
+  ITL_CHAR_BUF_FREE(b);
+  return ok;
+}
+
+static bool
 test_merge_visual_spans(void)
 {
   static const char *first = "\x1b[31m";
@@ -4046,6 +4083,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_menu_narrow_reuses_base),
                                    DEFINE_TEST_CASE(test_menu_cells),
+                                   DEFINE_TEST_CASE(
+                                       test_history_menu_multiline_display),
                                    DEFINE_TEST_CASE(test_merge_visual_spans),
 #if defined ITL_POSIX
                                    DEFINE_TEST_CASE(
