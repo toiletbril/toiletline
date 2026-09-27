@@ -2353,6 +2353,21 @@ ITL_DEF void itl_le_move_left(itl_le_t *le, size_t steps)
   }
 }
 
+/* A user edit turns a recalled entry into the current draft. Keep that draft
+   available for Down, then make the next history navigation start fresh. */
+ITL_DEF void itl_history_reset_after_edit(itl_le_t *le)
+{
+  if (le->history_selected_index == ITL_HISTORY_NONE) {
+    return;
+  }
+
+  if (itl_g_history_draft == NULL) {
+    itl_g_history_draft = itl_string_alloc();
+  }
+  itl_string_copy(itl_g_history_draft, le->line);
+  le->history_selected_index = ITL_HISTORY_NONE;
+}
+
 ITL_DEF void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
 {
   if (count == 0) {
@@ -2370,6 +2385,7 @@ ITL_DEF void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
     return;
   }
 
+  itl_history_reset_after_edit(le);
   itl_undo_push(le);
   itl_g_undo_insert_run_open = false;
 
@@ -2407,6 +2423,7 @@ ITL_DEF bool itl_le_insert(itl_le_t *le, itl_utf8_t ch)
 {
   ITL_TRY(le->line->size + ch.size < le->out_size, return false);
 
+  itl_history_reset_after_edit(le);
   if (!itl_g_undo_insert_run_open) {
     itl_undo_push(le);
     itl_g_undo_insert_run_open = true;
@@ -6748,6 +6765,7 @@ typedef struct itl_menu_source
   bool should_show_loading;
   bool should_submit_on_enter;
   bool should_highlight;
+  bool restore_on_escape;
   const char *help_title;
   const char *help_keys;
 } itl_menu_source;
@@ -7248,7 +7266,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
   itl_menu_filter_state state;
   size_t selected = 0;
   size_t window_start = 0;
-  bool should_regather_first_character = false;
+  bool should_regather_first_character = source->should_regather_new_words;
 
   /* The row the ghost was filled from. It starts outside the candidate range so
      the first pass fills the preview, and a regather puts it back there. */
@@ -7423,7 +7441,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
     }
 
     if (kind == TL_KEY_UNKN) {
-      if (!is_escape && has_original_line) {
+      if ((!is_escape || source->restore_on_escape) && has_original_line) {
         itl_string_from_bytes(le->line, original_line, original_line_size);
         le->cursor_position = original_cursor <= le->line->length
                                   ? original_cursor
@@ -7528,7 +7546,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
 {
   static const itl_menu_source completion_source = {
-      itl_menu_regather, true, true, true, true, false,
+      itl_menu_regather, true, true, true, true, false, false,
       "selecting completions",
       "enter to run, tab to accept, esc to close, ctrl-g to restore"};
   char line_cstr[ITL_STRING_MAX_LEN];
@@ -7671,7 +7689,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
 ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
 {
   static const itl_menu_source history_source = {
-      itl_history_menu_gather, false, false, false, false, true,
+      itl_history_menu_gather, false, false, false, false, true, true,
       "incremental history search",
       "enter/tab to accept, esc/ctrl-g to cancel"};
 
