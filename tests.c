@@ -2042,6 +2042,87 @@ test_history_private_branch(void)
   return ok;
 }
 
+/* Selects the entry at index through the editor recall path and compares the
+   resulting line to expected. */
+static bool
+recall_line_is(size_t index, const char *expected)
+{
+  char          out_buffer[BUFFER_SIZE];
+  char          line_buffer[BUFFER_SIZE];
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  bool          is_equal;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.history_selected_index = index;
+  itl_history_show_selected(&le);
+  is_equal = itl_string_to_cstr(line, line_buffer, sizeof(line_buffer)) ==
+                 TL_SUCCESS &&
+             strcmp(line_buffer, expected) == 0;
+  ITL_STRING_FREE(line);
+
+  return is_equal;
+}
+
+static bool
+test_history_recall_after_peer_write(void)
+{
+  const char *path = "tl_test_recall_peer.txt";
+  bool        ok = true;
+  FILE       *other;
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+  hist_append_cstr("mine one");
+  hist_append_cstr("mine two");
+
+  other = fopen(path, "ab");
+  if (other == NULL) {
+    TEST_PRINTF("could not open the file as another session\n");
+    itl_g_history_free();
+    itl_g_is_active = false;
+    return false;
+  }
+  fputs("peer entry that is long enough to shift offsets\n", other);
+  fclose(other);
+
+  if (!recall_line_is(0, "mine one") || !recall_line_is(1, "mine two")) {
+    TEST_PRINTF("recall after a peer append left the private branch\n");
+    ok = false;
+  }
+
+  other = fopen(path, "wb");
+  if (other == NULL) {
+    TEST_PRINTF("could not truncate the file as another session\n");
+    remove(path);
+    itl_g_history_free();
+    itl_g_is_active = false;
+    return false;
+  }
+  fputs("p\n", other);
+  fclose(other);
+
+  if (!recall_line_is(0, "mine one") || !recall_line_is(1, "mine two")) {
+    TEST_PRINTF("recall after a peer truncation left the private branch\n");
+    ok = false;
+  }
+
+  hist_append_cstr("mine three");
+  if (ok && (itl_g_history_count != 3 || !recall_line_is(0, "mine one") ||
+             !recall_line_is(1, "mine two") ||
+             !recall_line_is(2, "mine three")))
+  {
+    TEST_PRINTF("append after a peer truncation changed the branch\n");
+    ok = false;
+  }
+
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
 static bool
 test_completion_replacement_is_atomic(void)
 {
@@ -4074,6 +4155,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_history_short_entry_skipped),
                                    DEFINE_TEST_CASE(test_history_alloc_balance),
                                    DEFINE_TEST_CASE(test_history_private_branch),
+                                   DEFINE_TEST_CASE(test_history_recall_after_peer_write),
                                    DEFINE_TEST_CASE(
                                        test_completion_replacement_is_atomic),
                                    DEFINE_TEST_CASE(
