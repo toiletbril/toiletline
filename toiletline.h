@@ -723,6 +723,7 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_entered_raw_mode = false;
 ITL_DEF ITL_THREAD_LOCAL DWORD itl_g_original_tty_in_mode = 0;
 ITL_DEF ITL_THREAD_LOCAL DWORD itl_g_original_tty_out_mode = 0;
 ITL_DEF ITL_THREAD_LOCAL UINT itl_g_original_tty_cp = 0;
+ITL_DEF ITL_THREAD_LOCAL UINT itl_g_original_tty_output_cp = 0;
 ITL_DEF ITL_THREAD_LOCAL int itl_g_original_mode = 0;
 #elif defined ITL_POSIX
 ITL_DEF ITL_THREAD_LOCAL struct termios itl_g_original_tty_mode = ITL_ZERO_INIT;
@@ -773,6 +774,15 @@ ITL_DEF bool itl_enter_raw_mode_impl(void)
   itl_g_original_tty_cp = codepage;
   ITL_TRY(SetConsoleCP(CP_UTF8), return false);
 
+  /* The editor draws UTF-8, so the output code page follows the input one
+     while raw mode is active and is restored for the programs run between
+     prompts. */
+  codepage = GetConsoleOutputCP();
+  ITL_TRY(codepage != 0, return false);
+
+  itl_g_original_tty_output_cp = codepage;
+  ITL_TRY(SetConsoleOutputCP(CP_UTF8), return false);
+
   mode = _setmode(STDIN_FILENO, _O_BINARY);
   ITL_TRY(mode != -1, return false);
 
@@ -817,6 +827,10 @@ ITL_DEF bool itl_exit_raw_mode_impl(void)
   }
   if (itl_g_original_tty_cp != 0) {
     ITL_TRY(SetConsoleCP(itl_g_original_tty_cp), something_failed = true);
+  }
+  if (itl_g_original_tty_output_cp != 0) {
+    ITL_TRY(SetConsoleOutputCP(itl_g_original_tty_output_cp),
+            something_failed = true);
   }
   if (itl_g_original_mode != 0) {
     ITL_TRY(_setmode(STDIN_FILENO, itl_g_original_mode) != -1,
