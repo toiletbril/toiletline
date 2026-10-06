@@ -4295,6 +4295,289 @@ test_menu_band_survives_disabled_colors(void)
   return ok;
 }
 
+static const char *test_hint_text = "";
+
+static const char *
+test_hint_callback(const char *buffer, size_t cursor, const char **sgr)
+{
+  (void) buffer;
+  (void) cursor;
+  (void) sgr;
+
+  return test_hint_text;
+}
+
+static const char *
+test_hint_cursor_callback(const char *buffer, size_t cursor, const char **sgr)
+{
+  (void) sgr;
+
+  return cursor == strlen(buffer) ? "hint at end" : "hint in middle";
+}
+
+static bool
+test_hint_row_is_cut_to_the_width(void)
+{
+  static const char CJK[] = "\xE4\xBD\xA0\xE5\xA5\xBD\xE4\xBD\xA0\xE5\xA5\xBD"
+                            "\xE4\xBD\xA0\xE5\xA5\xBD\xE4\xBD\xA0\xE5\xA5\xBD";
+  int               was_colors_enabled = itl_g_colors_enabled;
+  bool              is_ascii_cut;
+  bool              is_wide_cut;
+  bool              is_short_kept;
+  bool              is_tiny_dropped;
+  bool              is_first_line_kept;
+  bool              ok;
+
+  tl_set_colors_enabled(0);
+  tl_set_hint_callback(test_hint_callback);
+
+  test_hint_text = "usage: a very long synopsis that cannot fit the row";
+  itl_hint_compose("x", 1, 20);
+  is_ascii_cut = itl_g_hint_next_len == 19 &&
+                 strcmp(itl_g_hint_next + 16, "...") == 0 &&
+                 itl_cstr_display_width(itl_g_hint_next) == 19;
+
+  test_hint_text = CJK;
+  itl_hint_compose("x", 1, 10);
+  is_wide_cut = itl_g_hint_next_len > 3 &&
+                strcmp(itl_g_hint_next + itl_g_hint_next_len - 3, "...") == 0 &&
+                itl_cstr_display_width(itl_g_hint_next) <= 9;
+
+  test_hint_text = "short";
+  itl_hint_compose("x", 1, 20);
+  is_short_kept = itl_g_hint_next_len == 5 &&
+                  strcmp(itl_g_hint_next, "short") == 0;
+
+  itl_hint_compose("x", 1, 4);
+  is_tiny_dropped = itl_g_hint_next_len == 0;
+
+  test_hint_text = "first\nsecond";
+  itl_hint_compose("x", 1, 20);
+  is_first_line_kept = itl_g_hint_next_len == 5 &&
+                       strcmp(itl_g_hint_next, "first") == 0;
+
+  tl_set_hint_callback(NULL);
+  tl_set_colors_enabled(was_colors_enabled);
+  itl_g_hint_next_len = 0;
+
+  ok = is_ascii_cut && is_wide_cut && is_short_kept && is_tiny_dropped &&
+       is_first_line_kept;
+
+  if (!ok) {
+    TEST_PRINTF("ascii %d, wide %d, short %d, tiny %d, first line %d\n",
+                (int) is_ascii_cut, (int) is_wide_cut, (int) is_short_kept,
+                (int) is_tiny_dropped, (int) is_first_line_kept);
+  }
+
+  return ok;
+}
+
+#if defined ITL_POSIX && !defined NDEBUG
+static void
+test_hint_prepare_frame(itl_le_t *le, itl_string_t *line, char *out_buffer,
+                        size_t out_size, const char *text)
+{
+  itl_le_init(le, line, out_buffer, out_size, "> ");
+  ITL_STRING_FROM_CSTR(line, "ec");
+  le->cursor_position = line->length;
+
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  itl_g_debug_frame_sink = test_frame_capture_sink;
+  itl_g_hint_is_closed = false;
+  itl_g_hint_hold_count = 0;
+  test_hint_text = text;
+  tl_set_hint_callback(test_hint_callback);
+}
+
+static void
+test_hint_finish_frame(itl_string_t *line)
+{
+  itl_g_debug_frame_sink = NULL;
+  tl_set_hint_callback(NULL);
+  itl_g_hint_is_closed = false;
+  itl_g_hint_hold_count = 0;
+  itl_g_hint_shown_len = 0;
+  itl_g_hint_next_len = 0;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  ITL_STRING_FREE(line);
+}
+
+static bool
+test_hint_row_draws_holds_and_erases(void)
+{
+  static const char HINT[] = "usage: ec [-n] string";
+  char              out_buffer[BUFFER_SIZE];
+  bool              was_hint_drawn;
+  bool              was_block_unchanged;
+  bool              is_cursor_move_quiet;
+  bool              was_hint_held_away;
+  bool              was_hint_back;
+  bool              was_hint_erased;
+  bool              ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer), HINT);
+
+  test_frame_capture_refresh(&le);
+  was_hint_drawn = test_frame_capture_has(HINT) && itl_g_hint_shown_len > 0;
+  was_block_unchanged = itl_g_le_prev_total_rows == 1;
+
+  test_frame_capture_size = 0;
+  itl_g_tty_should_refresh_text = false;
+  le.cursor_position = 1;
+  itl_le_tty_refresh(&le);
+  is_cursor_move_quiet = !test_frame_capture_has(HINT);
+
+  le.cursor_position = line->length;
+  itl_g_tty_should_refresh_text = true;
+  test_frame_capture_size = 0;
+  itl_hint_hold(&le);
+  was_hint_held_away = !test_frame_capture_has(HINT) &&
+                       test_frame_capture_size > 0 && itl_g_hint_shown_len == 0;
+
+  itl_g_tty_should_refresh_text = true;
+  test_frame_capture_size = 0;
+  itl_le_tty_refresh(&le);
+  was_hint_held_away = was_hint_held_away && !test_frame_capture_has(HINT);
+
+  itl_hint_release();
+  itl_g_tty_should_refresh_text = true;
+  test_frame_capture_size = 0;
+  itl_le_tty_refresh(&le);
+  was_hint_back = test_frame_capture_has(HINT);
+
+  test_frame_capture_size = 0;
+  itl_le_finish_input(&le, TL_PRESSED_ENTER);
+  was_hint_erased = test_frame_capture_size > 0 &&
+                    !test_frame_capture_has(HINT) && itl_g_hint_shown_len == 0 &&
+                    itl_g_hint_is_closed;
+
+  test_hint_finish_frame(line);
+
+  ok = was_hint_drawn && was_block_unchanged && is_cursor_move_quiet &&
+       was_hint_held_away && was_hint_back && was_hint_erased;
+
+  if (!ok) {
+    TEST_PRINTF("drawn %d, block %d, cursor quiet %d, held %d, back %d, "
+                "erased %d\n",
+                (int) was_hint_drawn, (int) was_block_unchanged,
+                (int) is_cursor_move_quiet, (int) was_hint_held_away,
+                (int) was_hint_back, (int) was_hint_erased);
+  }
+
+  return ok;
+}
+
+static bool
+test_hint_row_follows_the_caret_and_clears(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool was_end_hint_drawn;
+  bool was_middle_hint_drawn;
+  bool was_row_cleared;
+  bool ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer), "");
+  tl_set_hint_callback(test_hint_cursor_callback);
+
+  test_frame_capture_refresh(&le);
+  was_end_hint_drawn = test_frame_capture_has("hint at end");
+
+  test_frame_capture_size = 0;
+  itl_g_tty_should_refresh_text = false;
+  le.cursor_position = 0;
+  itl_le_tty_refresh(&le);
+  was_middle_hint_drawn = test_frame_capture_has("hint in middle") &&
+                          !test_frame_capture_has("hint at end");
+
+  tl_set_hint_callback(test_hint_callback);
+  test_hint_text = "";
+  test_frame_capture_size = 0;
+  itl_g_tty_should_refresh_text = false;
+  le.cursor_position = line->length;
+  itl_le_tty_refresh(&le);
+  was_row_cleared = test_frame_capture_size > 0 &&
+                    !test_frame_capture_has("hint") &&
+                    itl_g_hint_shown_len == 0;
+
+  test_hint_finish_frame(line);
+
+  ok = was_end_hint_drawn && was_middle_hint_drawn && was_row_cleared;
+
+  if (!ok) {
+    TEST_PRINTF("end %d, middle %d, cleared %d\n", (int) was_end_hint_drawn,
+                (int) was_middle_hint_drawn, (int) was_row_cleared);
+  }
+
+  return ok;
+}
+
+static bool
+test_hint_row_keeps_multiline_rows_and_append_path(void)
+{
+  const char *keys = "abcd";
+  char        out_buffer[BUFFER_SIZE];
+  size_t      key_index;
+  bool        was_multiline_counted;
+  bool        was_last_hint_drawn;
+  bool        ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer), "tip");
+  ITL_STRING_FROM_CSTR(line, "a\nb");
+  le.cursor_position = line->length;
+
+  test_frame_capture_refresh(&le);
+  was_multiline_counted = itl_g_le_prev_total_rows == 2 &&
+                          test_frame_capture_has("tip");
+
+  itl_string_clear(line);
+  le.cursor_position = 0;
+  test_frame_capture_refresh(&le);
+
+  itl_g_debug_append_refresh_count = 0;
+  itl_g_debug_full_refresh_count = 0;
+  for (key_index = 0; keys[key_index] != '\0'; ++key_index) {
+    static const char *const texts[] = {"tip-a", "tip-b", "tip-c", "tip-d"};
+    itl_utf8_t               appended_character =
+        itl_utf8_parse((uint8_t) keys[key_index]);
+
+    test_hint_text = texts[key_index];
+    itl_g_tty_plain_append_pending = le.cursor_position == le.line->length;
+    itl_g_tty_plain_append_width = itl_char_width(appended_character);
+    itl_le_insert(&le, appended_character);
+    itl_g_tty_should_refresh_text = true;
+    test_frame_capture_size = 0;
+    itl_le_tty_refresh(&le);
+  }
+  was_last_hint_drawn = test_frame_capture_has("tip-d") &&
+                        !test_frame_capture_has("tip-c");
+
+  ok = was_multiline_counted && was_last_hint_drawn &&
+       itl_g_debug_append_refresh_count == 4;
+
+  test_hint_finish_frame(line);
+
+  if (!ok) {
+    TEST_PRINTF("multiline %d, last hint %d, appends %zu\n",
+                (int) was_multiline_counted, (int) was_last_hint_drawn,
+                itl_g_debug_append_refresh_count);
+  }
+
+  return ok;
+}
+#endif
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -4427,7 +4710,15 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_colors_disabled_drop_span_escapes),
                                    DEFINE_TEST_CASE(
                                        test_submit_erases_the_drawn_ghost),
+                                   DEFINE_TEST_CASE(
+                                       test_hint_row_draws_holds_and_erases),
+                                   DEFINE_TEST_CASE(
+                                       test_hint_row_follows_the_caret_and_clears),
+                                   DEFINE_TEST_CASE(
+                                       test_hint_row_keeps_multiline_rows_and_append_path),
 #endif
+                                   DEFINE_TEST_CASE(
+                                       test_hint_row_is_cut_to_the_width),
 };
 
 int

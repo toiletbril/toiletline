@@ -407,6 +407,24 @@ typedef int (*tl_highlight_fn)(const char *buffer, tl_highlight *out);
 TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback);
 
 /**
+ * The hint callback. The host receives the buffer and the byte offset of the
+ * caret. It returns one line of text for the row directly under the input, or
+ * NULL or an empty string for no hint. It may set *sgr to the escape sequence
+ * that styles the row, and leaves it alone for the dimmed default. The text
+ * past its first line break is ignored and a row wider than the terminal is
+ * cut with an ellipsis. Both pointers only need to stay valid until the call
+ * returns. The row is never drawn while a menu or history search is open and
+ * is erased when the line is submitted.
+ */
+typedef const char *(*tl_hint_fn)(const char *buffer, size_t cursor,
+                                  const char **sgr);
+
+/**
+ * Register the hint callback, or NULL to disable the hint row.
+ */
+TL_DEF void tl_set_hint_callback(tl_hint_fn callback);
+
+/**
  * The wake hook for an out-of-band report such as a finished background job.
  * The wait loop calls phase 0 to ask whether anything must print. On a nonzero
  * answer it clears the render block, calls phase 1 for the host to write its
@@ -4216,6 +4234,29 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_length = 0;
    path fires only then, otherwise a mid-line caret forces the full redraw. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_cursor_at_end = false;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_ghost_len = 0;
+
+/* The host hint callback, or NULL when the hint row is off. */
+ITL_DEF ITL_THREAD_LOCAL tl_hint_fn itl_g_hint_callback = NULL;
+
+/* The most text bytes and style bytes of one hint row the editor keeps. */
+#define ITL_HINT_TEXT_MAX 512
+#define ITL_HINT_SGR_MAX  32
+
+/* The row the next frame wants, its style, text, and reset joined, and the row
+   the screen holds. The shown length is zero when nothing sits under the input.
+   The two compare byte for byte, so an unchanged hint costs no output. */
+ITL_DEF ITL_THREAD_LOCAL char
+    itl_g_hint_next[ITL_HINT_SGR_MAX + ITL_HINT_TEXT_MAX + 16] = {0};
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_next_len = 0;
+ITL_DEF ITL_THREAD_LOCAL char
+    itl_g_hint_shown[ITL_HINT_SGR_MAX + ITL_HINT_TEXT_MAX + 16] = {0};
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_shown_len = 0;
+
+/* A menu or a history search holds the row away while it is open. A finished
+   line keeps it away until the next line starts. */
+ITL_DEF ITL_THREAD_LOCAL int itl_g_hint_hold_count = 0;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_hint_is_closed = false;
+
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_plain_append_pending = false;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_plain_append_width = 0;
 #if !defined NDEBUG
@@ -4708,6 +4749,7 @@ ITL_DEF void itl_le_invalidate_prev_frame(void)
   itl_g_le_prev_length = 0;
   itl_g_le_prev_ghost_len = 0;
   itl_g_le_prev_spans_usable = false;
+  itl_g_hint_shown_len = 0;
 }
 
 ITL_DEF void itl_le_tty_move_to_block_top(itl_char_buf_t *b)
@@ -5102,6 +5144,124 @@ ITL_DEF bool itl_le_tty_draw_ghost(itl_char_buf_t *b, bool is_cursor_at_end,
   return true;
 }
 
+/* Ask the host for the row of this line and fit it to the terminal width. The
+   text is cut at its first line break, control bytes become spaces, and a row
+   wider than the terminal less its last column is cut with an ellipsis so the
+   row never wraps. The result lands in itl_g_hint_next, empty for no hint. */
+ITL_DEF void itl_hint_compose(const char *line, size_t cursor_byte, size_t cols)
+{
+  char text[ITL_HINT_TEXT_MAX + 8];
+  const char *sgr = NULL;
+  const char *returned;
+  size_t room = cols > 1 ? cols - 1 : 0;
+  size_t text_bytes, offset = 0, width, i;
+
+  itl_g_hint_next_len = 0;
+
+  if (itl_g_hint_callback == NULL || itl_g_hint_hold_count > 0 ||
+      itl_g_hint_is_closed || room <= ITL_PROMPT_ELLIPSIS_WIDTH + 1)
+  {
+    return;
+  }
+
+  returned = itl_g_hint_callback(line, cursor_byte, &sgr);
+  if (returned == NULL) {
+    return;
+  }
+
+  text_bytes = strcspn(returned, "\r\n");
+  if (text_bytes > ITL_HINT_TEXT_MAX) {
+    text_bytes = ITL_HINT_TEXT_MAX;
+  }
+  if (text_bytes == 0) {
+    return;
+  }
+
+  memcpy(text, returned, text_bytes);
+  text[text_bytes] = '\0';
+  for (i = 0; i < text_bytes; ++i) {
+    if ((unsigned char) text[i] < 0x20 || text[i] == 0x7f) {
+      text[i] = ' ';
+    }
+  }
+
+  width = itl_cstr_display_width(text);
+  if (width > room) {
+    size_t kept = itl_cstr_width_walk(text, room - ITL_PROMPT_ELLIPSIS_WIDTH,
+                                      &offset);
+    if (kept + ITL_PROMPT_ELLIPSIS_WIDTH > room) {
+      itl_cstr_width_walk(text, room - ITL_PROMPT_ELLIPSIS_WIDTH - 1, &offset);
+    }
+    text_bytes = offset;
+    text[text_bytes] = '\0';
+    memcpy(text + text_bytes, ITL_PROMPT_ELLIPSIS, ITL_PROMPT_ELLIPSIS_WIDTH + 1);
+    text_bytes += ITL_PROMPT_ELLIPSIS_WIDTH;
+  }
+
+  if (sgr == NULL || strlen(sgr) >= ITL_HINT_SGR_MAX) {
+    sgr = ITL_DIM_SGR;
+  }
+
+  {
+    const char *open = itl_color_sequence(sgr);
+    const char *reset = itl_color_sequence(ITL_HIGHLIGHT_RESET);
+    size_t open_len = strlen(open);
+    size_t reset_len = strlen(reset);
+
+    memcpy(itl_g_hint_next, open, open_len);
+    memcpy(itl_g_hint_next + open_len, text, text_bytes);
+    memcpy(itl_g_hint_next + open_len + text_bytes, reset, reset_len);
+    itl_g_hint_next_len = open_len + text_bytes + reset_len;
+    itl_g_hint_next[itl_g_hint_next_len] = '\0';
+  }
+}
+
+/* The caret's byte offset into the serialized line. */
+ITL_DEF size_t itl_le_cursor_byte_offset(const itl_le_t *le)
+{
+  size_t stop = ITL_MIN(le->cursor_position, le->line->length);
+  size_t offset = 0;
+  size_t i;
+
+  for (i = 0; i < stop; ++i) {
+    offset += le->line->chars[i].size;
+  }
+
+  return offset;
+}
+
+ITL_DEF bool itl_hint_is_unchanged(void)
+{
+  return itl_g_hint_next_len == itl_g_hint_shown_len &&
+         memcmp(itl_g_hint_next, itl_g_hint_shown, itl_g_hint_next_len) == 0;
+}
+
+/* Bring the row under the last input row to the composed one. The caret must
+   sit on that last row. A line feed enters the row, which scrolls the screen
+   when the block ends at the bottom, and one step up returns to the caret's
+   row, with the column left for the caller to restore. */
+ITL_DEF void itl_le_tty_draw_hint(itl_char_buf_t *b)
+{
+  if (itl_hint_is_unchanged()) {
+    return;
+  }
+
+  itl_char_buf_append_cstr(b, ITL_LF);
+  ITL_TTY_MOVE_TO_COLUMN(b, 1);
+
+  if (itl_g_hint_next_len == 0) {
+    ITL_TTY_CLEAR_WHOLE_LINE(b);
+  } else {
+    itl_char_buf_append_bytes(b, itl_g_hint_next, itl_g_hint_next_len);
+    ITL_TTY_CLEAR_TO_END(b);
+  }
+
+  ITL_TTY_MOVE_UP(b, 1);
+
+  memcpy(itl_g_hint_shown, itl_g_hint_next, itl_g_hint_next_len);
+  itl_g_hint_shown_len = itl_g_hint_next_len;
+}
+
 /* NOTE: Hottest function in the library. */
 ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 {
@@ -5162,6 +5322,28 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
   cols = ITL_MAX(tty_cols, 1);
   indent = ITL_LE_INDENT(le, cols);
+
+  /* A caret move can change the hint, so the cursor-only frame asks for it
+     here. A hint that differs from the one on screen turns the frame into a
+     text refresh, which redraws the row. */
+  bool is_hint_ready = false;
+  if (!itl_g_tty_should_refresh_text && itl_g_hint_callback != NULL) {
+    bool was_serialized = itl_g_serialized_line_ready;
+
+    if (itl_le_serialize_line(le)) {
+      itl_hint_compose(itl_g_serialized_line, itl_le_cursor_byte_offset(le),
+                       cols);
+    } else {
+      itl_g_hint_next_len = 0;
+    }
+    itl_g_serialized_line_ready = was_serialized;
+    is_hint_ready = true;
+
+    if (!itl_hint_is_unchanged()) {
+      itl_g_tty_should_refresh_text = true;
+    }
+  }
+
   if (itl_g_tty_plain_append_pending && !is_resize &&
       !itl_g_tty_first_render && itl_g_le_prev_cursor_at_end &&
       itl_g_le_prev_cursor_col + itl_g_tty_plain_append_width < cols)
@@ -5228,6 +5410,14 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     }
   }
 
+  if (itl_g_tty_should_refresh_text && !is_hint_ready) {
+    if (have_cur_render) {
+      itl_hint_compose(itl_cur_render, itl_le_cursor_byte_offset(le), cols);
+    } else {
+      itl_g_hint_next_len = 0;
+    }
+  }
+
   bool spans_are_append_compatible = itl_le_prev_spans_append_compatible(
       itl_spans, span_count, le->line->length, &append_tail_sgr);
   if (is_metrics_ready && itl_g_tty_should_refresh_text && !is_resize &&
@@ -5256,6 +5446,12 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
       ITL_TTY_CLEAR_TO_END(fb);
       if (itl_le_tty_draw_ghost(fb, true, m.cursor_col, cols)) {
         ITL_TTY_MOVE_TO_COLUMN(fb, m.cursor_col + 1);
+      }
+      if (!itl_hint_is_unchanged()) {
+        ITL_TTY_HIDE_CURSOR(fb);
+        itl_le_tty_draw_hint(fb);
+        ITL_TTY_MOVE_TO_COLUMN(fb, m.cursor_col + 1);
+        ITL_TTY_SHOW_CURSOR(fb);
       }
       itl_le_commit_geometry(m, true);
       itl_le_commit_render(itl_cur_render, cur_len, le->line->length, itl_spans,
@@ -5298,19 +5494,22 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
       /* Park at the top-left of the previous render. */
       itl_le_tty_move_to_block_top(b);
 
-      /* Clear every row the previous render occupied, leaving rows we do not
-         own untouched. */
-      for (i = 0; i < itl_g_le_prev_total_rows; ++i) {
+      /* Clear every row the previous render occupied, and the hint row under
+         it, leaving rows we do not own untouched. */
+      size_t clear_rows =
+          itl_g_le_prev_total_rows + (itl_g_hint_shown_len > 0 ? 1 : 0);
+      for (i = 0; i < clear_rows; ++i) {
         ITL_TTY_CLEAR_WHOLE_LINE(b);
-        if (i + 1 < itl_g_le_prev_total_rows) {
+        if (i + 1 < clear_rows) {
           ITL_TTY_MOVE_DOWN(b, 1);
         }
       }
-      if (itl_g_le_prev_total_rows > 1) {
-        ITL_TTY_MOVE_UP(b, itl_g_le_prev_total_rows - 1);
+      if (clear_rows > 1) {
+        ITL_TTY_MOVE_UP(b, clear_rows - 1);
       }
       ITL_TTY_MOVE_TO_COLUMN(b, 1);
     }
+    itl_g_hint_shown_len = 0;
 
     if (le->prompt != NULL) {
       /* A prompt at or past the terminal width renders as the ellipsis
@@ -5426,6 +5625,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
     (void) itl_le_tty_draw_ghost(
         b, le->cursor_position == le->line->length, col, cols);
+    itl_le_tty_draw_hint(b);
 
     /* Move from the end of the rendered text up to the cursor's row. */
     move_up = (m.total_rows - 1) - m.cursor_row;
@@ -5607,6 +5807,11 @@ TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback)
   itl_g_highlight_callback = callback;
 }
 
+TL_DEF void tl_set_hint_callback(tl_hint_fn callback)
+{
+  itl_g_hint_callback = callback;
+}
+
 TL_DEF void tl_set_edit_mode(int mode)
 {
   if (mode == TL_EDIT_MODE_VI_INSERT || mode == TL_EDIT_MODE_VI_COMMAND ||
@@ -5658,6 +5863,23 @@ ITL_DEF void itl_ghost_clear(void)
   itl_g_ghost_should_replace_line = false;
 }
 
+/* Keep the hint row away while a menu or a search is open. A row already on
+   screen is erased with one forced text refresh. */
+ITL_DEF void itl_hint_hold(itl_le_t *le)
+{
+  itl_g_hint_hold_count += 1;
+
+  if (itl_g_hint_shown_len > 0) {
+    itl_g_tty_should_refresh_text = true;
+    itl_le_tty_refresh(le);
+  }
+}
+
+ITL_DEF void itl_hint_release(void)
+{
+  itl_g_hint_hold_count -= 1;
+}
+
 /* Hand the line back to the host with no ghost left anywhere. itl_ghost_clear
    only drops the recorded text, so a ghost that reached the screen also needs
    one forced text refresh to erase it. With nothing drawn the line on screen is
@@ -5666,10 +5888,12 @@ ITL_DEF void itl_ghost_clear(void)
 ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
 {
   bool was_ghost_drawn = itl_g_le_prev_ghost_len > 0;
+  bool was_hint_drawn = itl_g_hint_shown_len > 0;
 
   itl_ghost_clear();
+  itl_g_hint_is_closed = true;
 
-  if (was_ghost_drawn) {
+  if (was_ghost_drawn || was_hint_drawn) {
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
   }
@@ -5729,6 +5953,11 @@ TL_DEF tl_status_code tl_begin_external_screen(void)
   ITL_CHAR_BUF_CLEAR(b);
   for (i = 0; i < move_down; ++i) {
     itl_char_buf_append_cstr(b, ITL_LF);
+  }
+  if (itl_g_hint_shown_len > 0) {
+    ITL_TTY_MOVE_TO_COLUMN(b, 1);
+    ITL_TTY_CLEAR_WHOLE_LINE(b);
+    itl_g_hint_shown_len = 0;
   }
   ITL_TTY_AUTOWRAP_ON(b);
   ITL_TTY_SHOW_CURSOR(b);
@@ -6222,6 +6451,11 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result,
   ITL_TTY_SHOW_CURSOR(b);
   for (i = 0; i < move_down; ++i) {
     itl_char_buf_append_cstr(b, ITL_LF);
+  }
+  if (itl_g_hint_shown_len > 0) {
+    ITL_TTY_MOVE_TO_COLUMN(b, 1);
+    ITL_TTY_CLEAR_WHOLE_LINE(b);
+    itl_g_hint_shown_len = 0;
   }
 
   for (i = 0; i < result->count; ++i) {
@@ -7521,9 +7755,9 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
    line. The returned status is the one the caller must return, and it carries a
    terminating key back to the host. The source holds everything that separates
    one candidate list from another. */
-ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
-                                           const tl_completion *initial,
-                                           const itl_menu_source *source)
+ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
+                                               const tl_completion *initial,
+                                               const itl_menu_source *source)
 {
   tl_completion result = *initial;
   itl_menu_filter_state state;
@@ -7800,6 +8034,21 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
   itl_g_tty_should_refresh_text = true;
 
   return TL_SUCCESS;
+}
+
+/* Run the menu with the hint row held away, so the rows it draws under the
+   block never share the screen with it. */
+ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
+                                           const tl_completion *initial,
+                                           const itl_menu_source *source)
+{
+  tl_status_code status;
+
+  itl_hint_hold(le);
+  status = itl_completion_menu_run(le, initial, source);
+  itl_hint_release();
+
+  return status;
 }
 
 /* Handle the TAB key when a completion callback is registered. Replace the
@@ -8992,6 +9241,7 @@ ITL_DEF int itl_history_select(itl_le_t *le, tl_status_code *out_code)
   int result = TL_KEY_UNKN;
 
   *out_code = TL_SUCCESS;
+  itl_hint_hold(le);
   itl_history_search_snapshot_begin();
 
   if (itl_g_history_select_callback != NULL) {
@@ -9027,6 +9277,7 @@ ITL_DEF int itl_history_select(itl_le_t *le, tl_status_code *out_code)
 
 done:
   itl_history_search_snapshot_end();
+  itl_hint_release();
   return result;
 }
 
@@ -10795,6 +11046,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
   /* A new line starts with no ghost, since the previous line's suggestion does
      not carry over, and predefined input is shown as the user's own text. */
   itl_ghost_clear();
+  itl_g_hint_is_closed = false;
 
   /* Avoid clearing lines that don't belong to us. The incremental-append fast
      path keys off the previous render, so its state is reset with the row
