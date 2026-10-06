@@ -6024,7 +6024,8 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
    list. The previous-render row counts are reset so the refresh treats the spot
    below the list as untouched ground and does not clear the list it just
    printed. */
-ITL_DEF void itl_completion_print_list(const tl_completion *result)
+ITL_DEF void itl_completion_print_list(const tl_completion *result,
+                                       size_t anchor)
 {
   itl_char_buf_t *b = &itl_g_char_buffer;
   size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
@@ -6047,6 +6048,13 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
       longest = len;
     }
   }
+
+  /* The list starts under the token when its widest name fits to the right of
+     it, and at the leftmost column otherwise. */
+  if (anchor + longest >= tty_cols) {
+    anchor = 0;
+  }
+  tty_cols -= anchor;
 
   /* Two spaces between columns, at least one column even when a name is wider
      than the terminal. */
@@ -6072,6 +6080,7 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
       const char *desc = result->descriptions[i];
       size_t len = strlen(name);
       size_t pad;
+      itl_char_buf_append_spaces(b, anchor);
       itl_char_buf_append_cstr(b, name);
       if (desc != NULL && desc[0] != '\0') {
         size_t line_len = 0;
@@ -6097,7 +6106,7 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
           if (line_len > 0 && line_len + 1 + word_len > desc_room) {
             size_t k;
             itl_char_buf_append_cstr(b, ITL_LF);
-            for (k = 0; k < column_width; ++k)
+            for (k = 0; k < anchor + column_width; ++k)
               itl_char_buf_append_byte(b, ' ');
             line_len = 0;
           }
@@ -6119,6 +6128,9 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result)
       size_t len = strlen(name);
       size_t pad;
 
+      if (column == 0) {
+        itl_char_buf_append_spaces(b, anchor);
+      }
       itl_char_buf_append_cstr(b, name);
       column += 1;
       if (column >= columns || i + 1 == result->count) {
@@ -6635,6 +6647,39 @@ ITL_DEF size_t itl_menu_name_width(const tl_completion *result)
   return widest;
 }
 
+/* The display column, counted from zero, of the token being completed. The menu
+   loop sets it. A draw moves the row prefix left of it so the candidate text
+   sits under the token, and uses it only when the whole menu fits to its right.
+   It falls back to the leftmost column when it does not. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_menu_anchor_column = 0;
+
+/* The display column where the codepoint at index token_start of the line
+   begins, wrapped the way the renderer wraps the line. */
+ITL_DEF size_t itl_menu_anchor_column_of(const itl_le_t *le,
+                                         size_t token_start)
+{
+  size_t cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
+  size_t indent = ITL_LE_INDENT(le, cols);
+  size_t row = 0;
+  size_t col = indent;
+
+  if (token_start > le->line->length) {
+    token_start = le->line->length;
+  }
+  itl_wrap_walk_range(le->line, 0, token_start, cols, indent, &row, &col);
+
+  return col;
+}
+
+/* Park the caret on the column the rows start at. The leftmost column is where
+   every row break already lands. */
+ITL_DEF void itl_menu_move_to_anchor(itl_char_buf_t *b, size_t anchor)
+{
+  if (anchor > 0) {
+    ITL_TTY_MOVE_TO_COLUMN(b, anchor + 1);
+  }
+}
+
 /* Repaint the menu rows under the input block. The rows are written from the
    first row below the block downward, and the caret returns to the line. The
    editor's own render path never sees them. The layout owns which rows exist,
@@ -6649,10 +6694,16 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
 {
   itl_char_buf_t *b = &itl_g_char_buffer;
   size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
-  size_t row_cols = tty_cols > 1 ? tty_cols - 1 : 1;
-  size_t text_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH
-                          ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH
-                          : 1;
+  size_t full_cols = tty_cols > 1 ? tty_cols - 1 : 1;
+  size_t anchor = itl_g_menu_anchor_column >= ITL_MENU_ROW_PREFIX_WIDTH
+                      ? itl_g_menu_anchor_column - ITL_MENU_ROW_PREFIX_WIDTH
+                      : 0;
+  size_t needed_cols = ITL_MENU_ROW_PREFIX_WIDTH +
+                       (result->count == 0 ? itl_cstr_display_width(empty_text)
+                                           : name_width +
+                                                 ITL_MENU_SELECTED_MARGIN_WIDTH);
+  size_t row_cols;
+  size_t text_width;
   size_t window_end = window_start + layout.candidate_rows;
   size_t desc_width;
   size_t drawn_rows = 0;
@@ -6662,6 +6713,14 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
   if (layout.candidate_rows == 0) {
     return;
   }
+
+  if (anchor + needed_cols > full_cols) {
+    anchor = 0;
+  }
+  row_cols = full_cols - anchor;
+  text_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH
+                   ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH
+                   : 1;
 
   if (window_end > result->count) {
     window_end = result->count;
@@ -6685,6 +6744,7 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
   ITL_CHAR_BUF_CLEAR(b);
   ITL_TTY_HIDE_CURSOR(b);
   move_down = itl_menu_open_area(b);
+  itl_menu_move_to_anchor(b, anchor);
 
   if (layout.has_help_row && help_title != NULL) {
     itl_menu_append_help_row(b, help_title, help_keys, text_width);
@@ -6694,6 +6754,7 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
   if (result->count == 0) {
     if (drawn_rows > 0) {
       itl_char_buf_append_cstr(b, ITL_LF);
+      itl_menu_move_to_anchor(b, anchor);
     }
     itl_menu_append_dimmed_row(b, empty_text, text_width);
     drawn_rows += 1;
@@ -6702,6 +6763,7 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
   for (i = window_start; i < window_end; ++i) {
     if (drawn_rows > 0) {
       itl_char_buf_append_cstr(b, ITL_LF);
+      itl_menu_move_to_anchor(b, anchor);
     }
     itl_menu_append_row(b, result, i, name_width, desc_width, i == selected,
                         should_highlight);
@@ -6712,6 +6774,7 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
   {
     if (drawn_rows > 0) {
       itl_char_buf_append_cstr(b, ITL_LF);
+      itl_menu_move_to_anchor(b, anchor);
     }
     itl_menu_append_summary(b, window_start + 1, window_end, result->count);
     drawn_rows += 1;
@@ -6770,7 +6833,9 @@ typedef bool (*itl_menu_gather_fn)(itl_le_t *le, tl_completion *result);
    and submits what the line already holds. should_highlight belongs to a list
    whose entries are whole commands, and the host colors them the way it colors
    the line. help_title names the source on the first row and help_keys lists
-   the keys it answers beside it. */
+   the keys it answers beside it. should_anchor_to_token belongs to a list of
+   replacements for a token, and the rows then start under the token instead of
+   the leftmost column. */
 typedef struct itl_menu_source
 {
   itl_menu_gather_fn gather;
@@ -6782,6 +6847,7 @@ typedef struct itl_menu_source
   bool restore_on_escape;
   const char *help_title;
   const char *help_keys;
+  bool should_anchor_to_token;
 } itl_menu_source;
 
 /* Ask the host for the candidates of the line as it stands now. The host keeps
@@ -7202,6 +7268,7 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
 
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
+    itl_g_menu_anchor_column = 0;
     itl_menu_draw(&loading, 0, 0, layout, source->help_title,
                   source->help_keys, source->should_highlight, 0,
                   ITL_MENU_LOADING_TEXT);
@@ -7326,6 +7393,10 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 
     tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
     layout = itl_menu_measure(tty_rows, source->help_title != NULL);
+    itl_g_menu_anchor_column =
+        source->should_anchor_to_token
+            ? itl_menu_anchor_column_of(le, result.token_start)
+            : 0;
 
     window_start = itl_menu_window_start(result.count, selected, window_start,
                                          layout.candidate_rows);
@@ -7562,7 +7633,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
   static const itl_menu_source completion_source = {
       itl_menu_regather, true, true, true, true, false, false,
       "selecting completions",
-      "enter to run, tab to accept, esc to close, ctrl-g to restore"};
+      "enter to run, tab to accept, esc to close, ctrl-g to restore", true};
   char line_cstr[ITL_STRING_MAX_LEN];
   tl_completion result;
   size_t token_len, lcp_len;
@@ -7583,6 +7654,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     size_t tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
     itl_menu_layout layout = itl_menu_measure(tty_rows, true);
 
+    itl_g_menu_anchor_column = 0;
     itl_menu_draw(&loading, 0, 0, layout, "selecting completions",
                   "enter to run, tab to accept, esc to close, ctrl-g to restore",
                   false, 0, ITL_MENU_LOADING_TEXT);
@@ -7680,6 +7752,13 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     }
     itl_completion_replace_token(le, &result, result.longest_common_prefix);
     itl_g_tty_should_refresh_text = true;
+    if (itl_g_completion_menu_enabled) {
+      tl_completion remaining = ITL_ZERO_INIT;
+
+      if (itl_menu_regather(le, &remaining) && remaining.count > 1) {
+        *out_code = itl_completion_menu(le, &remaining, &completion_source);
+      }
+    }
     return true;
   }
 
@@ -7691,7 +7770,8 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     return true;
   }
 
-  itl_completion_print_list(&result);
+  itl_completion_print_list(
+      &result, itl_menu_anchor_column_of(le, result.token_start));
   return true;
 }
 
@@ -7705,7 +7785,7 @@ ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
   static const itl_menu_source history_source = {
       itl_history_menu_gather, false, false, false, false, true, true,
       "incremental history search",
-      "enter/tab to accept, esc/ctrl-g to cancel"};
+      "enter/tab to accept, esc/ctrl-g to cancel", false};
 
   tl_completion result;
   char original_line[ITL_STRING_MAX_LEN];

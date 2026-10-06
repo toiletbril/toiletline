@@ -3905,6 +3905,61 @@ test_loading_frame_drains_before_gather(void)
 }
 
 static bool
+test_menu_rows_start_under_the_token(void)
+{
+  static const char *candidates[] = {"alpha", "album"};
+  char               out_buffer[BUFFER_SIZE];
+  bool               ok;
+  size_t             anchor_column;
+  itl_le_t           le = ITL_ZERO_INIT;
+  tl_completion      result = ITL_ZERO_INIT;
+  itl_menu_layout    layout;
+  itl_string_t      *line = itl_string_alloc();
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  ITL_STRING_FROM_CSTR(line, "echo al");
+  le.cursor_position = line->length;
+
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  itl_g_le_prev_total_rows = 1;
+  itl_g_le_prev_cursor_row = 1;
+  result.candidates = candidates;
+  result.count = countof(candidates);
+  result.token_start = 5;
+  result.token_end = 7;
+  layout = itl_menu_measure(itl_g_tty_prev_rows, false);
+
+  anchor_column = itl_menu_anchor_column_of(&le, result.token_start);
+  ok = anchor_column == 7;
+
+  itl_g_debug_frame_sink = test_frame_capture_sink;
+  test_frame_capture_size = 0;
+  itl_g_menu_anchor_column = anchor_column;
+  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 5, "");
+  ok = ok && test_frame_capture_has("\x1b[6G");
+
+  itl_g_tty_prev_cols = 12;
+  test_frame_capture_size = 0;
+  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 5, "");
+  ok = ok && !test_frame_capture_has("\x1b[6G");
+
+  if (!ok) {
+    TEST_PRINTF("anchor=%zu bytes=%zu\n", anchor_column, test_frame_capture_size);
+  }
+
+  itl_g_menu_anchor_column = 0;
+  itl_g_debug_frame_sink = NULL;
+  itl_g_tty_prev_cols = 80;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
+static bool
 test_colors_disabled_drop_span_escapes(void)
 {
   char out_buffer[BUFFER_SIZE];
@@ -4204,6 +4259,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
 #if defined ITL_POSIX && !defined NDEBUG
                                    DEFINE_TEST_CASE(
                                        test_loading_frame_drains_before_gather),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_rows_start_under_the_token),
                                    DEFINE_TEST_CASE(
                                        test_append_path_keeps_spans),
                                    DEFINE_TEST_CASE(
