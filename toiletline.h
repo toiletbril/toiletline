@@ -501,6 +501,32 @@ typedef int (*tl_wake_fn)(int phase);
  */
 TL_DEF void tl_set_wake_callback(tl_wake_fn callback);
 
+/* The idle hook asks for the hint row to be composed again and redrawn when it
+   changed. */
+#define TL_IDLE_REFRESH 1
+/* The idle hook asks to run once more after the repeat interval while the
+   pause lasts. */
+#define TL_IDLE_AGAIN 2
+
+/**
+ * The idle hook. The input wait calls it once no key has arrived for the delay
+ * given at registration, with the buffer and the byte offset of the caret. It
+ * runs at most once per pause unless it answers TL_IDLE_AGAIN, and its answer
+ * may add TL_IDLE_REFRESH. A key ends the pause and the next pause waits the
+ * whole delay again. Pending input, a paste, an open menu, and a history
+ * search never reach it. The hook runs with the wake signals unblocked, so it
+ * may start and reap child processes, and it should return quickly since keys
+ * wait while it runs.
+ */
+typedef int (*tl_idle_fn)(const char *buffer, size_t cursor);
+
+/**
+ * Register the idle hook with its delay and repeat interval in milliseconds,
+ * or NULL to disable it.
+ */
+TL_DEF void tl_set_idle_callback(tl_idle_fn callback, int delay_ms,
+                                 int repeat_ms);
+
 TL_DEF void tl_set_edit_mode(int mode);
 
 #endif /* TOILETLINE_H_ */ /* End of header file */
@@ -578,6 +604,7 @@ TL_DEF void tl_set_edit_mode(int mode);
 #include <poll.h>
 #include <sys/select.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 /* It makes no sense to use escapes on WIN32 which does not support them
@@ -726,6 +753,7 @@ typedef unsigned char bool;
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h> /* sig_atomic_t for the terminal resize flag */
 #include <stdint.h>
 #include <stdlib.h>
@@ -1065,18 +1093,51 @@ ITL_DEF bool itl_restore_input_wake_signals(const sigset_t *previous_signals)
   return sigprocmask(SIG_SETMASK, previous_signals, NULL) == 0;
 }
 
-ITL_DEF bool itl_wait_for_input(const sigset_t *previous_signals)
+/* Waits for input or a wake signal, and for at most timeout_ms when it is not
+   negative. Returns 0 when the timeout passed with nothing to read, 1 on input
+   or a signal, and -1 on an error. */
+ITL_DEF int itl_wait_for_input_until(const sigset_t *previous_signals,
+                                     int timeout_ms)
 {
   fd_set readable;
+  struct timespec timeout;
   int result;
 
   FD_ZERO(&readable);
   FD_SET(STDIN_FILENO, &readable);
-  result = pselect(STDIN_FILENO + 1, &readable, NULL, NULL, NULL,
-                   previous_signals);
-  return result >= 0 || errno == EINTR;
+  timeout.tv_sec = timeout_ms / 1000;
+  timeout.tv_nsec = (long) (timeout_ms % 1000) * 1000000L;
+  result = pselect(STDIN_FILENO + 1, &readable, NULL, NULL,
+                   timeout_ms < 0 ? NULL : &timeout, previous_signals);
+  if (result == 0) {
+    return 0;
+  }
+  return result > 0 || errno == EINTR ? 1 : -1;
+}
+
+ITL_DEF bool itl_wait_for_input(const sigset_t *previous_signals)
+{
+  return itl_wait_for_input_until(previous_signals, -1) >= 0;
 }
 #endif /* ITL_POSIX && !ITL_INJECT_KLEE */
+
+/* A clock for the idle delay that never steps backwards. */
+ITL_DEF uint64_t itl_monotonic_ms(void)
+{
+#if defined ITL_INJECT_KLEE
+  return 0;
+#elif defined ITL_WIN32
+  return (uint64_t) GetTickCount64();
+#elif defined ITL_POSIX
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+    return 0;
+  }
+  return (uint64_t) now.tv_sec * 1000u + (uint64_t) now.tv_nsec / 1000000u;
+#else
+  return 0;
+#endif
+}
 
 ITL_DEF volatile sig_atomic_t itl_g_tty_changed_size = 1;
 
@@ -4404,6 +4465,13 @@ ITL_DEF ITL_THREAD_LOCAL tl_highlight_fn itl_g_highlight_callback = NULL;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_highlight_follows_cursor = false;
 ITL_DEF ITL_THREAD_LOCAL tl_wake_fn itl_g_wake_callback = NULL;
 
+/* The host idle hook, its delay and repeat interval, and the moment the next
+   call is due, zero while no call is due. */
+ITL_DEF ITL_THREAD_LOCAL tl_idle_fn itl_g_idle_callback = NULL;
+ITL_DEF ITL_THREAD_LOCAL int itl_g_idle_delay_ms = 0;
+ITL_DEF ITL_THREAD_LOCAL int itl_g_idle_repeat_ms = 0;
+ITL_DEF ITL_THREAD_LOCAL uint64_t itl_g_idle_due_ms = 0;
+
 /* The reset that closes every colored span, matching the ghost text's own
    reset. Each span carries its own opening SGR from the host. */
 #define ITL_HIGHLIGHT_RESET "\x1b[0m"
@@ -4754,18 +4822,30 @@ ITL_DEF bool itl_win_console_resized(void)
    modifier, or a mouse move would keep the handle signaled and spin the wait.
    Such a record is consumed here. A resize record marks the line for a redraw
    and returns to the caller. A real keystroke is left in the buffer for the
-   _getch reader, told apart by _kbhit. */
-ITL_DEF void itl_wait_for_input(void)
+   _getch reader, told apart by _kbhit. A timeout_ms that is not negative also
+   ends the wait, and 0 is returned when it passed with nothing to read. */
+ITL_DEF int itl_wait_for_input_until(int timeout_ms)
 {
   HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
+  uint64_t started_ms = itl_monotonic_ms();
   for (;;) {
+    DWORD slice_ms = 20;
     if (itl_g_pushback_byte != -1 || _kbhit() != 0) {
-      return;
+      return 1;
     }
-    if (WaitForSingleObject(handle, 20) != WAIT_OBJECT_0) {
+    if (timeout_ms >= 0) {
+      uint64_t waited_ms = itl_monotonic_ms() - started_ms;
+      if (waited_ms >= (uint64_t) timeout_ms) {
+        return 0;
+      }
+      if ((uint64_t) timeout_ms - waited_ms < slice_ms) {
+        slice_ms = (DWORD) ((uint64_t) timeout_ms - waited_ms);
+      }
+    }
+    if (WaitForSingleObject(handle, slice_ms) != WAIT_OBJECT_0) {
       if (itl_win_console_resized()) {
         itl_g_tty_changed_size = 1;
-        return;
+        return 1;
       }
       continue;
     }
@@ -4777,16 +4857,18 @@ ITL_DEF void itl_wait_for_input(void)
     if (record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown &&
         _kbhit() != 0)
     {
-      return;
+      return 1;
     }
     if (ReadConsoleInput(handle, &record, 1, &count) && count > 0 &&
         record.EventType == WINDOW_BUFFER_SIZE_EVENT)
     {
       itl_g_tty_changed_size = 1;
-      return;
+      return 1;
     }
   }
 }
+
+ITL_DEF void itl_wait_for_input(void) { (void) itl_wait_for_input_until(-1); }
 #endif /* !ITL_INJECT_KLEE */
 #endif /* ITL_WIN32 */
 
@@ -6149,6 +6231,15 @@ TL_DEF void tl_set_ghost_validate_callback(tl_ghost_validate_fn callback)
 TL_DEF void tl_set_wake_callback(tl_wake_fn callback)
 {
   itl_g_wake_callback = callback;
+}
+
+TL_DEF void tl_set_idle_callback(tl_idle_fn callback, int delay_ms,
+                                 int repeat_ms)
+{
+  itl_g_idle_callback = callback;
+  itl_g_idle_delay_ms = delay_ms > 0 ? delay_ms : 0;
+  itl_g_idle_repeat_ms = repeat_ms > 0 ? repeat_ms : 1;
+  itl_g_idle_due_ms = 0;
 }
 
 TL_DEF void tl_set_highlight_follows_cursor(int follows_cursor)
@@ -7894,6 +7985,131 @@ ITL_DEF bool itl_refresh_after_wake(itl_le_t *le)
   itl_g_tty_should_refresh_text = true;
   itl_le_tty_refresh(le);
   return true;
+}
+
+/* A handled key starts a new pause, so the idle hook is due a whole delay from
+   now. */
+ITL_DEF void itl_idle_arm(void)
+{
+  itl_g_idle_due_ms = itl_g_idle_callback == NULL
+                          ? 0
+                          : itl_monotonic_ms() + (uint64_t) itl_g_idle_delay_ms;
+}
+
+/* The wait the input loop may spend before the idle hook is due, or -1 when no
+   call is due. */
+ITL_DEF int itl_idle_wait_ms(void)
+{
+  uint64_t now_ms;
+
+  if (itl_g_idle_due_ms == 0 || itl_g_idle_callback == NULL) {
+    return -1;
+  }
+
+  now_ms = itl_monotonic_ms();
+  if (now_ms >= itl_g_idle_due_ms) {
+    return 0;
+  }
+  if (itl_g_idle_due_ms - now_ms > (uint64_t) INT_MAX) {
+    return INT_MAX;
+  }
+  return (int) (itl_g_idle_due_ms - now_ms);
+}
+
+/* Call the idle hook once for the line as it stands. A refresh that asks only
+   for the caret composes the hint again and turns into a text refresh only when
+   the row changed, so an unchanged hint redraws nothing. */
+ITL_DEF void itl_idle_run(itl_le_t *le)
+{
+  bool was_serialized = itl_g_serialized_line_ready;
+  bool was_text_refresh = itl_g_tty_should_refresh_text;
+  int outcome;
+
+  itl_g_idle_due_ms = 0;
+  if (itl_g_idle_callback == NULL || !itl_le_serialize_line(le)) {
+    itl_g_serialized_line_ready = was_serialized;
+    return;
+  }
+
+  outcome = itl_g_idle_callback(itl_g_serialized_line,
+                                itl_le_cursor_byte_offset(le));
+  itl_g_serialized_line_ready = was_serialized;
+
+  if ((outcome & TL_IDLE_AGAIN) != 0) {
+    itl_g_idle_due_ms = itl_monotonic_ms() + (uint64_t) itl_g_idle_repeat_ms;
+  }
+  if ((outcome & TL_IDLE_REFRESH) != 0) {
+    itl_g_tty_should_refresh_text = false;
+    itl_le_tty_refresh(le);
+    itl_g_tty_should_refresh_text = was_text_refresh;
+  }
+}
+
+/* Wait until a key is pending, redrawing for a resize or a wake report and
+   calling the idle hook when a pause reaches its delay. Returns false on an
+   error. */
+ITL_DEF bool itl_le_wait_for_key(itl_le_t *le)
+{
+#if defined ITL_POSIX && !defined ITL_INJECT_KLEE
+  for (;;) {
+    sigset_t previous_signals;
+    bool is_idle_due = false;
+
+    if (!itl_block_input_wake_signals(&previous_signals)) {
+      return false;
+    }
+
+    for (;;) {
+      int wait_result;
+
+      if (itl_g_tty_changed_size) {
+        itl_g_tty_should_refresh_text = true;
+        itl_le_tty_refresh(le);
+      }
+      itl_refresh_after_wake(le);
+      if (itl_input_is_pending()) {
+        break;
+      }
+      wait_result =
+          itl_wait_for_input_until(&previous_signals, itl_idle_wait_ms());
+      if (wait_result < 0) {
+        itl_restore_input_wake_signals(&previous_signals);
+        return false;
+      }
+      if (wait_result == 0) {
+        is_idle_due = true;
+        break;
+      }
+    }
+
+    if (!itl_restore_input_wake_signals(&previous_signals)) {
+      return false;
+    }
+    if (!is_idle_due) {
+      return true;
+    }
+    itl_idle_run(le);
+  }
+#elif defined ITL_WIN32 && !defined ITL_INJECT_KLEE
+  /* The console raises no resize signal, so the wait blocks on the input
+     handle and polls the size on its timeout, redrawing live when it
+     changes, the same shape as the POSIX branch above. */
+  for (;;) {
+    if (itl_g_tty_changed_size) {
+      itl_g_tty_should_refresh_text = true;
+      itl_le_tty_refresh(le);
+    }
+    if (itl_input_is_pending()) {
+      return true;
+    }
+    if (itl_wait_for_input_until(itl_idle_wait_ms()) == 0) {
+      itl_idle_run(le);
+    }
+  }
+#else
+  (void) le;
+  return true;
+#endif /* ITL_POSIX && !ITL_INJECT_KLEE */
 }
 
 /* Refills the menu candidates for the line as it stands now, returning false
@@ -12189,48 +12405,10 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
   itl_le_tty_refresh(le);
 
   while (true) {
-#if defined ITL_POSIX && !defined ITL_INJECT_KLEE
-    {
-      sigset_t previous_signals;
-
-      if (!itl_block_input_wake_signals(&previous_signals)) {
-        return TL_ERROR;
-      }
-
-      for (;;) {
-        if (itl_g_tty_changed_size) {
-          itl_g_tty_should_refresh_text = true;
-          itl_le_tty_refresh(le);
-        }
-        itl_refresh_after_wake(le);
-        if (itl_input_is_pending()) {
-          break;
-        }
-        if (!itl_wait_for_input(&previous_signals)) {
-          itl_restore_input_wake_signals(&previous_signals);
-          return TL_ERROR;
-        }
-      }
-
-      if (!itl_restore_input_wake_signals(&previous_signals)) {
-        return TL_ERROR;
-      }
+    itl_idle_arm();
+    if (!itl_le_wait_for_key(le)) {
+      return TL_ERROR;
     }
-#elif defined ITL_WIN32 && !defined ITL_INJECT_KLEE
-    /* The console raises no resize signal, so the wait blocks on the input
-       handle and polls the size on its timeout, redrawing live when it
-       changes, the same shape as the POSIX branch above. */
-    for (;;) {
-      if (itl_g_tty_changed_size) {
-        itl_g_tty_should_refresh_text = true;
-        itl_le_tty_refresh(le);
-      }
-      if (itl_input_is_pending()) {
-        break;
-      }
-      itl_wait_for_input();
-    }
-#endif /* ITL_POSIX && !ITL_INJECT_KLEE */
 
     ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
 

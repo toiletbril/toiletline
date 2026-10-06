@@ -3248,6 +3248,89 @@ cleanup:
   itl_g_tty_changed_size = 1;
   return result;
 }
+
+static int test_idle_wait_call_count = 0;
+static int test_idle_wait_writer = -1;
+
+static int
+test_idle_wait_callback(const char *buffer, size_t cursor)
+{
+  (void) buffer;
+  (void) cursor;
+  test_idle_wait_call_count += 1;
+  if (test_idle_wait_call_count == 1) {
+    return TL_IDLE_AGAIN;
+  }
+  if (write(test_idle_wait_writer, "k", 1) != 1) {
+    return 0;
+  }
+  return 0;
+}
+
+static bool
+test_idle_hook_runs_in_the_input_wait(void)
+{
+  int           pipe_descriptors[2] = {-1, -1};
+  int           saved_stdin = -1;
+  int           timeout_result = -1;
+  int           pending_result = -1;
+  bool          did_return = false;
+  bool          result = false;
+  uint64_t      started_ms;
+  uint64_t      waited_ms = 0;
+  uint8_t       byte = 0;
+  char          out_buffer[BUFFER_SIZE];
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  sigset_t      wait_mask;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+  saved_stdin = dup(STDIN_FILENO);
+  if (saved_stdin < 0 || dup2(pipe_descriptors[0], STDIN_FILENO) < 0)
+    goto cleanup;
+
+  if (sigprocmask(SIG_SETMASK, NULL, &wait_mask) != 0) goto cleanup;
+  timeout_result = itl_wait_for_input_until(&wait_mask, 10);
+  if (write(pipe_descriptors[1], "x", 1) != 1) goto cleanup;
+  pending_result = itl_wait_for_input_until(&wait_mask, 1000);
+  if (read(STDIN_FILENO, &byte, 1) != 1) goto cleanup;
+
+  itl_g_tty_changed_size = 0;
+  test_idle_wait_call_count = 0;
+  test_idle_wait_writer = pipe_descriptors[1];
+  tl_set_idle_callback(test_idle_wait_callback, 30, 10);
+  itl_idle_arm();
+  started_ms = itl_monotonic_ms();
+  did_return = itl_le_wait_for_key(&le);
+  waited_ms = itl_monotonic_ms() - started_ms;
+
+  result = timeout_result == 0 && pending_result == 1 && did_return &&
+           test_idle_wait_call_count == 2 && waited_ms >= 40 &&
+           itl_input_is_pending() && read(STDIN_FILENO, &byte, 1) == 1 &&
+           byte == 'k';
+
+cleanup:
+  tl_set_idle_callback(NULL, 0, 0);
+  test_idle_wait_writer = -1;
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+  ITL_STRING_FREE(line);
+  itl_g_tty_changed_size = 1;
+
+  if (!result) {
+    TEST_PRINTF("timeout %d, pending %d, returned %d, calls %d, waited %llu "
+                "ms\n",
+                timeout_result, pending_result, (int) did_return,
+                test_idle_wait_call_count, (unsigned long long) waited_ms);
+  }
+
+  return result;
+}
 #endif
 
 static int
@@ -4977,6 +5060,100 @@ test_hint_row_keeps_multiline_rows_and_append_path(void)
   return ok;
 }
 
+static int         test_idle_outcome = 0;
+static int         test_idle_call_count = 0;
+static char        test_idle_line[BUFFER_SIZE];
+static size_t      test_idle_cursor = 0;
+static const char *test_idle_next_hint = NULL;
+
+static int
+test_idle_callback(const char *buffer, size_t cursor)
+{
+  test_idle_call_count += 1;
+  snprintf(test_idle_line, sizeof(test_idle_line), "%s", buffer);
+  test_idle_cursor = cursor;
+  if (test_idle_next_hint != NULL) {
+    test_hint_text = test_idle_next_hint;
+  }
+  return test_idle_outcome;
+}
+
+static bool
+test_idle_hook_refreshes_the_hint_row(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool is_due_at_once;
+  bool did_receive_line;
+  bool was_new_hint_drawn;
+  bool is_settled_after_refresh;
+  bool is_unchanged_row_quiet;
+  bool is_repeat_due;
+  bool is_plain_answer_silent;
+  bool ok;
+  int  repeat_wait_ms;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer),
+                          "hint before");
+  test_frame_capture_refresh(&le);
+
+  test_idle_call_count = 0;
+  test_idle_line[0] = '\0';
+  tl_set_idle_callback(test_idle_callback, 0, 50);
+  itl_idle_arm();
+  is_due_at_once = itl_idle_wait_ms() == 0;
+
+  test_idle_outcome = TL_IDLE_REFRESH;
+  test_idle_next_hint = "hint after";
+  test_frame_capture_size = 0;
+  itl_idle_run(&le);
+  did_receive_line = test_idle_call_count == 1 &&
+                     strcmp(test_idle_line, "ec") == 0 && test_idle_cursor == 2;
+  was_new_hint_drawn = test_frame_capture_has("hint after") &&
+                       !test_frame_capture_has("hint before");
+  is_settled_after_refresh = itl_idle_wait_ms() == -1;
+
+  test_frame_capture_size = 0;
+  itl_idle_run(&le);
+  is_unchanged_row_quiet = !test_frame_capture_has("hint after");
+
+  test_idle_outcome = TL_IDLE_AGAIN;
+  test_frame_capture_size = 0;
+  itl_idle_run(&le);
+  repeat_wait_ms = itl_idle_wait_ms();
+  is_repeat_due = repeat_wait_ms >= 0 && repeat_wait_ms <= 50;
+
+  test_idle_outcome = 0;
+  test_idle_next_hint = "hint ignored";
+  test_frame_capture_size = 0;
+  itl_idle_run(&le);
+  is_plain_answer_silent = test_frame_capture_size == 0 &&
+                           itl_idle_wait_ms() == -1 &&
+                           test_idle_call_count == 4;
+
+  tl_set_idle_callback(NULL, 0, 0);
+  test_idle_next_hint = NULL;
+  test_hint_finish_frame(line);
+
+  ok = is_due_at_once && did_receive_line && was_new_hint_drawn &&
+       is_settled_after_refresh && is_unchanged_row_quiet && is_repeat_due &&
+       is_plain_answer_silent;
+
+  if (!ok) {
+    TEST_PRINTF("due %d, line %d '%s' %zu, drawn %d, settled %d, quiet %d, "
+                "repeat %d (%d ms), silent %d\n",
+                (int) is_due_at_once, (int) did_receive_line, test_idle_line,
+                test_idle_cursor, (int) was_new_hint_drawn,
+                (int) is_settled_after_refresh, (int) is_unchanged_row_quiet,
+                (int) is_repeat_due, repeat_wait_ms,
+                (int) is_plain_answer_silent);
+  }
+
+  return ok;
+}
+
 static bool
 test_auto_pair_line_is(itl_le_t *le, const char *expected, size_t caret)
 {
@@ -5515,6 +5692,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_pending_resize_wakes_input_wait),
                                    DEFINE_TEST_CASE(
+                                       test_idle_hook_runs_in_the_input_wait),
+                                   DEFINE_TEST_CASE(
                                        test_write_all_resumes_a_partial_write),
 #endif
                                    DEFINE_TEST_CASE(
@@ -5580,6 +5759,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_hint_row_follows_the_caret_and_clears),
                                    DEFINE_TEST_CASE(
                                        test_hint_row_keeps_multiline_rows_and_append_path),
+                                   DEFINE_TEST_CASE(
+                                       test_idle_hook_refreshes_the_hint_row),
                                    DEFINE_TEST_CASE(
                                        test_highlight_follows_the_caret),
                                    DEFINE_TEST_CASE(
