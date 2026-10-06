@@ -1455,6 +1455,38 @@ ITL_DEF size_t itl_char_width(itl_utf8_t ch)
   return 1;
 }
 
+/* A C0 control, DEL, or a C1 control never reaches the terminal raw from
+   edited or offered text, since a file name or a description could otherwise
+   move the cursor or set the title. It draws as caret notation, such as ^[ for
+   ESC and ^? for DEL, or as \x9b for a C1 control. */
+ITL_DEF bool itl_char_has_visible_notation(itl_utf8_t ch)
+{
+  if (ch.size == 1) {
+    return ch.bytes[0] < 0x20 || ch.bytes[0] == 0x7F;
+  }
+
+  return ch.size == 2 && ch.bytes[0] == 0xC2 && ch.bytes[1] < 0xA0;
+}
+
+#define ITL_CARET_NOTATION_WIDTH 2
+#define ITL_HEX_NOTATION_WIDTH   4
+
+/* The columns a character of the edited line takes as drawn. A tab is drawn
+   raw as one column and a newline is handled by the renderer, so only the
+   other controls take their notation width. */
+ITL_DEF size_t itl_char_line_width(itl_utf8_t ch)
+{
+  if (ch.size == 1 && (ch.bytes[0] == 0x09 || ch.bytes[0] == 0x0A)) {
+    return itl_char_width(ch);
+  }
+
+  if (itl_char_has_visible_notation(ch)) {
+    return ch.size == 1 ? ITL_CARET_NOTATION_WIDTH : ITL_HEX_NOTATION_WIDTH;
+  }
+
+  return itl_char_width(ch);
+}
+
 /* The walker consumes at most byte_length bytes and stops at a null byte. */
 ITL_DEF size_t itl_strn_width_walk(const char *cstr, size_t byte_length,
                                    size_t stop_after, size_t *out_offset)
@@ -3276,6 +3308,145 @@ ITL_DEF void itl_char_buf_append_spaces(itl_char_buf_t *cb, size_t count)
   cb->size += count;
 }
 
+/* Append the visible notation of a control byte or codepoint: caret notation
+   below 0x80 and a hex escape at or above it, which also stands for a byte
+   that starts no valid UTF-8 sequence. */
+ITL_DEF void itl_char_buf_append_notation(itl_char_buf_t *cb, uint32_t value)
+{
+  static const char hex_digits[] = "0123456789abcdef";
+
+  if (value < 0x80) {
+    itl_char_buf_append_byte(cb, '^');
+    itl_char_buf_append_byte(cb, (uint8_t) (value ^ 0x40));
+    return;
+  }
+
+  itl_char_buf_append_byte(cb, '\\');
+  itl_char_buf_append_byte(cb, 'x');
+  itl_char_buf_append_byte(cb, (uint8_t) hex_digits[(value >> 4) & 0x0F]);
+  itl_char_buf_append_byte(cb, (uint8_t) hex_digits[value & 0x0F]);
+}
+
+/* Append one character of the edited line as itl_char_line_width counts it. */
+ITL_DEF void itl_char_buf_append_line_char(itl_char_buf_t *cb, itl_utf8_t ch)
+{
+  bool is_raw_layout = ch.size == 1 &&
+                       (ch.bytes[0] == 0x09 || ch.bytes[0] == 0x0A);
+
+  if (!is_raw_layout && itl_char_has_visible_notation(ch)) {
+    itl_char_buf_append_notation(cb, itl_utf8_codepoint(ch));
+    return;
+  }
+
+  itl_char_buf_append_bytes(cb, (const char *) ch.bytes, ch.size);
+}
+
+/* Report the byte length and the drawn column width of the codepoint that
+   starts the text. A byte that begins no valid sequence is one byte drawn as
+   a hex escape, and a control draws in its notation, so every byte belongs to
+   exactly one step and none reaches the terminal raw. The host counts its
+   spans over the same raw bytes. */
+ITL_DEF void itl_visible_step(const char *text, size_t byte_length,
+                              size_t *out_bytes, size_t *out_width)
+{
+  uint8_t rune_width = itl_utf8_width((uint8_t) text[0]);
+  itl_utf8_t ch;
+  uint8_t j;
+
+  *out_bytes = 1;
+  *out_width = ITL_HEX_NOTATION_WIDTH;
+
+  if (rune_width == 0 || rune_width > sizeof ch.bytes ||
+      (size_t) rune_width > byte_length)
+  {
+    return;
+  }
+
+  for (j = 1; j < rune_width; ++j) {
+    if (((uint8_t) text[j] & 0xC0) != 0x80) break;
+  }
+
+  if (j != rune_width) {
+    return;
+  }
+
+  for (j = 0; j < rune_width; ++j) {
+    ch.bytes[j] = (uint8_t) text[j];
+  }
+  ch.size = rune_width;
+
+  *out_bytes = rune_width;
+  if (itl_char_has_visible_notation(ch)) {
+    *out_width =
+        rune_width == 1 ? ITL_CARET_NOTATION_WIDTH : ITL_HEX_NOTATION_WIDTH;
+  } else {
+    *out_width = itl_char_width(ch);
+  }
+}
+
+/* Append one step of text that itl_visible_step measured. */
+ITL_DEF void itl_char_buf_append_visible_step(itl_char_buf_t *cb,
+                                              const char *text,
+                                              size_t step_bytes)
+{
+  uint8_t first = (uint8_t) text[0];
+
+  if (step_bytes == 1 && (first < 0x20 || first >= 0x7F)) {
+    itl_char_buf_append_notation(cb, first);
+    return;
+  }
+
+  if (step_bytes == 2 && first == 0xC2 && (uint8_t) text[1] < 0xA0) {
+    itl_char_buf_append_notation(cb, (uint8_t) text[1]);
+    return;
+  }
+
+  itl_char_buf_append_bytes(cb, text, step_bytes);
+}
+
+/* The drawn width of the first length bytes of text. */
+ITL_DEF size_t itl_visible_width(const char *text, size_t length)
+{
+  size_t offset = 0;
+  size_t width = 0;
+
+  while (offset < length) {
+    size_t step_bytes = 0;
+    size_t step_width = 0;
+
+    itl_visible_step(text + offset, length - offset, &step_bytes, &step_width);
+    offset += step_bytes;
+    width += step_width;
+  }
+
+  return width;
+}
+
+/* Append the leading part of the first length bytes of text that fits in
+   width columns and return the columns drawn. */
+ITL_DEF size_t itl_char_buf_append_visible(itl_char_buf_t *cb,
+                                           const char *text, size_t length,
+                                           size_t width)
+{
+  size_t offset = 0;
+  size_t drawn = 0;
+
+  while (offset < length) {
+    size_t step_bytes = 0;
+    size_t step_width = 0;
+
+    itl_visible_step(text + offset, length - offset, &step_bytes, &step_width);
+    if (step_width > 0 && drawn + step_width > width) {
+      break;
+    }
+    itl_char_buf_append_visible_step(cb, text + offset, step_bytes);
+    offset += step_bytes;
+    drawn += step_width;
+  }
+
+  return drawn;
+}
+
 /* Appends a string with each newline written as backslash n and each backslash
    doubled, so a multiline entry survives the newline-delimited history file. */
 ITL_DEF void itl_char_buf_append_string_escaped(itl_char_buf_t *cb,
@@ -4198,6 +4369,10 @@ ITL_DEF int itl_esc_parse_ctrl_x(void)
   case 21: return TL_KEY_UNDO;         /* ctrl u */
   }
 
+  /* The chord is not bound, so the byte starts the next key and an arrow after
+     ctrl x still moves rather than inserting the tail of its sequence. */
+  itl_g_pushback_byte = byte;
+
   return TL_KEY_UNKN;
 }
 
@@ -5037,7 +5212,7 @@ ITL_DEF void itl_wrap_walk_range(const itl_string_t *line, size_t from,
       continue;
     }
 
-    char_width = itl_char_width(line->chars[i]);
+    char_width = itl_char_line_width(line->chars[i]);
 
     if (itl_wrap_is_early_break(*col, char_width, cols)) {
       *row += 1;
@@ -5161,7 +5336,7 @@ ITL_DEF size_t itl_le_reflow_rows_above_caret(const itl_le_t *le,
       continue;
     }
 
-    char_width = itl_char_width(le->line->chars[i]);
+    char_width = itl_char_line_width(le->line->chars[i]);
 
     if (itl_wrap_is_early_break(col, char_width, ocols)) {
       rows_above += itl_reflow_row_count(col, ncols);
@@ -5217,7 +5392,7 @@ ITL_DEF size_t itl_le_index_at_visual(const itl_le_t *le, size_t tty_cols,
       row += 1;
       col = indent;
     } else {
-      size_t char_width = itl_char_width(le->line->chars[i]);
+      size_t char_width = itl_char_line_width(le->line->chars[i]);
 
       if (itl_wrap_is_early_break(col, char_width, cols)) {
         row += 1;
@@ -5350,7 +5525,8 @@ ITL_DEF bool itl_le_tty_draw_ghost(itl_char_buf_t *b, bool is_cursor_at_end,
   }
 
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_DIM_SGR));
-  itl_char_buf_append_cstr(b, itl_g_ghost);
+  itl_char_buf_append_visible(b, itl_g_ghost, itl_g_ghost_len,
+                              itl_g_ghost_width);
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
   ITL_TTY_CLEAR_TO_END(b);
   itl_g_le_prev_ghost_len = itl_g_ghost_len;
@@ -5391,12 +5567,26 @@ ITL_DEF void itl_hint_compose(const char *line, size_t cursor_byte, size_t cols)
     return;
   }
 
-  memcpy(text, returned, text_bytes);
-  text[text_bytes] = '\0';
-  for (i = 0; i < text_bytes; ++i) {
-    if ((unsigned char) text[i] < 0x20 || text[i] == 0x7f) {
-      text[i] = ' ';
+  {
+    size_t kept_bytes = 0;
+
+    for (i = 0; i < text_bytes; ++i) {
+      uint8_t byte = (uint8_t) returned[i];
+      bool is_c1 = byte == 0xC2 && i + 1 < text_bytes &&
+                   (uint8_t) returned[i + 1] >= 0x80 &&
+                   (uint8_t) returned[i + 1] < 0xA0;
+
+      if (is_c1) {
+        i += 1;
+      }
+      if (is_c1 || byte < 0x20 || byte == 0x7F) {
+        text[kept_bytes++] = ' ';
+      } else {
+        text[kept_bytes++] = (char) byte;
+      }
     }
+    text_bytes = kept_bytes;
+    text[text_bytes] = '\0';
   }
 
   width = itl_cstr_display_width(text);
@@ -5700,11 +5890,15 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
                itl_g_le_prev_render_len) == 0)
     {
       itl_char_buf_t *fb = &itl_g_char_buffer;
+      size_t tail_index;
       if (append_tail_sgr != NULL) {
         itl_char_buf_append_cstr(fb, append_tail_sgr);
       }
-      itl_char_buf_append_bytes(fb, itl_cur_render + itl_g_le_prev_render_len,
-                                cur_len - itl_g_le_prev_render_len);
+      for (tail_index = itl_g_le_prev_length; tail_index < le->line->length;
+           ++tail_index)
+      {
+        itl_char_buf_append_line_char(fb, le->line->chars[tail_index]);
+      }
       if (append_tail_sgr != NULL) {
         itl_char_buf_append_cstr(fb, ITL_HIGHLIGHT_RESET);
       }
@@ -5870,14 +6064,14 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
       }
 
       {
-        size_t char_width = itl_char_width(ch);
+        size_t char_width = itl_char_line_width(ch);
 
         if (itl_wrap_is_early_break(col, char_width, cols)) {
           col = itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent,
                                      &row);
         }
 
-        itl_char_buf_append_bytes(b, (const char *) ch.bytes, ch.size);
+        itl_char_buf_append_line_char(b, ch);
         col += char_width;
 
         if (itl_wrap_is_break_after(col, cols)) {
@@ -6257,12 +6451,48 @@ TL_DEF void tl_set_hint_callback(tl_hint_fn callback)
   itl_g_hint_callback = callback;
 }
 
+/* Whether every control in the text opens an SGR sequence, ESC [ parameters m.
+   Any other control, such as a tab, a carriage return, a cursor movement, or a
+   C1 control, moves the cursor by an amount the width walker cannot know. */
+ITL_DEF bool itl_text_has_only_sgr_controls(const char *text)
+{
+  const uint8_t *p = (const uint8_t *) text;
+
+  while (*p != '\0') {
+    if (*p == 0x1B) {
+      if (p[1] != '[') {
+        return false;
+      }
+      p += 2;
+      while (*p >= 0x30 && *p <= 0x3F) {
+        p += 1;
+      }
+      if (*p != 'm') {
+        return false;
+      }
+      p += 1;
+      continue;
+    }
+
+    if (*p < 0x20 || *p == 0x7F) {
+      return false;
+    }
+    if (p[0] == 0xC2 && p[1] >= 0x80 && p[1] < 0xA0) {
+      return false;
+    }
+
+    p += 1;
+  }
+
+  return true;
+}
+
 TL_DEF void tl_set_right_prompt(const char *right_prompt)
 {
   itl_g_right_prompt = right_prompt;
   itl_g_right_prompt_width = 0;
 
-  if (right_prompt != NULL && strchr(right_prompt, '\n') == NULL) {
+  if (right_prompt != NULL && itl_text_has_only_sgr_controls(right_prompt)) {
     itl_g_right_prompt_width = itl_cstr_display_width(right_prompt);
   }
 }
@@ -6876,7 +7106,7 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
           itl_g_ghost_should_replace_line =
               memcmp(itl_g_ghost_sticky_target, line_cstr, line_byte_len) != 0;
 
-          itl_g_ghost_width = itl_cstr_display_width(itl_g_ghost);
+          itl_g_ghost_width = itl_visible_width(itl_g_ghost, itl_g_ghost_len);
           return;
         }
       }
@@ -6905,7 +7135,7 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
       }
     }
   }
-  itl_g_ghost_width = itl_cstr_display_width(itl_g_ghost);
+  itl_g_ghost_width = itl_visible_width(itl_g_ghost, itl_g_ghost_len);
 
   /* A source that produced a suggestion records the whole line-plus-ghost as
      the sticky target, so the next keystroke keeps it while the input stays a
@@ -6934,7 +7164,7 @@ ITL_DEF size_t itl_menu_description_width(const tl_completion *result)
 
   for (i = 0; i < result->count; ++i) {
     const char *desc = result->descriptions[i];
-    size_t width = desc != NULL ? itl_cstr_display_width(desc) : 0;
+    size_t width = desc != NULL ? itl_visible_width(desc, strlen(desc)) : 0;
 
     if (width > widest) {
       widest = width;
@@ -6974,7 +7204,8 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result,
   }
 
   for (i = 0; i < result->count; ++i) {
-    size_t len = strlen(result->candidates[i]);
+    const char *name = result->candidates[i];
+    size_t len = itl_visible_width(name, strlen(name));
     if (len > longest) {
       longest = len;
     }
@@ -7011,10 +7242,10 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result,
     for (i = 0; i < result->count; ++i) {
       const char *name = result->candidates[i];
       const char *desc = result->descriptions[i];
-      size_t len = strlen(name);
+      size_t len;
       size_t pad;
       itl_char_buf_append_spaces(b, anchor);
-      itl_char_buf_append_cstr(b, name);
+      len = itl_char_buf_append_visible(b, name, strlen(name), (size_t) -1);
       if (desc != NULL && desc[0] != '\0') {
         size_t line_len = 0;
         const char *p = desc;
@@ -7047,8 +7278,8 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result,
             itl_char_buf_append_byte(b, ' ');
             line_len += 1;
           }
-          itl_char_buf_append_bytes(b, word, word_len);
-          line_len += word_len;
+          line_len += itl_char_buf_append_visible(b, word, word_len,
+                                                  (size_t) -1);
         }
         itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
       }
@@ -7058,13 +7289,13 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result,
     column = 0;
     for (i = 0; i < result->count; ++i) {
       const char *name = result->candidates[i];
-      size_t len = strlen(name);
+      size_t len;
       size_t pad;
 
       if (column == 0) {
         itl_char_buf_append_spaces(b, anchor);
       }
-      itl_char_buf_append_cstr(b, name);
+      len = itl_char_buf_append_visible(b, name, strlen(name), (size_t) -1);
       column += 1;
       if (column >= columns || i + 1 == result->count) {
         itl_char_buf_append_cstr(b, ITL_LF);
@@ -7257,11 +7488,25 @@ ITL_DEF size_t itl_menu_window_start(size_t count, size_t selected,
 ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
                                     size_t width, bool should_pad)
 {
+  size_t text_bytes = strlen(text);
   size_t offset = 0;
-  size_t drawn = itl_cstr_width_walk(text, width, &offset);
+  size_t drawn = 0;
 
-  itl_char_buf_reserve(b, b->size + offset + width);
-  itl_char_buf_append_bytes(b, text, offset);
+  itl_char_buf_reserve(b, b->size + text_bytes + width);
+
+  while (offset < text_bytes) {
+    size_t step_bytes = 0;
+    size_t step_width = 0;
+
+    itl_visible_step(text + offset, text_bytes - offset, &step_bytes,
+                     &step_width);
+    if (step_width > 0 && drawn >= width) {
+      break;
+    }
+    itl_char_buf_append_visible_step(b, text + offset, step_bytes);
+    offset += step_bytes;
+    drawn += step_width;
+  }
 
   if (!should_pad) {
     return drawn;
@@ -7303,44 +7548,6 @@ ITL_DEF const char *itl_menu_display_name(const char *name, char *storage,
   memcpy(storage, name, prefix_length);
   memcpy(storage + prefix_length, "...", 4);
   return storage;
-}
-
-/* Report the byte length and the column width of the codepoint that starts the
-   text. A byte that begins no valid sequence counts as one byte of one column,
-   the way the width walker counts it. The host counts its spans over the same
-   raw bytes. Every byte belongs to exactly one step, and an escape byte is a
-   codepoint of its own here. */
-ITL_DEF void itl_menu_step_codepoint(const char *text, size_t byte_length,
-                                     size_t *out_bytes, size_t *out_width)
-{
-  uint8_t rune_width = itl_utf8_width((uint8_t) text[0]);
-  itl_utf8_t ch;
-  uint8_t j;
-
-  *out_bytes = 1;
-  *out_width = 1;
-
-  if (rune_width == 0 || rune_width > sizeof ch.bytes ||
-      (size_t) rune_width > byte_length) {
-    return;
-  }
-
-  for (j = 1; j < rune_width; ++j) {
-    if (((uint8_t) text[j] & 0xC0) != 0x80) break;
-  }
-
-  if (j != rune_width) {
-    return;
-  }
-
-  ch.bytes[0] = (uint8_t) text[0];
-  if (rune_width > 1) ch.bytes[1] = (uint8_t) text[1];
-  if (rune_width > 2) ch.bytes[2] = (uint8_t) text[2];
-  if (rune_width > 3) ch.bytes[3] = (uint8_t) text[3];
-  ch.size = rune_width;
-
-  *out_bytes = rune_width;
-  *out_width = itl_char_width(ch);
 }
 
 /* Draw a cell whose text carries the colors the host chose for it. The spans
@@ -7387,14 +7594,14 @@ ITL_DEF void itl_menu_append_colored_cell(itl_char_buf_t *b, const char *text,
       open_span = active;
     }
 
-    itl_menu_step_codepoint(text + byte_offset, text_bytes - byte_offset,
-                            &step_bytes, &step_width);
+    itl_visible_step(text + byte_offset, text_bytes - byte_offset, &step_bytes,
+                     &step_width);
 
     if (step_width > 0 && drawn + step_width > width) {
       break;
     }
 
-    itl_char_buf_append_bytes(b, text + byte_offset, step_bytes);
+    itl_char_buf_append_visible_step(b, text + byte_offset, step_bytes);
 
     byte_offset += step_bytes;
     codepoint_index += 1;
@@ -7520,26 +7727,6 @@ ITL_DEF void itl_menu_move_to_anchor(itl_char_buf_t *b, size_t anchor)
   }
 }
 
-/* The display width of the first length bytes of text, counted the way the
-   width walker counts them. */
-ITL_DEF size_t itl_menu_span_width(const char *text, size_t length)
-{
-  size_t offset = 0;
-  size_t width = 0;
-
-  while (offset < length) {
-    size_t step_bytes = 0;
-    size_t step_width = 0;
-
-    itl_menu_step_codepoint(text + offset, length - offset, &step_bytes,
-                            &step_width);
-    offset += step_bytes;
-    width += step_width;
-  }
-
-  return width;
-}
-
 /* Append the leading part of text that fits in width columns, ending in an
    ellipsis when something was cut. */
 ITL_DEF void itl_menu_append_elided(itl_char_buf_t *b, const char *text,
@@ -7553,12 +7740,11 @@ ITL_DEF void itl_menu_append_elided(itl_char_buf_t *b, const char *text,
     size_t step_bytes = 0;
     size_t step_width = 0;
 
-    itl_menu_step_codepoint(text + offset, length - offset, &step_bytes,
-                            &step_width);
+    itl_visible_step(text + offset, length - offset, &step_bytes, &step_width);
     if (drawn + step_width > keep) {
       break;
     }
-    itl_char_buf_append_bytes(b, text + offset, step_bytes);
+    itl_char_buf_append_visible_step(b, text + offset, step_bytes);
     offset += step_bytes;
     drawn += step_width;
   }
@@ -7584,6 +7770,7 @@ ITL_DEF size_t itl_menu_layout_help(itl_char_buf_t *b, const char *title,
   size_t rows = 0;
   size_t used = 0;
   size_t part;
+  bool is_full = false;
 
   parts[0] = title;
   parts[1] = keys;
@@ -7592,7 +7779,7 @@ ITL_DEF size_t itl_menu_layout_help(itl_char_buf_t *b, const char *title,
     return 0;
   }
 
-  for (part = 0; part < part_count; ++part) {
+  for (part = 0; part < part_count && !is_full; ++part) {
     const char *item = parts[part];
 
     while (*item != '\0') {
@@ -7600,23 +7787,21 @@ ITL_DEF size_t itl_menu_layout_help(itl_char_buf_t *b, const char *title,
       size_t length = separator != NULL ? (size_t) (separator - item)
                                         : strlen(item);
       bool has_next = separator != NULL || part + 1 < part_count;
-      size_t item_width = itl_menu_span_width(item, length) + (has_next ? 1 : 0);
+      size_t item_width = itl_visible_width(item, length) + (has_next ? 1 : 0);
       bool is_row_open = rows > 0 && used > 0;
       size_t cut;
 
       if (is_row_open && used + 1 + item_width > width) {
         is_row_open = false;
-        if (rows >= max_rows) {
-          break;
-        }
-        if (b != NULL) {
-          itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
-        }
       }
 
       if (!is_row_open) {
         if (rows >= max_rows) {
+          is_full = true;
           break;
+        }
+        if (b != NULL && rows > 0) {
+          itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
         }
         if (b != NULL) {
           if (rows > 0) {
@@ -7641,7 +7826,7 @@ ITL_DEF size_t itl_menu_layout_help(itl_char_buf_t *b, const char *title,
         if (item_width > width) {
           itl_menu_append_elided(b, item, length, cut);
         } else {
-          itl_char_buf_append_bytes(b, item, length);
+          itl_char_buf_append_visible(b, item, length, width);
           if (has_next) {
             itl_char_buf_append_byte(b, ',');
           }
@@ -7700,7 +7885,7 @@ ITL_DEF size_t itl_menu_name_width(const tl_completion *result)
     const char *name = itl_menu_display_name(result->candidates[i],
                                              display_name_storage,
                                              sizeof(display_name_storage));
-    size_t width = itl_cstr_display_width(name);
+    size_t width = itl_visible_width(name, strlen(name));
 
     if (width > widest) {
       widest = width;
@@ -7773,7 +7958,7 @@ ITL_DEF size_t itl_menu_widest_help_item(const char *title, const char *keys)
       size_t length = separator != NULL ? (size_t) (separator - item)
                                         : strlen(item);
       bool has_next = separator != NULL || part + 1 < part_count;
-      size_t width = itl_menu_span_width(item, length) + (has_next ? 1 : 0);
+      size_t width = itl_visible_width(item, length) + (has_next ? 1 : 0);
 
       if (width > widest) {
         widest = width;
@@ -7805,7 +7990,7 @@ ITL_DEF itl_menu_geometry itl_menu_geometry_of(const tl_completion *result,
                      itl_menu_widest_help_item(help_title, help_keys);
 
   if (result->count == 0) {
-    needed_cols += itl_cstr_display_width(empty_text);
+    needed_cols += itl_visible_width(empty_text, strlen(empty_text));
   } else {
     needed_cols += name_width + ITL_MENU_SELECTED_MARGIN_WIDTH;
     if (widest_desc > 0) {
@@ -8402,7 +8587,7 @@ ITL_DEF void itl_menu_ghost_preview(itl_le_t *le, const tl_completion *result,
   itl_ghost_fill_from_token_text(le, line_cstr, le->line->size,
                                  result->token_start,
                                  name);
-  itl_g_ghost_width = itl_cstr_display_width(itl_g_ghost);
+  itl_g_ghost_width = itl_visible_width(itl_g_ghost, itl_g_ghost_len);
 }
 
 /* Drop every candidate while the menu stays open. A failed gather has already
@@ -9373,12 +9558,13 @@ ITL_DEF size_t itl_le_word_start_from(const itl_string_t *line, size_t i)
 
 /* Swaps the word before the cursor with the word after it and leaves the
    cursor after both, the way readline does. At the end of the line the last
-   two words are swapped. */
+   two words are swapped and trailing blanks stay where they are. */
 ITL_DEF void itl_le_transpose_words(itl_le_t *le)
 {
   itl_string_t *line = le->line;
-  size_t second_end = itl_le_word_end_from(line, le->cursor_position);
-  size_t second_start = itl_le_word_start_from(line, second_end);
+  size_t second_start = itl_le_word_start_from(
+      line, itl_le_word_end_from(line, le->cursor_position));
+  size_t second_end = itl_le_word_end_from(line, second_start);
   size_t first_start = itl_le_word_start_from(line, second_start);
   size_t first_end = itl_le_word_end_from(line, first_start);
   size_t first_length = first_end - first_start;
@@ -9468,9 +9654,19 @@ ITL_DEF bool itl_last_word_span(const char *text, size_t size,
   return has_word;
 }
 
+/* Forget the span the last yank or last-argument insertion put into the line,
+   so no later Alt-Y or Alt-. replaces text it did not insert. */
+ITL_DEF void itl_le_end_insertion_walk(void)
+{
+  itl_g_le_action = ITL_LE_ACTION_NONE;
+  itl_g_le_inserted_start = 0;
+  itl_g_le_inserted_length = 0;
+}
+
 /* Alt-. inserts the last word of the newest history entry. Pressed again right
    away, it replaces that word with the last word of the entry before, and an
-   entry with no word is skipped. Past the oldest entry the line stays. */
+   entry with no word or with a word that is not UTF-8 is skipped. Past the
+   oldest entry the line stays and the walk stays open. */
 ITL_DEF void itl_le_insert_last_argument(itl_le_t *le,
                                          itl_le_action_kind previous_action)
 {
@@ -9480,10 +9676,11 @@ ITL_DEF void itl_le_insert_last_argument(itl_le_t *le,
   size_t word_end = 0;
   size_t distance = 0;
   bool is_repeat = previous_action == ITL_LE_ACTION_LAST_ARGUMENT;
+  bool has_word = false;
   itl_string_t word;
 
-  itl_g_le_action = ITL_LE_ACTION_LAST_ARGUMENT;
   if (is_repeat) {
+    itl_g_le_action = ITL_LE_ACTION_LAST_ARGUMENT;
     distance = itl_g_last_argument_distance + 1;
   }
 
@@ -9492,31 +9689,28 @@ ITL_DEF void itl_le_insert_last_argument(itl_le_t *le,
     return;
   }
 
+  itl_string_init(&word);
   for (; distance < itl_g_history_count; ++distance) {
     size_t offset =
         itl_history_index_to_offset(itl_g_history_count - 1 - distance);
     if (itl_history_decode_entry_buffered(offset, decoded, sizeof(decoded),
                                           &decoded_size) &&
-        itl_last_word_span(decoded, decoded_size, &word_start, &word_end))
+        itl_last_word_span(decoded, decoded_size, &word_start, &word_end) &&
+        itl_string_from_bytes(&word, decoded + word_start,
+                              word_end - word_start))
     {
+      has_word = true;
       break;
     }
   }
 
-  if (distance >= itl_g_history_count) {
-    itl_g_tty_should_refresh_text = false;
-    return;
-  }
-
-  itl_string_init(&word);
-  if (!itl_string_from_bytes(&word, decoded + word_start,
-                             word_end - word_start))
-  {
+  if (!has_word) {
     ITL_FREE(word.chars);
     itl_g_tty_should_refresh_text = false;
     return;
   }
 
+  itl_g_le_action = ITL_LE_ACTION_LAST_ARGUMENT;
   if (!is_repeat) {
     itl_le_begin_edit(le);
     itl_g_le_inserted_start = le->cursor_position;
@@ -10341,7 +10535,7 @@ ITL_DEF int itl_history_search(itl_le_t *le)
       for (pi = 0; pi < preview->length; ++pi) {
         itl_utf8_t pch = preview->chars[pi];
         bool is_newline = ITL_LE_IS_NEWLINE(pch);
-        size_t char_width = is_newline ? 1 : itl_char_width(pch);
+        size_t char_width = is_newline ? 1 : itl_char_line_width(pch);
 
         if (match_width + char_width > budget) {
           break;
@@ -12389,7 +12583,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
   TL_ASSERT(buffer != NULL);
 
   itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
-  itl_g_le_action = ITL_LE_ACTION_NONE;
+  itl_le_end_insertion_walk();
   itl_g_auto_pair_count = 0;
 
   /* A new line starts with no ghost, since the previous line's suggestion does
@@ -12482,6 +12676,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
     if ((input_type & TL_MASK_KEY) == TL_KEY_PASTE_BEGIN) {
       /* A paste replaces the token wholesale, so the stale ghost is dropped. */
       itl_ghost_clear();
+      itl_le_end_insertion_walk();
       itl_le_read_paste(le);
       itl_g_tty_should_refresh_text = true;
     } else if ((itl_g_edit_mode == TL_EDIT_MODE_EMACS ||
@@ -12567,14 +12762,16 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       }
     } else if (itl_le_auto_pair_type(le, input_byte)) {
       is_auto_pair_kept = true;
+      itl_le_end_insertion_walk();
       itl_g_tty_should_refresh_text = true;
       itl_ghost_update(le);
     } else {
       is_auto_pair_kept = true;
+      itl_le_end_insertion_walk();
       itl_utf8_t appended_character = itl_utf8_parse(input_byte);
       itl_g_tty_plain_append_pending =
           le->cursor_position == le->line->length;
-      itl_g_tty_plain_append_width = itl_char_width(appended_character);
+      itl_g_tty_plain_append_width = itl_char_line_width(appended_character);
       itl_le_insert(le, appended_character);
       itl_g_tty_should_refresh_text = true;
       /* Recompute the ghost for the token the new character extended. */

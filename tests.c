@@ -2368,6 +2368,16 @@ test_transpose_characters_and_words(void)
   itl_le_key_handle(&le, TL_KEY_TRANSPOSE | TL_MOD_ALT);
   ok &= test_line_is(line, "  один  ", "alt-t with one word");
 
+  ITL_STRING_FROM_CSTR(line, "a b ");
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE | TL_MOD_ALT);
+  ok &= test_line_is(line, "b a ", "alt-t before trailing blanks");
+  if (le.cursor_position != 3) {
+    TEST_PRINTF("cursor after alt-t before blanks is %zu\n",
+                le.cursor_position);
+    ok = false;
+  }
+
   ITL_STRING_FROM_CSTR(line, "один два");
   le.cursor_position = line->length;
   itl_le_key_handle(&le, TL_KEY_TRANSPOSE | TL_MOD_ALT);
@@ -2504,6 +2514,11 @@ test_editing_key_sequences(void)
   ok &= itl_esc_parse(24) == TL_KEY_UNDO;
   itl_g_pushback_byte = 'q';
   ok &= itl_esc_parse(24) == TL_KEY_UNKN;
+  ok &= itl_g_pushback_byte == 'q';
+  itl_g_pushback_byte = 27;
+  ok &= itl_esc_parse(24) == TL_KEY_UNKN;
+  ok &= itl_g_pushback_byte == 27;
+  itl_g_pushback_byte = -1;
 
   return ok;
 }
@@ -5606,6 +5621,250 @@ test_transient_prompt_redraws_the_submitted_line(void)
 }
 #endif
 
+#define TEST_OSC_NAME    "a\x1b]0;PWN\x07" "z"
+#define TEST_OSC_VISIBLE "a^[]0;PWN^Gz"
+
+/* A control byte from a file name, a description, or a suggestion draws as its
+   notation in a menu cell, the ghost, and the hint row, and the widths count
+   the notation. */
+static bool
+test_control_bytes_draw_visibly(void)
+{
+  static const char *names[] = {TEST_OSC_NAME, "c\xC2\x9B" "d"};
+  int                was_colors_enabled = itl_g_colors_enabled;
+  tl_completion      result = ITL_ZERO_INIT;
+  itl_char_buf_t    *b = itl_char_buf_alloc();
+  size_t             drawn;
+  bool               is_cell_visible;
+  bool               is_c1_visible;
+  bool               is_colored_visible;
+  bool               is_name_width_counted;
+  bool               is_invalid_byte_visible;
+  bool               is_ghost_visible;
+  bool               is_hint_blanked;
+  bool               ok;
+
+  tl_set_colors_enabled(0);
+
+  drawn = itl_menu_append_cell(b, TEST_OSC_NAME, 20, false);
+  is_cell_visible = drawn == 12 && b->size == 12 &&
+                    memcmp(b->data, TEST_OSC_VISIBLE, 12) == 0;
+
+  b->size = 0;
+  drawn = itl_menu_append_cell(b, names[1], 20, false);
+  is_c1_visible = drawn == 6 && b->size == 6 &&
+                  memcmp(b->data, "c\\x9bd", 6) == 0;
+
+  b->size = 0;
+  itl_menu_append_colored_cell(b, TEST_OSC_NAME, 5, NULL, 0, true);
+  is_colored_visible = b->size == 5 && memcmp(b->data, "a^[]0", 5) == 0;
+
+  result.candidates = names;
+  result.count = countof(names);
+  is_name_width_counted = itl_menu_name_width(&result) == 12;
+
+  b->size = 0;
+  drawn = itl_char_buf_append_visible(b, "x\xFF", 2, 10);
+  is_invalid_byte_visible = drawn == 5 && itl_visible_width("x\xFF", 2) == 5 &&
+                            b->size == 5 && memcmp(b->data, "x\\xff", 5) == 0;
+
+  b->size = 0;
+  memcpy(itl_g_ghost, TEST_OSC_NAME, sizeof(TEST_OSC_NAME));
+  itl_g_ghost_len = sizeof(TEST_OSC_NAME) - 1;
+  itl_g_ghost_width = itl_visible_width(itl_g_ghost, itl_g_ghost_len);
+  is_ghost_visible = itl_g_ghost_width == 12 &&
+                     itl_le_tty_draw_ghost(b, true, 0, 80) &&
+                     test_bytes_have(b->data, b->size, TEST_OSC_VISIBLE) &&
+                     !test_bytes_have(b->data, b->size, "\x07") &&
+                     !test_bytes_have(b->data, b->size, "\x1b]");
+  itl_ghost_clear();
+  itl_g_le_prev_ghost_len = 0;
+
+  tl_set_hint_callback(test_hint_callback);
+  test_hint_text = "a\xC2\x9B" "b\x1b" "c";
+  itl_hint_compose("x", 1, 20);
+  is_hint_blanked = strcmp(itl_g_hint_next, "a b c") == 0;
+  tl_set_hint_callback(NULL);
+  itl_g_hint_next_len = 0;
+
+  tl_set_colors_enabled(was_colors_enabled);
+  ITL_CHAR_BUF_FREE(b);
+
+  ok = is_cell_visible && is_c1_visible && is_colored_visible &&
+       is_name_width_counted && is_invalid_byte_visible && is_ghost_visible &&
+       is_hint_blanked;
+
+  if (!ok) {
+    TEST_PRINTF("cell %d, c1 %d, colored %d, width %d, invalid %d, ghost %d, "
+                "hint %d\n",
+                (int) is_cell_visible, (int) is_c1_visible,
+                (int) is_colored_visible, (int) is_name_width_counted,
+                (int) is_invalid_byte_visible, (int) is_ghost_visible,
+                (int) is_hint_blanked);
+  }
+
+  return ok;
+}
+
+/* A right prompt keeps SGR colors and is hidden by any other control, since
+   the width walker cannot know where that control moves the cursor. */
+static bool
+test_right_prompt_rejects_controls(void)
+{
+  static const char *rejected[] = {"R\tP", "R\rP", "\x1b]0;t\x07RP",
+                                   "\x1b[2CRP", "\xC2\x9BRP"};
+  bool               ok;
+  size_t             i;
+
+  tl_set_right_prompt("\x1b[1;32mRP\x1b[0m");
+  ok = itl_g_right_prompt_width == 2;
+
+  for (i = 0; i < countof(rejected); ++i) {
+    tl_set_right_prompt(rejected[i]);
+    if (itl_g_right_prompt_width != 0) {
+      TEST_PRINTF("right prompt %zu kept width %zu\n", i,
+                  itl_g_right_prompt_width);
+      ok = false;
+    }
+  }
+
+  tl_set_right_prompt(NULL);
+  return ok;
+}
+
+/* Alt-. skips a last word that is not UTF-8 and only marks the walk when it
+   inserted a word, so the next press never replaces a span it did not put
+   into the line. */
+static bool
+test_last_argument_skips_invalid_words(void)
+{
+  static const char content[] = "echo first\necho caf\xE9\n";
+  static const char invalid_only[] = "echo caf\xE9\n";
+  const char       *path = "tl_test_last_argument_invalid.txt";
+  char              out_buffer[BUFFER_SIZE];
+  bool              ok = true;
+  itl_le_t          le = ITL_ZERO_INIT;
+  itl_string_t     *line = itl_string_alloc();
+
+  itl_g_is_active = true;
+  remove(path);
+  ok &= hist_write_raw(path, content, sizeof(content) - 1);
+  tl_history_load(path);
+
+  ITL_STRING_FROM_CSTR(line, "ls ");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_le_end_insertion_walk();
+  itl_le_key_handle(&le, TL_KEY_LAST_ARGUMENT);
+  ok &= test_line_is(line, "ls first", "alt-. past a word that is not UTF-8");
+  itl_le_key_handle(&le, TL_KEY_LAST_ARGUMENT);
+  ok &= test_line_is(line, "ls first", "alt-. past the oldest valid word");
+
+  itl_g_history_free();
+  ok &= hist_write_raw(path, invalid_only, sizeof(invalid_only) - 1);
+  tl_history_load(path);
+  ITL_STRING_FROM_CSTR(line, "ls ");
+  le.cursor_position = line->length;
+  itl_le_end_insertion_walk();
+  itl_le_key_handle(&le, TL_KEY_LAST_ARGUMENT);
+  ok &= itl_g_le_action != ITL_LE_ACTION_LAST_ARGUMENT;
+  itl_le_key_handle(&le, TL_KEY_LAST_ARGUMENT);
+  ok &= test_line_is(line, "ls ", "alt-. with no valid word");
+
+  ITL_STRING_FREE(line);
+  remove(path);
+  itl_g_history_free();
+  itl_le_end_insertion_walk();
+  itl_g_is_active = false;
+  return ok;
+}
+
+/* Once the help rows are full, every later item is dropped, including the keys
+   that would still fit on the last row. */
+static bool
+test_menu_help_drops_items_past_the_last_row(void)
+{
+  itl_char_buf_t *b = itl_char_buf_alloc();
+  size_t          rows;
+  bool            ok;
+
+  rows = itl_menu_layout_help(b, "abcdefgh, ijklmnop", "x", 12, 0, 1);
+  ok = rows == 1 && test_bytes_have(b->data, b->size, "abcdefgh,") &&
+       !test_bytes_have(b->data, b->size, "ijkl") &&
+       !test_bytes_have(b->data, b->size, "x");
+
+  if (!ok) {
+    TEST_PRINTF("rows %zu\n", rows);
+  }
+
+  ITL_CHAR_BUF_FREE(b);
+  return ok;
+}
+
+#if defined ITL_POSIX && !defined NDEBUG
+/* The line renderer draws control bytes as notation on a full render and on
+   the append path, and the caret column counts the notation. */
+static bool
+test_line_render_shows_control_bytes(void)
+{
+  char             out_buffer[BUFFER_SIZE];
+  int              was_colors_enabled = itl_g_colors_enabled;
+  itl_le_metrics_t expected;
+  itl_utf8_t       escape = itl_utf8_parse(0x1b);
+  bool             is_full_render_visible;
+  bool             is_append_visible;
+  bool             ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  tl_set_colors_enabled(0);
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  ITL_STRING_FROM_CSTR(line, TEST_OSC_NAME "\xC2\x9B");
+  le.cursor_position = line->length;
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 40;
+  itl_g_debug_frame_sink = test_frame_capture_sink;
+
+  expected = itl_le_compute_metrics(&le, 40);
+  test_frame_capture_refresh(&le);
+  is_full_render_visible = test_frame_capture_has(TEST_OSC_VISIBLE "\\x9b") &&
+                           !test_frame_capture_has("\x07") &&
+                           !test_frame_capture_has("\x1b]") &&
+                           !test_frame_capture_has("\xC2\x9B") &&
+                           expected.cursor_col == 18 &&
+                           itl_g_le_prev_cursor_col == 18;
+
+  itl_g_tty_plain_append_pending = true;
+  itl_g_tty_plain_append_width = itl_char_line_width(escape);
+  itl_le_insert(&le, escape);
+  itl_g_tty_should_refresh_text = true;
+  itl_g_debug_append_refresh_count = 0;
+  test_frame_capture_size = 0;
+  itl_le_tty_refresh(&le);
+  is_append_visible = itl_g_debug_append_refresh_count == 1 &&
+                      test_frame_capture_has("^[") &&
+                      !test_frame_capture_has("\x1b\x1b") &&
+                      itl_g_le_prev_cursor_col == 20;
+
+  itl_g_debug_frame_sink = NULL;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  itl_le_invalidate_prev_frame();
+  tl_set_colors_enabled(was_colors_enabled);
+  ITL_STRING_FREE(line);
+
+  ok = is_full_render_visible && is_append_visible;
+
+  if (!ok) {
+    TEST_PRINTF("full %d, append %d, caret %zu\n", (int) is_full_render_visible,
+                (int) is_append_visible, itl_g_le_prev_cursor_col);
+  }
+
+  return ok;
+}
+#endif
+
 typedef bool (*test_func)(void);
 
 typedef struct test_case test_case_t;
@@ -5771,9 +6030,19 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_right_prompt_follows_appends),
                                    DEFINE_TEST_CASE(
                                        test_transient_prompt_redraws_the_submitted_line),
+                                   DEFINE_TEST_CASE(
+                                       test_line_render_shows_control_bytes),
 #endif
                                    DEFINE_TEST_CASE(
                                        test_hint_row_is_cut_to_the_width),
+                                   DEFINE_TEST_CASE(
+                                       test_control_bytes_draw_visibly),
+                                   DEFINE_TEST_CASE(
+                                       test_right_prompt_rejects_controls),
+                                   DEFINE_TEST_CASE(
+                                       test_last_argument_skips_invalid_words),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_help_drops_items_past_the_last_row),
 };
 
 int
