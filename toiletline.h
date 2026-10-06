@@ -7244,7 +7244,8 @@ ITL_DEF size_t itl_menu_anchor_column_of(const itl_le_t *le,
 
 /* Where the rows of a menu start and how wide they are. The rows start under
    the token only when the whole row fits to its right, the prefix, the widest
-   name, the widest description and the gap before it included. Otherwise the
+   name, the widest description and the gap before it included, and only when
+   no item of the help text would be cut there. Otherwise the
    rows start at the leftmost column, and a description too wide for the
    terminal is cut there. */
 typedef struct itl_menu_geometry
@@ -7256,9 +7257,49 @@ typedef struct itl_menu_geometry
   size_t desc_width;
 } itl_menu_geometry;
 
+/* The widest item of the help text, its trailing comma included. A row narrower
+   than that would cut the item. */
+ITL_DEF size_t itl_menu_widest_help_item(const char *title, const char *keys)
+{
+  const char *parts[2];
+  size_t part_count = keys != NULL ? 2 : 1;
+  size_t widest = 0;
+  size_t part;
+
+  parts[0] = title;
+  parts[1] = keys;
+
+  if (title == NULL) {
+    return 0;
+  }
+
+  for (part = 0; part < part_count; ++part) {
+    const char *item = parts[part];
+
+    while (*item != '\0') {
+      const char *separator = strstr(item, ITL_MENU_TITLE_SEPARATOR);
+      size_t length = separator != NULL ? (size_t) (separator - item)
+                                        : strlen(item);
+      bool has_next = separator != NULL || part + 1 < part_count;
+      size_t width = itl_menu_span_width(item, length) + (has_next ? 1 : 0);
+
+      if (width > widest) {
+        widest = width;
+      }
+
+      item = separator != NULL ? separator + ITL_MENU_TITLE_SEPARATOR_WIDTH
+                               : item + length;
+    }
+  }
+
+  return widest;
+}
+
 ITL_DEF itl_menu_geometry itl_menu_geometry_of(const tl_completion *result,
                                                size_t name_width,
-                                               const char *empty_text)
+                                               const char *empty_text,
+                                               const char *help_title,
+                                               const char *help_keys)
 {
   itl_menu_geometry geometry;
   size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
@@ -7268,6 +7309,8 @@ ITL_DEF itl_menu_geometry itl_menu_geometry_of(const tl_completion *result,
                       : 0;
   size_t widest_desc = result->count == 0 ? 0 : itl_menu_description_width(result);
   size_t needed_cols = ITL_MENU_ROW_PREFIX_WIDTH;
+  size_t help_cols = ITL_MENU_ROW_PREFIX_WIDTH +
+                     itl_menu_widest_help_item(help_title, help_keys);
 
   if (result->count == 0) {
     needed_cols += itl_cstr_display_width(empty_text);
@@ -7276,6 +7319,10 @@ ITL_DEF itl_menu_geometry itl_menu_geometry_of(const tl_completion *result,
     if (widest_desc > 0) {
       needed_cols += 1 + widest_desc;
     }
+  }
+
+  if (help_cols > needed_cols) {
+    needed_cols = help_cols;
   }
 
   if (anchor + needed_cols > full_cols) {
@@ -7322,7 +7369,8 @@ ITL_DEF itl_menu_layout itl_menu_measure_for(const tl_completion *result,
 
   if (help_title != NULL) {
     itl_menu_geometry geometry =
-        itl_menu_geometry_of(result, name_width, empty_text);
+        itl_menu_geometry_of(result, name_width, empty_text, help_title,
+                             help_keys);
 
     help_rows = itl_menu_layout_help(NULL, help_title, help_keys,
                                      geometry.text_width, geometry.anchor,
@@ -7359,7 +7407,8 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
     return;
   }
 
-  geometry = itl_menu_geometry_of(result, name_width, empty_text);
+  geometry = itl_menu_geometry_of(result, name_width, empty_text, help_title,
+                                  help_keys);
   anchor = geometry.anchor;
   text_width = geometry.text_width;
   name_width = geometry.name_width;

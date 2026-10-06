@@ -4228,6 +4228,16 @@ test_menu_anchor_accounts_for_descriptions(void)
   itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
   ok = ok && test_frame_capture_has("\x1b[29G");
 
+  /* The names fit, a help item would be cut beside them. */
+  layout = itl_menu_measure_for(&result, itl_g_tty_prev_rows, 4, "",
+                                "selecting completions",
+                                "a help item far too wide for that row");
+  test_frame_capture_size = 0;
+  itl_menu_draw(&result, 0, 0, layout, "selecting completions",
+                "a help item far too wide for that row", false, 4, "");
+  ok = ok && !test_frame_capture_has("\x1b[29G") &&
+       test_frame_capture_has("a help item far too wide for that row");
+
   if (!ok) {
     TEST_PRINTF("bytes=%zu\n", test_frame_capture_size);
   }
