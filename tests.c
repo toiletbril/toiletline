@@ -1,4 +1,5 @@
 #define ITL_TTY_IS_TTY() (1)
+#define TL_CTRL_Z_UNDO
 #define TOILETLINE_IMPLEMENTATION
 #include "toiletline.h"
 
@@ -2488,8 +2489,107 @@ test_editing_key_sequences(void)
   ok &= itl_g_pushback_byte == 27;
   itl_g_pushback_byte = -1;
 
+  ok &= itl_esc_parse(26) == TL_KEY_UNDO;
+  ok &= itl_esc_parse(30) == TL_KEY_REDO;
+  ok &= itl_esc_parse(31) == TL_KEY_UNDO;
+
   return ok;
 }
+
+#if defined ITL_POSIX
+typedef struct key_sequence_case key_sequence_case_t;
+
+struct key_sequence_case
+{
+  const char *bytes;
+  int         key;
+};
+
+/* Parse one key from bytes and report whether any of them was left unread. */
+static int
+test_parse_key_bytes(const char *bytes, bool *was_drained)
+{
+  int    pipe_descriptors[2] = {-1, -1};
+  int    saved_stdin = -1;
+  int    key = -1;
+  size_t tail_size = strlen(bytes) - 1;
+
+  *was_drained = false;
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+  if (write(pipe_descriptors[1], bytes + 1, tail_size) != (ssize_t) tail_size)
+    goto cleanup;
+  saved_stdin = dup(STDIN_FILENO);
+  if (saved_stdin < 0 || dup2(pipe_descriptors[0], STDIN_FILENO) < 0)
+    goto cleanup;
+
+  key = itl_esc_parse((uint8_t) bytes[0]);
+  *was_drained = !itl_input_is_pending();
+
+cleanup:
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+  return key;
+}
+
+static bool
+test_modified_key_sequences(void)
+{
+  /* clang-format off */
+  const key_sequence_case_t cases[] = {
+      {"\x1b[122;6u",     TL_KEY_REDO},
+      {"\x1b[90;6u",      TL_KEY_REDO},
+      {"\x1b[90;5u",      TL_KEY_REDO},
+      {"\x1b[27;6;90~",   TL_KEY_REDO},
+      {"\x1b[27;6;122~",  TL_KEY_REDO},
+      {"\x1b[122;5u",     TL_KEY_UNDO},
+      {"\x1b[27;5;122~",  TL_KEY_UNDO},
+      {"\x1b[122;70u",    TL_KEY_REDO},
+      {"\x1b[122;7u",     TL_KEY_UNKN},
+      {"\x1b[97;5u",      TL_KEY_UNKN},
+      {"\x1b[122:90;6u",  TL_KEY_REDO},
+      {"\x1b[A",          TL_KEY_UP},
+      {"\x1bOD",          TL_KEY_LEFT},
+      {"\x1b[1;5C",       TL_KEY_RIGHT | TL_MOD_CTRL},
+      {"\x1b[1;3D",       TL_KEY_LEFT | TL_MOD_ALT},
+      {"\x1b[1;2A",       TL_KEY_UP | TL_MOD_SHIFT},
+      {"\x1b[1~",         TL_KEY_HOME},
+      {"\x1b[4~",         TL_KEY_END},
+      {"\x1b[7~",         TL_KEY_HOME},
+      {"\x1b[8~",         TL_KEY_END},
+      {"\x1b[3~",         TL_KEY_DELETE},
+      {"\x1b[3;5~",       TL_KEY_DELETE | TL_MOD_CTRL},
+      {"\x1b[Z",          TL_KEY_TAB | TL_MOD_SHIFT},
+      {"\x1b[200~",       TL_KEY_PASTE_BEGIN},
+      {"\x1b[201~",       TL_KEY_UNKN},
+      {"\x1b[2~",         TL_KEY_UNKN},
+      {"\x1b[2;5~",       TL_KEY_UNKN},
+      {"\x1b[5~",         TL_KEY_UNKN},
+      {"\x1b[11~",        TL_KEY_UNKN},
+      {"\x1b[1;10A",      TL_KEY_UP},
+      {"\x1b[<0;1;1M",    TL_KEY_UNKN},
+  };
+  /* clang-format on */
+  size_t i;
+  bool   ok = true;
+
+  for (i = 0; i < countof(cases); ++i) {
+    bool was_drained;
+    int  key = test_parse_key_bytes(cases[i].bytes, &was_drained);
+
+    if (key != cases[i].key || !was_drained) {
+      TEST_PRINTF("case %zu (ESC%s): key %d, want %d, drained %d\n", i,
+                  cases[i].bytes + 1, key, cases[i].key, (int) was_drained);
+      ok = false;
+    }
+  }
+
+  return ok;
+}
+#endif
 
 static bool
 test_prefix_history_search_walks_matches(void)
@@ -4940,6 +5040,213 @@ test_hint_row_draws_holds_and_erases(void)
 }
 
 static bool
+test_hint_is(const char *expected, size_t cols, const char *step)
+{
+  itl_hint_compose("x", 1, cols);
+  if (itl_g_hint_next_len != strlen(expected) ||
+      (itl_g_hint_next_len > 0 && strcmp(itl_g_hint_next, expected) != 0))
+  {
+    TEST_PRINTF("%s: hint '%s', want '%s'\n", step, itl_g_hint_next, expected);
+    return false;
+  }
+  return true;
+}
+
+static void
+test_prefix_reset(void)
+{
+  itl_g_prefix_kind = ITL_PREFIX_NONE;
+  itl_g_prefix_key = 0;
+  itl_g_vi_pending_operator = ITL_VI_OP_NONE;
+  itl_g_vi_pending_count = 0;
+  itl_g_vi_pending_register = 0;
+  itl_g_edit_mode = TL_EDIT_MODE_EMACS;
+}
+
+static bool
+test_prefix_hint_names_the_waiting_keys(void)
+{
+  int  was_colors_enabled = itl_g_colors_enabled;
+  bool ok = true;
+
+  tl_set_colors_enabled(0);
+  tl_set_hint_callback(test_hint_callback);
+  test_hint_text = "usage";
+  test_prefix_reset();
+
+  ok &= test_hint_is("usage", 200, "no prefix");
+
+  itl_g_prefix_kind = ITL_PREFIX_CTRL_X;
+  ok &= test_hint_is("pressed ctrl-x. waiting for ctrl-e (edit in $VISUAL), "
+                     "ctrl-u (undo)",
+                     200, "ctrl-x");
+  ok &= test_hint_is("pressed ctrl-x. waiting...", 27, "ctrl-x cut");
+  tl_set_hint_callback(NULL);
+  ok &= test_hint_is("", 200, "ctrl-x with the row off");
+  tl_set_hint_callback(test_hint_callback);
+  test_prefix_reset();
+
+  itl_g_vi_pending_operator = ITL_VI_OP_DELETE;
+  ok &= test_hint_is("usage", 200, "vi state outside normal mode");
+
+  itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
+  itl_g_vi_pending_count = 2;
+  itl_g_vi_pending_register = 'a';
+  ok &= test_hint_is("pressed \"a2d. waiting for a motion: w, b, e, $, 0, ^, "
+                     "d (line), f, t, F, T, h, l, j, k, W, B, E, ;, ,",
+                     200, "operator");
+
+  itl_g_prefix_kind = ITL_PREFIX_VI_FIND;
+  itl_g_prefix_key = 't';
+  ok &= test_hint_is("pressed \"a2dt. waiting for a character to stop before",
+                     200, "operator find");
+  test_prefix_reset();
+
+  itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
+  itl_g_vi_pending_operator = ITL_VI_OP_CHANGE;
+  ok &= test_hint_is("pressed c. waiting for a motion: w, b, e, $, 0, ^, "
+                     "c (line), f, t, F, T, h, l, j, k, W, B, E, ;, ,",
+                     200, "change");
+  itl_g_vi_pending_operator = ITL_VI_OP_YANK;
+  ok &= test_hint_is("pressed y. waiting...", 22, "yank cut");
+  itl_g_vi_pending_operator = ITL_VI_OP_NONE;
+
+  itl_g_vi_pending_count = 3;
+  ok &= test_hint_is("pressed 3. waiting for a command or a motion", 200,
+                     "count");
+  itl_g_vi_pending_count = 0;
+
+  itl_g_vi_pending_register = 'b';
+  ok &= test_hint_is("pressed \"b. waiting for a command: d, c, y, p, P, x, "
+                     "X, D, C, s, S",
+                     200, "register");
+  itl_g_vi_pending_register = 0;
+
+  itl_g_prefix_kind = ITL_PREFIX_VI_REGISTER;
+  ok &= test_hint_is("pressed \". waiting for a register name: a-z", 200,
+                     "register name");
+  itl_g_prefix_kind = ITL_PREFIX_VI_REPLACE;
+  ok &= test_hint_is("pressed r. waiting for a replacement character", 200,
+                     "replace");
+  itl_g_prefix_kind = ITL_PREFIX_VI_EX;
+  ok &= test_hint_is("pressed :. waiting for q, q!, quit, wq, wq!, or x "
+                     "(quit), then enter",
+                     200, "ex");
+
+  itl_g_edit_mode = TL_EDIT_MODE_VI_VISUAL;
+  itl_g_prefix_kind = ITL_PREFIX_VI_FIND;
+  itl_g_prefix_key = 'F';
+  ok &= test_hint_is("pressed F. waiting for a character to find backward", 200,
+                     "visual find");
+  itl_g_prefix_key = 'T';
+  ok &= test_hint_is("pressed T. waiting for a character to stop after", 200,
+                     "visual till");
+  itl_g_prefix_key = 'f';
+  ok &= test_hint_is("pressed f. waiting for a character to find", 200,
+                     "visual find forward");
+
+  test_prefix_reset();
+  ok &= test_hint_is("usage", 200, "closed prefix");
+
+  tl_set_hint_callback(NULL);
+  tl_set_colors_enabled(was_colors_enabled);
+  itl_g_hint_next_len = 0;
+
+  return ok;
+}
+
+static int test_chord_writer = -1;
+static bool test_chord_hint_was_drawn = false;
+
+static int
+test_chord_idle_callback(const char *buffer, size_t cursor)
+{
+  static const char CTRL_U = 21;
+
+  (void) buffer;
+  (void) cursor;
+  test_chord_hint_was_drawn =
+      test_frame_capture_has("pressed ctrl-x. waiting for") &&
+      !test_frame_capture_has("usage") &&
+      itl_g_prefix_kind == ITL_PREFIX_CTRL_X;
+  if (write(test_chord_writer, &CTRL_U, 1) != 1) {
+    return 0;
+  }
+  return 0;
+}
+
+static bool
+test_ctrl_x_chord_shows_and_drops_its_hint(void)
+{
+  char          out_buffer[BUFFER_SIZE];
+  int           pipe_descriptors[2] = {-1, -1};
+  int           saved_stdin = -1;
+  bool          did_wait = false;
+  bool          was_resolved = false;
+  bool          was_hint_dropped = false;
+  bool          was_pending_quiet = false;
+  bool          was_unbound_pushed = false;
+  bool          ok;
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer), "usage");
+  test_prefix_reset();
+  test_chord_hint_was_drawn = false;
+
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+  saved_stdin = dup(STDIN_FILENO);
+  if (saved_stdin < 0 || dup2(pipe_descriptors[0], STDIN_FILENO) < 0)
+    goto cleanup;
+
+  test_chord_writer = pipe_descriptors[1];
+  tl_set_idle_callback(test_chord_idle_callback, 10, 10);
+  test_frame_capture_size = 0;
+  did_wait = itl_le_await_chord(&le, ITL_PREFIX_CTRL_X, 24);
+  was_resolved = itl_g_prefix_kind == ITL_PREFIX_NONE &&
+                 itl_esc_parse(24) == TL_KEY_UNDO;
+  tl_set_idle_callback(NULL, 0, 0);
+
+  test_frame_capture_size = 0;
+  itl_g_tty_should_refresh_text = true;
+  itl_le_tty_refresh(&le);
+  was_hint_dropped = test_frame_capture_has("usage") &&
+                     !test_frame_capture_has("pressed ctrl-x");
+
+  if (write(pipe_descriptors[1], "q", 1) != 1) goto cleanup;
+  test_frame_capture_size = 0;
+  was_pending_quiet = itl_le_await_chord(&le, ITL_PREFIX_CTRL_X, 24) &&
+                      test_frame_capture_size == 0;
+  was_unbound_pushed =
+      itl_esc_parse(24) == TL_KEY_UNKN && itl_g_pushback_byte == 'q';
+  itl_g_pushback_byte = -1;
+
+cleanup:
+  tl_set_idle_callback(NULL, 0, 0);
+  test_chord_writer = -1;
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+  test_prefix_reset();
+  test_hint_finish_frame(line);
+
+  ok = did_wait && test_chord_hint_was_drawn && was_resolved &&
+       was_hint_dropped && was_pending_quiet && was_unbound_pushed;
+  if (!ok) {
+    TEST_PRINTF("waited %d, drawn %d, resolved %d, dropped %d, quiet %d, "
+                "pushed %d\n",
+                (int) did_wait, (int) test_chord_hint_was_drawn,
+                (int) was_resolved, (int) was_hint_dropped,
+                (int) was_pending_quiet, (int) was_unbound_pushed);
+  }
+
+  return ok;
+}
+
+static bool
 test_hint_row_follows_the_caret_and_clears(void)
 {
   char out_buffer[BUFFER_SIZE];
@@ -5935,6 +6242,9 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_edit_external_replaces_the_line),
                                    DEFINE_TEST_CASE(test_editing_key_sequences),
+#if defined ITL_POSIX
+                                   DEFINE_TEST_CASE(test_modified_key_sequences),
+#endif
                                    DEFINE_TEST_CASE(
                                        test_prefix_history_search_walks_matches),
                                    DEFINE_TEST_CASE(
@@ -5981,6 +6291,10 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_submit_erases_the_drawn_ghost),
                                    DEFINE_TEST_CASE(
                                        test_hint_row_draws_holds_and_erases),
+                                   DEFINE_TEST_CASE(
+                                       test_prefix_hint_names_the_waiting_keys),
+                                   DEFINE_TEST_CASE(
+                                       test_ctrl_x_chord_shows_and_drops_its_hint),
                                    DEFINE_TEST_CASE(
                                        test_hint_row_follows_the_caret_and_clears),
                                    DEFINE_TEST_CASE(

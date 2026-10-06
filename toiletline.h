@@ -54,6 +54,12 @@ extern "C"
 #define ITL_SUSPEND
 #endif /* !TL_NO_SUSPEND */
 
+/* If defined, Ctrl-Z undoes while a line is read, the same as Ctrl-_, and
+ * neither suspends nor returns `TL_PRESSED_SUSPEND`. Define it with
+ * `TL_NO_SUSPEND` in a host that leaves job control to the terminal while its
+ * own programs run. Ctrl-Shift-Z redoes either way when the terminal reports
+ * it apart from Ctrl-Z. */
+
 /* To use custom assertions or to disable them, you can define `TL_ASSERT` to
  * some other function or nothing before including. */
 #if !defined TL_ASSERT
@@ -4161,12 +4167,124 @@ ITL_DEF size_t itl_parse_size(const char *cstr, size_t *result)
   return i;
 }
 
+/* The key Ctrl-Z reports. A host that keeps job control to itself, such as a
+   shell, can make it undo at the prompt instead. */
+ITL_DEF int itl_ctrl_z_key(void)
+{
+#if defined TL_CTRL_Z_UNDO
+  return TL_KEY_UNDO;
+#else
+  return TL_KEY_SUSPEND;
+#endif /* TL_CTRL_Z_UNDO */
+}
+
 #if defined ITL_POSIX || defined ITL_WIN32
+/* The modifier parameter of a CSI key is one plus a bit set of shift 1, alt 2,
+   and ctrl 4. The plain mapping below keeps the forms the editor always read:
+   2 is shift, 3 is alt, and 5 is ctrl. */
+ITL_DEF int itl_csi_modifier(unsigned value)
+{
+  switch (value) {
+  case 2: return TL_MOD_SHIFT;
+  case 3: return TL_MOD_ALT;
+  case 5: return TL_MOD_CTRL;
+  }
+
+  return 0;
+}
+
+/* A character key with modifiers, reported by the kitty keyboard protocol as
+   CSI code ; modifier u or by xterm's modifyOtherKeys as CSI 27 ; modifier ;
+   code ~. The editor turns neither mode on, but a terminal configured for one
+   still sends these. Ctrl-Z and Ctrl-Shift-Z are bound, where the shifted key
+   may be reported as the lower or the upper case letter. The lock bits 64 and
+   128 are ignored. */
+ITL_DEF int itl_esc_parse_modified_key(unsigned code, unsigned modifier)
+{
+  unsigned bits = (modifier > 0) ? modifier - 1 : 0;
+  bool is_ctrl = (bits & 4) != 0;
+  bool is_shift = (bits & 1) != 0 || code == 'Z';
+
+  if ((bits & ~(1u | 4u | 64u | 128u)) != 0 || !is_ctrl) {
+    return TL_KEY_UNKN;
+  }
+  if (code == 'z' || code == 'Z') {
+    return is_shift ? TL_KEY_REDO : itl_ctrl_z_key();
+  }
+
+  return TL_KEY_UNKN;
+}
+
+#define ITL_CSI_PARAMETER_MAX 4
+
+/* A CSI or SS3 sequence whose first byte after the introducer is a parameter
+   byte. Every parameter and intermediate byte is consumed up to the final
+   byte, so an unbound sequence never leaks its tail as typed text. A private
+   marker such as '<' or '?' makes the whole sequence unbound, and a ':'
+   sub-parameter is skipped up to the next ';'. */
+ITL_DEF int itl_esc_parse_csi_parameters(uint8_t byte)
+{
+  unsigned parameters[ITL_CSI_PARAMETER_MAX] = {0};
+  size_t index = 0;
+  bool is_private = false;
+  bool is_subparameter = false;
+  int modifier;
+
+  while (byte >= 0x20 && byte < 0x40) {
+    if (byte >= '0' && byte <= '9') {
+      if (!is_subparameter && index < ITL_CSI_PARAMETER_MAX &&
+          parameters[index] < 100000)
+      {
+        parameters[index] = parameters[index] * 10 + (unsigned) (byte - '0');
+      }
+    } else if (byte == ';') {
+      index += 1;
+      is_subparameter = false;
+    } else if (byte == ':') {
+      is_subparameter = true;
+    } else {
+      is_private = true;
+    }
+    ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
+  }
+
+  if (is_private) {
+    return TL_KEY_UNKN;
+  }
+
+  modifier = itl_csi_modifier(parameters[1]);
+
+  switch (byte) {
+  case '~':
+    switch (parameters[0]) {
+    case 1:
+    case 7: return modifier | TL_KEY_HOME;
+    case 4:
+    case 8: return modifier | TL_KEY_END;
+    case 3: return modifier | TL_KEY_DELETE;
+    /* Bracketed paste opens with ESC [ 200 ~. Its closing ESC [ 201 ~ outside
+       a paste, Insert, and the other keys are unbound. */
+    case 200: return TL_KEY_PASTE_BEGIN;
+    case 27: return itl_esc_parse_modified_key(parameters[2], parameters[1]);
+    }
+    return TL_KEY_UNKN;
+
+  case 'u': return itl_esc_parse_modified_key(parameters[0], parameters[1]);
+
+  case 'A': return modifier | TL_KEY_UP;
+  case 'B': return modifier | TL_KEY_DOWN;
+  case 'C': return modifier | TL_KEY_RIGHT;
+  case 'D': return modifier | TL_KEY_LEFT;
+  case 'F': return modifier | TL_KEY_END;
+  case 'H': return modifier | TL_KEY_HOME;
+  case 'Z': return TL_MOD_SHIFT | TL_KEY_TAB;
+  }
+
+  return TL_KEY_UNKN;
+}
+
 ITL_DEF int itl_esc_parse_vt(uint8_t byte)
 {
-  int event = 0;
-  bool read_mod = false;
-
   if (byte == 27) { /* esc */
     /* A lone ESC has no byte after it, so reading one here would block until
        the next keystroke and a search or a command mode would never see the
@@ -4205,90 +4323,26 @@ ITL_DEF int itl_esc_parse_vt(uint8_t byte)
 
     ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
 
-    /* Bracketed paste opens with ESC [ 200 ~ and closes with ESC [ 201 ~. Any
-       other ESC [ 2 ... ~ sequence, like Insert or its modified forms, is
-       drained to the terminator so its trailing bytes do not leak as input. */
-    if (byte == '2') {
-      int paste_kind = 0;
-      ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-      if (byte == '0') {
-        ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-        if (byte == '0' || byte == '1') {
-          paste_kind = (byte == '0') ? 1 : 2;
-          ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-        }
-      }
-      /* Consume the remaining CSI parameter and intermediate bytes (0x20-0x3F)
-         up to the final byte, so a non-paste sequence does not leak bytes and a
-         malformed one cannot drain past its terminator. */
-      while (byte >= 0x20 && byte < 0x40) {
-        ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-      }
-      return (paste_kind == 1) ? TL_KEY_PASTE_BEGIN : TL_KEY_UNKN;
-    }
-
-    if (byte == '1') {
-      ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-      if (byte == '~') {
-        return event | TL_KEY_HOME;
-      }
-      if (byte != ';') {
-        return TL_KEY_UNKN;
-      }
-
-      ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-      switch (byte) {
-      case '2': event |= TL_MOD_SHIFT; break;
-      case '3': event |= TL_MOD_ALT; break;
-      case '5': event |= TL_MOD_CTRL; break;
-      }
-      read_mod = true;
-
-      ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
+    if (byte >= 0x20 && byte < 0x40) {
+      return itl_esc_parse_csi_parameters(byte);
     }
 
     switch (byte) {
-    case 'A': return event | TL_KEY_UP;
-    case 'B': return event | TL_KEY_DOWN;
-    case 'C': return event | TL_KEY_RIGHT;
-    case 'D': return event | TL_KEY_LEFT;
+    case 'A': return TL_KEY_UP;
+    case 'B': return TL_KEY_DOWN;
+    case 'C': return TL_KEY_RIGHT;
+    case 'D': return TL_KEY_LEFT;
 
-    case 'F': return event | TL_KEY_END;
-    case 'H': return event | TL_KEY_HOME;
-    case 'Z': return event | TL_MOD_SHIFT | TL_KEY_TAB;
-
-    case '3': event |= TL_KEY_DELETE; break;
-    case '4': event |= TL_KEY_END; break;
-    case '7': event |= TL_KEY_HOME; break;
-    case '8': event |= TL_KEY_END; break;
-
-    default: event |= TL_KEY_UNKN;
+    case 'F': return TL_KEY_END;
+    case 'H': return TL_KEY_HOME;
+    case 'Z': return TL_MOD_SHIFT | TL_KEY_TAB;
     }
-  } else {
-    ITL_TRY(!iscntrl(byte), return TL_KEY_UNKN);
-    return TL_KEY_CHAR;
+
+    return TL_KEY_UNKN;
   }
 
-  if (!read_mod) {
-    if (byte >= 0x40) {
-      return event;
-    }
-
-    ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-    if (byte == ';') {
-      ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-      switch (byte) {
-      case '2': event |= TL_MOD_SHIFT; break;
-      case '3': event |= TL_MOD_ALT; break;
-      case '5': event |= TL_MOD_CTRL; break;
-      }
-      ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
-    }
-
-    ITL_TRY(byte == '~', return TL_KEY_UNKN);
-  }
-
-  return event;
+  ITL_TRY(!iscntrl(byte), return TL_KEY_UNKN);
+  return TL_KEY_CHAR;
 }
 #endif /* ITL_POSIX || ITL_WIN32 */
 
@@ -4366,7 +4420,7 @@ ITL_DEF int itl_esc_parse(uint8_t byte)
 
   case 3: return TL_KEY_INTERRUPT; /* ctrl c */
   case 4: return TL_KEY_EOF;       /* ctrl d */
-  case 26: return TL_KEY_SUSPEND;  /* ctrl z */
+  case 26: return itl_ctrl_z_key(); /* ctrl z */
 
   case 9: return TL_KEY_TAB;
 #if !defined ITL_WIN32
@@ -4572,6 +4626,22 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_shown_len = 0;
    line keeps it away until the next line starts. */
 ITL_DEF ITL_THREAD_LOCAL int itl_g_hint_hold_count = 0;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_hint_is_closed = false;
+
+/* A key that waits for the next one before it acts. While one is open the hint
+   row names it and the keys that complete it, in place of the host's hint. */
+typedef enum
+{
+  ITL_PREFIX_NONE = 0,
+  ITL_PREFIX_CTRL_X,
+  ITL_PREFIX_VI_REGISTER,
+  ITL_PREFIX_VI_FIND,
+  ITL_PREFIX_VI_REPLACE,
+  ITL_PREFIX_VI_EX
+} itl_prefix_kind;
+
+ITL_DEF ITL_THREAD_LOCAL itl_prefix_kind itl_g_prefix_kind = ITL_PREFIX_NONE;
+/* The byte that opened a find chord, one of f, F, t, and T. */
+ITL_DEF ITL_THREAD_LOCAL uint8_t itl_g_prefix_key = 0;
 
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_plain_append_pending = false;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_plain_append_width = 0;
@@ -5512,13 +5582,128 @@ ITL_DEF bool itl_le_tty_draw_ghost(itl_char_buf_t *b, bool is_cursor_at_end,
   return true;
 }
 
-/* Ask the host for the row of this line and fit it to the terminal width. The
-   text is cut at its first line break, control bytes become spaces, and a row
-   wider than the terminal less its last column is cut with an ellipsis so the
-   row never wraps. The result lands in itl_g_hint_next, empty for no hint. */
+/* Append text to the hint being built in out, cut to fit out_size. */
+ITL_DEF void itl_prefix_append(char *out, size_t out_size, size_t *length,
+                               const char *text)
+{
+  size_t text_length = strlen(text);
+
+  if (*length + text_length >= out_size) {
+    text_length = out_size - 1 - *length;
+  }
+  memcpy(out + *length, text, text_length);
+  *length += text_length;
+  out[*length] = '\0';
+}
+
+/* Write the hint of the open prefix into out, or return false when no key
+   waits. A vi count, register, or operator held between keys in normal mode
+   counts as a prefix too, and the keys typed so far lead the text. */
+ITL_DEF bool itl_prefix_hint(char *out, size_t out_size)
+{
+  char keys[48];
+  char digits[24];
+  size_t keys_length = 0;
+  size_t out_length = 0;
+  const char *waiting_for;
+  bool is_vi_held = itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND &&
+                    (itl_g_vi_pending_operator != ITL_VI_OP_NONE ||
+                     itl_g_vi_pending_count > 0 ||
+                     itl_g_vi_pending_register != 0);
+
+  out[0] = '\0';
+  if (itl_g_prefix_kind == ITL_PREFIX_CTRL_X) {
+    itl_prefix_append(out, out_size, &out_length,
+                      "pressed ctrl-x. waiting for ctrl-e (edit in $VISUAL), "
+                      "ctrl-u (undo)");
+    return true;
+  }
+  if (itl_g_prefix_kind == ITL_PREFIX_VI_EX) {
+    itl_prefix_append(out, out_size, &out_length,
+                      "pressed :. waiting for q, q!, quit, wq, wq!, or x "
+                      "(quit), then enter");
+    return true;
+  }
+  if (itl_g_prefix_kind == ITL_PREFIX_NONE && !is_vi_held) {
+    return false;
+  }
+
+  if (is_vi_held && itl_g_vi_pending_register != 0) {
+    keys[keys_length++] = '"';
+    keys[keys_length++] = itl_g_vi_pending_register;
+  }
+  if (is_vi_held && itl_g_vi_pending_count > 0) {
+    size_t count = itl_g_vi_pending_count;
+    size_t digit_count = 0;
+
+    while (count > 0 && digit_count < sizeof(digits)) {
+      digits[digit_count++] = (char) ('0' + (count % 10));
+      count /= 10;
+    }
+    while (digit_count > 0) {
+      keys[keys_length++] = digits[--digit_count];
+    }
+  }
+  if (is_vi_held && itl_g_vi_pending_operator != ITL_VI_OP_NONE) {
+    keys[keys_length++] = (itl_g_vi_pending_operator == ITL_VI_OP_DELETE) ? 'd'
+                          : (itl_g_vi_pending_operator == ITL_VI_OP_CHANGE)
+                              ? 'c'
+                              : 'y';
+  }
+
+  switch (itl_g_prefix_kind) {
+  case ITL_PREFIX_VI_REGISTER:
+    keys[keys_length++] = '"';
+    waiting_for = "a register name: a-z";
+    break;
+  case ITL_PREFIX_VI_FIND:
+    keys[keys_length++] = (char) itl_g_prefix_key;
+    waiting_for = (itl_g_prefix_key == 'f')   ? "a character to find"
+                  : (itl_g_prefix_key == 'F') ? "a character to find backward"
+                  : (itl_g_prefix_key == 't') ? "a character to stop before"
+                                              : "a character to stop after";
+    break;
+  case ITL_PREFIX_VI_REPLACE:
+    keys[keys_length++] = 'r';
+    waiting_for = "a replacement character";
+    break;
+  default:
+    if (itl_g_vi_pending_operator == ITL_VI_OP_DELETE) {
+      waiting_for = "a motion: w, b, e, $, 0, ^, d (line), f, t, F, T, h, l, "
+                    "j, k, W, B, E, ;, ,";
+    } else if (itl_g_vi_pending_operator == ITL_VI_OP_CHANGE) {
+      waiting_for = "a motion: w, b, e, $, 0, ^, c (line), f, t, F, T, h, l, "
+                    "j, k, W, B, E, ;, ,";
+    } else if (itl_g_vi_pending_operator == ITL_VI_OP_YANK) {
+      waiting_for = "a motion: w, b, e, $, 0, ^, y (line), f, t, F, T, h, l, "
+                    "j, k, W, B, E, ;, ,";
+    } else if (itl_g_vi_pending_count > 0) {
+      waiting_for = "a command or a motion";
+    } else {
+      waiting_for = "a command: d, c, y, p, P, x, X, D, C, s, S";
+    }
+    break;
+  }
+
+  keys[keys_length] = '\0';
+  itl_prefix_append(out, out_size, &out_length, "pressed ");
+  itl_prefix_append(out, out_size, &out_length, keys);
+  itl_prefix_append(out, out_size, &out_length, ". waiting for ");
+  itl_prefix_append(out, out_size, &out_length, waiting_for);
+
+  return true;
+}
+
+/* Ask the host for the row of this line and fit it to the terminal width. An
+   open prefix takes the row before the host is asked, and only while the row
+   is enabled, held by nothing, and not closed. The text is cut at its first
+   line break, control bytes become spaces, and a row wider than the terminal
+   less its last column is cut with an ellipsis so the row never wraps. The
+   result lands in itl_g_hint_next, empty for no hint. */
 ITL_DEF void itl_hint_compose(const char *line, size_t cursor_byte, size_t cols)
 {
   char text[ITL_HINT_TEXT_MAX + 8];
+  char prefix_text[160];
   const char *sgr = NULL;
   const char *returned;
   size_t room = cols > 1 ? cols - 1 : 0;
@@ -5532,7 +5717,11 @@ ITL_DEF void itl_hint_compose(const char *line, size_t cursor_byte, size_t cols)
     return;
   }
 
-  returned = itl_g_hint_callback(line, cursor_byte, &sgr);
+  if (itl_prefix_hint(prefix_text, sizeof(prefix_text))) {
+    returned = prefix_text;
+  } else {
+    returned = itl_g_hint_callback(line, cursor_byte, &sgr);
+  }
   if (returned == NULL) {
     return;
   }
@@ -8273,6 +8462,31 @@ ITL_DEF bool itl_le_wait_for_key(itl_le_t *le)
   (void) le;
   return true;
 #endif /* ITL_POSIX && !ITL_INJECT_KLEE */
+}
+
+/* Open a prefix and wait for the key that completes it. The hint row names
+   the prefix while the editor waits, and a key already pending is read at once
+   without drawing it. The prefix is closed again before this returns, so the
+   next frame drops its hint. Returns false on an error. */
+ITL_DEF bool itl_le_await_chord(itl_le_t *le, itl_prefix_kind kind, uint8_t key)
+{
+  bool is_ready;
+
+  itl_g_prefix_kind = kind;
+  itl_g_prefix_key = key;
+
+  if (!itl_input_is_pending()) {
+    itl_g_tty_plain_append_pending = false;
+    itl_g_tty_should_refresh_text = true;
+    itl_le_tty_refresh(le);
+    itl_idle_arm();
+  }
+  is_ready = itl_le_wait_for_key(le);
+
+  itl_g_prefix_kind = ITL_PREFIX_NONE;
+  itl_g_prefix_key = 0;
+
+  return is_ready;
 }
 
 /* Refills the menu candidates for the line as it stands now, returning false
@@ -11656,7 +11870,9 @@ ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
 
       if (byte == 'f' || byte == 'F' || byte == 't' || byte == 'T') {
         uint8_t target_byte;
-        if (ITL_READ_BYTE(&target_byte)) {
+        if (itl_le_await_chord(le, ITL_PREFIX_VI_FIND, byte) &&
+            ITL_READ_BYTE(&target_byte))
+        {
           find_char = itl_utf8_parse(target_byte);
         }
       }
@@ -11898,7 +12114,9 @@ ITL_DEF tl_status_code itl_vi_block_loop(itl_le_t *le, int return_mode)
 
       if (byte == 'f' || byte == 'F' || byte == 't' || byte == 'T') {
         uint8_t target_byte;
-        if (ITL_READ_BYTE(&target_byte)) {
+        if (itl_le_await_chord(le, ITL_PREFIX_VI_FIND, byte) &&
+            ITL_READ_BYTE(&target_byte))
+        {
           find_char = itl_utf8_parse(target_byte);
         }
       }
@@ -12139,6 +12357,7 @@ ITL_DEF tl_status_code itl_vi_ex_command(itl_le_t *le)
 
   command[0] = '\0';
   itl_string_copy(original, le->line);
+  itl_g_prefix_kind = ITL_PREFIX_VI_EX;
 
   while (!is_done) {
     int key, kind;
@@ -12209,6 +12428,7 @@ ITL_DEF tl_status_code itl_vi_ex_command(itl_le_t *le)
     }
   }
 
+  itl_g_prefix_kind = ITL_PREFIX_NONE;
   le->prompt = saved_prompt;
   le->prompt_size = saved_prompt_size;
   le->prompt_width = saved_prompt_width;
@@ -12358,7 +12578,9 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
 
   if (byte == '"') {
     uint8_t register_byte;
-    if (ITL_READ_BYTE(&register_byte)) {
+    if (itl_le_await_chord(le, ITL_PREFIX_VI_REGISTER, byte) &&
+        ITL_READ_BYTE(&register_byte))
+    {
       itl_g_vi_pending_register = (char) register_byte;
     }
     return TL_SUCCESS;
@@ -12376,7 +12598,9 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
       itl_utf8_t find_char = ITL_ZERO_INIT;
       if (byte == 'f' || byte == 'F' || byte == 't' || byte == 'T') {
         uint8_t target_byte;
-        if (ITL_READ_BYTE(&target_byte)) {
+        if (itl_le_await_chord(le, ITL_PREFIX_VI_FIND, byte) &&
+            ITL_READ_BYTE(&target_byte))
+        {
           find_char = itl_utf8_parse(target_byte);
         }
       }
@@ -12434,7 +12658,8 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
 
   case 'r': {
     uint8_t replace_byte;
-    if (ITL_READ_BYTE(&replace_byte) &&
+    if (itl_le_await_chord(le, ITL_PREFIX_VI_REPLACE, byte) &&
+        ITL_READ_BYTE(&replace_byte) &&
         le->cursor_position + count <= le->line->length)
     {
       itl_utf8_t ch = itl_utf8_parse(replace_byte);
@@ -12525,7 +12750,9 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
   case 'T': {
     uint8_t target_byte;
     itl_utf8_t find_char = ITL_ZERO_INIT;
-    if (ITL_READ_BYTE(&target_byte)) {
+    if (itl_le_await_chord(le, ITL_PREFIX_VI_FIND, byte) &&
+        ITL_READ_BYTE(&target_byte))
+    {
       find_char = itl_utf8_parse(target_byte);
     }
     itl_vi_apply_bare_motion(le, (int) byte, find_char, count);
@@ -12618,6 +12845,13 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
       continue;
+    }
+
+    /* Ctrl-X waits for its chord in the editor's own wait, so the hint row can
+       name the chord and a resize or the idle hook is still served. The parser
+       then reads the chord, and an unbound key starts the next key. */
+    if (input_byte == 24 && !itl_le_await_chord(le, ITL_PREFIX_CTRL_X, 24)) {
+      return TL_ERROR;
     }
 
     input_type = itl_esc_parse(input_byte);
