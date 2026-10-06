@@ -469,6 +469,26 @@ typedef const char *(*tl_hint_fn)(const char *buffer, size_t cursor,
 TL_DEF void tl_set_hint_callback(tl_hint_fn callback);
 
 /**
+ * Set the right prompt, or NULL for none. It is drawn right-aligned on the
+ * first input row and ends one column short of the right edge. It is hidden
+ * while the input and ghost on that row would come within one column of it,
+ * while the prompt is cut to fit, while a history search is open, and when it
+ * holds a line break. It is never part of the submitted line. Escape sequences
+ * count as zero columns. The width is measured once here, and the host keeps
+ * the string valid until the next call.
+ */
+TL_DEF void tl_set_right_prompt(const char *right_prompt);
+
+/**
+ * Set the prompt a submitted line is redrawn with, or NULL to leave the line
+ * as it was drawn. When Enter submits, everything from the top of the prompt
+ * down is erased, which takes the right prompt, the ghost, the hint row, and
+ * any rows below the input, and the line is drawn again after this prompt. The
+ * host keeps the string valid until the next call.
+ */
+TL_DEF void tl_set_transient_prompt(const char *transient_prompt);
+
+/**
  * The wake hook for an out-of-band report such as a finished background job.
  * The wait loop calls phase 0 to ask whether anything must print. On a nonzero
  * answer it clears the render block, calls phase 1 for the host to write its
@@ -4303,6 +4323,19 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_length = 0;
    path fires only then, otherwise a mid-line caret forces the full redraw. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_cursor_at_end = false;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_ghost_len = 0;
+/* Whether the previous frame drew the right prompt on the first input row, so
+   a resize knows that row reached the right edge less one column. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_right_prompt_is_shown = false;
+
+/* The host right prompt and its display width, zero when nothing is drawn. A
+   hold keeps it away while a history search or a transient redraw owns the
+   first row. */
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_right_prompt = NULL;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_right_prompt_width = 0;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_right_prompt_is_held = false;
+
+/* The prompt a submitted line is redrawn with, or NULL to keep the line. */
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_transient_prompt = NULL;
 
 /* The host hint callback, or NULL when the hint row is off. */
 ITL_DEF ITL_THREAD_LOCAL tl_hint_fn itl_g_hint_callback = NULL;
@@ -4840,6 +4873,7 @@ ITL_DEF void itl_le_invalidate_prev_frame(void)
   itl_g_le_prev_length = 0;
   itl_g_le_prev_ghost_len = 0;
   itl_g_le_prev_spans_usable = false;
+  itl_g_le_prev_right_prompt_is_shown = false;
   itl_g_hint_shown_len = 0;
 }
 
@@ -5032,7 +5066,14 @@ ITL_DEF size_t itl_le_reflow_rows_above_caret(const itl_le_t *le,
     }
 
     if (ITL_LE_IS_NEWLINE(le->line->chars[i])) {
-      rows_above += itl_reflow_row_count(col, ncols);
+      /* A right prompt drawn on the first row reached one column short of the
+         old right edge, and the terminal reflowed it with that row. */
+      size_t row_extent = col;
+      if (rows_above == le->prompt_rows && itl_g_le_prev_right_prompt_is_shown)
+      {
+        row_extent = ITL_MAX(col, ocols - 1);
+      }
+      rows_above += itl_reflow_row_count(row_extent, ncols);
       col = indent;
       i += 1;
       continue;
@@ -5353,6 +5394,32 @@ ITL_DEF void itl_le_tty_draw_hint(itl_char_buf_t *b)
   itl_g_hint_shown_len = itl_g_hint_next_len;
 }
 
+/* The column the right prompt starts at when the first input row ends at
+   row_end_col, or zero when it is not drawn. It ends one column short of the
+   right edge and keeps one free column after the row. A prompt cut to fit
+   leaves no room for it. */
+ITL_DEF size_t itl_right_prompt_column(const itl_le_t *le, size_t row_end_col,
+                                       size_t cols)
+{
+  if (itl_g_right_prompt_width == 0 || itl_g_right_prompt_is_held ||
+      le->prompt_width >= cols ||
+      row_end_col + itl_g_right_prompt_width + 2 > cols)
+  {
+    return 0;
+  }
+
+  return cols - 1 - itl_g_right_prompt_width;
+}
+
+/* Draw the right prompt on the current row from start_col. The caller moves
+   the caret back afterwards. */
+ITL_DEF void itl_le_tty_draw_right_prompt(itl_char_buf_t *b, size_t start_col)
+{
+  ITL_TTY_MOVE_TO_COLUMN(b, start_col + 1);
+  itl_char_buf_append_cstr(b, itl_g_right_prompt);
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+}
+
 /* NOTE: Hottest function in the library. */
 ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 {
@@ -5560,7 +5627,23 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         itl_char_buf_append_cstr(fb, ITL_HIGHLIGHT_RESET);
       }
       ITL_TTY_CLEAR_TO_END(fb);
-      if (itl_le_tty_draw_ghost(fb, true, m.cursor_col, cols)) {
+      bool was_ghost_drawn = itl_le_tty_draw_ghost(fb, true, m.cursor_col, cols);
+      bool should_restore_column = was_ghost_drawn;
+      /* The clear above took a right prompt on the caret's row with it, so it is
+         drawn again while the row still leaves room for it. */
+      if (m.cursor_row == le->prompt_rows) {
+        size_t row_end_col =
+            m.cursor_col + (was_ghost_drawn ? itl_g_ghost_width : 0);
+        size_t right_prompt_col =
+            itl_right_prompt_column(le, row_end_col, cols);
+
+        if (right_prompt_col > 0) {
+          itl_le_tty_draw_right_prompt(fb, right_prompt_col);
+          should_restore_column = true;
+        }
+        itl_g_le_prev_right_prompt_is_shown = right_prompt_col > 0;
+      }
+      if (should_restore_column) {
         ITL_TTY_MOVE_TO_COLUMN(fb, m.cursor_col + 1);
       }
       if (!itl_hint_is_unchanged()) {
@@ -5651,6 +5734,8 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     size_t open_end = 0;
     const char *open_sgr = NULL;
     bool suppress_pad = itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL;
+    /* Where the first input row ends. A row that wrapped fills the width. */
+    size_t first_row_end_col = cols;
     col = indent;
     row = le->prompt_rows;
     /* The flash repaints the whole line in one tone. It opens that SGR once and
@@ -5693,6 +5778,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
           in_span = false;
         }
 
+        if (row == le->prompt_rows) {
+          first_row_end_col = col;
+        }
         col = itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent,
                                    &row);
 
@@ -5739,14 +5827,33 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     }
     ITL_TTY_CLEAR_TO_END(b);
 
-    (void) itl_le_tty_draw_ghost(
+    bool was_ghost_drawn = itl_le_tty_draw_ghost(
         b, le->cursor_position == le->line->length, col, cols);
     itl_le_tty_draw_hint(b);
 
-    /* Move from the end of the rendered text up to the cursor's row. */
-    move_up = (m.total_rows - 1) - m.cursor_row;
-    if (move_up > 0) {
-      ITL_TTY_MOVE_UP(b, move_up);
+    if (row == le->prompt_rows) {
+      first_row_end_col = col + (was_ghost_drawn ? itl_g_ghost_width : 0);
+    }
+    size_t right_prompt_col =
+        itl_right_prompt_column(le, first_row_end_col, cols);
+    itl_g_le_prev_right_prompt_is_shown = right_prompt_col > 0;
+
+    if (right_prompt_col > 0) {
+      /* The right prompt goes on the first input row, and the caret steps down
+         from there to its own row. */
+      if (m.total_rows - 1 > le->prompt_rows) {
+        ITL_TTY_MOVE_UP(b, m.total_rows - 1 - le->prompt_rows);
+      }
+      itl_le_tty_draw_right_prompt(b, right_prompt_col);
+      if (m.cursor_row > le->prompt_rows) {
+        ITL_TTY_MOVE_DOWN(b, m.cursor_row - le->prompt_rows);
+      }
+    } else {
+      /* Move from the end of the rendered text up to the cursor's row. */
+      move_up = (m.total_rows - 1) - m.cursor_row;
+      if (move_up > 0) {
+        ITL_TTY_MOVE_UP(b, move_up);
+      }
     }
   } else {
     /* Only the caret moved, so step from the previously stored caret row. */
@@ -6059,6 +6166,21 @@ TL_DEF void tl_set_hint_callback(tl_hint_fn callback)
   itl_g_hint_callback = callback;
 }
 
+TL_DEF void tl_set_right_prompt(const char *right_prompt)
+{
+  itl_g_right_prompt = right_prompt;
+  itl_g_right_prompt_width = 0;
+
+  if (right_prompt != NULL && strchr(right_prompt, '\n') == NULL) {
+    itl_g_right_prompt_width = itl_cstr_display_width(right_prompt);
+  }
+}
+
+TL_DEF void tl_set_transient_prompt(const char *transient_prompt)
+{
+  itl_g_transient_prompt = transient_prompt;
+}
+
 TL_DEF void tl_set_edit_mode(int mode)
 {
   if (mode == TL_EDIT_MODE_VI_INSERT || mode == TL_EDIT_MODE_VI_COMMAND ||
@@ -6127,11 +6249,40 @@ ITL_DEF void itl_hint_release(void)
   itl_g_hint_hold_count -= 1;
 }
 
+/* Redraw a submitted line after the transient prompt. The erase runs from the
+   top of the block to the end of the screen, so the old prompt rows, the right
+   prompt, the hint row, and any rows under the input go with it, and the erase
+   and the redraw leave in one write. */
+ITL_DEF void itl_le_tty_draw_transient(itl_le_t *le)
+{
+  itl_char_buf_t *b = &itl_g_char_buffer;
+
+  itl_le_tty_move_to_block_top(b);
+  ITL_TTY_MOVE_TO_COLUMN(b, 1);
+  ITL_TTY_CLEAR_BELOW(b);
+
+  le->prompt = itl_g_transient_prompt;
+  le->prompt_size = strlen(itl_g_transient_prompt);
+  le->prompt_width =
+      itl_prompt_last_row_width(itl_g_transient_prompt, &le->prompt_rows);
+
+  itl_g_right_prompt_is_held = true;
+  itl_g_tty_first_render = true;
+  itl_le_invalidate_prev_frame();
+  itl_g_tty_should_refresh_text = true;
+  if (!itl_le_tty_refresh(le)) {
+    ITL_CHAR_BUF_DUMP(b);
+    ITL_CHAR_BUF_CLEAR(b);
+  }
+  itl_g_right_prompt_is_held = false;
+}
+
 /* Hand the line back to the host with no ghost left anywhere. itl_ghost_clear
    only drops the recorded text, so a ghost that reached the screen also needs
    one forced text refresh to erase it. With nothing drawn the line on screen is
    already correct and the repaint is skipped, which avoids a full-block flicker
-   on a multiline submit. */
+   on a multiline submit. A submit with a transient prompt redraws the line
+   after it instead. */
 ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
 {
   bool was_ghost_drawn = itl_g_le_prev_ghost_len > 0;
@@ -6140,7 +6291,9 @@ ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
   itl_ghost_clear();
   itl_g_hint_is_closed = true;
 
-  if (was_ghost_drawn || was_hint_drawn) {
+  if (code == TL_PRESSED_ENTER && itl_g_transient_prompt != NULL) {
+    itl_le_tty_draw_transient(le);
+  } else if (was_ghost_drawn || was_hint_drawn) {
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
   }
@@ -10082,6 +10235,7 @@ ITL_DEF int itl_history_search(itl_le_t *le)
     le->prompt_width = 0;
     le->line = &display;
     le->cursor_position = query_start + query.length;
+    itl_g_right_prompt_is_held = true;
     itl_g_search_spans_active = true;
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
@@ -10169,6 +10323,7 @@ ITL_DEF int itl_history_search(itl_le_t *le)
   /* Restore the real prompt width and line editor buffer, and stop drawing the
      search spans so the next refresh highlights the line as a command again. */
   itl_g_search_spans_active = false;
+  itl_g_right_prompt_is_held = false;
   le->prompt_width = saved_prompt_width;
   le->line = &itl_g_line_buffer;
 

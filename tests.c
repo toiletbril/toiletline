@@ -5167,6 +5167,266 @@ test_highlight_follows_the_caret(void)
 
   return ok;
 }
+
+#define TEST_RIGHT_PROMPT "\x1b[32mRP\x1b[0m"
+
+static void
+test_right_prompt_prepare_frame(itl_le_t *le, itl_string_t *line,
+                                char *out_buffer, size_t out_size,
+                                const char *text, size_t cols)
+{
+  itl_le_init(le, line, out_buffer, out_size, "> ");
+  ITL_STRING_FROM_CSTR(line, text);
+  le->cursor_position = line->length;
+
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = cols;
+  itl_g_debug_frame_sink = test_frame_capture_sink;
+  tl_set_right_prompt(TEST_RIGHT_PROMPT);
+}
+
+static void
+test_right_prompt_finish_frame(itl_string_t *line)
+{
+  itl_g_debug_frame_sink = NULL;
+  tl_set_right_prompt(NULL);
+  tl_set_transient_prompt(NULL);
+  itl_g_hint_is_closed = false;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  itl_le_invalidate_prev_frame();
+  ITL_STRING_FREE(line);
+}
+
+/* The right prompt ends one column short of the edge, and it needs one free
+   column after the first input row. At 20 columns with a two-column prompt it
+   starts at column 17, so input that ends at column 16 keeps it and input that
+   reaches column 17 hides it. */
+static bool
+test_right_prompt_fits_the_first_row(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool is_width_measured;
+  bool was_drawn_short;
+  bool was_drawn_at_the_gap;
+  bool was_hidden_at_overlap;
+  bool was_drawn_above_rows;
+  bool was_hidden_when_wrapped;
+  bool was_hidden_when_narrow;
+  bool was_hidden_when_held;
+  bool ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  test_right_prompt_prepare_frame(&le, line, out_buffer, sizeof(out_buffer),
+                                  "ab", 20);
+  is_width_measured = itl_g_right_prompt_width == 2;
+
+  test_frame_capture_refresh(&le);
+  was_drawn_short = test_frame_capture_has("\x1b[18G" TEST_RIGHT_PROMPT) &&
+                    itl_g_le_prev_right_prompt_is_shown;
+
+  ITL_STRING_FROM_CSTR(line, "abcdefghijklmn");
+  le.cursor_position = line->length;
+  test_frame_capture_refresh(&le);
+  was_drawn_at_the_gap = test_frame_capture_has(TEST_RIGHT_PROMPT);
+
+  ITL_STRING_FROM_CSTR(line, "abcdefghijklmno");
+  le.cursor_position = line->length;
+  test_frame_capture_refresh(&le);
+  was_hidden_at_overlap = !test_frame_capture_has("RP") &&
+                          !itl_g_le_prev_right_prompt_is_shown;
+
+  ITL_STRING_FROM_CSTR(line, "ab\ncdefghijklmnopq");
+  le.cursor_position = line->length;
+  test_frame_capture_refresh(&le);
+  was_drawn_above_rows =
+      test_frame_capture_has("\x1b[1A\x1b[18G" TEST_RIGHT_PROMPT) &&
+      itl_g_le_prev_total_rows == 2;
+
+  ITL_STRING_FROM_CSTR(line, "abcdefghijklmnopqrstuvwxyz\nab");
+  le.cursor_position = line->length;
+  test_frame_capture_refresh(&le);
+  was_hidden_when_wrapped = !test_frame_capture_has("RP");
+
+  ITL_STRING_FROM_CSTR(line, "");
+  le.cursor_position = 0;
+  itl_g_tty_prev_cols = 5;
+  test_frame_capture_refresh(&le);
+  was_hidden_when_narrow = !test_frame_capture_has("RP");
+
+  itl_g_tty_prev_cols = 20;
+  itl_g_right_prompt_is_held = true;
+  test_frame_capture_refresh(&le);
+  was_hidden_when_held = !test_frame_capture_has("RP");
+  itl_g_right_prompt_is_held = false;
+
+  test_right_prompt_finish_frame(line);
+
+  ok = is_width_measured && was_drawn_short && was_drawn_at_the_gap &&
+       was_hidden_at_overlap && was_drawn_above_rows &&
+       was_hidden_when_wrapped && was_hidden_when_narrow &&
+       was_hidden_when_held;
+
+  if (!ok) {
+    TEST_PRINTF("width %d, short %d, gap %d, overlap %d, rows %d, wrapped %d, "
+                "narrow %d, held %d\n",
+                (int) is_width_measured, (int) was_drawn_short,
+                (int) was_drawn_at_the_gap, (int) was_hidden_at_overlap,
+                (int) was_drawn_above_rows, (int) was_hidden_when_wrapped,
+                (int) was_hidden_when_narrow, (int) was_hidden_when_held);
+  }
+
+  return ok;
+}
+
+/* Typed characters stay on the append path. Each one redraws the right prompt
+   after the clear, until the input reaches it, and the prompt comes back on a
+   full redraw once the input shrinks. A prompt with a line break is never
+   drawn. */
+static bool
+test_right_prompt_follows_appends(void)
+{
+  const char *keys = "cdefghijklmno";
+  char        out_buffer[BUFFER_SIZE];
+  size_t      key_index;
+  size_t      drawn_count = 0;
+  bool        was_hidden_at_end;
+  bool        was_back_after_erase;
+  bool        was_line_break_rejected;
+  bool        ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  test_right_prompt_prepare_frame(&le, line, out_buffer, sizeof(out_buffer),
+                                  "ab", 20);
+  test_frame_capture_refresh(&le);
+
+  itl_g_debug_append_refresh_count = 0;
+  for (key_index = 0; keys[key_index] != '\0'; ++key_index) {
+    itl_utf8_t appended_character = itl_utf8_parse((uint8_t) keys[key_index]);
+
+    itl_g_tty_plain_append_pending = le.cursor_position == le.line->length;
+    itl_g_tty_plain_append_width = itl_char_width(appended_character);
+    itl_le_insert(&le, appended_character);
+    itl_g_tty_should_refresh_text = true;
+    test_frame_capture_size = 0;
+    itl_le_tty_refresh(&le);
+    if (test_frame_capture_has(TEST_RIGHT_PROMPT)) {
+      drawn_count += 1;
+    }
+  }
+  was_hidden_at_end = !itl_g_le_prev_right_prompt_is_shown;
+
+  ITL_LE_ERASE_BACKWARD(&le, 1);
+  itl_g_tty_should_refresh_text = true;
+  test_frame_capture_size = 0;
+  itl_le_tty_refresh(&le);
+  was_back_after_erase = test_frame_capture_has(TEST_RIGHT_PROMPT) &&
+                         itl_g_le_prev_right_prompt_is_shown;
+
+  tl_set_right_prompt("one\ntwo");
+  was_line_break_rejected = itl_g_right_prompt_width == 0;
+
+  ok = drawn_count == 12 && was_hidden_at_end && was_back_after_erase &&
+       was_line_break_rejected &&
+       itl_g_debug_append_refresh_count == strlen(keys);
+
+  test_right_prompt_finish_frame(line);
+
+  if (!ok) {
+    TEST_PRINTF("drawn %zu, hidden %d, back %d, line break %d, appends %zu\n",
+                drawn_count, (int) was_hidden_at_end,
+                (int) was_back_after_erase, (int) was_line_break_rejected,
+                itl_g_debug_append_refresh_count);
+  }
+
+  return ok;
+}
+
+/* Enter with a transient prompt erases from the top of the block down and
+   draws the line after that prompt alone. The other ways out of the line and a
+   submit without one leave the block standing. */
+static bool
+test_transient_prompt_redraws_the_submitted_line(void)
+{
+  static const char HINT[] = "usage: ab";
+  char              out_buffer[BUFFER_SIZE];
+  bool              was_block_erased;
+  bool              was_line_redrawn;
+  bool              were_prompts_dropped;
+  bool              is_prompt_restored;
+  bool              was_interrupt_left;
+  bool              was_plain_submit_left;
+  bool              ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  test_right_prompt_prepare_frame(&le, line, out_buffer, sizeof(out_buffer),
+                                  "ab\ncd", 40);
+  le.prompt = "top\n> ";
+  le.prompt_size = strlen(le.prompt);
+  le.prompt_width = itl_prompt_last_row_width(le.prompt, &le.prompt_rows);
+  test_hint_text = HINT;
+  itl_g_hint_is_closed = false;
+  itl_g_hint_hold_count = 0;
+  tl_set_hint_callback(test_hint_callback);
+  tl_set_transient_prompt("$ ");
+  test_frame_capture_refresh(&le);
+
+  test_frame_capture_size = 0;
+  itl_le_finish_input(&le, TL_PRESSED_ENTER);
+  was_block_erased = test_frame_capture_has("\x1b[2A\x1b[1G\x1b[0J");
+  was_line_redrawn = test_frame_capture_has("$ ab") &&
+                     itl_g_le_prev_total_rows == 2;
+  were_prompts_dropped = !test_frame_capture_has("RP") &&
+                         !test_frame_capture_has("top") &&
+                         !test_frame_capture_has(HINT);
+  is_prompt_restored = !itl_g_right_prompt_is_held;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  ITL_STRING_FROM_CSTR(line, "ab");
+  le.cursor_position = line->length;
+  itl_g_hint_is_closed = false;
+  test_frame_capture_refresh(&le);
+  test_frame_capture_size = 0;
+  itl_le_finish_input(&le, TL_PRESSED_INTERRUPT);
+  was_interrupt_left = !test_frame_capture_has("\x1b[0J") &&
+                       !test_frame_capture_has("$ ");
+
+  tl_set_transient_prompt(NULL);
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  ITL_STRING_FROM_CSTR(line, "ab");
+  le.cursor_position = line->length;
+  itl_g_hint_is_closed = false;
+  test_frame_capture_refresh(&le);
+  test_frame_capture_size = 0;
+  itl_le_finish_input(&le, TL_PRESSED_ENTER);
+  was_plain_submit_left = !test_frame_capture_has("\x1b[0J") &&
+                          !test_frame_capture_has("$ ");
+
+  tl_set_hint_callback(NULL);
+  itl_g_hint_shown_len = 0;
+  itl_g_hint_next_len = 0;
+  test_right_prompt_finish_frame(line);
+
+  ok = was_block_erased && was_line_redrawn && were_prompts_dropped &&
+       is_prompt_restored && was_interrupt_left && was_plain_submit_left;
+
+  if (!ok) {
+    TEST_PRINTF("erased %d, redrawn %d, dropped %d, restored %d, interrupt %d, "
+                "plain %d\n",
+                (int) was_block_erased, (int) was_line_redrawn,
+                (int) were_prompts_dropped, (int) is_prompt_restored,
+                (int) was_interrupt_left, (int) was_plain_submit_left);
+  }
+
+  return ok;
+}
 #endif
 
 typedef bool (*test_func)(void);
@@ -5324,6 +5584,12 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_highlight_follows_the_caret),
                                    DEFINE_TEST_CASE(
                                        test_auto_pair_types_steps_and_erases),
+                                   DEFINE_TEST_CASE(
+                                       test_right_prompt_fits_the_first_row),
+                                   DEFINE_TEST_CASE(
+                                       test_right_prompt_follows_appends),
+                                   DEFINE_TEST_CASE(
+                                       test_transient_prompt_redraws_the_submitted_line),
 #endif
                                    DEFINE_TEST_CASE(
                                        test_hint_row_is_cut_to_the_width),
