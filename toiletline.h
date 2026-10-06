@@ -359,6 +359,13 @@ TL_DEF void tl_set_ghost_enabled(int enabled);
  */
 TL_DEF void tl_set_history_prefix_search(int enabled);
 
+/*
+ * Makes a typed (, [, {, " or ' insert its closer after the caret. Typing that
+ * closer steps over it, and Backspace between the empty pair deletes both.
+ * Disabled by default.
+ */
+TL_DEF void tl_set_auto_pair(int enabled);
+
 /** Append a space after a complete non-directory completion when enabled. */
 TL_DEF void tl_set_space_after_completion(int enabled);
 
@@ -405,15 +412,23 @@ typedef struct tl_highlight_span
 } tl_highlight_span;
 
 /**
+ * The cursor of a highlight request whose text carries no caret, such as a
+ * menu candidate or a reverse search match.
+ */
+#define TL_HIGHLIGHT_NO_CURSOR ((size_t) -1)
+
+/**
  * The highlight result. The editor provides spans, an array of capacity slots,
  * and the host fills the first count of them. The spans must be sorted by
- * start, non-overlapping, and within the line.
+ * start, non-overlapping, and within the line. cursor is the byte offset of
+ * the caret in the buffer, or TL_HIGHLIGHT_NO_CURSOR.
  */
 typedef struct tl_highlight
 {
   tl_highlight_span *spans;
   size_t count;
   size_t capacity;
+  size_t cursor;
 } tl_highlight;
 
 /**
@@ -427,6 +442,13 @@ typedef int (*tl_highlight_fn)(const char *buffer, tl_highlight *out);
  * Register the highlight callback, or NULL to disable highlighting.
  */
 TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback);
+
+/**
+ * Whether the highlight depends on the caret. When nonzero, a caret move asks
+ * the highlight callback again and redraws the line when the spans changed.
+ * The default is zero.
+ */
+TL_DEF void tl_set_highlight_follows_cursor(int follows_cursor);
 
 /**
  * The hint callback. The host receives the buffer and the byte offset of the
@@ -4346,6 +4368,7 @@ ITL_DEF int itl_ascii_prefix_matches_casefold(const char *entry,
    interactive host registers one. The refresh reads it, so it is declared
    before the refresh. */
 ITL_DEF ITL_THREAD_LOCAL tl_highlight_fn itl_g_highlight_callback = NULL;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_highlight_follows_cursor = false;
 ITL_DEF ITL_THREAD_LOCAL tl_wake_fn itl_g_wake_callback = NULL;
 
 /* The reset that closes every colored span, matching the ghost text's own
@@ -4544,6 +4567,26 @@ ITL_DEF bool itl_le_prev_spans_append_compatible(
   return true;
 }
 
+/* Whether the spans are the ones the previous frame drew. A caret move that
+   keeps them leaves the drawn line valid. */
+ITL_DEF bool itl_le_prev_spans_equal(const tl_highlight_span *spans,
+                                     size_t count)
+{
+  size_t s;
+  if (!itl_g_le_prev_spans_usable || count != itl_g_le_prev_span_count) {
+    return false;
+  }
+  for (s = 0; s < count; ++s) {
+    if (spans[s].start != itl_g_le_prev_spans[s].start ||
+        spans[s].end != itl_g_le_prev_spans[s].end ||
+        strcmp(spans[s].sgr, itl_g_le_prev_spans[s].sgr) != 0)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 ITL_DEF size_t itl_spans_keep_valid(const tl_highlight_span *source,
                                     size_t source_count,
                                     tl_highlight_span *destination,
@@ -4565,13 +4608,14 @@ ITL_DEF size_t itl_spans_keep_valid(const tl_highlight_span *source,
 
 ITL_DEF size_t itl_le_collect_highlight(const char *render,
                                         tl_highlight_span *destination,
-                                        size_t line_length)
+                                        size_t line_length, size_t cursor)
 {
   tl_highlight hl;
 
   hl.spans = destination;
   hl.count = 0;
   hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
+  hl.cursor = cursor;
 
   if (!itl_g_highlight_callback(render, &hl)) {
     return 0;
@@ -5370,23 +5414,46 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   cols = ITL_MAX(tty_cols, 1);
   indent = ITL_LE_INDENT(le, cols);
 
-  /* A caret move can change the hint, so the cursor-only frame asks for it
-     here. A hint that differs from the one on screen turns the frame into a
-     text refresh, which redraws the row. */
-  bool is_hint_ready = false;
-  if (!itl_g_tty_should_refresh_text && itl_g_hint_callback != NULL) {
-    bool was_serialized = itl_g_serialized_line_ready;
+  tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
+  size_t span_count = 0;
 
-    if (itl_le_serialize_line(le)) {
-      itl_hint_compose(itl_g_serialized_line, itl_le_cursor_byte_offset(le),
-                       cols);
-    } else {
-      itl_g_hint_next_len = 0;
+  /* A caret move can change the hint and a caret-dependent highlight, so the
+     cursor-only frame asks for them here. A hint or spans that differ from
+     the ones on screen turn the frame into a text refresh, which redraws the
+     line and the row. */
+  bool is_hint_ready = false;
+  bool is_highlight_ready = false;
+  bool should_follow_highlight =
+      !itl_g_tty_should_refresh_text && itl_g_highlight_follows_cursor &&
+      !itl_g_search_spans_active && itl_should_run_highlight();
+  if (!itl_g_tty_should_refresh_text &&
+      (itl_g_hint_callback != NULL || should_follow_highlight))
+  {
+    bool was_serialized = itl_g_serialized_line_ready;
+    bool is_serialized = itl_le_serialize_line(le);
+    size_t cursor_offset = itl_le_cursor_byte_offset(le);
+
+    if (itl_g_hint_callback != NULL) {
+      if (is_serialized) {
+        itl_hint_compose(itl_g_serialized_line, cursor_offset, cols);
+      } else {
+        itl_g_hint_next_len = 0;
+      }
+      is_hint_ready = true;
+    }
+
+    if (should_follow_highlight && is_serialized) {
+      span_count = itl_le_collect_highlight(
+          itl_g_serialized_line, itl_spans, le->line->length, cursor_offset);
+      is_highlight_ready = true;
+
+      if (!itl_le_prev_spans_equal(itl_spans, span_count)) {
+        itl_g_tty_should_refresh_text = true;
+      }
     }
     itl_g_serialized_line_ready = was_serialized;
-    is_hint_ready = true;
 
-    if (!itl_hint_is_unchanged()) {
+    if (is_hint_ready && !itl_hint_is_unchanged()) {
       itl_g_tty_should_refresh_text = true;
     }
   }
@@ -5426,9 +5493,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
      are dropped here. */
   const char *itl_cur_render = itl_g_serialized_line;
   bool have_cur_render = false;
-  tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
   tl_highlight_span itl_syntax_spans[ITL_HIGHLIGHT_MAX_SPANS];
-  size_t span_count = 0;
   const char *append_tail_sgr = NULL;
   if (itl_g_tty_should_refresh_text) {
     have_cur_render = itl_le_serialize_line(le);
@@ -5439,7 +5504,8 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         have_cur_render && itl_should_run_highlight())
     {
       size_t syntax_count = itl_le_collect_highlight(
-          itl_cur_render, itl_syntax_spans, le->line->length);
+          itl_cur_render, itl_syntax_spans, le->line->length,
+          itl_le_cursor_byte_offset(le));
 
       span_count = itl_merge_visual_spans(
           itl_syntax_spans, syntax_count, itl_g_search_spans,
@@ -5451,9 +5517,12 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
       span_count = itl_spans_keep_valid(itl_g_search_spans,
                                         itl_g_search_span_count, itl_spans,
                                         le->line->length);
-    } else if (have_cur_render && itl_should_run_highlight()) {
+    } else if (have_cur_render && !is_highlight_ready &&
+               itl_should_run_highlight())
+    {
       span_count = itl_le_collect_highlight(itl_cur_render, itl_spans,
-                                            le->line->length);
+                                            le->line->length,
+                                            itl_le_cursor_byte_offset(le));
     }
   }
 
@@ -5819,6 +5888,123 @@ TL_DEF void tl_set_history_prefix_search(int enabled)
   itl_g_history_prefix_search_enabled = enabled;
 }
 
+/* Whether a typed opener inserts its closer, and how many closers the editor
+   inserted that still sit right after the caret. A typed character lands
+   before them and a backspace erases before them, so both keep the count.
+   Any other key forgets it. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_auto_pair_enabled = false;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_auto_pair_count = 0;
+
+TL_DEF void tl_set_auto_pair(int enabled)
+{
+  itl_g_auto_pair_enabled = enabled != 0;
+  itl_g_auto_pair_count = 0;
+}
+
+/* The closer an opener pairs with, or zero for any other byte. */
+ITL_DEF uint8_t itl_auto_pair_closer(uint8_t opener)
+{
+  switch (opener) {
+  case '(': return ')';
+  case '[': return ']';
+  case '{': return '}';
+  case '"': return '"';
+  case '\'': return '\'';
+  default: return 0;
+  }
+}
+
+/* The byte of a single-byte character at position, or zero past the line
+   end and for a multibyte character. */
+ITL_DEF uint8_t itl_le_ascii_at(const itl_le_t *le, size_t position)
+{
+  if (position >= le->line->length || le->line->chars[position].size != 1) {
+    return 0;
+  }
+  return le->line->chars[position].bytes[0];
+}
+
+/* An opener is paired only before the line end, a blank, or a closing
+   bracket, and never after a backslash. A quote after a word character or the
+   same quote more likely closes a string or sits inside a word, so it stays
+   single there. */
+ITL_DEF bool itl_le_auto_pair_fits(const itl_le_t *le, uint8_t opener)
+{
+  size_t caret = le->cursor_position;
+  uint8_t next = itl_le_ascii_at(le, caret);
+  uint8_t previous = caret > 0 ? itl_le_ascii_at(le, caret - 1) : ' ';
+  bool is_previous_wide = caret > 0 && le->line->chars[caret - 1].size != 1;
+
+  if (caret < le->line->length && next != ' ' && next != '\t' &&
+      next != '\n' && next != ')' && next != ']' && next != '}')
+  {
+    return false;
+  }
+  if (previous == '\\') {
+    return false;
+  }
+  if (opener == '"' || opener == '\'') {
+    return !is_previous_wide && !isalnum(previous) && previous != opener;
+  }
+  return true;
+}
+
+/* Steps over an inserted closer or inserts an opener with its closer, and
+   returns whether the typed byte was handled. */
+ITL_DEF bool itl_le_auto_pair_type(itl_le_t *le, uint8_t byte)
+{
+  uint8_t closer;
+
+  if (!itl_g_auto_pair_enabled || itl_g_vi_block_insert_active) {
+    return false;
+  }
+
+  if (itl_g_auto_pair_count > 0 &&
+      itl_le_ascii_at(le, le->cursor_position) == byte &&
+      (byte == ')' || byte == ']' || byte == '}' || byte == '"' ||
+       byte == '\''))
+  {
+    itl_le_move_right(le, 1);
+    itl_g_auto_pair_count -= 1;
+    return true;
+  }
+
+  closer = itl_auto_pair_closer(byte);
+  if (closer == 0 || !itl_le_auto_pair_fits(le, byte)) {
+    return false;
+  }
+  if (!itl_le_insert(le, itl_utf8_parse(byte))) {
+    return false;
+  }
+  if (itl_le_insert(le, itl_utf8_parse(closer))) {
+    itl_le_move_left(le, 1);
+    itl_g_auto_pair_count += 1;
+  }
+  return true;
+}
+
+/* Deletes an empty pair around the caret whose closer the editor inserted,
+   and returns whether it did. */
+ITL_DEF bool itl_le_auto_pair_erase(itl_le_t *le)
+{
+  size_t caret = le->cursor_position;
+  uint8_t closer;
+
+  if (itl_g_auto_pair_count == 0 || caret == 0) {
+    return false;
+  }
+
+  closer = itl_auto_pair_closer(itl_le_ascii_at(le, caret - 1));
+  if (closer == 0 || itl_le_ascii_at(le, caret) != closer) {
+    return false;
+  }
+
+  itl_le_move_right(le, 1);
+  ITL_LE_ERASE_BACKWARD(le, 2);
+  itl_g_auto_pair_count -= 1;
+  return true;
+}
+
 /* Whether a second TAB opens the selectable menu. A host that wants the plain
    printed list, or that drives another selector of its own, leaves it off. */
 ITL_DEF ITL_THREAD_LOCAL int itl_g_completion_menu_enabled = 0;
@@ -5856,6 +6042,11 @@ TL_DEF void tl_set_ghost_validate_callback(tl_ghost_validate_fn callback)
 TL_DEF void tl_set_wake_callback(tl_wake_fn callback)
 {
   itl_g_wake_callback = callback;
+}
+
+TL_DEF void tl_set_highlight_follows_cursor(int follows_cursor)
+{
+  itl_g_highlight_follows_cursor = follows_cursor != 0;
 }
 
 TL_DEF void tl_set_highlight_callback(tl_highlight_fn callback)
@@ -7014,6 +7205,7 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
     hl.spans = name_spans;
     hl.count = 0;
     hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
+    hl.cursor = TL_HIGHLIGHT_NO_CURSOR;
 
     if (itl_g_highlight_callback(name, &hl)) {
       size_t span_count = hl.count < ITL_HIGHLIGHT_MAX_SPANS
@@ -9812,6 +10004,7 @@ ITL_DEF int itl_history_search(itl_le_t *le)
         hl.spans = cached_spans;
         hl.count = 0;
         hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
+        hl.cursor = TL_HIGHLIGHT_NO_CURSOR;
 
 #if !defined NDEBUG
         itl_g_debug_search_highlight_count += 1;
@@ -11826,6 +12019,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
 
   itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
   itl_g_le_action = ITL_LE_ACTION_NONE;
+  itl_g_auto_pair_count = 0;
 
   /* A new line starts with no ghost, since the previous line's suggestion does
      not carry over, and predefined input is shown as the user's own text. */
@@ -11925,6 +12119,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
 
     input_type = itl_esc_parse(input_byte);
     itl_g_tty_plain_append_pending = false;
+    bool is_auto_pair_kept = false;
 
     /* Only a key that reaches itl_le_key_handle directly can continue a kill,
        a yank, or a last-argument walk. */
@@ -12014,7 +12209,17 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       if (!is_tab && !accepts_ghost) {
         itl_ghost_clear();
       }
-      code = itl_le_key_handle(le, input_type);
+      /* A backspace erases before the inserted closers, so they stay counted.
+         Between an empty pair it deletes both halves. */
+      is_auto_pair_kept = (input_type & TL_MASK_KEY) == TL_KEY_BACKSPACE;
+      if (input_type == TL_KEY_BACKSPACE && itl_le_auto_pair_erase(le)) {
+        itl_g_le_action = ITL_LE_ACTION_NONE;
+        itl_g_last_control = input_type;
+        itl_g_tty_should_refresh_text = true;
+        code = TL_SUCCESS;
+      } else {
+        code = itl_le_key_handle(le, input_type);
+      }
       if (code != TL_SUCCESS) {
         return itl_le_finish_input(le, code);
       }
@@ -12027,7 +12232,12 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       {
         itl_ghost_update(le);
       }
+    } else if (itl_le_auto_pair_type(le, input_byte)) {
+      is_auto_pair_kept = true;
+      itl_g_tty_should_refresh_text = true;
+      itl_ghost_update(le);
     } else {
+      is_auto_pair_kept = true;
       itl_utf8_t appended_character = itl_utf8_parse(input_byte);
       itl_g_tty_plain_append_pending =
           le->cursor_position == le->line->length;
@@ -12036,6 +12246,10 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       itl_g_tty_should_refresh_text = true;
       /* Recompute the ghost for the token the new character extended. */
       itl_ghost_update(le);
+    }
+
+    if (!is_auto_pair_kept) {
+      itl_g_auto_pair_count = 0;
     }
 
     ITL_TRACELN("strlen: %zu, hist index: %zu\n", le->line->length,

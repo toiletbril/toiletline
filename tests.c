@@ -4976,6 +4976,197 @@ test_hint_row_keeps_multiline_rows_and_append_path(void)
 
   return ok;
 }
+
+static bool
+test_auto_pair_line_is(itl_le_t *le, const char *expected, size_t caret)
+{
+  char text[BUFFER_SIZE];
+
+  if (itl_string_to_cstr(le->line, text, sizeof(text)) != TL_SUCCESS) {
+    return false;
+  }
+  if (strcmp(text, expected) != 0 || le->cursor_position != caret) {
+    TEST_PRINTF("line '%s' caret %zu, expected '%s' caret %zu\n", text,
+                le->cursor_position, expected, caret);
+    return false;
+  }
+  return true;
+}
+
+static bool
+test_auto_pair_types_steps_and_erases(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool ok = true;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+
+  ok = ok && !itl_le_auto_pair_type(&le, '(');
+
+  tl_set_auto_pair(1);
+  ok = ok && itl_le_auto_pair_type(&le, '(') &&
+       test_auto_pair_line_is(&le, "()", 1);
+  ok = ok && itl_le_insert(&le, itl_utf8_parse('a')) &&
+       test_auto_pair_line_is(&le, "(a)", 2);
+  ok = ok && itl_le_auto_pair_type(&le, ')') &&
+       test_auto_pair_line_is(&le, "(a)", 3) && itl_g_auto_pair_count == 0;
+  ok = ok && !itl_le_auto_pair_type(&le, ')');
+
+  itl_le_clear_line(&le);
+  ok = ok && itl_le_auto_pair_type(&le, '[') &&
+       itl_le_auto_pair_type(&le, '{') &&
+       test_auto_pair_line_is(&le, "[{}]", 2) && itl_g_auto_pair_count == 2;
+  ok = ok && itl_le_auto_pair_erase(&le) &&
+       test_auto_pair_line_is(&le, "[]", 1);
+  ok = ok && itl_le_auto_pair_erase(&le) && test_auto_pair_line_is(&le, "", 0);
+  ok = ok && !itl_le_auto_pair_erase(&le);
+
+  itl_le_clear_line(&le);
+  ok = ok && itl_le_auto_pair_type(&le, '"') &&
+       test_auto_pair_line_is(&le, "\"\"", 1);
+  ok = ok && itl_le_auto_pair_type(&le, '"') &&
+       test_auto_pair_line_is(&le, "\"\"", 2);
+
+  ITL_STRING_FROM_CSTR(line, "don");
+  le.cursor_position = line->length;
+  itl_g_auto_pair_count = 0;
+  ok = ok && !itl_le_auto_pair_type(&le, '\'');
+
+  ITL_STRING_FROM_CSTR(line, "\\");
+  le.cursor_position = line->length;
+  ok = ok && !itl_le_auto_pair_type(&le, '(');
+
+  ITL_STRING_FROM_CSTR(line, "x");
+  le.cursor_position = 0;
+  ok = ok && !itl_le_auto_pair_type(&le, '(');
+
+  ITL_STRING_FROM_CSTR(line, "()");
+  le.cursor_position = 1;
+  ok = ok && !itl_le_auto_pair_type(&le, ')') && !itl_le_auto_pair_erase(&le);
+
+  tl_set_auto_pair(0);
+  ITL_STRING_FREE(line);
+
+  if (!ok) {
+    TEST_PRINTF("auto pair count %zu\n", itl_g_auto_pair_count);
+  }
+
+  return ok;
+}
+
+#define TEST_CARET_SGR "\x1b[4m"
+
+static size_t test_highlight_cursor = 0;
+static size_t test_highlight_call_count = 0;
+
+static int
+test_caret_cell_highlight_callback(const char *buffer, tl_highlight *out)
+{
+  test_highlight_cursor = out->cursor;
+  test_highlight_call_count += 1;
+
+  if (out->capacity == 0 || out->cursor == TL_HIGHLIGHT_NO_CURSOR ||
+      out->cursor >= strlen(buffer))
+  {
+    return 0;
+  }
+
+  out->spans[0].start = out->cursor;
+  out->spans[0].end = out->cursor + 1;
+  out->spans[0].sgr = TEST_CARET_SGR;
+  out->count = 1;
+
+  return 1;
+}
+
+static void
+test_caret_highlight_move(itl_le_t *le, size_t position)
+{
+  test_frame_capture_size = 0;
+  itl_g_tty_should_refresh_text = false;
+  le->cursor_position = position;
+  itl_le_tty_refresh(le);
+}
+
+static bool
+test_highlight_follows_the_caret(void)
+{
+  char   out_buffer[BUFFER_SIZE];
+  size_t full_count;
+  size_t call_count;
+  bool   was_end_cursor_passed;
+  bool   was_move_redrawn;
+  bool   was_same_spans_quiet;
+  bool   was_unfollowed_quiet;
+  bool   was_byte_offset_passed;
+  bool   ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  ITL_STRING_FROM_CSTR(line, "abc");
+  le.cursor_position = line->length;
+
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  itl_g_debug_frame_sink = test_frame_capture_sink;
+  tl_set_highlight_callback(test_caret_cell_highlight_callback);
+  tl_set_highlight_follows_cursor(1);
+
+  test_frame_capture_refresh(&le);
+  was_end_cursor_passed =
+      test_highlight_cursor == 3 && !test_frame_capture_has(TEST_CARET_SGR);
+
+  full_count = itl_g_debug_full_refresh_count;
+  test_caret_highlight_move(&le, 1);
+  was_move_redrawn = test_highlight_cursor == 1 &&
+                     itl_g_debug_full_refresh_count == full_count + 1 &&
+                     test_frame_capture_has(TEST_CARET_SGR "b");
+
+  full_count = itl_g_debug_full_refresh_count;
+  call_count = test_highlight_call_count;
+  test_caret_highlight_move(&le, 1);
+  was_same_spans_quiet = test_highlight_call_count == call_count + 1 &&
+                         itl_g_debug_full_refresh_count == full_count &&
+                         !test_frame_capture_has(TEST_CARET_SGR);
+
+  tl_set_highlight_follows_cursor(0);
+  full_count = itl_g_debug_full_refresh_count;
+  call_count = test_highlight_call_count;
+  test_caret_highlight_move(&le, 2);
+  was_unfollowed_quiet = test_highlight_call_count == call_count &&
+                         itl_g_debug_full_refresh_count == full_count &&
+                         !test_frame_capture_has(TEST_CARET_SGR);
+
+  ITL_STRING_FROM_CSTR(line, "\xd0\xb0" "bc");
+  le.cursor_position = 1;
+  test_frame_capture_refresh(&le);
+  was_byte_offset_passed = test_highlight_cursor == 2;
+
+  itl_g_debug_frame_sink = NULL;
+  tl_set_highlight_callback(NULL);
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  ITL_STRING_FREE(line);
+
+  ok = was_end_cursor_passed && was_move_redrawn && was_same_spans_quiet &&
+       was_unfollowed_quiet && was_byte_offset_passed;
+
+  if (!ok) {
+    TEST_PRINTF("end %d, moved %d, same quiet %d, unfollowed quiet %d, "
+                "bytes %d\n",
+                (int) was_end_cursor_passed, (int) was_move_redrawn,
+                (int) was_same_spans_quiet, (int) was_unfollowed_quiet,
+                (int) was_byte_offset_passed);
+  }
+
+  return ok;
+}
 #endif
 
 typedef bool (*test_func)(void);
@@ -5129,6 +5320,10 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_hint_row_follows_the_caret_and_clears),
                                    DEFINE_TEST_CASE(
                                        test_hint_row_keeps_multiline_rows_and_append_path),
+                                   DEFINE_TEST_CASE(
+                                       test_highlight_follows_the_caret),
+                                   DEFINE_TEST_CASE(
+                                       test_auto_pair_types_steps_and_erases),
 #endif
                                    DEFINE_TEST_CASE(
                                        test_hint_row_is_cut_to_the_width),
