@@ -2589,6 +2589,376 @@ test_modified_key_sequences(void)
 
   return ok;
 }
+
+#define TEST_KEY_BYTES_MAX 32
+
+typedef struct test_key_reading test_key_reading_t;
+
+/* What the read path makes of bytes the terminal sent: every byte it yields
+   while input is pending, and separately the key the parser reads from them. */
+struct test_key_reading
+{
+  uint8_t bytes[TEST_KEY_BYTES_MAX];
+  size_t  size;
+  int     key;
+  bool    was_drained;
+};
+
+static bool
+test_read_terminal_bytes(const char *bytes, size_t size, bool should_parse,
+                         test_key_reading_t *reading)
+{
+  int     pipe_descriptors[2] = {-1, -1};
+  int     saved_stdin = -1;
+  bool    ok = false;
+  uint8_t byte;
+
+  reading->size = 0;
+  reading->key = -1;
+  reading->was_drained = false;
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+  if (write(pipe_descriptors[1], bytes, size) != (ssize_t) size) goto cleanup;
+  saved_stdin = dup(STDIN_FILENO);
+  if (saved_stdin < 0 || dup2(pipe_descriptors[0], STDIN_FILENO) < 0)
+    goto cleanup;
+
+  if (should_parse) {
+    if (ITL_READ_BYTE(&byte)) {
+      reading->key = itl_esc_parse(byte);
+    }
+  } else {
+    while (itl_input_is_pending() && reading->size < TEST_KEY_BYTES_MAX &&
+           ITL_READ_BYTE(&byte))
+    {
+      reading->bytes[reading->size++] = byte;
+    }
+  }
+  reading->was_drained = !itl_input_is_pending();
+  ok = true;
+
+cleanup:
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+  itl_g_key_queue_index = 0;
+  itl_g_key_queue_length = 0;
+  itl_g_pushback_byte = -1;
+  return ok;
+}
+
+typedef struct extended_key_case extended_key_case_t;
+
+/* An extended encoding and the legacy bytes the same key sends, or NULL when
+   the encoding has no legacy form and must reach the parser as it arrived. A
+   legacy_size of zero means the legacy string's length. */
+struct extended_key_case
+{
+  const char *extended;
+  const char *legacy;
+  size_t      legacy_size;
+};
+
+static bool
+test_extended_key_case(const char *extended, const char *legacy,
+                       size_t legacy_size)
+{
+  test_key_reading_t extended_bytes, extended_key, legacy_bytes, legacy_key;
+  const char        *expected = legacy != NULL ? legacy : extended;
+  size_t             expected_size = legacy == NULL  ? strlen(extended)
+                                     : legacy_size > 0 ? legacy_size
+                                                       : strlen(legacy);
+
+  if (!test_read_terminal_bytes(extended, strlen(extended), false,
+                                &extended_bytes) ||
+      !test_read_terminal_bytes(extended, strlen(extended), true,
+                                &extended_key) ||
+      !test_read_terminal_bytes(expected, expected_size, false,
+                                &legacy_bytes) ||
+      !test_read_terminal_bytes(expected, expected_size, true, &legacy_key))
+  {
+    TEST_PRINTF("ESC%s: could not feed the bytes\n", extended + 1);
+    return false;
+  }
+
+  if (extended_bytes.size != expected_size ||
+      memcmp(extended_bytes.bytes, expected, expected_size) != 0 ||
+      (legacy != NULL && (legacy_bytes.size != expected_size ||
+                          memcmp(legacy_bytes.bytes, expected,
+                                 expected_size) != 0)))
+  {
+    TEST_PRINTF("ESC%s: read %zu bytes, want %zu\n", extended + 1,
+                extended_bytes.size, expected_size);
+    return false;
+  }
+  if (extended_key.key != legacy_key.key ||
+      extended_key.was_drained != legacy_key.was_drained)
+  {
+    TEST_PRINTF("ESC%s: key %d, legacy key %d, drained %d and %d\n",
+                extended + 1, extended_key.key, legacy_key.key,
+                (int) extended_key.was_drained, (int) legacy_key.was_drained);
+    return false;
+  }
+
+  return true;
+}
+
+static bool
+test_extended_keys_read_as_legacy_bytes(void)
+{
+  /* clang-format off */
+  const extended_key_case_t cases[] = {
+      {"\x1b[99;5u",        "\x03",       0},
+      {"\x1b[100;5u",       "\x04",       0},
+      {"\x1b[27;5;99~",     "\x03",       0},
+      {"\x1b[27;5;100~",    "\x04",       0},
+      {"\x1b[99;69u",       "\x03",       0},
+      {"\x1b[27u",          "\x1b",       0},
+      {"\x1b[27;3u",        "\x1b\x1b",   0},
+      {"\x1b[27;5;27~",     "\x1b",       0},
+      {"\x1b[13;2u",        "\r",         0},
+      {"\x1b[13;5u",        "\r",         0},
+      {"\x1b[13;3u",        "\x1b\r",     0},
+      {"\x1b[27;5;13~",     "\r",         0},
+      {"\x1b[9;5u",         "\t",         0},
+      {"\x1b[9;2u",         "\x1b[Z",     0},
+      {"\x1b[9;3u",         "\x1b\t",     0},
+      {"\x1b[27;5;9~",      "\t",         0},
+      {"\x1b[127u",         "\x7f",       0},
+      {"\x1b[127;3u",       "\x1b\x7f",   0},
+      {"\x1b[127;5u",       "\x08",       0},
+      {"\x1b[127;7u",       "\x1b\x08",   0},
+      {"\x1b[27;5;8~",      "\x08",       0},
+      {"\x1b[32;5u",        "\0",         1},
+      {"\x1b[50;6u",        "\0",         1},
+      {"\x1b[27;6;64~",     "\0",         1},
+      {"\x1b[45;6u",        "\x1f",       0},
+      {"\x1b[45:95;6u",     "\x1f",       0},
+      {"\x1b[47;5u",        "\x1f",       0},
+      {"\x1b[27;6;95~",     "\x1f",       0},
+      {"\x1b[95;6u",        "\x1f",       0},
+      {"\x1b[54;6u",        "\x1e",       0},
+      {"\x1b[27;6;94~",     "\x1e",       0},
+      {"\x1b[91;5u",        "\x1b",       0},
+      {"\x1b[120;5u\x1b[101;5u", "\x18\x05", 0},
+      {"\x1b[120;5u\x1b[117;5u", "\x18\x15", 0},
+      {"\x1b[46;3u",        "\x1b.",      0},
+      {"\x1b[45;4u",        "\x1b_",      0},
+      {"\x1b[44;4u",        "\x1b<",      0},
+      {"\x1b[46;4u",        "\x1b>",      0},
+      {"\x1b[46:62;4u",     "\x1b>",      0},
+      {"\x1b[27;3;98~",     "\x1b" "b",   0},
+      {"\x1b[98;33u",       "\x1b" "b",   0},
+      {"\x1b[98;7u",        "\x1b\x02",   0},
+      {"\x1b[1076;3u",      "\x1b\xd0\xb4", 0},
+      {"\x1b[97;5uX",       "\x01X",      0},
+      {"\x1b[57414u",       "\r",         0},
+      {"\x1b[57399u",       "0",          0},
+      {"\x1b[57413;2u",     "+",          0},
+      {"\x1b[57417;5u",     "\x1b[1;5D",  0},
+      {"\x1b[57421u",       "\x1b[5~",    0},
+      {"\x1b[57426;3u",     "\x1b[3;3~",  0},
+      {"\x1b[122;6u",       NULL,         0},
+      {"\x1b[90;5u",        NULL,         0},
+      {"\x1b[27;6;90~",     NULL,         0},
+      {"\x1b[91;3u",        NULL,         0},
+      {"\x1b[79;4u",        NULL,         0},
+      {"\x1b[97;9u",        NULL,         0},
+      {"\x1b[97;5:3u",      NULL,         0},
+      {"\x1b[49;5u",        NULL,         0},
+      {"\x1b[57376u",       NULL,         0},
+      {"\x1b[A",            NULL,         0},
+      {"\x1b[1;5C",         NULL,         0},
+      {"\x1b[1;3D",         NULL,         0},
+      {"\x1b[1;2A",         NULL,         0},
+      {"\x1b[1;6B",         NULL,         0},
+      {"\x1bOD",            NULL,         0},
+      {"\x1b[H",            NULL,         0},
+      {"\x1b[1;5F",         NULL,         0},
+      {"\x1b[1~",           NULL,         0},
+      {"\x1b[4~",           NULL,         0},
+      {"\x1b[5~",           NULL,         0},
+      {"\x1b[6;5~",         NULL,         0},
+      {"\x1b[2~",           NULL,         0},
+      {"\x1b[3;5~",         NULL,         0},
+      {"\x1b[Z",            NULL,         0},
+      {"\x1bOP",            NULL,         0},
+      {"\x1b[P",            NULL,         0},
+      {"\x1b[1;5P",         NULL,         0},
+      {"\x1b[13~",          NULL,         0},
+      {"\x1b[15;2~",        NULL,         0},
+      {"\x1b[24~",          NULL,         0},
+      {"\x1b[200~",         NULL,         0},
+      {"\x1b[<0;1;1M",      NULL,         0},
+      {"\x1b" "b",          NULL,         0},
+      {"\x1b",              NULL,         0},
+  };
+  /* clang-format on */
+  char   extended[TEST_KEY_BYTES_MAX];
+  char   legacy[TEST_KEY_BYTES_MAX];
+  size_t i;
+  bool   ok = true;
+  int    letter;
+
+  for (i = 0; i < countof(cases); ++i) {
+    ok &= test_extended_key_case(cases[i].extended, cases[i].legacy,
+                                 cases[i].legacy_size);
+  }
+
+  /* Every Ctrl and Alt letter in both encodings, apart from Ctrl-X, which
+     waits for its chord and is covered above. */
+  for (letter = 'a'; letter <= 'z'; ++letter) {
+    if (letter != 'x') {
+      snprintf(legacy, sizeof(legacy), "%c", letter & 0x1F);
+      snprintf(extended, sizeof(extended), "\x1b[%d;5u", letter);
+      ok &= test_extended_key_case(extended, legacy, 0);
+      snprintf(extended, sizeof(extended), "\x1b[27;5;%d~", letter);
+      ok &= test_extended_key_case(extended, legacy, 0);
+      snprintf(extended, sizeof(extended), "\x1b[%d;6u", letter);
+      ok &= test_extended_key_case(extended, letter == 'z' ? NULL : legacy, 0);
+    }
+
+    snprintf(legacy, sizeof(legacy), "\x1b%c", letter);
+    snprintf(extended, sizeof(extended), "\x1b[%d;3u", letter);
+    ok &= test_extended_key_case(extended, legacy, 0);
+    snprintf(extended, sizeof(extended), "\x1b[27;3;%d~", letter);
+    ok &= test_extended_key_case(extended, legacy, 0);
+    snprintf(legacy, sizeof(legacy), "\x1b%c", letter - 'a' + 'A');
+    snprintf(extended, sizeof(extended), "\x1b[%d;4u", letter);
+    ok &= test_extended_key_case(extended, letter == 'o' ? NULL : legacy, 0);
+  }
+
+  return ok;
+}
+
+static bool
+test_extended_keys_map_signal_keys(void)
+{
+  test_key_reading_t reading;
+  bool               ok = true;
+
+  ok &= test_read_terminal_bytes("\x1b[99;5u", 8, true, &reading) &&
+        reading.key == TL_KEY_INTERRUPT;
+  ok &= test_read_terminal_bytes("\x1b[100;5u", 9, true, &reading) &&
+        reading.key == TL_KEY_EOF;
+  ok &= test_read_terminal_bytes("\x1b[27;5;99~", 11, true, &reading) &&
+        reading.key == TL_KEY_INTERRUPT;
+  ok &= test_read_terminal_bytes("\x1b[122;5u", 9, true, &reading) &&
+        reading.key == TL_KEY_UNDO;
+  ok &= test_read_terminal_bytes("\x1b[122;6u", 9, true, &reading) &&
+        reading.key == TL_KEY_REDO;
+  ok &= test_read_terminal_bytes("\x1b[45;6u", 8, true, &reading) &&
+        reading.key == TL_KEY_UNDO;
+  ok &= test_read_terminal_bytes("\x1b[54;6u", 8, true, &reading) &&
+        reading.key == TL_KEY_REDO;
+  ok &= test_read_terminal_bytes("\x1b[32;5u", 8, true, &reading) &&
+        reading.key == TL_KEY_TAB;
+  ok &= test_read_terminal_bytes("\x1b[13;3u", 8, true, &reading) &&
+        reading.key == (TL_KEY_ENTER | TL_MOD_ALT);
+  ok &= test_read_terminal_bytes("\x1b[27u", 5, true, &reading) &&
+        reading.key == TL_KEY_UNKN && reading.was_drained;
+
+  /* A paste body is text, so a key form inside it stays as it was sent. */
+  itl_g_is_reading_paste = true;
+  ok &= test_read_terminal_bytes("\x1b[99;5u", 8, false, &reading) &&
+        reading.size == 8 && memcmp(reading.bytes, "\x1b[99;5u", 8) == 0;
+  itl_g_is_reading_paste = false;
+
+  if (!ok) {
+    TEST_PRINTF("a signal key read as another key\n");
+  }
+  return ok;
+}
+
+/* Declared here because the strict C99 build hides the XSI terminal calls. */
+extern int   posix_openpt(int flags);
+extern int   grantpt(int descriptor);
+extern int   unlockpt(int descriptor);
+extern char *ptsname(int descriptor);
+
+static bool
+test_extended_keys_follow_raw_mode(void)
+{
+  static const char expected[] = "\x1b[?2004h" ITL_EXTENDED_KEYS_ON
+      ITL_EXTENDED_KEYS_OFF ITL_EXTENDED_KEYS_ON ITL_EXTENDED_KEYS_OFF
+          ITL_EXTENDED_KEYS_ON "\x1b[?2004l" ITL_EXTENDED_KEYS_OFF;
+  struct termios saved_mode = itl_g_original_tty_mode;
+  bool           was_raw = itl_g_entered_raw_mode;
+  int            master = -1, slave = -1;
+  int            saved_stdin = -1, saved_stdout = -1;
+  char           written[256];
+  size_t         written_size = 0;
+  bool           ok = false;
+
+  master = posix_openpt(O_RDWR | O_NOCTTY);
+  if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 ||
+      ptsname(master) == NULL)
+  {
+    TEST_PRINTF("could not open a terminal pair\n");
+    goto cleanup;
+  }
+  slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+  saved_stdin = dup(STDIN_FILENO);
+  saved_stdout = dup(STDOUT_FILENO);
+  if (slave < 0 || saved_stdin < 0 || saved_stdout < 0 ||
+      dup2(slave, STDIN_FILENO) < 0 || dup2(slave, STDOUT_FILENO) < 0)
+  {
+    goto cleanup;
+  }
+
+  itl_g_entered_raw_mode = false;
+  tl_set_extended_keys(1);
+  ok = tl_enter_raw_mode() == TL_SUCCESS;
+  ok &= tl_set_signal_keys(1) == TL_SUCCESS;
+  ok &= tl_set_signal_keys(0) == TL_SUCCESS;
+  tl_set_extended_keys(0);
+  tl_set_extended_keys(1);
+  ok &= tl_exit_raw_mode() == TL_SUCCESS;
+  tl_set_extended_keys(0);
+  tl_set_extended_keys(1);
+  ok &= tl_set_signal_keys(0) == TL_ERROR;
+  tl_set_extended_keys(0);
+
+cleanup:
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (saved_stdout >= 0) {
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+  }
+  if (slave >= 0) close(slave);
+  if (master >= 0) {
+    struct pollfd pfd;
+    ssize_t       chunk;
+
+    pfd.fd = master;
+    pfd.events = POLLIN;
+    while (written_size < sizeof(written) && poll(&pfd, 1, 100) > 0 &&
+           (pfd.revents & POLLIN) != 0 &&
+           (chunk = read(master, written + written_size,
+                         sizeof(written) - written_size)) > 0)
+    {
+      written_size += (size_t) chunk;
+    }
+    close(master);
+  }
+  itl_g_entered_raw_mode = was_raw;
+  itl_g_original_tty_mode = saved_mode;
+  itl_g_extended_keys_active = false;
+
+  if (!ok || written_size != sizeof(expected) - 1 ||
+      memcmp(written, expected, written_size) != 0)
+  {
+    TEST_PRINTF("raw mode wrote %zu bytes, want %zu\n", written_size,
+                sizeof(expected) - 1);
+    return false;
+  }
+  return true;
+}
 #endif
 
 static bool
@@ -6244,6 +6614,12 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_editing_key_sequences),
 #if defined ITL_POSIX
                                    DEFINE_TEST_CASE(test_modified_key_sequences),
+                                   DEFINE_TEST_CASE(
+                                       test_extended_keys_read_as_legacy_bytes),
+                                   DEFINE_TEST_CASE(
+                                       test_extended_keys_map_signal_keys),
+                                   DEFINE_TEST_CASE(
+                                       test_extended_keys_follow_raw_mode),
 #endif
                                    DEFINE_TEST_CASE(
                                        test_prefix_history_search_walks_matches),

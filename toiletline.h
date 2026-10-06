@@ -58,7 +58,7 @@ extern "C"
  * neither suspends nor returns `TL_PRESSED_SUSPEND`. Define it with
  * `TL_NO_SUSPEND` in a host that leaves job control to the terminal while its
  * own programs run. Ctrl-Shift-Z redoes either way when the terminal reports
- * it apart from Ctrl-Z. */
+ * it apart from Ctrl-Z, which tl_set_extended_keys() asks the terminal for. */
 
 /* To use custom assertions or to disable them, you can define `TL_ASSERT` to
  * some other function or nothing before including. */
@@ -350,6 +350,18 @@ TL_DEF void tl_set_edit_callback(tl_edit_fn callback);
  * its duration so the key reaches the command instead of queueing as input.
  */
 TL_DEF tl_status_code tl_set_signal_keys(int enabled);
+
+/*
+ * Asks the terminal for distinct reports of modified keys while raw mode is on,
+ * through the kitty keyboard protocol's disambiguate flag and xterm's
+ * modifyOtherKeys level 1. A terminal without either ignores the requests. A
+ * key reported in one of those forms that has a legacy encoding is read as the
+ * legacy bytes, so every binding behaves the same, and a key without one, such
+ * as Ctrl-Shift-Z, becomes distinct. The requests are withdrawn whenever raw
+ * mode is left and while signal keys are on, since the kitty form of the
+ * interrupt key raises no signal. POSIX only. Disabled by default.
+ */
+TL_DEF void tl_set_extended_keys(int enabled);
 
 /*
  * Enables or disables the dimmed ghost suggestion shown ahead of the cursor.
@@ -986,6 +998,40 @@ ITL_DEF bool itl_exit_raw_mode_impl(void)
 ITL_DEF ITL_THREAD_LOCAL int itl_g_vi_cursor_shape =
     ITL_VI_CURSOR_DEFAULT_SHAPE;
 
+/* The kitty push of the disambiguate flag with xterm's modifyOtherKeys level 1,
+   and the kitty pop with the modifyOtherKeys reset to the terminal's own
+   setting. A terminal that knows neither sees private-marker sequences it
+   discards. */
+#define ITL_EXTENDED_KEYS_ON  "\x1b[>1u\x1b[>4;1m"
+#define ITL_EXTENDED_KEYS_OFF "\x1b[<u\x1b[>4m"
+
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_extended_keys_enabled = false;
+#if defined ITL_POSIX
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_extended_keys_active = false;
+#endif /* ITL_POSIX */
+
+ITL_DEF void itl_set_extended_keys_active(bool should_be_active)
+{
+#if defined ITL_POSIX
+  if (should_be_active == itl_g_extended_keys_active) {
+    return;
+  }
+
+  if (should_be_active) {
+    ITL_TRY(ITL_WRITE(ITL_STDOUT, ITL_EXTENDED_KEYS_ON,
+                      sizeof(ITL_EXTENDED_KEYS_ON) - 1) != -1,
+            return);
+  } else {
+    ITL_TRY(ITL_WRITE(ITL_STDOUT, ITL_EXTENDED_KEYS_OFF,
+                      sizeof(ITL_EXTENDED_KEYS_OFF) - 1) != -1,
+            {});
+  }
+  itl_g_extended_keys_active = should_be_active;
+#else
+  (void) should_be_active;
+#endif /* ITL_POSIX */
+}
+
 TL_DEF tl_status_code tl_enter_raw_mode(void)
 {
   ITL_TRY(!itl_g_entered_raw_mode, return TL_SUCCESS);
@@ -1006,6 +1052,7 @@ TL_DEF tl_status_code tl_enter_raw_mode(void)
      terminal ignores it. */
   ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[?2004h", 8) != -1, {});
 #endif
+  itl_set_extended_keys_active(itl_g_extended_keys_enabled);
 
   return TL_SUCCESS;
 }
@@ -1020,6 +1067,7 @@ TL_DEF tl_status_code tl_exit_raw_mode(void)
 #if defined ITL_POSIX
   ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[?2004l", 8) != -1, {});
 #endif
+  itl_set_extended_keys_active(false);
 
   if (itl_g_vi_cursor_shape != ITL_VI_CURSOR_DEFAULT_SHAPE) {
     ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[0 q", 5) != -1, {});
@@ -1035,14 +1083,38 @@ TL_DEF tl_status_code tl_exit_raw_mode(void)
    it before the descriptor and the pending probe counts it as input. */
 ITL_DEF ITL_THREAD_LOCAL int itl_g_pushback_byte = -1;
 
-ITL_DEF bool ITL_READ_BYTE(uint8_t *buffer)
+/* The rest of an escape sequence already read from the terminal, or the legacy
+   bytes that replaced it. The read path drains it after the pushback byte and
+   before the descriptor, and the pending probe counts it as input. */
+#define ITL_KEY_QUEUE_SIZE 32
+ITL_DEF ITL_THREAD_LOCAL uint8_t itl_g_key_queue[ITL_KEY_QUEUE_SIZE];
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_key_queue_index = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_key_queue_length = 0;
+
+/* A bracketed paste body is text, so its bytes are never translated. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_reading_paste = false;
+
+/* Returns true when the terminal has a byte to read without blocking. */
+ITL_DEF bool itl_tty_input_is_pending(void)
+{
+#if defined ITL_INJECT_KLEE
+  return false;
+#elif defined ITL_WIN32
+  return _kbhit() != 0;
+#elif defined ITL_POSIX
+  struct pollfd pfd;
+  pfd.fd = STDIN_FILENO;
+  pfd.events = POLLIN;
+  pfd.revents = 0;
+  return poll(&pfd, 1, 0) > 0;
+#else
+  return false;
+#endif
+}
+
+ITL_DEF bool itl_read_tty_byte(uint8_t *buffer)
 {
   int byte;
-  if (itl_g_pushback_byte != -1) {
-    ITL_PTR_ASSIGN(buffer, (uint8_t) itl_g_pushback_byte);
-    itl_g_pushback_byte = -1;
-    return true;
-  }
 #if defined ITL_POSIX
   /* Retry across signals so a delivered SIGWINCH or SIGCONT does not abort
      input. Catch real `read()` errors. `_getch()` on Windows has no error
@@ -1059,28 +1131,322 @@ ITL_DEF bool ITL_READ_BYTE(uint8_t *buffer)
   return true;
 }
 
+#if defined ITL_POSIX
+#define ITL_LEGACY_KEY_SIZE 8
+
+ITL_DEF size_t itl_utf8_encode_codepoint(uint32_t codepoint, uint8_t *out)
+{
+  if (codepoint < 0x80) {
+    out[0] = (uint8_t) codepoint;
+    return 1;
+  }
+  if (codepoint < 0x800) {
+    out[0] = (uint8_t) (0xC0 | (codepoint >> 6));
+    out[1] = (uint8_t) (0x80 | (codepoint & 0x3F));
+    return 2;
+  }
+  if (codepoint < 0x10000) {
+    out[0] = (uint8_t) (0xE0 | (codepoint >> 12));
+    out[1] = (uint8_t) (0x80 | ((codepoint >> 6) & 0x3F));
+    out[2] = (uint8_t) (0x80 | (codepoint & 0x3F));
+    return 3;
+  }
+  out[0] = (uint8_t) (0xF0 | (codepoint >> 18));
+  out[1] = (uint8_t) (0x80 | ((codepoint >> 12) & 0x3F));
+  out[2] = (uint8_t) (0x80 | ((codepoint >> 6) & 0x3F));
+  out[3] = (uint8_t) (0x80 | (codepoint & 0x3F));
+  return 4;
+}
+
+/* The byte a legacy terminal sends for Ctrl with a character, or -1 when the
+   pair has none. These are the xterm and kitty tables. */
+ITL_DEF int itl_legacy_ctrl_byte(uint32_t key)
+{
+  if ((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z')) {
+    return (int) (key & 0x1F);
+  }
+
+  switch (key) {
+  case ' ':
+  case '@':
+  case '2': return 0;
+  case '[':
+  case '3': return 27;
+  case '\\':
+  case '4': return 28;
+  case ']':
+  case '5': return 29;
+  case '^':
+  case '~':
+  case '6': return 30;
+  case '_':
+  case '/':
+  case '7': return 31;
+  case '?':
+  case '8': return 127;
+  }
+
+  return -1;
+}
+
+/* The legacy bytes for a key the kitty keyboard protocol reports as CSI code ;
+   modifier u, or xterm's modifyOtherKeys as CSI 27 ; modifier ; code ~. The
+   modifier is one plus a bit set of shift 1, alt 2, ctrl 4, super 8, hyper 16,
+   meta 32, and the lock bits 64 and 128, which are ignored. Kitty reports the
+   unshifted key, so a shifted key comes from shifted_code, the case of a
+   letter, or the US layout. Returns the byte count written to out, or 0 when
+   the key has no legacy form of its own, such as Ctrl-Shift-Z, or would read
+   as the start of another sequence, such as Alt-[. The sequence is then left
+   to the key parser. */
+ITL_DEF size_t itl_legacy_key_bytes(uint32_t code, uint32_t shifted_code,
+                                    unsigned modifier, uint8_t *out)
+{
+  static const char unshifted_keys[] = "`1234567890-=[]\\;',./";
+  static const char shifted_keys[] = "~!@#$%^&*()_+{}|:\"<>?";
+  static const char keypad_text[] = "0123456789./*-+\r=,";
+  static const char *const keypad_moves[] = {"D", "C", "A",  "B",  "5~", "6~",
+                                             "H", "F", "2~", "3~", "E"};
+  unsigned bits = (modifier > 0) ? modifier - 1 : 0;
+  uint32_t key = code;
+  size_t length = 0;
+  bool is_shift, is_alt, is_ctrl;
+  int ctrl_byte;
+
+  if ((bits & 32u) != 0) {
+    bits |= 2u;
+  }
+  if ((bits & (8u | 16u)) != 0) {
+    return 0;
+  }
+  bits &= 7u;
+  is_shift = (bits & 1u) != 0;
+  is_alt = (bits & 2u) != 0;
+  is_ctrl = (bits & 4u) != 0;
+
+  /* Kitty reports the keypad apart from the main keys. Its text keys read as
+     their characters and its moves as the main moves. */
+  if (key >= 57399 && key < 57399 + sizeof(keypad_text) - 1) {
+    key = (uint8_t) keypad_text[key - 57399];
+  } else if (key >= 57417 &&
+             key < 57417 + sizeof(keypad_moves) / sizeof(*keypad_moves))
+  {
+    const char *move = keypad_moves[key - 57417];
+    size_t move_length = strlen(move);
+
+    out[length++] = 0x1B;
+    out[length++] = '[';
+    if (move_length == 1 && bits != 0) {
+      out[length++] = '1';
+    }
+    if (move_length == 2) {
+      out[length++] = (uint8_t) move[0];
+    }
+    if (bits != 0) {
+      out[length++] = ';';
+      out[length++] = (uint8_t) ('1' + bits);
+    }
+    out[length++] = (uint8_t) move[move_length - 1];
+    return length;
+  }
+
+  switch (key) {
+  case 27:
+  case 13:
+    if (is_alt) {
+      out[length++] = 0x1B;
+    }
+    out[length++] = (uint8_t) key;
+    return length;
+
+  case 9:
+    if (is_shift) {
+      memcpy(out, "\x1b[Z", 3);
+      return 3;
+    }
+    if (is_alt) {
+      out[length++] = 0x1B;
+    }
+    out[length++] = 9;
+    return length;
+
+  case 8:
+  case 127:
+    if (is_alt) {
+      out[length++] = 0x1B;
+    }
+    out[length++] = (is_ctrl || key == 8) ? 8 : 127;
+    return length;
+  }
+
+  if (key < 32 || (key >= 127 && key < 160) || key > 0x10FFFF ||
+      (key >= 0xD800 && key < 0xE000) || (key >= 57344 && key < 63744))
+  {
+    return 0;
+  }
+
+  if (is_shift) {
+    const char *unshifted =
+        (key < 128) ? strchr(unshifted_keys, (int) key) : NULL;
+
+    if (shifted_code >= 32 && shifted_code <= 0x10FFFF) {
+      key = shifted_code;
+    } else if (key >= 'a' && key <= 'z') {
+      key -= 'a' - 'A';
+    } else if (unshifted != NULL) {
+      key = (uint8_t) shifted_keys[unshifted - unshifted_keys];
+    }
+  }
+
+  if (is_alt) {
+    out[length++] = 0x1B;
+  }
+
+  if (is_ctrl) {
+    ctrl_byte = itl_legacy_ctrl_byte(key);
+    if (key == 'Z' || ctrl_byte < 0) {
+      return 0;
+    }
+    out[length++] = (uint8_t) ctrl_byte;
+    return length;
+  }
+
+  if (is_alt && (key == '[' || key == 'O')) {
+    return 0;
+  }
+
+  return length + itl_utf8_encode_codepoint(key, out + length);
+}
+
+#define ITL_CSI_FIELD_MAX 3
+
+/* Decodes the parameters and final byte of a CSI sequence into the legacy
+   bytes of the key it reports, returning 0 for any sequence that is not a
+   key in the kitty or the modifyOtherKeys form. */
+ITL_DEF size_t itl_legacy_csi_key_bytes(const uint8_t *sequence, size_t size,
+                                        uint8_t *out)
+{
+  uint32_t fields[ITL_CSI_FIELD_MAX][ITL_CSI_FIELD_MAX] = {{0}};
+  size_t field = 0, part = 0, i;
+  uint8_t final_byte;
+
+  if (size < 2 || sequence[0] < '0' || sequence[0] > '9') {
+    return 0;
+  }
+  final_byte = sequence[size - 1];
+
+  for (i = 0; i + 1 < size; ++i) {
+    uint8_t byte = sequence[i];
+
+    if (byte >= '0' && byte <= '9') {
+      if (fields[field][part] > 0x10FFFF) {
+        return 0;
+      }
+      fields[field][part] = fields[field][part] * 10 + (uint32_t) (byte - '0');
+    } else if (byte == ';' && field + 1 < ITL_CSI_FIELD_MAX) {
+      field += 1;
+      part = 0;
+    } else if (byte == ':' && part + 1 < ITL_CSI_FIELD_MAX) {
+      part += 1;
+    } else {
+      return 0;
+    }
+  }
+
+  if (final_byte == 'u') {
+    if (fields[1][1] == 3) {
+      return 0;
+    }
+    return itl_legacy_key_bytes(fields[0][0], fields[0][1],
+                                (unsigned) fields[1][0], out);
+  }
+  if (final_byte == '~' && fields[0][0] == 27 && fields[0][1] == 0 &&
+      field == 2)
+  {
+    return itl_legacy_key_bytes(fields[2][0], fields[2][0],
+                                (unsigned) fields[1][0], out);
+  }
+
+  return 0;
+}
+
+/* Reads what follows an ESC from the terminal into the key queue. A key that
+   the kitty keyboard protocol or modifyOtherKeys reports in a form of its own
+   is replaced by the bytes a legacy terminal sends for it, so every reader of
+   keys, from the parser to the vi, menu, and search loops, sees one encoding.
+   Any other sequence is queued as it arrived. A lone ESC queues nothing. */
+ITL_DEF void itl_queue_escape_tail(uint8_t *first_byte)
+{
+  uint8_t legacy[ITL_LEGACY_KEY_SIZE];
+  size_t length = 0, legacy_length;
+  uint8_t byte;
+
+  itl_g_key_queue_index = 0;
+  itl_g_key_queue_length = 0;
+  if (itl_g_is_reading_paste || !itl_tty_input_is_pending() ||
+      !itl_read_tty_byte(&byte))
+  {
+    return;
+  }
+
+  itl_g_key_queue[length++] = byte;
+  if (byte == '[') {
+    while (length < ITL_KEY_QUEUE_SIZE && itl_read_tty_byte(&byte)) {
+      itl_g_key_queue[length++] = byte;
+      if (byte < 0x20 || byte >= 0x40) {
+        break;
+      }
+    }
+
+    legacy_length =
+        itl_legacy_csi_key_bytes(itl_g_key_queue + 1, length - 1, legacy);
+    if (legacy_length > 0) {
+      *first_byte = legacy[0];
+      memcpy(itl_g_key_queue, legacy + 1, legacy_length - 1);
+      length = legacy_length - 1;
+    }
+  }
+
+  itl_g_key_queue_length = length;
+}
+#endif /* ITL_POSIX */
+
+ITL_DEF bool ITL_READ_BYTE(uint8_t *buffer)
+{
+  uint8_t byte;
+  if (itl_g_pushback_byte != -1) {
+    ITL_PTR_ASSIGN(buffer, (uint8_t) itl_g_pushback_byte);
+    itl_g_pushback_byte = -1;
+    return true;
+  }
+  if (itl_g_key_queue_index < itl_g_key_queue_length) {
+    ITL_PTR_ASSIGN(buffer, itl_g_key_queue[itl_g_key_queue_index]);
+    itl_g_key_queue_index += 1;
+    return true;
+  }
+
+  ITL_TRY(itl_read_tty_byte(&byte), return false);
+#if defined ITL_POSIX
+  if (byte == 0x1B) {
+    itl_queue_escape_tail(&byte);
+  }
+#endif /* ITL_POSIX */
+  ITL_PTR_ASSIGN(buffer, byte);
+  return true;
+}
+
 #define ITL_TRY_READ_BYTE(buffer, expr) ITL_TRY(ITL_READ_BYTE(buffer), expr)
 
 /* Returns true when a byte is already available without blocking, so the
    key wait loop skips its sleep when input is ready. */
 ITL_DEF bool itl_input_is_pending(void)
 {
-  if (itl_g_pushback_byte != -1) {
+  if (itl_g_pushback_byte != -1 ||
+      itl_g_key_queue_index < itl_g_key_queue_length)
+  {
     return true;
   }
-#if defined ITL_INJECT_KLEE
-  return false;
-#elif defined ITL_WIN32
-  return _kbhit() != 0;
-#elif defined ITL_POSIX
-  struct pollfd pfd;
-  pfd.fd = STDIN_FILENO;
-  pfd.events = POLLIN;
-  pfd.revents = 0;
-  return poll(&pfd, 1, 0) > 0;
-#else
-  return false;
-#endif
+
+  return itl_tty_input_is_pending();
 }
 
 #if defined ITL_POSIX && !defined ITL_INJECT_KLEE
@@ -4195,10 +4561,10 @@ ITL_DEF int itl_csi_modifier(unsigned value)
 
 /* A character key with modifiers, reported by the kitty keyboard protocol as
    CSI code ; modifier u or by xterm's modifyOtherKeys as CSI 27 ; modifier ;
-   code ~. The editor turns neither mode on, but a terminal configured for one
-   still sends these. Ctrl-Z and Ctrl-Shift-Z are bound, where the shifted key
-   may be reported as the lower or the upper case letter. The lock bits 64 and
-   128 are ignored. */
+   code ~. The read path already turned every such key with a legacy form into
+   its legacy bytes, so only Ctrl-Shift-Z reaches here bound, where the shifted
+   key may be reported as the lower or the upper case letter. A direct parse
+   also maps Ctrl-Z. The lock bits 64 and 128 are ignored. */
 ITL_DEF int itl_esc_parse_modified_key(unsigned code, unsigned modifier)
 {
   unsigned bits = (modifier > 0) ? modifier - 1 : 0;
@@ -6809,6 +7175,10 @@ TL_DEF tl_status_code tl_set_signal_keys(int enabled)
   }
 
   ITL_TRY(tcsetattr(STDIN_FILENO, TCSANOW, &term) == 0, return TL_ERROR);
+
+  /* The kitty form of the interrupt key is a sequence the terminal driver does
+     not turn into SIGINT, so the extended keys are withdrawn meanwhile. */
+  itl_set_extended_keys_active(!enabled && itl_g_extended_keys_enabled);
   return TL_SUCCESS;
 #else
   /* The Windows console has no equivalent knob, and the host reads the key
@@ -6816,6 +7186,14 @@ TL_DEF tl_status_code tl_set_signal_keys(int enabled)
   (void) enabled;
   return TL_SUCCESS;
 #endif /* ITL_POSIX */
+}
+
+TL_DEF void tl_set_extended_keys(int enabled)
+{
+  itl_g_extended_keys_enabled = enabled != 0;
+  if (itl_g_entered_raw_mode) {
+    itl_set_extended_keys_active(itl_g_extended_keys_enabled);
+  }
 }
 
 /* The height of the prompt block the picker was opened under, so the resume
@@ -12887,7 +13265,9 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       /* A paste replaces the token wholesale, so the stale ghost is dropped. */
       itl_ghost_clear();
       itl_le_end_insertion_walk();
+      itl_g_is_reading_paste = true;
       itl_le_read_paste(le);
+      itl_g_is_reading_paste = false;
       itl_g_tty_should_refresh_text = true;
     } else if ((itl_g_edit_mode == TL_EDIT_MODE_EMACS ||
                 itl_g_edit_mode == TL_EDIT_MODE_VI_INSERT) &&
