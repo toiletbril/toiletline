@@ -147,6 +147,16 @@ typedef enum
   TL_KEY_UNDO,
   TL_KEY_REDO,
 
+  /* Ctrl-Y inserts the newest kill and Alt-Y replaces it with an older one. */
+  TL_KEY_YANK,
+  TL_KEY_YANK_POP,
+  /* Ctrl-T transposes characters, and with TL_MOD_ALT, words. */
+  TL_KEY_TRANSPOSE,
+  /* Alt-. inserts the last word of a previous history entry. */
+  TL_KEY_LAST_ARGUMENT,
+  /* Ctrl-X Ctrl-E hands the line to the edit callback. */
+  TL_KEY_EDIT_EXTERNAL,
+
   /* Reported when a bracketed paste sequence begins. Handled internally. */
   TL_KEY_PASTE_BEGIN
 } tl_key_kind;
@@ -315,6 +325,18 @@ TL_DEF void tl_set_history_search_snapshot_callback(
  */
 TL_DEF tl_status_code tl_begin_external_screen(void);
 TL_DEF tl_status_code tl_end_external_screen(void);
+
+/**
+ * The edit callback for Ctrl-X Ctrl-E. The host receives the current buffer
+ * and edits it with a program of its own, handing the terminal over through
+ * tl_begin_external_screen(). It returns 1 when it wrote the edited text to
+ * out_edited and 0 to leave the buffer alone. The edited text replaces the
+ * whole buffer and is not submitted. It stays valid until the next call.
+ */
+typedef int (*tl_edit_fn)(const char *buffer, const char **out_edited);
+
+/** Register the edit callback, or NULL to make Ctrl-X Ctrl-E do nothing. */
+TL_DEF void tl_set_edit_callback(tl_edit_fn callback);
 
 /**
  * Let the terminal turn the interrupt key back into SIGINT while the editor
@@ -3912,7 +3934,12 @@ ITL_DEF int itl_esc_parse_vt(uint8_t byte)
       case 8:
       case 127: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
 
+      case 'y': return TL_KEY_YANK_POP;
+      case 't': return TL_KEY_TRANSPOSE | TL_MOD_ALT;
+
       case '.':
+      case '_': return TL_KEY_LAST_ARGUMENT;
+
       case '>': return TL_KEY_HISTORY_END;
       case ',':
       case '<': return TL_KEY_HISTORY_BEGINNING;
@@ -4055,6 +4082,22 @@ ITL_DEF int itl_esc_parse_win32(uint8_t byte)
 }
 #endif /* ITL_WIN32 */
 
+/* Ctrl-X is a prefix, so the key is the byte that follows it. Ctrl-X Ctrl-E
+   edits the line in the host's editor and Ctrl-X Ctrl-U undoes. */
+ITL_DEF int itl_esc_parse_ctrl_x(void)
+{
+  uint8_t byte;
+
+  ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
+
+  switch (byte) {
+  case 5: return TL_KEY_EDIT_EXTERNAL; /* ctrl e */
+  case 21: return TL_KEY_UNDO;         /* ctrl u */
+  }
+
+  return TL_KEY_UNKN;
+}
+
 ITL_DEF int itl_esc_parse(uint8_t byte)
 {
   /* plain bytes */
@@ -4094,6 +4137,10 @@ ITL_DEF int itl_esc_parse(uint8_t byte)
 
   case 31: return TL_KEY_UNDO;
   case 30: return TL_KEY_REDO;
+
+  case 20: return TL_KEY_TRANSPOSE; /* ctrl t */
+  case 25: return TL_KEY_YANK;      /* ctrl y */
+  case 24: return itl_esc_parse_ctrl_x();
   }
 
 #if defined ITL_WIN32
@@ -5738,6 +5785,15 @@ ITL_DEF ITL_THREAD_LOCAL tl_history_select_fn itl_g_history_select_callback =
 TL_DEF void tl_set_history_select_callback(tl_history_select_fn callback)
 {
   itl_g_history_select_callback = callback;
+}
+
+/* The host edit callback for Ctrl-X Ctrl-E, or NULL when the key does
+   nothing. */
+ITL_DEF ITL_THREAD_LOCAL tl_edit_fn itl_g_edit_callback = NULL;
+
+TL_DEF void tl_set_edit_callback(tl_edit_fn callback)
+{
+  itl_g_edit_callback = callback;
 }
 
 TL_DEF void tl_set_history_search_snapshot_callback(
@@ -8514,9 +8570,448 @@ ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
   return status;
 }
 
+#define ITL_KILL_RING_SIZE 16
+
+/* The editing command a key performed, so the next key knows whether it
+   continues a kill, a yank, or a last-argument walk. */
+typedef enum
+{
+  ITL_LE_ACTION_NONE = 0,
+  ITL_LE_ACTION_KILL,
+  ITL_LE_ACTION_YANK,
+  ITL_LE_ACTION_LAST_ARGUMENT
+} itl_le_action_kind;
+
+/* The kill ring keeps the newest kills across lines. kill_ring_newest is the
+   slot of the newest entry once kill_ring_count is nonzero. */
+ITL_DEF ITL_THREAD_LOCAL itl_string_t *itl_g_kill_ring[ITL_KILL_RING_SIZE] =
+    ITL_ZERO_INIT;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_kill_ring_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_kill_ring_newest = 0;
+/* How many entries back from the newest the yanked text came from. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_kill_ring_yank_distance = 0;
+
+ITL_DEF ITL_THREAD_LOCAL itl_le_action_kind itl_g_le_action =
+    ITL_LE_ACTION_NONE;
+/* The span a yank or a last-argument insertion put into the line, which the
+   next Alt-Y or Alt-. replaces. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_inserted_start = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_inserted_length = 0;
+/* How many entries back from the newest the inserted last argument came
+   from. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_last_argument_distance = 0;
+
+ITL_DEF void itl_kill_ring_free(void)
+{
+  size_t i;
+
+  for (i = 0; i < ITL_KILL_RING_SIZE; ++i) {
+    if (itl_g_kill_ring[i] != NULL) {
+      ITL_STRING_FREE(itl_g_kill_ring[i]);
+      itl_g_kill_ring[i] = NULL;
+    }
+  }
+
+  itl_g_kill_ring_count = 0;
+  itl_g_kill_ring_newest = 0;
+  itl_g_kill_ring_yank_distance = 0;
+  itl_g_le_action = ITL_LE_ACTION_NONE;
+}
+
+ITL_DEF itl_string_t *itl_kill_ring_at_distance(size_t distance)
+{
+  TL_ASSERT(distance < itl_g_kill_ring_count);
+  return itl_g_kill_ring[(itl_g_kill_ring_newest + ITL_KILL_RING_SIZE -
+                          distance) %
+                         ITL_KILL_RING_SIZE];
+}
+
+/* Copies the span [from, to) of the line into the kill ring. A kill that
+   follows another kill grows the newest entry, at its end for a forward kill
+   and at its start for a backward one, so the entry reads as the line did. */
+ITL_DEF void itl_kill_ring_save(const itl_string_t *line, size_t from,
+                                size_t to, bool is_backward,
+                                bool should_append)
+{
+  itl_string_t *entry;
+  size_t i;
+
+  if (from >= to) {
+    return;
+  }
+
+  if (!should_append || itl_g_kill_ring_count == 0) {
+    if (itl_g_kill_ring_count > 0) {
+      itl_g_kill_ring_newest =
+          (itl_g_kill_ring_newest + 1) % ITL_KILL_RING_SIZE;
+    }
+    if (itl_g_kill_ring_count < ITL_KILL_RING_SIZE) {
+      itl_g_kill_ring_count += 1;
+    }
+    if (itl_g_kill_ring[itl_g_kill_ring_newest] == NULL) {
+      itl_g_kill_ring[itl_g_kill_ring_newest] = itl_string_alloc();
+    }
+    itl_g_kill_ring[itl_g_kill_ring_newest]->length = 0;
+    itl_g_kill_ring[itl_g_kill_ring_newest]->size = 0;
+  }
+
+  entry = itl_g_kill_ring[itl_g_kill_ring_newest];
+  for (i = from; i < to; ++i) {
+    itl_string_insert(entry, is_backward ? i - from : entry->length,
+                      line->chars[i]);
+  }
+}
+
+/* Erases count characters next to the cursor and saves them in the kill ring.
+   The previous action decides whether the kill grows the newest entry. */
+ITL_DEF void itl_le_kill(itl_le_t *le, size_t count, bool backwards,
+                         itl_le_action_kind previous_action)
+{
+  size_t from;
+  size_t to;
+
+  if (le->cursor_position > le->line->length) {
+    le->cursor_position = le->line->length;
+  }
+
+  if (backwards) {
+    if (count > le->cursor_position) {
+      count = le->cursor_position;
+    }
+    from = le->cursor_position - count;
+    to = le->cursor_position;
+  } else {
+    if (count > le->line->length - le->cursor_position) {
+      count = le->line->length - le->cursor_position;
+    }
+    from = le->cursor_position;
+    to = le->cursor_position + count;
+  }
+
+  itl_kill_ring_save(le->line, from, to, backwards,
+                     previous_action == ITL_LE_ACTION_KILL);
+  itl_le_erase(le, count, backwards);
+  itl_g_le_action = ITL_LE_ACTION_KILL;
+}
+
+/* Opens one undo step for an edit that is not a typed insertion. */
+ITL_DEF void itl_le_begin_edit(itl_le_t *le)
+{
+  itl_history_reset_after_edit(le);
+  itl_undo_push(le);
+  itl_g_undo_insert_run_open = false;
+}
+
+/* Replaces the span the previous yank or last-argument insertion put into the
+   line with text, keeping as much of it as the output buffer holds. */
+ITL_DEF void itl_le_replace_inserted(itl_le_t *le, const itl_string_t *text)
+{
+  size_t i;
+
+  if (itl_g_le_inserted_start > le->line->length) {
+    itl_g_le_inserted_start = le->line->length;
+  }
+  if (itl_g_le_inserted_length > le->line->length - itl_g_le_inserted_start) {
+    itl_g_le_inserted_length = le->line->length - itl_g_le_inserted_start;
+  }
+
+  itl_string_erase(le->line, itl_g_le_inserted_start,
+                   itl_g_le_inserted_length, false);
+  le->cursor_position = itl_g_le_inserted_start;
+  itl_g_le_inserted_length = 0;
+
+  for (i = 0; i < text->length; ++i) {
+    if (le->line->size + text->chars[i].size >= le->out_size) {
+      break;
+    }
+    itl_string_insert(le->line, le->cursor_position, text->chars[i]);
+    le->cursor_position += 1;
+    itl_g_le_inserted_length += 1;
+  }
+}
+
+ITL_DEF void itl_le_yank(itl_le_t *le)
+{
+  if (itl_g_kill_ring_count == 0) {
+    itl_g_tty_should_refresh_text = false;
+    return;
+  }
+
+  itl_le_begin_edit(le);
+  itl_g_kill_ring_yank_distance = 0;
+  itl_g_le_inserted_start = le->cursor_position;
+  itl_g_le_inserted_length = 0;
+  itl_le_replace_inserted(le, itl_kill_ring_at_distance(0));
+  itl_g_le_action = ITL_LE_ACTION_YANK;
+}
+
+/* Alt-Y right after a yank swaps the yanked text for the next older kill and
+   wraps around to the newest after the oldest. The whole yank stays one undo
+   step. */
+ITL_DEF void itl_le_yank_pop(itl_le_t *le, itl_le_action_kind previous_action)
+{
+  if (previous_action != ITL_LE_ACTION_YANK || itl_g_kill_ring_count == 0) {
+    itl_g_tty_should_refresh_text = false;
+    return;
+  }
+
+  itl_g_kill_ring_yank_distance =
+      (itl_g_kill_ring_yank_distance + 1) % itl_g_kill_ring_count;
+  itl_le_replace_inserted(
+      le, itl_kill_ring_at_distance(itl_g_kill_ring_yank_distance));
+  itl_g_le_action = ITL_LE_ACTION_YANK;
+}
+
+/* Swaps the character before the cursor with the one under it and steps past
+   both. At the end of the line the last two characters are swapped. */
+ITL_DEF void itl_le_transpose_chars(itl_le_t *le)
+{
+  size_t at = le->cursor_position;
+  itl_utf8_t held;
+
+  if (le->line->length < 2 || at == 0) {
+    itl_g_tty_should_refresh_text = false;
+    return;
+  }
+  if (at >= le->line->length) {
+    at = le->line->length - 1;
+  }
+
+  itl_le_begin_edit(le);
+  held = le->line->chars[at - 1];
+  le->line->chars[at - 1] = le->line->chars[at];
+  le->line->chars[at] = held;
+  le->cursor_position = at + 1;
+}
+
+#define ITL_LE_IS_WORD_CHAR(ch) ((ch).size > 1 || isalnum((ch).bytes[0]))
+
+ITL_DEF size_t itl_le_word_end_from(const itl_string_t *line, size_t i)
+{
+  while (i < line->length && !ITL_LE_IS_WORD_CHAR(line->chars[i])) {
+    i += 1;
+  }
+  while (i < line->length && ITL_LE_IS_WORD_CHAR(line->chars[i])) {
+    i += 1;
+  }
+
+  return i;
+}
+
+ITL_DEF size_t itl_le_word_start_from(const itl_string_t *line, size_t i)
+{
+  while (i > 0 && !ITL_LE_IS_WORD_CHAR(line->chars[i - 1])) {
+    i -= 1;
+  }
+  while (i > 0 && ITL_LE_IS_WORD_CHAR(line->chars[i - 1])) {
+    i -= 1;
+  }
+
+  return i;
+}
+
+/* Swaps the word before the cursor with the word after it and leaves the
+   cursor after both, the way readline does. At the end of the line the last
+   two words are swapped. */
+ITL_DEF void itl_le_transpose_words(itl_le_t *le)
+{
+  itl_string_t *line = le->line;
+  size_t second_end = itl_le_word_end_from(line, le->cursor_position);
+  size_t second_start = itl_le_word_start_from(line, second_end);
+  size_t first_start = itl_le_word_start_from(line, second_start);
+  size_t first_end = itl_le_word_end_from(line, first_start);
+  size_t first_length = first_end - first_start;
+  size_t gap_length;
+  size_t second_length;
+  itl_utf8_t *swapped;
+
+  if (first_start == second_start || second_start < first_end) {
+    itl_g_tty_should_refresh_text = false;
+    return;
+  }
+
+  gap_length = second_start - first_end;
+  second_length = second_end - second_start;
+  swapped = (itl_utf8_t *) itl_malloc((second_end - first_start) *
+                                      sizeof(itl_utf8_t));
+  memcpy(swapped, line->chars + second_start,
+         second_length * sizeof(itl_utf8_t));
+  memcpy(swapped + second_length, line->chars + first_end,
+         gap_length * sizeof(itl_utf8_t));
+  memcpy(swapped + second_length + gap_length, line->chars + first_start,
+         first_length * sizeof(itl_utf8_t));
+
+  itl_le_begin_edit(le);
+  memcpy(line->chars + first_start, swapped,
+         (second_end - first_start) * sizeof(itl_utf8_t));
+  ITL_FREE(swapped);
+  le->cursor_position = second_end;
+}
+
+/* Finds the last word of a history entry. Quotes and backslashes keep their
+   blanks inside the word, so a quoted argument comes back whole. */
+ITL_DEF bool itl_last_word_span(const char *text, size_t size,
+                                size_t *out_start, size_t *out_end)
+{
+  size_t i;
+  size_t word_start = 0;
+  bool is_in_word = false;
+  bool has_word = false;
+  char quote = 0;
+
+  for (i = 0; i < size; ++i) {
+    char ch = text[i];
+    bool is_blank = ch == ' ' || ch == '\t' || ch == '\n';
+
+    if (!is_in_word) {
+      if (is_blank) {
+        continue;
+      }
+      is_in_word = true;
+      word_start = i;
+    }
+
+    if (quote != 0) {
+      if (ch == quote) {
+        quote = 0;
+      } else if (ch == '\\' && quote == '"' && i + 1 < size) {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (ch == '\\') {
+      if (i + 1 < size) {
+        i += 1;
+      }
+      continue;
+    }
+    if (ch == '\'' || ch == '"') {
+      quote = ch;
+      continue;
+    }
+    if (is_blank) {
+      *out_start = word_start;
+      *out_end = i;
+      has_word = true;
+      is_in_word = false;
+    }
+  }
+
+  if (is_in_word) {
+    *out_start = word_start;
+    *out_end = size;
+    has_word = true;
+  }
+
+  return has_word;
+}
+
+/* Alt-. inserts the last word of the newest history entry. Pressed again right
+   away, it replaces that word with the last word of the entry before, and an
+   entry with no word is skipped. Past the oldest entry the line stays. */
+ITL_DEF void itl_le_insert_last_argument(itl_le_t *le,
+                                         itl_le_action_kind previous_action)
+{
+  char decoded[ITL_STRING_MAX_LEN + 1];
+  size_t decoded_size = 0;
+  size_t word_start = 0;
+  size_t word_end = 0;
+  size_t distance = 0;
+  bool is_repeat = previous_action == ITL_LE_ACTION_LAST_ARGUMENT;
+  itl_string_t word;
+
+  itl_g_le_action = ITL_LE_ACTION_LAST_ARGUMENT;
+  if (is_repeat) {
+    distance = itl_g_last_argument_distance + 1;
+  }
+
+  if (!itl_history_ensure_read_buffer()) {
+    itl_g_tty_should_refresh_text = false;
+    return;
+  }
+
+  for (; distance < itl_g_history_count; ++distance) {
+    size_t offset =
+        itl_history_index_to_offset(itl_g_history_count - 1 - distance);
+    if (itl_history_decode_entry_buffered(offset, decoded, sizeof(decoded),
+                                          &decoded_size) &&
+        itl_last_word_span(decoded, decoded_size, &word_start, &word_end))
+    {
+      break;
+    }
+  }
+
+  if (distance >= itl_g_history_count) {
+    itl_g_tty_should_refresh_text = false;
+    return;
+  }
+
+  itl_string_init(&word);
+  if (!itl_string_from_bytes(&word, decoded + word_start,
+                             word_end - word_start))
+  {
+    ITL_FREE(word.chars);
+    itl_g_tty_should_refresh_text = false;
+    return;
+  }
+
+  if (!is_repeat) {
+    itl_le_begin_edit(le);
+    itl_g_le_inserted_start = le->cursor_position;
+    itl_g_le_inserted_length = 0;
+  }
+  itl_g_last_argument_distance = distance;
+  itl_le_replace_inserted(le, &word);
+  ITL_FREE(word.chars);
+}
+
+/* Ctrl-X Ctrl-E hands the line to the host's editor. The edited text replaces
+   the whole line as one undo step, and text that is not UTF-8 or does not fit
+   the output buffer leaves the line alone. */
+ITL_DEF void itl_le_edit_external(itl_le_t *le)
+{
+  const char *edited = NULL;
+  size_t edited_size;
+  itl_string_t replacement;
+
+  if (itl_g_edit_callback == NULL) {
+    itl_g_tty_should_refresh_text = false;
+    return;
+  }
+  if (itl_string_to_cstr(le->line, le->out_buf, le->out_size) != TL_SUCCESS) {
+    return;
+  }
+
+  itl_hint_hold(le);
+  if (itl_g_edit_callback(le->out_buf, &edited) <= 0 || edited == NULL) {
+    itl_hint_release();
+    return;
+  }
+  itl_hint_release();
+
+  edited_size = strlen(edited);
+  if (edited_size >= le->out_size) {
+    return;
+  }
+
+  itl_string_init(&replacement);
+  if (itl_string_from_bytes(&replacement, edited, edited_size)) {
+    itl_le_begin_edit(le);
+    itl_string_copy(le->line, &replacement);
+    le->cursor_position = le->line->length;
+  }
+  ITL_FREE(replacement.chars);
+}
+
 ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
 {
   int prev_control = itl_g_last_control;
+  itl_le_action_kind previous_action = itl_g_le_action;
+
+  /* A key continues a kill, a yank, or a last-argument walk only when it
+     directly follows one. */
+  itl_g_le_action = ITL_LE_ACTION_NONE;
 
   /* Remember the last control sequence. */
   itl_g_last_control = esc;
@@ -8715,7 +9210,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
         if (le->cursor_position <= steps) {
           steps = le->cursor_position + 1;
         }
-        ITL_LE_ERASE_BACKWARD(le, steps - 1);
+        itl_le_kill(le, steps - 1, true, previous_action);
       }
     } else {
       ITL_LE_ERASE_BACKWARD(le, 1);
@@ -8724,7 +9219,8 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
 
   case TL_KEY_DELETE: {
     if (esc & TL_MOD_CTRL) {
-      ITL_LE_ERASE_FORWARD(le, ITL_LE_STEPS_TO_TOKEN_FORWARD(le));
+      itl_le_kill(le, ITL_LE_STEPS_TO_TOKEN_FORWARD(le), false,
+                  previous_action);
     } else {
       ITL_LE_ERASE_FORWARD(le, 1);
     }
@@ -8732,13 +9228,31 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
 
   case TL_KEY_KILL_LINE: {
     size_t line_end = itl_le_line_end_of(le, le->cursor_position);
-    ITL_LE_ERASE_FORWARD(le, line_end - le->cursor_position);
+    itl_le_kill(le, line_end - le->cursor_position, false, previous_action);
   } break;
 
   case TL_KEY_KILL_LINE_BEFORE: {
     size_t line_start = itl_le_line_start_of(le, le->cursor_position);
-    ITL_LE_ERASE_BACKWARD(le, le->cursor_position - line_start);
+    itl_le_kill(le, le->cursor_position - line_start, true, previous_action);
   } break;
+
+  case TL_KEY_YANK: itl_le_yank(le); break;
+
+  case TL_KEY_YANK_POP: itl_le_yank_pop(le, previous_action); break;
+
+  case TL_KEY_TRANSPOSE: {
+    if (esc & TL_MOD_ALT) {
+      itl_le_transpose_words(le);
+    } else {
+      itl_le_transpose_chars(le);
+    }
+  } break;
+
+  case TL_KEY_LAST_ARGUMENT:
+    itl_le_insert_last_argument(le, previous_action);
+    break;
+
+  case TL_KEY_EDIT_EXTERNAL: itl_le_edit_external(le); break;
 
   case TL_KEY_SUSPEND: {
 #if defined ITL_SUSPEND
@@ -8962,6 +9476,7 @@ TL_DEF tl_status_code tl_exit(void)
 
   itl_g_history_free();
   itl_vi_free();
+  itl_kill_ring_free();
   ITL_FREE(itl_g_line_buffer.chars);
   ITL_FREE(itl_g_char_buffer.data);
 
@@ -11310,6 +11825,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
   TL_ASSERT(buffer != NULL);
 
   itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
+  itl_g_le_action = ITL_LE_ACTION_NONE;
 
   /* A new line starts with no ghost, since the previous line's suggestion does
      not carry over, and predefined input is shown as the user's own text. */
@@ -11409,6 +11925,17 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
 
     input_type = itl_esc_parse(input_byte);
     itl_g_tty_plain_append_pending = false;
+
+    /* Only a key that reaches itl_le_key_handle directly can continue a kill,
+       a yank, or a last-argument walk. */
+    if (input_type == TL_KEY_CHAR ||
+        (input_type & TL_MASK_KEY) == TL_KEY_PASTE_BEGIN ||
+        (input_type & TL_MASK_KEY) == TL_KEY_HISTORY_SEARCH ||
+        input_byte == 6 || itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND ||
+        itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL || input_byte == 22)
+    {
+      itl_g_le_action = ITL_LE_ACTION_NONE;
+    }
 
     if (itl_g_vi_block_insert_active &&
         itl_g_edit_mode == TL_EDIT_MODE_VI_INSERT)

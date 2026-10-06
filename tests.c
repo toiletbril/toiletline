@@ -2249,6 +2249,266 @@ test_ctrl_right_accepts_one_case_corrected_word(void)
 }
 
 static bool
+test_line_is(const itl_string_t *line, const char *expected, const char *step)
+{
+  char line_buffer[BUFFER_SIZE];
+
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, expected) != 0) {
+    printf("%s gave '%s', expected '%s'\n", step, line_buffer, expected);
+    return false;
+  }
+
+  return true;
+}
+
+static bool
+test_kill_ring_appends_yanks_and_cycles(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool ok = true;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(line, "one two three");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_g_le_action = ITL_LE_ACTION_NONE;
+  itl_le_key_handle(&le, TL_KEY_KILL_LINE_BEFORE);
+  ok &= test_line_is(line, "", "ctrl-u");
+
+  ITL_STRING_FROM_CSTR(line, "four five");
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_HOME);
+  itl_le_key_handle(&le, TL_KEY_KILL_LINE);
+  ok &= test_line_is(line, "", "ctrl-k");
+
+  ITL_STRING_FROM_CSTR(line, "a b c");
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_END);
+  itl_le_key_handle(&le, TL_KEY_BACKSPACE | TL_MOD_CTRL);
+  itl_le_key_handle(&le, TL_KEY_BACKSPACE | TL_MOD_CTRL);
+  itl_le_key_handle(&le, TL_KEY_BACKSPACE | TL_MOD_CTRL);
+  ok &= test_line_is(line, "a ", "three ctrl-w");
+
+  itl_le_key_handle(&le, TL_KEY_YANK);
+  ok &= test_line_is(line, "a b c", "yank of the appended kill");
+  itl_le_key_handle(&le, TL_KEY_YANK_POP);
+  ok &= test_line_is(line, "a four five", "first alt-y");
+  itl_le_key_handle(&le, TL_KEY_YANK_POP);
+  ok &= test_line_is(line, "a one two three", "second alt-y");
+  itl_le_key_handle(&le, TL_KEY_YANK_POP);
+  ok &= test_line_is(line, "a b c", "alt-y past the oldest");
+  if (le.cursor_position != line->length) {
+    TEST_PRINTF("cursor after alt-y is %zu\n", le.cursor_position);
+    ok = false;
+  }
+
+  itl_le_key_handle(&le, TL_KEY_UNDO);
+  ok &= test_line_is(line, "a ", "undo of the yank");
+
+  itl_le_key_handle(&le, TL_KEY_YANK_POP);
+  ok &= test_line_is(line, "a ", "alt-y without a yank");
+
+  le.cursor_position = 0;
+  itl_le_key_handle(&le, TL_KEY_DELETE | TL_MOD_CTRL);
+  itl_le_key_handle(&le, TL_KEY_YANK);
+  ok &= test_line_is(line, "a ", "alt-d then yank");
+
+  ITL_STRING_FREE(line);
+  itl_kill_ring_free();
+  return ok;
+}
+
+static bool
+test_transpose_characters_and_words(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool ok = true;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(line, "abc");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.cursor_position = 1;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
+  ok &= test_line_is(line, "bac", "ctrl-t inside the line");
+  if (le.cursor_position != 2) {
+    TEST_PRINTF("cursor after ctrl-t is %zu\n", le.cursor_position);
+    ok = false;
+  }
+
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
+  ok &= test_line_is(line, "bca", "ctrl-t at the end");
+
+  le.cursor_position = 0;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
+  ok &= test_line_is(line, "bca", "ctrl-t at the start");
+
+  ITL_STRING_FROM_CSTR(line, "привет");
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
+  ok &= test_line_is(line, "привте", "ctrl-t on UTF-8");
+
+  ITL_STRING_FROM_CSTR(line, "cp src dst");
+  le.cursor_position = 3;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE | TL_MOD_ALT);
+  ok &= test_line_is(line, "src cp dst", "alt-t inside the line");
+  if (le.cursor_position != 6) {
+    TEST_PRINTF("cursor after alt-t is %zu\n", le.cursor_position);
+    ok = false;
+  }
+
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE | TL_MOD_ALT);
+  ok &= test_line_is(line, "src dst cp", "alt-t at the end");
+
+  ITL_STRING_FROM_CSTR(line, "  один  ");
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE | TL_MOD_ALT);
+  ok &= test_line_is(line, "  один  ", "alt-t with one word");
+
+  ITL_STRING_FROM_CSTR(line, "один два");
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE | TL_MOD_ALT);
+  ok &= test_line_is(line, "два один", "alt-t on UTF-8");
+
+  itl_le_key_handle(&le, TL_KEY_UNDO);
+  ok &= test_line_is(line, "один два", "undo of alt-t");
+
+  ITL_STRING_FREE(line);
+  return ok;
+}
+
+static bool
+test_last_argument_walks_history(void)
+{
+  const char *path = "tl_test_last_argument.txt";
+  char out_buffer[BUFFER_SIZE];
+  bool ok = true;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+  if (!hist_append_cstr("cat 'a b'")) ok = false;
+  if (!hist_append_cstr("touch file1 ")) ok = false;
+  if (!hist_append_cstr("git commit -m \"x y\"")) ok = false;
+
+  ITL_STRING_FROM_CSTR(line, "vim ");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_g_le_action = ITL_LE_ACTION_NONE;
+  itl_le_key_handle(&le, TL_KEY_LAST_ARGUMENT);
+  ok &= test_line_is(line, "vim \"x y\"", "first alt-.");
+  itl_le_key_handle(&le, TL_KEY_LAST_ARGUMENT);
+  ok &= test_line_is(line, "vim file1", "second alt-.");
+  itl_le_key_handle(&le, TL_KEY_LAST_ARGUMENT);
+  ok &= test_line_is(line, "vim 'a b'", "third alt-.");
+  itl_le_key_handle(&le, TL_KEY_LAST_ARGUMENT);
+  ok &= test_line_is(line, "vim 'a b'", "alt-. past the oldest");
+
+  itl_le_key_handle(&le, TL_KEY_UNDO);
+  ok &= test_line_is(line, "vim ", "undo of the alt-. walk");
+
+  itl_le_key_handle(&le, TL_KEY_LAST_ARGUMENT);
+  itl_le_key_handle(&le, TL_KEY_HOME);
+  itl_le_key_handle(&le, TL_KEY_LAST_ARGUMENT);
+  ok &= test_line_is(line, "\"x y\"vim \"x y\"", "alt-. after a motion");
+
+  ITL_STRING_FREE(line);
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
+static const char *test_edit_seen_buffer = NULL;
+static char test_edit_seen_copy[BUFFER_SIZE];
+
+static int
+test_edit_callback(const char *buffer, const char **out_edited)
+{
+  snprintf(test_edit_seen_copy, sizeof(test_edit_seen_copy), "%s", buffer);
+  test_edit_seen_buffer = test_edit_seen_copy;
+  *out_edited = "edited\nline";
+  return 1;
+}
+
+static int
+test_edit_declining_callback(const char *buffer, const char **out_edited)
+{
+  (void) buffer;
+  (void) out_edited;
+  return 0;
+}
+
+static bool
+test_edit_external_replaces_the_line(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool ok = true;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(line, "draft");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_le_key_handle(&le, TL_KEY_EDIT_EXTERNAL);
+  ok &= test_line_is(line, "draft", "ctrl-x ctrl-e without a callback");
+
+  tl_set_edit_callback(test_edit_declining_callback);
+  itl_le_key_handle(&le, TL_KEY_EDIT_EXTERNAL);
+  ok &= test_line_is(line, "draft", "declined edit");
+
+  tl_set_edit_callback(test_edit_callback);
+  le.cursor_position = 2;
+  itl_le_key_handle(&le, TL_KEY_EDIT_EXTERNAL);
+  ok &= test_line_is(line, "edited\nline", "ctrl-x ctrl-e");
+  if (test_edit_seen_buffer == NULL ||
+      strcmp(test_edit_seen_buffer, "draft") != 0)
+  {
+    TEST_PRINTF("the callback did not receive the line\n");
+    ok = false;
+  }
+  if (le.cursor_position != line->length) {
+    TEST_PRINTF("cursor after the edit is %zu\n", le.cursor_position);
+    ok = false;
+  }
+
+  itl_le_key_handle(&le, TL_KEY_UNDO);
+  ok &= test_line_is(line, "draft", "undo of the edit");
+
+  tl_set_edit_callback(NULL);
+  ITL_STRING_FREE(line);
+  return ok;
+}
+
+static bool
+test_editing_key_sequences(void)
+{
+  bool ok = true;
+
+  itl_g_pushback_byte = 'y';
+  ok &= itl_esc_parse(27) == TL_KEY_YANK_POP;
+  itl_g_pushback_byte = 't';
+  ok &= itl_esc_parse(27) == (TL_KEY_TRANSPOSE | TL_MOD_ALT);
+  itl_g_pushback_byte = '.';
+  ok &= itl_esc_parse(27) == TL_KEY_LAST_ARGUMENT;
+  itl_g_pushback_byte = '_';
+  ok &= itl_esc_parse(27) == TL_KEY_LAST_ARGUMENT;
+  ok &= itl_esc_parse(20) == TL_KEY_TRANSPOSE;
+  ok &= itl_esc_parse(25) == TL_KEY_YANK;
+  itl_g_pushback_byte = 5;
+  ok &= itl_esc_parse(24) == TL_KEY_EDIT_EXTERNAL;
+  itl_g_pushback_byte = 21;
+  ok &= itl_esc_parse(24) == TL_KEY_UNDO;
+  itl_g_pushback_byte = 'q';
+  ok &= itl_esc_parse(24) == TL_KEY_UNKN;
+
+  return ok;
+}
+
+static bool
 test_prefix_history_search_walks_matches(void)
 {
   const char *path = "tl_test_prefix_search.txt";
@@ -4810,6 +5070,15 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_ctrl_right_accepts_one_ghost_word),
                                    DEFINE_TEST_CASE(
                                        test_ctrl_right_accepts_one_case_corrected_word),
+                                   DEFINE_TEST_CASE(
+                                       test_kill_ring_appends_yanks_and_cycles),
+                                   DEFINE_TEST_CASE(
+                                       test_transpose_characters_and_words),
+                                   DEFINE_TEST_CASE(
+                                       test_last_argument_walks_history),
+                                   DEFINE_TEST_CASE(
+                                       test_edit_external_replaces_the_line),
+                                   DEFINE_TEST_CASE(test_editing_key_sequences),
                                    DEFINE_TEST_CASE(
                                        test_prefix_history_search_walks_matches),
                                    DEFINE_TEST_CASE(
