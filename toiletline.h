@@ -329,6 +329,14 @@ TL_DEF tl_status_code tl_set_signal_keys(int enabled);
  */
 TL_DEF void tl_set_ghost_enabled(int enabled);
 
+/*
+ * Makes Up and Down on a non-empty line recall only the history entries that
+ * begin with the text typed before the first Up. Down walks back and restores
+ * the typed text. An empty line navigates the whole history. Disabled by
+ * default.
+ */
+TL_DEF void tl_set_history_prefix_search(int enabled);
+
 /** Append a space after a complete non-directory completion when enabled. */
 TL_DEF void tl_set_space_after_completion(int enabled);
 
@@ -1893,6 +1901,21 @@ ITL_DEF ITL_THREAD_LOCAL itl_string_t *itl_g_history_draft = NULL;
    than a stored entry. */
 #define ITL_HISTORY_NONE ((size_t) -1)
 
+/* Whether Up and Down on a non-empty line recall only the entries that begin
+   with the text typed before the first Up. */
+ITL_DEF ITL_THREAD_LOCAL int itl_g_history_prefix_search_enabled = 0;
+
+/* The typed text a prefix search matches entries against. */
+ITL_DEF ITL_THREAD_LOCAL char itl_g_history_prefix[ITL_STRING_MAX_LEN + 1] = {
+    0};
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_prefix_length = 0;
+
+/* The entry the last prefix step selected. Navigation continues the prefix
+   search only while the selected entry is still this one, so any other way of
+   moving through history ends it. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_prefix_selected =
+    ((size_t) -1);
+
 ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_g_line_buffer = ITL_ZERO_INIT;
 
 /* The whole history entry the ghost currently suggests, kept across keystrokes
@@ -2634,6 +2657,120 @@ ITL_DEF void itl_g_history_get_next(itl_le_t *le)
     /* Stepping past the newest entry restores the draft line. */
     itl_history_restore_draft(le);
   }
+}
+
+/* Scans the history from the given index toward older or newer entries and
+   stores the first entry that begins with the typed prefix and differs from the
+   line shown now. A start index outside the history finds nothing. */
+ITL_DEF bool itl_history_find_prefixed(size_t from, bool is_backwards,
+                                       const char *current,
+                                       size_t *found_out)
+{
+  static ITL_THREAD_LOCAL char entry_cstr[ITL_STRING_MAX_LEN + 1];
+  size_t index = from;
+  size_t current_length = strlen(current);
+
+  if (!itl_history_ensure_read_buffer()) {
+    return false;
+  }
+
+  while (index < itl_g_history_count) {
+    size_t entry_len = 0;
+
+    if (itl_history_decode_entry_buffered(itl_history_index_to_offset(index),
+                                          entry_cstr, sizeof(entry_cstr),
+                                          &entry_len) &&
+        entry_len >= itl_g_history_prefix_length &&
+        memcmp(entry_cstr, itl_g_history_prefix,
+               itl_g_history_prefix_length) == 0 &&
+        !(entry_len == current_length &&
+          memcmp(entry_cstr, current, entry_len) == 0))
+    {
+      *found_out = index;
+      return true;
+    }
+
+    if (is_backwards) {
+      if (index == 0) {
+        break;
+      }
+      index -= 1;
+    } else {
+      index += 1;
+    }
+  }
+
+  return false;
+}
+
+/* Up on a non-empty line recalls the next older entry that begins with the text
+   typed before the first Up. Returns false when the line is not eligible, so
+   the caller falls back to plain history navigation. */
+ITL_DEF bool itl_g_history_prefix_get_prev(itl_le_t *le)
+{
+  char current[ITL_STRING_MAX_LEN + 1];
+  bool is_continuing = le->history_selected_index != ITL_HISTORY_NONE &&
+                       le->history_selected_index ==
+                           itl_g_history_prefix_selected;
+  size_t from;
+  size_t found;
+
+  if (itl_string_to_cstr(le->line, current, sizeof(current)) != TL_SUCCESS) {
+    return false;
+  }
+
+  if (is_continuing) {
+    from = le->history_selected_index - 1;
+  } else {
+    if (le->history_selected_index != ITL_HISTORY_NONE ||
+        le->line->length == 0)
+    {
+      return false;
+    }
+    memcpy(itl_g_history_prefix, current, strlen(current) + 1);
+    itl_g_history_prefix_length = strlen(current);
+    from = itl_g_history_count - 1;
+  }
+
+  if (!itl_history_find_prefixed(from, true, current, &found)) {
+    return true; /* No older match, so the line stays as it is. */
+  }
+
+  if (!is_continuing) {
+    itl_history_save_draft(le);
+  }
+  le->history_selected_index = found;
+  itl_g_history_prefix_selected = found;
+  itl_history_show_selected(le);
+
+  return true;
+}
+
+/* Down continues a prefix search toward newer entries and restores the typed
+   draft once none is left. Returns false when no prefix search is under way. */
+ITL_DEF bool itl_g_history_prefix_get_next(itl_le_t *le)
+{
+  char current[ITL_STRING_MAX_LEN + 1];
+  size_t found;
+
+  if (le->history_selected_index == ITL_HISTORY_NONE ||
+      le->history_selected_index != itl_g_history_prefix_selected ||
+      itl_string_to_cstr(le->line, current, sizeof(current)) != TL_SUCCESS)
+  {
+    return false;
+  }
+
+  if (itl_history_find_prefixed(le->history_selected_index + 1, false, current,
+                                &found))
+  {
+    le->history_selected_index = found;
+    itl_g_history_prefix_selected = found;
+    itl_history_show_selected(le);
+  } else {
+    itl_history_restore_draft(le);
+  }
+
+  return true;
 }
 
 #define ITL_CHAR_BUFFER_INIT_SIZE 256
@@ -5421,6 +5558,11 @@ TL_DEF void tl_set_ghost_enabled(int enabled)
   itl_g_ghost_enabled = enabled && itl_term_supports_decorations();
 }
 
+TL_DEF void tl_set_history_prefix_search(int enabled)
+{
+  itl_g_history_prefix_search_enabled = enabled;
+}
+
 /* Whether a second TAB opens the selectable menu. A host that wants the plain
    printed list, or that drives another selector of its own, leaves it off. */
 ITL_DEF ITL_THREAD_LOCAL int itl_g_completion_menu_enabled = 0;
@@ -5633,15 +5775,46 @@ TL_DEF tl_status_code tl_end_external_screen(void)
   return TL_SUCCESS;
 }
 
-ITL_DEF void itl_ghost_accept(itl_le_t *le)
+/* Byte length of the leading word of the ghost, counting the spaces before it.
+   A ghost made only of spaces counts whole. */
+ITL_DEF size_t itl_ghost_word_length(void)
 {
+  size_t length = 0;
+
+  while (length < itl_g_ghost_len &&
+         ITL_CHAR_IS_SPACE((unsigned char) itl_g_ghost[length]))
+  {
+    length += 1;
+  }
+  while (length < itl_g_ghost_len &&
+         !ITL_CHAR_IS_SPACE((unsigned char) itl_g_ghost[length]))
+  {
+    length += 1;
+  }
+
+  return length;
+}
+
+/* Accepts the first byte_count bytes of the ghost. The whole ghost is accepted
+   when byte_count covers it. */
+ITL_DEF void itl_ghost_accept_bytes(itl_le_t *le, size_t byte_count)
+{
+  if (byte_count > itl_g_ghost_len) {
+    byte_count = itl_g_ghost_len;
+  }
+
   if (itl_g_ghost_should_replace_line) {
     /* itl_le_clear_line drops the sticky target, so the corrected line is taken
        aside before the line is cleared. */
     char target[ITL_STRING_MAX_LEN];
+    size_t target_len = strlen(itl_g_ghost_sticky_target);
 
-    memcpy(target, itl_g_ghost_sticky_target,
-           strlen(itl_g_ghost_sticky_target) + 1);
+    memcpy(target, itl_g_ghost_sticky_target, target_len + 1);
+    /* The target ends with the whole ghost, so a partial accept keeps the typed
+       part and the accepted bytes of the target. */
+    if (byte_count < itl_g_ghost_len && target_len >= itl_g_ghost_len) {
+      target[target_len - itl_g_ghost_len + byte_count] = '\0';
+    }
 
     /* The dispatch closed the insert run, so clear_line would otherwise erase
        the typed prefix before any snapshot captures it. Push the pre-accept
@@ -5652,8 +5825,17 @@ ITL_DEF void itl_ghost_accept(itl_le_t *le)
     itl_le_clear_line(le);
     itl_le_insert_cstr(le, target);
   } else {
-    itl_le_insert_cstr(le, itl_g_ghost);
+    char accepted[ITL_STRING_MAX_LEN];
+
+    memcpy(accepted, itl_g_ghost, byte_count);
+    accepted[byte_count] = '\0';
+    itl_le_insert_cstr(le, accepted);
   }
+}
+
+ITL_DEF void itl_ghost_accept(itl_le_t *le)
+{
+  itl_ghost_accept_bytes(le, itl_g_ghost_len);
 }
 
 ITL_DEF bool itl_ghost_extends_completion_miss_plainly(
@@ -7860,6 +8042,14 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
       break;
     }
 
+    /* A non-empty line on its last visual row recalls only entries that begin
+       with the typed text when prefix search is on. */
+    if (itl_g_history_prefix_search_enabled &&
+        m.cursor_row + 1 >= m.total_rows && itl_g_history_prefix_get_prev(le))
+    {
+      break;
+    }
+
     /* On the first visual row, navigate to the previous history entry. The
        draft line is saved inside get_prev on the first step up. */
     itl_g_history_get_prev(le);
@@ -7881,6 +8071,12 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
       break;
     }
 
+    if (itl_g_history_prefix_search_enabled &&
+        itl_g_history_prefix_get_next(le))
+    {
+      break;
+    }
+
     itl_g_history_get_next(le);
   } break;
 
@@ -7888,10 +8084,13 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     bool cursor_was_on_space;
     /* At the end of the line, a Right with ghost text accepts the suggestion by
        inserting it, rather than moving the cursor nowhere. */
-    if (le->cursor_position == le->line->length && itl_g_ghost_len > 0 &&
-        !(esc & (TL_MOD_CTRL | TL_MOD_ALT)))
-    {
-      itl_ghost_accept(le);
+    if (le->cursor_position == le->line->length && itl_g_ghost_len > 0) {
+      /* Ctrl-Right and Alt-F accept only the next word of the suggestion. */
+      if (esc & (TL_MOD_CTRL | TL_MOD_ALT)) {
+        itl_ghost_accept_bytes(le, itl_ghost_word_length());
+      } else {
+        itl_ghost_accept(le);
+      }
       itl_ghost_clear();
       itl_g_tty_should_refresh_text = true;
       break;
@@ -10772,8 +10971,13 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       if (code != TL_SUCCESS) {
         return itl_le_finish_input(le, code);
       }
-      /* After tab grew the line, offer a fresh ghost for the new token. */
-      if (is_tab && le->line->length > line_length_before_key) {
+      /* After tab or a word-wise accept grew the line, offer a fresh ghost for
+         the rest of the suggestion. */
+      bool is_word_accept =
+          accepts_ghost && (input_type & (TL_MOD_CTRL | TL_MOD_ALT)) != 0;
+      if ((is_tab || is_word_accept) &&
+          le->line->length > line_length_before_key)
+      {
         itl_ghost_update(le);
       }
     } else {

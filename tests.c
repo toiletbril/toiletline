@@ -2150,7 +2150,8 @@ test_alt_arrows_use_word_movement(void)
   char out_buffer[BUFFER_SIZE];
   bool left_matches;
   bool right_matches;
-  bool ghost_was_not_accepted;
+  bool ghost_word_was_accepted;
+  char word_buffer[BUFFER_SIZE];
   itl_le_t ctrl_le = ITL_ZERO_INIT;
   itl_le_t alt_le = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
@@ -2169,14 +2170,165 @@ test_alt_arrows_use_word_movement(void)
   right_matches = ctrl_le.cursor_position == alt_le.cursor_position;
 
   alt_le.cursor_position = line->length;
-  memcpy(itl_g_ghost, " tail", 6);
-  itl_g_ghost_len = 5;
+  memcpy(itl_g_ghost, " tail end", 10);
+  itl_g_ghost_len = 9;
   itl_le_key_handle(&alt_le, TL_KEY_RIGHT | TL_MOD_ALT);
-  ghost_was_not_accepted = line->length == 10 && itl_g_ghost_len == 5;
+  itl_string_to_cstr(line, word_buffer, sizeof(word_buffer));
+  ghost_word_was_accepted = strcmp(word_buffer, "alpha beta tail") == 0 &&
+                            itl_g_ghost_len == 0;
   itl_ghost_clear();
 
   ITL_STRING_FREE(line);
-  return left_matches && right_matches && ghost_was_not_accepted;
+  return left_matches && right_matches && ghost_word_was_accepted;
+}
+
+static bool
+test_ctrl_right_accepts_one_ghost_word(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  char line_buffer[BUFFER_SIZE];
+  bool ok = true;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(line, "git");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.cursor_position = line->length;
+  memcpy(itl_g_ghost, " commit --amend", 16);
+  itl_g_ghost_len = 15;
+
+  itl_le_key_handle(&le, TL_KEY_RIGHT | TL_MOD_CTRL);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, "git commit") != 0) {
+    TEST_PRINTF("word accept gave '%s'\n", line_buffer);
+    ok = false;
+  }
+
+  memcpy(itl_g_ghost, " --amend", 9);
+  itl_g_ghost_len = 8;
+  itl_le_key_handle(&le, TL_KEY_RIGHT);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, "git commit --amend") != 0) {
+    TEST_PRINTF("full accept gave '%s'\n", line_buffer);
+    ok = false;
+  }
+
+  itl_ghost_clear();
+  ITL_STRING_FREE(line);
+  return ok;
+}
+
+static bool
+test_ctrl_right_accepts_one_case_corrected_word(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  char line_buffer[BUFFER_SIZE];
+  bool ok = true;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(line, "git");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.cursor_position = line->length;
+  memcpy(itl_g_ghost, " Status --Json", 15);
+  itl_g_ghost_len = 14;
+  itl_g_ghost_should_replace_line = true;
+  memcpy(itl_g_ghost_sticky_target, "Git Status --Json", 18);
+
+  itl_le_key_handle(&le, TL_KEY_RIGHT | TL_MOD_ALT);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, "Git Status") != 0) {
+    TEST_PRINTF("corrected word accept gave '%s'\n", line_buffer);
+    ok = false;
+  }
+
+  itl_ghost_clear();
+  itl_g_ghost_sticky_target[0] = '\0';
+  ITL_STRING_FREE(line);
+  return ok;
+}
+
+static bool
+test_prefix_history_search_walks_matches(void)
+{
+  const char *path = "tl_test_prefix_search.txt";
+  char out_buffer[BUFFER_SIZE];
+  char line_buffer[BUFFER_SIZE];
+  bool ok = true;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+  if (!hist_append_cstr("git status")) ok = false;
+  if (!hist_append_cstr("ls -l")) ok = false;
+  if (!hist_append_cstr("git commit")) ok = false;
+  if (!hist_append_cstr("echo hi")) ok = false;
+  tl_set_history_prefix_search(1);
+
+  ITL_STRING_FROM_CSTR(line, "git");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.cursor_position = line->length;
+
+  itl_le_key_handle(&le, TL_KEY_UP);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, "git commit") != 0) {
+    TEST_PRINTF("first up gave '%s'\n", line_buffer);
+    ok = false;
+  }
+  itl_le_key_handle(&le, TL_KEY_UP);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, "git status") != 0) {
+    TEST_PRINTF("second up gave '%s'\n", line_buffer);
+    ok = false;
+  }
+  itl_le_key_handle(&le, TL_KEY_UP);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, "git status") != 0) {
+    TEST_PRINTF("up past the oldest match gave '%s'\n", line_buffer);
+    ok = false;
+  }
+  itl_le_key_handle(&le, TL_KEY_DOWN);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, "git commit") != 0) {
+    TEST_PRINTF("down gave '%s'\n", line_buffer);
+    ok = false;
+  }
+  itl_le_key_handle(&le, TL_KEY_DOWN);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, "git") != 0 ||
+      le.history_selected_index != ITL_HISTORY_NONE)
+  {
+    TEST_PRINTF("down past the newest match gave '%s'\n", line_buffer);
+    ok = false;
+  }
+
+  ITL_STRING_FROM_CSTR(line, "");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_le_key_handle(&le, TL_KEY_UP);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, "echo hi") != 0) {
+    TEST_PRINTF("empty line up gave '%s'\n", line_buffer);
+    ok = false;
+  }
+
+  tl_set_history_prefix_search(0);
+  ITL_STRING_FROM_CSTR(line, "git");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_UP);
+  itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+  if (strcmp(line_buffer, "echo hi") != 0) {
+    TEST_PRINTF("disabled up gave '%s'\n", line_buffer);
+    ok = false;
+  }
+
+  ITL_STRING_FREE(line);
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
 }
 
 typedef struct menu_rank_test_case menu_rank_test_case_t;
@@ -4231,6 +4383,12 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_write_all_resumes_a_partial_write),
 #endif
+                                   DEFINE_TEST_CASE(
+                                       test_ctrl_right_accepts_one_ghost_word),
+                                   DEFINE_TEST_CASE(
+                                       test_ctrl_right_accepts_one_case_corrected_word),
+                                   DEFINE_TEST_CASE(
+                                       test_prefix_history_search_walks_matches),
                                    DEFINE_TEST_CASE(
                                        test_ghost_prefers_recent_history),
                                    DEFINE_TEST_CASE(
