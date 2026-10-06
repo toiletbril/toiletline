@@ -6430,6 +6430,29 @@ ITL_DEF void itl_ghost_update(itl_le_t *le)
   }
 }
 
+/* The widest description of the list as it is drawn. A list without
+   descriptions has none. */
+ITL_DEF size_t itl_menu_description_width(const tl_completion *result)
+{
+  size_t widest = 0;
+  size_t i;
+
+  if (result->descriptions == NULL) {
+    return 0;
+  }
+
+  for (i = 0; i < result->count; ++i) {
+    const char *desc = result->descriptions[i];
+    size_t width = desc != NULL ? itl_cstr_display_width(desc) : 0;
+
+    if (width > widest) {
+      widest = width;
+    }
+  }
+
+  return widest;
+}
+
 /* Print the candidate list below the input in columns, then leave the cursor on
    a fresh line so the next refresh redraws the prompt and line beneath the
    list. The previous-render row counts are reset so the refresh treats the spot
@@ -6441,6 +6464,7 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result,
   itl_char_buf_t *b = &itl_g_char_buffer;
   size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
   size_t longest = 0;
+  size_t widest_desc;
   size_t i, column_width, columns, column;
 
   /* Move below the whole input block, the same accounting tl_emit_newlines
@@ -6465,9 +6489,11 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result,
     }
   }
 
-  /* The list starts under the token when its widest name fits to the right of
+  /* The list starts under the token when its widest name, and the widest
+     description beside it when there are descriptions, fits to the right of
      it, and at the leftmost column otherwise. */
-  if (anchor + longest >= tty_cols) {
+  widest_desc = itl_menu_description_width(result);
+  if (anchor + longest + (widest_desc > 0 ? 2 + widest_desc : 0) >= tty_cols) {
     anchor = 0;
   }
   tty_cols -= anchor;
@@ -6671,28 +6697,31 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc);
 typedef struct itl_menu_layout
 {
   size_t candidate_rows;
+  size_t help_row_count;
   bool has_help_row;
   bool has_count_row;
 } itl_menu_layout;
 
-/* Divide the rows under the input block between the help row, the candidates,
+/* Divide the rows under the input block between the help rows, the candidates,
    and the count row. The whole block is held back first, since the terminal
-   scrolls the prompt away once the rows below it are overrun. The help row is
+   scrolls the prompt away once the rows below it are overrun. The help rows are
    the first to go and the count row is the second. A block that already fills
    the terminal leaves nothing, and the menu then draws no rows at all. The
-   fixed ceiling keeps a long list from filling a tall terminal. */
-ITL_DEF itl_menu_layout itl_menu_measure(size_t tty_rows, bool wants_help_row)
+   fixed ceiling keeps a long list from filling a tall terminal. The help text
+   asks for help_rows rows, and zero asks for none. */
+ITL_DEF itl_menu_layout itl_menu_measure(size_t tty_rows, size_t help_rows)
 {
   itl_menu_layout layout;
   size_t available = tty_rows > itl_g_le_prev_total_rows
                          ? tty_rows - itl_g_le_prev_total_rows
                          : 0;
 
-  layout.has_help_row = wants_help_row && available >= 3;
+  layout.has_help_row = help_rows > 0 && available >= help_rows + 2;
+  layout.help_row_count = layout.has_help_row ? help_rows : 0;
   layout.has_count_row = available >= 2;
 
   if (layout.has_help_row) {
-    available -= 1;
+    available -= help_rows;
   }
 
   if (layout.has_count_row) {
@@ -6990,28 +7019,154 @@ ITL_DEF void itl_menu_append_dimmed_row(itl_char_buf_t *b, const char *text,
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
 }
 
-/* Draw the help row of the menu. The phrase naming the active source and the
-   keys it answers both carry the dim of every other secondary text. Both texts
-   are cut at the row width and never wrap. */
-ITL_DEF void itl_menu_append_help_row(itl_char_buf_t *b, const char *title,
-                                      const char *keys, size_t width)
+/* Park the caret on the column the rows start at. The leftmost column is where
+   every row break already lands. */
+ITL_DEF void itl_menu_move_to_anchor(itl_char_buf_t *b, size_t anchor)
 {
-  size_t drawn;
+  if (anchor > 0) {
+    ITL_TTY_MOVE_TO_COLUMN(b, anchor + 1);
+  }
+}
 
-  itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
-  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_MENU_DESCRIPTION_SGR));
-  drawn = itl_menu_append_cell(b, title, width, false);
-  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+/* The display width of the first length bytes of text, counted the way the
+   width walker counts them. */
+ITL_DEF size_t itl_menu_span_width(const char *text, size_t length)
+{
+  size_t offset = 0;
+  size_t width = 0;
 
-  if (keys == NULL || drawn + ITL_MENU_TITLE_SEPARATOR_WIDTH >= width) {
-    return;
+  while (offset < length) {
+    size_t step_bytes = 0;
+    size_t step_width = 0;
+
+    itl_menu_step_codepoint(text + offset, length - offset, &step_bytes,
+                            &step_width);
+    offset += step_bytes;
+    width += step_width;
   }
 
-  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_MENU_DESCRIPTION_SGR));
-  itl_char_buf_append_cstr(b, ITL_MENU_TITLE_SEPARATOR);
-  itl_menu_append_cell(b, keys, width - drawn - ITL_MENU_TITLE_SEPARATOR_WIDTH,
-                       false);
-  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+  return width;
+}
+
+/* Append the leading part of text that fits in width columns, ending in an
+   ellipsis when something was cut. */
+ITL_DEF void itl_menu_append_elided(itl_char_buf_t *b, const char *text,
+                                    size_t length, size_t width)
+{
+  size_t keep = width > 3 ? width - 3 : width;
+  size_t offset = 0;
+  size_t drawn = 0;
+
+  while (offset < length) {
+    size_t step_bytes = 0;
+    size_t step_width = 0;
+
+    itl_menu_step_codepoint(text + offset, length - offset, &step_bytes,
+                            &step_width);
+    if (drawn + step_width > keep) {
+      break;
+    }
+    itl_char_buf_append_bytes(b, text + offset, step_bytes);
+    offset += step_bytes;
+    drawn += step_width;
+  }
+
+  if (offset < length && width > 3) {
+    itl_char_buf_append_cstr(b, "...");
+  }
+}
+
+/* Lay the help text out over rows of at most width columns, and draw it when b
+   is not null. The phrase naming the active source and the keys it answers
+   read as one list of items split at the item separator, and a row breaks only
+   between two items. Every row opens with the row prefix, carries the dim of
+   every other secondary text, and starts at the anchor column. An item wider
+   than a row is cut and ends in an ellipsis. Items past max_rows are dropped.
+   Returns the rows the text takes. */
+ITL_DEF size_t itl_menu_layout_help(itl_char_buf_t *b, const char *title,
+                                    const char *keys, size_t width,
+                                    size_t anchor, size_t max_rows)
+{
+  const char *parts[2];
+  size_t part_count = keys != NULL ? 2 : 1;
+  size_t rows = 0;
+  size_t used = 0;
+  size_t part;
+
+  parts[0] = title;
+  parts[1] = keys;
+
+  if (width == 0 || max_rows == 0) {
+    return 0;
+  }
+
+  for (part = 0; part < part_count; ++part) {
+    const char *item = parts[part];
+
+    while (*item != '\0') {
+      const char *separator = strstr(item, ITL_MENU_TITLE_SEPARATOR);
+      size_t length = separator != NULL ? (size_t) (separator - item)
+                                        : strlen(item);
+      bool has_next = separator != NULL || part + 1 < part_count;
+      size_t item_width = itl_menu_span_width(item, length) + (has_next ? 1 : 0);
+      bool is_row_open = rows > 0 && used > 0;
+      size_t cut;
+
+      if (is_row_open && used + 1 + item_width > width) {
+        is_row_open = false;
+        if (rows >= max_rows) {
+          break;
+        }
+        if (b != NULL) {
+          itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+        }
+      }
+
+      if (!is_row_open) {
+        if (rows >= max_rows) {
+          break;
+        }
+        if (b != NULL) {
+          if (rows > 0) {
+            itl_char_buf_append_cstr(b, ITL_LF);
+            itl_menu_move_to_anchor(b, anchor);
+          }
+          itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
+          itl_char_buf_append_cstr(b,
+                                   itl_color_sequence(ITL_MENU_DESCRIPTION_SGR));
+        }
+        rows += 1;
+        used = 0;
+      } else {
+        if (b != NULL) {
+          itl_char_buf_append_byte(b, ' ');
+        }
+        used += 1;
+      }
+
+      cut = item_width > width ? width : item_width;
+      if (b != NULL) {
+        if (item_width > width) {
+          itl_menu_append_elided(b, item, length, cut);
+        } else {
+          itl_char_buf_append_bytes(b, item, length);
+          if (has_next) {
+            itl_char_buf_append_byte(b, ',');
+          }
+        }
+      }
+      used += cut;
+
+      item = separator != NULL ? separator + ITL_MENU_TITLE_SEPARATOR_WIDTH
+                               : item + length;
+    }
+  }
+
+  if (b != NULL && rows > 0) {
+    itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+  }
+
+  return rows;
 }
 
 /* Step to the first row below the input block and clear everything under it,
@@ -7087,21 +7242,103 @@ ITL_DEF size_t itl_menu_anchor_column_of(const itl_le_t *le,
   return col;
 }
 
-/* Park the caret on the column the rows start at. The leftmost column is where
-   every row break already lands. */
-ITL_DEF void itl_menu_move_to_anchor(itl_char_buf_t *b, size_t anchor)
+/* Where the rows of a menu start and how wide they are. The rows start under
+   the token only when the whole row fits to its right, the prefix, the widest
+   name, the widest description and the gap before it included. Otherwise the
+   rows start at the leftmost column, and a description too wide for the
+   terminal is cut there. */
+typedef struct itl_menu_geometry
 {
-  if (anchor > 0) {
-    ITL_TTY_MOVE_TO_COLUMN(b, anchor + 1);
+  size_t anchor;
+  size_t row_cols;
+  size_t text_width;
+  size_t name_width;
+  size_t desc_width;
+} itl_menu_geometry;
+
+ITL_DEF itl_menu_geometry itl_menu_geometry_of(const tl_completion *result,
+                                               size_t name_width,
+                                               const char *empty_text)
+{
+  itl_menu_geometry geometry;
+  size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
+  size_t full_cols = tty_cols > 1 ? tty_cols - 1 : 1;
+  size_t anchor = itl_g_menu_anchor_column >= ITL_MENU_ROW_PREFIX_WIDTH
+                      ? itl_g_menu_anchor_column - ITL_MENU_ROW_PREFIX_WIDTH
+                      : 0;
+  size_t widest_desc = result->count == 0 ? 0 : itl_menu_description_width(result);
+  size_t needed_cols = ITL_MENU_ROW_PREFIX_WIDTH;
+
+  if (result->count == 0) {
+    needed_cols += itl_cstr_display_width(empty_text);
+  } else {
+    needed_cols += name_width + ITL_MENU_SELECTED_MARGIN_WIDTH;
+    if (widest_desc > 0) {
+      needed_cols += 1 + widest_desc;
+    }
   }
+
+  if (anchor + needed_cols > full_cols) {
+    anchor = 0;
+  }
+
+  geometry.anchor = anchor;
+  geometry.row_cols = full_cols - anchor;
+  geometry.text_width = geometry.row_cols > ITL_MENU_ROW_PREFIX_WIDTH
+                            ? geometry.row_cols - ITL_MENU_ROW_PREFIX_WIDTH
+                            : 1;
+
+  if (name_width + ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_SELECTED_MARGIN_WIDTH >=
+      geometry.row_cols)
+  {
+    name_width =
+        geometry.row_cols >
+                ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_SELECTED_MARGIN_WIDTH
+            ? geometry.row_cols - ITL_MENU_ROW_PREFIX_WIDTH -
+                  ITL_MENU_SELECTED_MARGIN_WIDTH
+            : 1;
+  }
+  geometry.name_width = name_width;
+  geometry.desc_width =
+      geometry.row_cols > ITL_MENU_ROW_PREFIX_WIDTH + name_width + 1 +
+                              ITL_MENU_SELECTED_MARGIN_WIDTH
+          ? geometry.row_cols - ITL_MENU_ROW_PREFIX_WIDTH - name_width - 1 -
+                ITL_MENU_SELECTED_MARGIN_WIDTH
+          : 0;
+
+  return geometry;
+}
+
+/* Divide the rows under the input block for a list about to be drawn. The help
+   text wraps at the width the rows will have, so its row count follows the
+   anchor the same fit rule picks for the draw. */
+ITL_DEF itl_menu_layout itl_menu_measure_for(const tl_completion *result,
+                                             size_t tty_rows, size_t name_width,
+                                             const char *empty_text,
+                                             const char *help_title,
+                                             const char *help_keys)
+{
+  size_t help_rows = 0;
+
+  if (help_title != NULL) {
+    itl_menu_geometry geometry =
+        itl_menu_geometry_of(result, name_width, empty_text);
+
+    help_rows = itl_menu_layout_help(NULL, help_title, help_keys,
+                                     geometry.text_width, geometry.anchor,
+                                     tty_rows);
+  }
+
+  return itl_menu_measure(tty_rows, help_rows);
 }
 
 /* Repaint the menu rows under the input block. The rows are written from the
    first row below the block downward, and the caret returns to the line. The
    editor's own render path never sees them. The layout owns which rows exist,
-   and a help_title of null drops the help row the layout granted. An empty
-   list draws the row that says so in place of the candidates. A layout with no
-   candidate row leaves the screen untouched. */
+   and a help_title of null drops the help rows the layout granted. The help
+   text wraps onto as many rows as the layout granted. An empty list draws the
+   row that says so in place of the candidates. A layout with no candidate row
+   leaves the screen untouched. */
 ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
                            size_t window_start, itl_menu_layout layout,
                            const char *help_title, const char *help_keys,
@@ -7109,16 +7346,8 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
                            const char *empty_text)
 {
   itl_char_buf_t *b = &itl_g_char_buffer;
-  size_t tty_cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
-  size_t full_cols = tty_cols > 1 ? tty_cols - 1 : 1;
-  size_t anchor = itl_g_menu_anchor_column >= ITL_MENU_ROW_PREFIX_WIDTH
-                      ? itl_g_menu_anchor_column - ITL_MENU_ROW_PREFIX_WIDTH
-                      : 0;
-  size_t needed_cols = ITL_MENU_ROW_PREFIX_WIDTH +
-                       (result->count == 0 ? itl_cstr_display_width(empty_text)
-                                           : name_width +
-                                                 ITL_MENU_SELECTED_MARGIN_WIDTH);
-  size_t row_cols;
+  itl_menu_geometry geometry;
+  size_t anchor;
   size_t text_width;
   size_t window_end = window_start + layout.candidate_rows;
   size_t desc_width;
@@ -7130,32 +7359,15 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
     return;
   }
 
-  if (anchor + needed_cols > full_cols) {
-    anchor = 0;
-  }
-  row_cols = full_cols - anchor;
-  text_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH
-                   ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH
-                   : 1;
+  geometry = itl_menu_geometry_of(result, name_width, empty_text);
+  anchor = geometry.anchor;
+  text_width = geometry.text_width;
+  name_width = geometry.name_width;
+  desc_width = geometry.desc_width;
 
   if (window_end > result->count) {
     window_end = result->count;
   }
-
-  if (name_width + ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_SELECTED_MARGIN_WIDTH >=
-      row_cols)
-  {
-    name_width =
-        row_cols > ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_SELECTED_MARGIN_WIDTH
-            ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH -
-                  ITL_MENU_SELECTED_MARGIN_WIDTH
-            : 1;
-  }
-  desc_width = row_cols > ITL_MENU_ROW_PREFIX_WIDTH + name_width + 1 +
-                              ITL_MENU_SELECTED_MARGIN_WIDTH
-                   ? row_cols - ITL_MENU_ROW_PREFIX_WIDTH - name_width - 1 -
-                         ITL_MENU_SELECTED_MARGIN_WIDTH
-                   : 0;
 
   ITL_CHAR_BUF_CLEAR(b);
   ITL_TTY_HIDE_CURSOR(b);
@@ -7163,8 +7375,8 @@ ITL_DEF void itl_menu_draw(const tl_completion *result, size_t selected,
   itl_menu_move_to_anchor(b, anchor);
 
   if (layout.has_help_row && help_title != NULL) {
-    itl_menu_append_help_row(b, help_title, help_keys, text_width);
-    drawn_rows += 1;
+    drawn_rows += itl_menu_layout_help(b, help_title, help_keys, text_width,
+                                       anchor, layout.help_row_count);
   }
 
   if (result->count == 0) {
@@ -7679,12 +7891,13 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
   if (source->should_show_loading) {
     tl_completion loading = ITL_ZERO_INIT;
     size_t tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
-    itl_menu_layout layout =
-        itl_menu_measure(tty_rows, source->help_title != NULL);
+    itl_menu_layout layout;
 
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
     itl_g_menu_anchor_column = 0;
+    layout = itl_menu_measure_for(&loading, tty_rows, 0, ITL_MENU_LOADING_TEXT,
+                                  source->help_title, source->help_keys);
     itl_menu_draw(&loading, 0, 0, layout, source->help_title,
                   source->help_keys, source->should_highlight, 0,
                   ITL_MENU_LOADING_TEXT);
@@ -7808,11 +8021,13 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
     }
 
     tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
-    layout = itl_menu_measure(tty_rows, source->help_title != NULL);
     itl_g_menu_anchor_column =
         source->should_anchor_to_token
             ? itl_menu_anchor_column_of(le, result.token_start)
             : 0;
+    layout = itl_menu_measure_for(&result, tty_rows, state.name_width,
+                                  ITL_MENU_EMPTY_TEXT, source->help_title,
+                                  source->help_keys);
 
     window_start = itl_menu_window_start(result.count, selected, window_start,
                                          layout.candidate_rows);
@@ -8083,12 +8298,16 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
   if (itl_g_completion_menu_enabled) {
     tl_completion loading = ITL_ZERO_INIT;
     size_t tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
-    itl_menu_layout layout = itl_menu_measure(tty_rows, true);
+    static const char loading_title[] = "selecting completions";
+    static const char loading_keys[] =
+        "enter to run, tab to accept, esc to close, ctrl-g to restore";
+    itl_menu_layout layout;
 
     itl_g_menu_anchor_column = 0;
-    itl_menu_draw(&loading, 0, 0, layout, "selecting completions",
-                  "enter to run, tab to accept, esc to close, ctrl-g to restore",
-                  false, 0, ITL_MENU_LOADING_TEXT);
+    layout = itl_menu_measure_for(&loading, tty_rows, 0, ITL_MENU_LOADING_TEXT,
+                                  loading_title, loading_keys);
+    itl_menu_draw(&loading, 0, 0, layout, loading_title, loading_keys, false, 0,
+                  ITL_MENU_LOADING_TEXT);
     itl_terminal_drain_output();
     is_loading_drawn = true;
   }

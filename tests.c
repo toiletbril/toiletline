@@ -4112,6 +4112,136 @@ test_menu_rows_start_under_the_token(void)
 }
 
 static bool
+test_menu_help_wraps_between_items(void)
+{
+  static const char *candidates[] = {"alpha", "album"};
+  static const char  title[] = "selecting completions";
+  static const char  keys[] =
+      "enter to run, tab to accept, esc to close, ctrl-g to restore";
+  tl_completion      result = ITL_ZERO_INIT;
+  itl_menu_layout    layout;
+  size_t             rows_wide;
+  size_t             rows_mid;
+  size_t             rows_narrow;
+  size_t             rows_cut;
+  bool               ok;
+
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 40;
+  itl_g_le_prev_total_rows = 1;
+  itl_g_le_prev_cursor_row = 1;
+  itl_g_menu_anchor_column = 0;
+  result.candidates = candidates;
+  result.count = countof(candidates);
+
+  rows_wide = itl_menu_layout_help(NULL, title, keys, 100, 0, 24);
+  rows_mid = itl_menu_layout_help(NULL, title, keys, 57, 0, 24);
+  rows_narrow = itl_menu_layout_help(NULL, title, keys, 37, 0, 24);
+  rows_cut = itl_menu_layout_help(NULL, title, keys, 37, 0, 2);
+  ok = rows_wide == 1 && rows_mid == 2 && rows_narrow == 3 && rows_cut == 2;
+
+  layout = itl_menu_measure_for(&result, itl_g_tty_prev_rows, 5, "", title,
+                                keys);
+  ok = ok && layout.has_help_row && layout.help_row_count == 3 &&
+       layout.has_count_row && layout.candidate_rows == ITL_MENU_MAX_ROWS;
+
+  itl_g_debug_frame_sink = test_frame_capture_sink;
+  test_frame_capture_size = 0;
+  itl_menu_draw(&result, 0, 0, layout, title, keys, false, 5, "");
+  ok = ok && test_frame_capture_has("selecting completions, enter to run,") &&
+       test_frame_capture_has("tab to accept, esc to close,") &&
+       test_frame_capture_has("ctrl-g to restore") &&
+       !test_frame_capture_has("run, tab");
+
+  /* A tall block leaves no room, so the help text is dropped whole. */
+  itl_g_le_prev_total_rows = 21;
+  layout = itl_menu_measure_for(&result, itl_g_tty_prev_rows, 5, "", title,
+                                keys);
+  ok = ok && !layout.has_help_row && layout.help_row_count == 0;
+
+  /* One item wider than the row is cut with an ellipsis. */
+  itl_g_le_prev_total_rows = 1;
+  itl_g_tty_prev_cols = 16;
+  layout = itl_menu_measure_for(&result, itl_g_tty_prev_rows, 5, "",
+                                "a title longer than the row", NULL);
+  test_frame_capture_size = 0;
+  itl_menu_draw(&result, 0, 0, layout, "a title longer than the row", NULL,
+                false, 5, "");
+  ok = ok && layout.help_row_count == 1 && test_frame_capture_has("...") &&
+       !test_frame_capture_has("than the row");
+
+  if (!ok) {
+    TEST_PRINTF("rows wide=%zu mid=%zu narrow=%zu cut=%zu help=%zu\n",
+                rows_wide, rows_mid, rows_narrow, rows_cut,
+                layout.help_row_count);
+  }
+
+  itl_g_debug_frame_sink = NULL;
+  itl_g_tty_prev_cols = 80;
+  itl_g_le_prev_total_rows = 1;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+
+  return ok;
+}
+
+static bool
+test_menu_anchor_accounts_for_descriptions(void)
+{
+  static const char *candidates[] = {"-a", "-all"};
+  static const char *short_descriptions[] = {"all", "everything"};
+  static const char *long_descriptions[] = {
+      "do not ignore entries starting with a dot",
+      "list every entry including the implied dot entries"};
+  tl_completion      result = ITL_ZERO_INIT;
+  itl_menu_layout    layout;
+  bool               ok;
+
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 60;
+  itl_g_le_prev_total_rows = 1;
+  itl_g_le_prev_cursor_row = 1;
+  result.candidates = candidates;
+  result.count = countof(candidates);
+  result.descriptions = short_descriptions;
+  layout = itl_menu_measure(itl_g_tty_prev_rows, 0);
+
+  itl_g_debug_frame_sink = test_frame_capture_sink;
+  itl_g_menu_anchor_column = 30;
+
+  /* Names and descriptions fit to the right of the token. */
+  test_frame_capture_size = 0;
+  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
+  ok = test_frame_capture_has("\x1b[29G");
+
+  /* The names alone would fit, the descriptions do not. */
+  result.descriptions = long_descriptions;
+  test_frame_capture_size = 0;
+  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
+  ok = ok && !test_frame_capture_has("\x1b[29G");
+
+  /* Without descriptions the same names stay under the token. */
+  result.descriptions = NULL;
+  test_frame_capture_size = 0;
+  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
+  ok = ok && test_frame_capture_has("\x1b[29G");
+
+  if (!ok) {
+    TEST_PRINTF("bytes=%zu\n", test_frame_capture_size);
+  }
+
+  itl_g_menu_anchor_column = 0;
+  itl_g_debug_frame_sink = NULL;
+  itl_g_tty_prev_cols = 80;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+
+  return ok;
+}
+
+static bool
 test_colors_disabled_drop_span_escapes(void)
 {
   char out_buffer[BUFFER_SIZE];
@@ -4702,6 +4832,10 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_loading_frame_drains_before_gather),
                                    DEFINE_TEST_CASE(
                                        test_menu_rows_start_under_the_token),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_help_wraps_between_items),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_anchor_accounts_for_descriptions),
                                    DEFINE_TEST_CASE(
                                        test_append_path_keeps_spans),
                                    DEFINE_TEST_CASE(
