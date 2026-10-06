@@ -1886,28 +1886,6 @@ ITL_DEF void itl_string_insert(itl_string_t *str, size_t position,
   str->size += ch.size;
 }
 
-/* Removes every backslash that is immediately followed by a newline, together
-   with that newline, joining the two physical lines like a POSIX shell. */
-ITL_DEF void itl_string_join_continuations(itl_string_t *str)
-{
-  size_t read_index, write_index = 0;
-
-  for (read_index = 0; read_index < str->length; ++read_index) {
-    if (read_index + 1 < str->length &&
-        ITL_LE_IS_BACKSLASH(str->chars[read_index]) &&
-        ITL_LE_IS_NEWLINE(str->chars[read_index + 1]))
-    {
-      read_index += 1; /* Drop the backslash and the newline that follows it. */
-      continue;
-    }
-    str->chars[write_index] = str->chars[read_index];
-    write_index += 1;
-  }
-
-  str->length = write_index;
-  itl_string_recalc_size(str);
-}
-
 #define ITL_STRING_FREE(str)                                                   \
   do {                                                                         \
     ITL_FREE((str)->chars);                                                    \
@@ -9937,11 +9915,9 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
       break;
     }
 
-    /* Submit. Join backslash continuations before handing the line back. */
-    itl_string_join_continuations(le->line);
-    if (le->cursor_position > le->line->length) {
-      le->cursor_position = le->line->length;
-    }
+    /* Submit the line as typed. The shell joins backslash continuations
+       itself, and only where they are not quoted, so history keeps the
+       physical lines. */
     ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
                 TL_SUCCESS,
             return TL_ERROR_SIZE);

@@ -826,38 +826,6 @@ test_find_substring(void)
 }
 
 static bool
-test_join_continuations(void)
-{
-  char out[64];
-
-  itl_string_t *s = itl_string_alloc();
-
-  const char with_continuation[] = {'a', 'b', 0x5C, 0x0A, 'c', 'd'};
-  const char plain_newline[] = {'a', 0x0A, 'b'};
-
-  itl_string_from_bytes(s, with_continuation, sizeof with_continuation);
-  itl_string_join_continuations(s);
-  itl_string_to_cstr(s, out, sizeof out);
-  if (strcmp(out, "abcd") != 0) {
-    TEST_PRINTF("joined: '%s', should be 'abcd'\n", out);
-    ITL_STRING_FREE(s);
-    return false;
-  }
-
-  itl_string_from_bytes(s, plain_newline, sizeof plain_newline);
-  itl_string_join_continuations(s);
-  itl_string_to_cstr(s, out, sizeof out);
-  if (!(out[0] == 'a' && out[1] == 0x0A && out[2] == 'b' && out[3] == '\0')) {
-    TEST_PRINTF("plain newline was not preserved, length %zu\n", s->length);
-    ITL_STRING_FREE(s);
-    return false;
-  }
-
-  ITL_STRING_FREE(s);
-  return true;
-}
-
-static bool
 test_history_multiline_file(void)
 {
   bool ok = true;
@@ -5901,7 +5869,6 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_char_width),
                                    DEFINE_TEST_CASE(test_metrics),
                                    DEFINE_TEST_CASE(test_find_substring),
-                                   DEFINE_TEST_CASE(test_join_continuations),
                                    DEFINE_TEST_CASE(test_history_multiline_file),
                                    DEFINE_TEST_CASE(
                                        test_rejected_ghost_history_prefix_is_cached),
