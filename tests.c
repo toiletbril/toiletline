@@ -2959,6 +2959,97 @@ cleanup:
   }
   return true;
 }
+
+/* Raw mode entered again while the host has the signal keys on keeps the
+   interrupt key a signal and asks for no extended keys. The exit restore puts
+   the terminal back and withdraws every request without touching the editor
+   state. */
+static bool
+test_raw_mode_keeps_signal_keys(void)
+{
+  static const char expected[] = "\x1b[?2004h" ITL_EXTENDED_KEYS_ON
+      ITL_EXTENDED_KEYS_OFF "\x1b[?2004l\x1b[?2004h" ITL_EXTENDED_KEYS_ON
+          "\x1b[?2004l" ITL_EXTENDED_KEYS_OFF;
+  struct termios saved_mode = itl_g_original_tty_mode;
+  struct termios term;
+  bool           was_raw = itl_g_entered_raw_mode;
+  int            master = -1, slave = -1;
+  int            saved_stdin = -1, saved_stdout = -1;
+  char           written[256];
+  size_t         written_size = 0;
+  bool           ok = false;
+
+  master = posix_openpt(O_RDWR | O_NOCTTY);
+  if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 ||
+      ptsname(master) == NULL)
+  {
+    TEST_PRINTF("could not open a terminal pair\n");
+    goto cleanup;
+  }
+  slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+  saved_stdin = dup(STDIN_FILENO);
+  saved_stdout = dup(STDOUT_FILENO);
+  if (slave < 0 || saved_stdin < 0 || saved_stdout < 0 ||
+      dup2(slave, STDIN_FILENO) < 0 || dup2(slave, STDOUT_FILENO) < 0)
+  {
+    goto cleanup;
+  }
+
+  itl_g_entered_raw_mode = false;
+  tl_set_extended_keys(1);
+  ok = tl_enter_raw_mode() == TL_SUCCESS;
+  ok &= tl_set_signal_keys(1) == TL_SUCCESS;
+  ok &= tl_exit_raw_mode() == TL_SUCCESS;
+  ok &= tl_enter_raw_mode() == TL_SUCCESS;
+  ok &= tcgetattr(STDIN_FILENO, &term) == 0 &&
+        (term.c_lflag & (tcflag_t) ISIG) != 0 &&
+        (term.c_lflag & (tcflag_t) ICANON) == 0;
+  ok &= tl_set_signal_keys(0) == TL_SUCCESS;
+  tl_restore_terminal_for_exit();
+  ok &= itl_g_entered_raw_mode;
+  ok &= tcgetattr(STDIN_FILENO, &term) == 0 &&
+        (term.c_lflag & (tcflag_t) ICANON) != 0;
+
+cleanup:
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (saved_stdout >= 0) {
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+  }
+  if (slave >= 0) close(slave);
+  if (master >= 0) {
+    struct pollfd pfd;
+    ssize_t       chunk;
+
+    pfd.fd = master;
+    pfd.events = POLLIN;
+    while (written_size < sizeof(written) && poll(&pfd, 1, 100) > 0 &&
+           (pfd.revents & POLLIN) != 0 &&
+           (chunk = read(master, written + written_size,
+                         sizeof(written) - written_size)) > 0)
+    {
+      written_size += (size_t) chunk;
+    }
+    close(master);
+  }
+  itl_g_entered_raw_mode = was_raw;
+  itl_g_original_tty_mode = saved_mode;
+  itl_g_extended_keys_active = false;
+  itl_g_extended_keys_enabled = false;
+  itl_g_signal_keys_enabled = false;
+
+  if (!ok || written_size != sizeof(expected) - 1 ||
+      memcmp(written, expected, written_size) != 0)
+  {
+    TEST_PRINTF("raw mode wrote %zu bytes, want %zu\n", written_size,
+                sizeof(expected) - 1);
+    return false;
+  }
+  return true;
+}
 #endif
 
 static bool
@@ -7242,6 +7333,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_extended_keys_map_signal_keys),
                                    DEFINE_TEST_CASE(
                                        test_extended_keys_follow_raw_mode),
+                                   DEFINE_TEST_CASE(
+                                       test_raw_mode_keeps_signal_keys),
 #endif
                                    DEFINE_TEST_CASE(
                                        test_prefix_history_search_walks_matches),

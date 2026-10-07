@@ -203,6 +203,13 @@ TL_DEF tl_status_code tl_exit(void);
  */
 TL_DEF tl_status_code tl_exit_raw_mode(void);
 /**
+ * Put the terminal back the way raw mode found it and withdraw every request
+ * raw mode made, from a fatal signal handler or an exit hook. It calls only
+ * async-signal-safe functions and changes no editor state, so the process is
+ * expected to end after it. POSIX only.
+ */
+TL_DEF void tl_restore_terminal_for_exit(void);
+/**
  * Read a line of input into the buffer. The returned string may contain
  * newline characters that come from multiline editing or a paste.
  */
@@ -861,6 +868,9 @@ ITL_DEF inline void itl_do_nothing() {}
 
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_active = false;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_entered_raw_mode = false;
+/* Set while the host lets the interrupt key raise a signal, so raw mode entered
+   again meanwhile, such as after a program run in the middle, keeps it. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_signal_keys_enabled = false;
 #if defined ITL_WIN32
 ITL_DEF ITL_THREAD_LOCAL DWORD itl_g_original_tty_in_mode = 0;
 ITL_DEF ITL_THREAD_LOCAL DWORD itl_g_original_tty_out_mode = 0;
@@ -936,6 +946,9 @@ ITL_DEF bool itl_enter_raw_mode_impl(void)
   itl_g_original_tty_mode = term;
   cfmakeraw(&term);
   term.c_oflag = OPOST | ONLCR;
+  if (itl_g_signal_keys_enabled) {
+    term.c_lflag |= (tcflag_t) ISIG;
+  }
 
   /* TCSADRAIN keeps the pty's queued input, so a command typed ahead while
      the previous one ran, or sent by tmux before the shell finished
@@ -1058,17 +1071,23 @@ TL_DEF tl_status_code tl_enter_raw_mode(void)
      terminal ignores it. */
   ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[?2004h", 8) != -1, {});
 #endif
-  itl_set_extended_keys_active(itl_g_extended_keys_enabled);
+  itl_set_extended_keys_active(itl_g_extended_keys_enabled &&
+                               !itl_g_signal_keys_enabled);
 
   return TL_SUCCESS;
 }
 
 TL_DEF tl_status_code tl_exit_raw_mode(void)
 {
+  bool did_restore_mode;
+
   ITL_TRY(itl_g_entered_raw_mode, return TL_SUCCESS);
 
   ITL_TRY(ITL_TTY_IS_TTY(), return TL_ERROR);
-  ITL_TRY(itl_exit_raw_mode_impl(), return TL_ERROR);
+
+  /* The terminal requests are withdrawn even when the mode cannot be restored,
+     so a failed exit leaves no key reporting behind for the next program. */
+  did_restore_mode = itl_exit_raw_mode_impl();
 
 #if defined ITL_POSIX
   ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[?2004l", 8) != -1, {});
@@ -1080,9 +1099,31 @@ TL_DEF tl_status_code tl_exit_raw_mode(void)
     itl_g_vi_cursor_shape = ITL_VI_CURSOR_DEFAULT_SHAPE;
   }
 
+  ITL_TRY(did_restore_mode, return TL_ERROR);
+
   itl_g_entered_raw_mode = false;
 
   return TL_SUCCESS;
+}
+
+TL_DEF void tl_restore_terminal_for_exit(void)
+{
+#if defined ITL_POSIX
+  static const char withdraw[] = "\x1b[?2004l" ITL_EXTENDED_KEYS_OFF;
+  static const char default_cursor[] = "\x1b[0 q";
+  ssize_t written;
+
+  if (!itl_g_entered_raw_mode) {
+    return;
+  }
+
+  written = write(STDOUT_FILENO, withdraw, sizeof(withdraw) - 1);
+  if (itl_g_vi_cursor_shape != ITL_VI_CURSOR_DEFAULT_SHAPE) {
+    written = write(STDOUT_FILENO, default_cursor, sizeof(default_cursor) - 1);
+  }
+  (void) written;
+  (void) tcsetattr(STDIN_FILENO, TCSANOW, &itl_g_original_tty_mode);
+#endif /* ITL_POSIX */
 }
 
 /* Holds at most one pushed-back byte, or -1 when empty. The read path drains
@@ -7394,6 +7435,7 @@ TL_DEF tl_status_code tl_set_signal_keys(int enabled)
   }
 
   ITL_TRY(tcsetattr(STDIN_FILENO, TCSANOW, &term) == 0, return TL_ERROR);
+  itl_g_signal_keys_enabled = enabled != 0;
 
   /* The kitty form of the interrupt key is a sequence the terminal driver does
      not turn into SIGINT, so the extended keys are withdrawn meanwhile. */
@@ -7411,7 +7453,8 @@ TL_DEF void tl_set_extended_keys(int enabled)
 {
   itl_g_extended_keys_enabled = enabled != 0;
   if (itl_g_entered_raw_mode) {
-    itl_set_extended_keys_active(itl_g_extended_keys_enabled);
+    itl_set_extended_keys_active(itl_g_extended_keys_enabled &&
+                                 !itl_g_signal_keys_enabled);
   }
 }
 
