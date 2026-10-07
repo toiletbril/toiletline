@@ -6345,25 +6345,29 @@ ITL_DEF void itl_hint_compose(const char *line, size_t cursor_byte, size_t cols,
     header_end -= 1;
   }
 
-  for (i = 0; i < text_bytes; ++i) {
+  i = 0;
+  while (i < text_bytes) {
     uint8_t byte = (uint8_t) returned[i];
-    bool is_c1 = byte == 0xC2 && i + 1 < text_bytes &&
-                 (uint8_t) returned[i + 1] >= 0x80 &&
-                 (uint8_t) returned[i + 1] < 0xA0;
+    size_t step_bytes, step_width;
+    bool is_notation;
 
     if (line_break != NULL && i == header_end) {
       itl_g_hint_header_len = kept_bytes;
-      i = (size_t) (line_break - returned);
+      i = (size_t) (line_break - returned) + 1;
       continue;
     }
-    if (is_c1) {
-      i += 1;
-    }
-    if (is_c1 || byte < 0x20 || byte == 0x7F) {
+
+    itl_visible_step(returned + i, text_bytes - i, &step_bytes, &step_width);
+    is_notation = step_bytes == 1 ? byte < 0x20 || byte >= 0x7F
+                                  : byte == 0xC2 &&
+                                        (uint8_t) returned[i + 1] < 0xA0;
+    if (is_notation) {
       itl_g_hint_source[kept_bytes++] = ' ';
     } else {
-      itl_g_hint_source[kept_bytes++] = (char) byte;
+      memcpy(itl_g_hint_source + kept_bytes, returned + i, step_bytes);
+      kept_bytes += step_bytes;
     }
+    i += step_bytes;
   }
   itl_g_hint_source_len = kept_bytes;
   itl_g_hint_source[kept_bytes] = '\0';
@@ -9402,6 +9406,31 @@ ITL_DEF bool itl_history_menu_gather(itl_le_t *le, tl_completion *result)
    The line above the rows reads as the line that accepting it produces. The
    ghost only appends. A candidate that does not extend the typed token leaves
    the line bare. */
+/* True when name opens with the typed token in either case, so the ghost of
+   its rest reads as the name. A row matched elsewhere in its text, such as a
+   subsequence, would draw the typed bytes followed by a suffix that does not
+   continue them. token_start is a codepoint index. */
+ITL_DEF bool itl_menu_name_extends_token(const itl_le_t *le,
+                                         const char *line_cstr,
+                                         size_t token_start, const char *name)
+{
+  size_t token_start_byte = 0;
+  size_t typed_bytes;
+  size_t i;
+
+  if (token_start > le->line->length) {
+    return false;
+  }
+  for (i = 0; i < token_start; ++i) {
+    token_start_byte += le->line->chars[i].size;
+  }
+  typed_bytes = le->line->size - token_start_byte;
+
+  return strlen(name) >= typed_bytes &&
+         itl_ascii_prefix_matches_casefold(name, line_cstr + token_start_byte,
+                                           typed_bytes);
+}
+
 ITL_DEF void itl_menu_ghost_preview(itl_le_t *le, const tl_completion *result,
                                     size_t selected)
 {
@@ -9424,6 +9453,9 @@ ITL_DEF void itl_menu_ghost_preview(itl_le_t *le, const tl_completion *result,
   name = itl_menu_display_name(result->candidates[selected],
                                display_name_storage,
                                sizeof(display_name_storage));
+  if (!itl_menu_name_extends_token(le, line_cstr, result->token_start, name)) {
+    return;
+  }
   itl_ghost_fill_from_token_text(le, line_cstr, le->line->size,
                                  result->token_start,
                                  name);
@@ -11056,12 +11088,18 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     bool insert_newline = (esc & TL_MOD_ALT) != 0;
 
     /* A trailing backslash at the end of the line continues it, fish-style. A
-       backslash with text after it submits the line instead. */
-    if (!insert_newline && le->cursor_position > 0 &&
-        le->cursor_position == le->line->length &&
-        ITL_LE_IS_BACKSLASH(le->line->chars[le->cursor_position - 1]))
-    {
-      insert_newline = true;
+       backslash with text after it submits the line instead, and so does an
+       even run, where the last backslash is itself escaped. */
+    if (!insert_newline && le->cursor_position == le->line->length) {
+      size_t backslash_count = 0;
+
+      while (backslash_count < le->cursor_position &&
+             ITL_LE_IS_BACKSLASH(
+                 le->line->chars[le->cursor_position - backslash_count - 1]))
+      {
+        backslash_count += 1;
+      }
+      insert_newline = backslash_count % 2 == 1;
     }
     /* A bare newline always submits. Real pastes arrive inside the bracketed
        paste markers requested at raw enter, and a terminal without them

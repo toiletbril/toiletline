@@ -4533,6 +4533,44 @@ test_ghost_completion_corrects_case(void)
   return ok;
 }
 
+/* The menu previews a highlighted row as a ghost only when the row continues
+   the typed token, so a row matched inside its text draws no ghost. */
+static bool
+test_menu_preview_needs_an_extending_row(void)
+{
+  static const char *names[] = {"apple", "Pear"};
+  char               out_buffer[BUFFER_SIZE];
+  bool               is_inner_match_hidden;
+  bool               is_extending_shown;
+  tl_completion      result = ITL_ZERO_INIT;
+  itl_le_t           le = ITL_ZERO_INIT;
+  itl_string_t      *line = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(line, "cat p");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  result.candidates = names;
+  result.count = countof(names);
+  result.token_start = 4;
+  result.token_end = 5;
+
+  itl_menu_ghost_preview(&le, &result, 0);
+  is_inner_match_hidden = itl_g_ghost_len == 0;
+  itl_menu_ghost_preview(&le, &result, 1);
+  is_extending_shown = strcmp(itl_g_ghost, "ear") == 0;
+
+  itl_ghost_clear();
+  itl_g_ghost_sticky_target[0] = '\0';
+  ITL_STRING_FREE(line);
+
+  if (!is_inner_match_hidden || !is_extending_shown) {
+    TEST_PRINTF("inner match hidden %d, extending row shown %d\n",
+                (int) is_inner_match_hidden, (int) is_extending_shown);
+    return false;
+  }
+
+  return true;
+}
+
 static bool
 test_ghost_sticky_target_continues(void)
 {
@@ -7061,6 +7099,9 @@ test_control_bytes_draw_visibly(void)
   test_hint_text = "a\xC2\x9B" "b\x1b" "c";
   itl_hint_compose("x", 1, 20, 24);
   is_hint_blanked = strcmp(itl_g_hint_next, "  a b c") == 0;
+  test_hint_text = "a\x9B" "b\xE2\x82" "c\xC3\xA9";
+  itl_hint_compose("x", 1, 20, 24);
+  is_hint_blanked &= strcmp(itl_g_hint_next, "  a b  c\xC3\xA9") == 0;
   tl_set_hint_callback(NULL);
   itl_hint_drop_next();
 
@@ -7367,6 +7408,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_ghost_history_corrects_case),
                                    DEFINE_TEST_CASE(
                                        test_ghost_completion_corrects_case),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_preview_needs_an_extending_row),
                                    DEFINE_TEST_CASE(
                                        test_ghost_sticky_target_continues),
                                    DEFINE_TEST_CASE(
