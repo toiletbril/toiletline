@@ -6663,6 +6663,22 @@ test_auto_pair_line_is(itl_le_t *le, const char *expected, size_t caret)
   return true;
 }
 
+/* Brackets and quotes after an odd count of single quotes are plain text. */
+static int
+test_pair_role_inside_quote(const char *buffer, size_t cursor, int byte)
+{
+  size_t quote_count = 0;
+  size_t i;
+
+  for (i = 0; i < cursor; ++i) {
+    quote_count += buffer[i] == '\'';
+  }
+  if (quote_count % 2 == 1) {
+    return TL_PAIR_NONE;
+  }
+  return byte == ')' ? TL_PAIR_CLOSES : TL_PAIR_OPENS;
+}
+
 static bool
 test_auto_pair_types_steps_and_erases(void)
 {
@@ -6716,6 +6732,21 @@ test_auto_pair_types_steps_and_erases(void)
   ITL_STRING_FROM_CSTR(line, "()");
   le.cursor_position = 1;
   ok = ok && !itl_le_auto_pair_type(&le, ')') && !itl_le_auto_pair_erase(&le);
+
+  tl_set_pair_role_callback(test_pair_role_inside_quote);
+  ITL_STRING_FROM_CSTR(line, "' ");
+  le.cursor_position = line->length;
+  itl_g_auto_pair_count = 0;
+  ok = ok && !itl_le_auto_pair_type(&le, '(') &&
+       !itl_le_auto_pair_type(&le, '"');
+  ITL_STRING_FROM_CSTR(line, "a ");
+  le.cursor_position = line->length;
+  ok = ok && itl_le_auto_pair_type(&le, '(') &&
+       test_auto_pair_line_is(&le, "a ()", 3);
+  ok = ok && itl_le_insert(&le, itl_utf8_parse('\'')) &&
+       !itl_le_auto_pair_type(&le, ')') &&
+       test_auto_pair_line_is(&le, "a (')", 4) && itl_g_auto_pair_count == 1;
+  tl_set_pair_role_callback(NULL);
 
   tl_set_auto_pair(0);
   ITL_STRING_FREE(line);

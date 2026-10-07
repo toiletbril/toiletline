@@ -400,6 +400,26 @@ TL_DEF void tl_set_history_prefix_search(int enabled);
  */
 TL_DEF void tl_set_auto_pair(int enabled);
 
+/* The typed byte is plain text at the caret, such as inside a quoted string. */
+#define TL_PAIR_NONE 0
+/* The typed byte opens a pair, so the editor may insert its closer. */
+#define TL_PAIR_OPENS 1
+/* The typed byte closes a pair, so it may step over an inserted closer. */
+#define TL_PAIR_CLOSES 2
+
+/*
+ * The auto-pair callback. The host receives the buffer, the byte offset of the
+ * caret, and the typed bracket or quote, and answers TL_PAIR_NONE,
+ * TL_PAIR_OPENS, or TL_PAIR_CLOSES from its own syntax. Without a callback a
+ * typed opener always opens and a typed closer always closes.
+ */
+typedef int (*tl_pair_role_fn)(const char *buffer, size_t cursor, int byte);
+
+/**
+ * Register the auto-pair callback, or NULL to pair without one.
+ */
+TL_DEF void tl_set_pair_role_callback(tl_pair_role_fn callback);
+
 typedef enum
 {
   TL_SPACE_AFTER_COMPLETION_OFF = 0,
@@ -7093,11 +7113,33 @@ TL_DEF void tl_set_history_prefix_search(int enabled)
    Any other key forgets it. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_auto_pair_enabled = false;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_auto_pair_count = 0;
+ITL_DEF ITL_THREAD_LOCAL tl_pair_role_fn itl_g_pair_role_callback = NULL;
 
 TL_DEF void tl_set_auto_pair(int enabled)
 {
   itl_g_auto_pair_enabled = enabled != 0;
   itl_g_auto_pair_count = 0;
+}
+
+TL_DEF void tl_set_pair_role_callback(tl_pair_role_fn callback)
+{
+  itl_g_pair_role_callback = callback;
+}
+
+/* What the typed byte does at the caret, or the given fallback when no host
+   callback answers. */
+ITL_DEF int itl_le_pair_role(const itl_le_t *le, uint8_t byte, int fallback)
+{
+  if (itl_g_pair_role_callback == NULL ||
+      itl_string_to_cstr(le->line, itl_g_serialized_line,
+                         sizeof(itl_g_serialized_line)) != TL_SUCCESS)
+  {
+    return fallback;
+  }
+
+  itl_g_serialized_line_ready = false;
+  return itl_g_pair_role_callback(itl_g_serialized_line,
+                                  itl_le_cursor_byte_offset(le), byte);
 }
 
 /* The closer an opener pairs with, or zero for any other byte. */
@@ -7161,7 +7203,8 @@ ITL_DEF bool itl_le_auto_pair_type(itl_le_t *le, uint8_t byte)
   if (itl_g_auto_pair_count > 0 &&
       itl_le_ascii_at(le, le->cursor_position) == byte &&
       (byte == ')' || byte == ']' || byte == '}' || byte == '"' ||
-       byte == '\''))
+       byte == '\'') &&
+      itl_le_pair_role(le, byte, TL_PAIR_CLOSES) == TL_PAIR_CLOSES)
   {
     itl_le_move_right(le, 1);
     itl_g_auto_pair_count -= 1;
@@ -7169,7 +7212,9 @@ ITL_DEF bool itl_le_auto_pair_type(itl_le_t *le, uint8_t byte)
   }
 
   closer = itl_auto_pair_closer(byte);
-  if (closer == 0 || !itl_le_auto_pair_fits(le, byte)) {
+  if (closer == 0 || !itl_le_auto_pair_fits(le, byte) ||
+      itl_le_pair_role(le, byte, TL_PAIR_OPENS) != TL_PAIR_OPENS)
+  {
     return false;
   }
   if (!itl_le_insert(le, itl_utf8_parse(byte))) {
