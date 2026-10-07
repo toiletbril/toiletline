@@ -7096,9 +7096,9 @@ test_right_prompt_follows_appends(void)
   return ok;
 }
 
-/* Enter with a transient prompt erases from the top of the block down and
-   draws the line after that prompt alone. The other ways out of the line and a
-   submit without one leave the block standing. */
+/* Enter or Ctrl-C with a transient prompt erases from the top of the block
+   down and draws the line after that prompt alone. A submit without one
+   leaves the block standing. */
 static bool
 test_transient_prompt_redraws_the_submitted_line(void)
 {
@@ -7108,7 +7108,7 @@ test_transient_prompt_redraws_the_submitted_line(void)
   bool              was_line_redrawn;
   bool              were_prompts_dropped;
   bool              is_prompt_restored;
-  bool              was_interrupt_left;
+  bool              was_interrupt_redrawn;
   bool              was_plain_submit_left;
   bool              ok;
 
@@ -7144,8 +7144,8 @@ test_transient_prompt_redraws_the_submitted_line(void)
   test_frame_capture_refresh(&le);
   test_frame_capture_size = 0;
   itl_le_finish_input(&le, TL_PRESSED_INTERRUPT);
-  was_interrupt_left = !test_frame_capture_has("\x1b[0J") &&
-                       !test_frame_capture_has("$ ");
+  was_interrupt_redrawn = test_frame_capture_has("\x1b[0J") &&
+                          test_frame_capture_has("$ ab");
 
   tl_set_transient_prompt(NULL);
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
@@ -7164,14 +7164,14 @@ test_transient_prompt_redraws_the_submitted_line(void)
   test_right_prompt_finish_frame(line);
 
   ok = was_block_erased && was_line_redrawn && were_prompts_dropped &&
-       is_prompt_restored && was_interrupt_left && was_plain_submit_left;
+       is_prompt_restored && was_interrupt_redrawn && was_plain_submit_left;
 
   if (!ok) {
     TEST_PRINTF("erased %d, redrawn %d, dropped %d, restored %d, interrupt %d, "
                 "plain %d\n",
                 (int) was_block_erased, (int) was_line_redrawn,
                 (int) were_prompts_dropped, (int) is_prompt_restored,
-                (int) was_interrupt_left, (int) was_plain_submit_left);
+                (int) was_interrupt_redrawn, (int) was_plain_submit_left);
   }
 
   return ok;

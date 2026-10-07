@@ -551,7 +551,8 @@ TL_DEF void tl_set_right_prompt(const char *right_prompt);
 
 /**
  * Set the prompt a submitted line is redrawn with, or NULL to leave the line
- * as it was drawn. When Enter submits, everything from the top of the prompt
+ * as it was drawn. When Enter submits or Ctrl-C interrupts the line,
+ * everything from the top of the prompt
  * down is erased, which takes the right prompt, the ghost, the hint rows, and
  * any rows below the input, and the line is drawn again after this prompt. The
  * host keeps the string valid until the next call.
@@ -7432,7 +7433,7 @@ ITL_DEF void itl_hint_release(void)
   itl_g_hint_hold_count -= 1;
 }
 
-/* Redraw a submitted line after the transient prompt. The erase runs from the
+/* Redraw a finished line after the transient prompt. The erase runs from the
    top of the block to the end of the screen, so the old prompt rows, the right
    prompt, the hint rows, and any rows under the input go with it, and the erase
    and the redraw leave in one write. */
@@ -7464,8 +7465,9 @@ ITL_DEF void itl_le_tty_draw_transient(itl_le_t *le)
    only drops the recorded text, so a ghost that reached the screen also needs
    one forced text refresh to erase it. With nothing drawn the line on screen is
    already correct and the repaint is skipped, which avoids a full-block flicker
-   on a multiline submit. A submit with a transient prompt redraws the line
-   after it instead. */
+   on a multiline submit. With a transient prompt, a submitted or interrupted
+   line is redrawn after it instead, so the scrollback keeps the short prompt
+   for a cancelled line too, as zsh transient prompts do. */
 ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
 {
   bool was_ghost_drawn = itl_g_le_prev_ghost_len > 0;
@@ -7474,7 +7476,9 @@ ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
   itl_ghost_clear();
   itl_g_hint_is_closed = true;
 
-  if (code == TL_PRESSED_ENTER && itl_g_transient_prompt != NULL) {
+  if ((code == TL_PRESSED_ENTER || code == TL_PRESSED_INTERRUPT) &&
+      itl_g_transient_prompt != NULL)
+  {
     itl_le_tty_draw_transient(le);
   } else if (was_ghost_drawn || was_hint_drawn) {
     itl_g_tty_should_refresh_text = true;
