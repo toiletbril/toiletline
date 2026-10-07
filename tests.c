@@ -3277,6 +3277,204 @@ test_menu_narrow_reuses_base(void)
   return true;
 }
 
+#if defined ITL_POSIX
+static size_t test_word_gather_calls;
+
+/* A source whose token is the last word of the line. It offers the words the
+   token starts, each with a description. */
+static bool
+test_word_gather(itl_le_t *le, tl_completion *result)
+{
+  static const char *words[] = {"alpha", "album", "alcove", "beta"};
+  static const char *notes[] = {"first", "second", "third", "fourth"};
+  static const char *candidates[countof(words)];
+  static const char *descriptions[countof(words)];
+  char               token[BUFFER_SIZE];
+  size_t             token_len = 0;
+  size_t             kept_count = 0;
+  size_t             start = le->line->length;
+  size_t             i;
+
+  test_word_gather_calls += 1;
+
+  while (start > 0 && !ITL_CHAR_IS_SPACE(le->line->chars[start - 1].bytes[0]))
+  {
+    start -= 1;
+  }
+  for (i = start; i < le->line->length && token_len + 1 < sizeof(token); ++i) {
+    token[token_len++] = (char) le->line->chars[i].bytes[0];
+  }
+  token[token_len] = '\0';
+
+  for (i = 0; i < countof(words); ++i) {
+    if (strncmp(words[i], token, token_len) == 0) {
+      candidates[kept_count] = words[i];
+      descriptions[kept_count] = notes[i];
+      kept_count += 1;
+    }
+  }
+
+  if (kept_count == 0) {
+    return false;
+  }
+
+  result->candidates = candidates;
+  result->descriptions = descriptions;
+  result->longest_common_prefix = NULL;
+  result->count = kept_count;
+  result->token_start = start;
+  result->token_end = le->line->length;
+
+  return true;
+}
+
+/* Open the menu on text with one gather, feed it keys until the input ends,
+   and return how many more gathers the keys cost. The line the keys left is
+   written to out_line. */
+static size_t
+menu_keys_gathers(const char *text, const char *keys, char *out_line,
+                  size_t out_size)
+{
+  static const itl_menu_source source = {
+      test_word_gather, true, true, false, true, false, false, NULL, NULL,
+      false, true};
+  char          out_buffer[BUFFER_SIZE];
+  int           pipe_descriptors[2] = {-1, -1};
+  int           null_descriptor = -1;
+  int           saved_stdin = -1;
+  int           saved_stdout = -1;
+  size_t        calls = (size_t) -1;
+  size_t        key_count = strlen(keys);
+  tl_completion initial = ITL_ZERO_INIT;
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  out_line[0] = '\0';
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+  if (write(pipe_descriptors[1], keys, key_count) != (ssize_t) key_count) {
+    goto cleanup;
+  }
+  close(pipe_descriptors[1]);
+  pipe_descriptors[1] = -1;
+
+  null_descriptor = open("/dev/null", O_WRONLY);
+  if (null_descriptor < 0) goto cleanup;
+
+  saved_stdin = dup(STDIN_FILENO);
+  saved_stdout = dup(STDOUT_FILENO);
+  if (saved_stdin < 0 || saved_stdout < 0) goto cleanup;
+  if (dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
+      dup2(null_descriptor, STDOUT_FILENO) < 0)
+  {
+    goto cleanup;
+  }
+
+  ITL_STRING_FROM_CSTR(line, text);
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+
+  test_word_gather_calls = 0;
+  (void) test_word_gather(&le, &initial);
+  test_word_gather_calls = 0;
+  (void) itl_completion_menu_run(&le, &initial, &source);
+  calls = test_word_gather_calls;
+  itl_string_to_cstr(line, out_line, out_size);
+
+cleanup:
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (saved_stdout >= 0) {
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+  }
+  if (null_descriptor >= 0) close(null_descriptor);
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+
+  ITL_STRING_FREE(line);
+  itl_ghost_clear();
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+
+  return calls;
+}
+
+typedef struct menu_keys_case menu_keys_case_t;
+
+struct menu_keys_case
+{
+  const char *text;
+  const char *keys;
+  const char *line;
+  size_t      gathers;
+};
+
+/* Typing into an open menu narrows the gathered list without asking the source
+   again, and an erase widens it while the gathered query stands. The source is
+   asked again for a new word, a new path component, a byte that moves the
+   token, and an erase below the gathered query. */
+static bool
+test_menu_keys_reuse_gathered_list(void)
+{
+  static const menu_keys_case_t cases[] = {
+      {"cat al",  "bu",               "cat albu",    0},
+      {"cat al",  "c",                "cat alc",     0},
+      {"cat al",  "bu\x7f\x7f",       "cat al",      0},
+      {"cat al",  "bu\x7f\x7f\x7f",   "cat a",       1},
+      {"cat al",  " ",                "cat al ",     1},
+      {"cat al",  " b",               "cat al b",    2},
+      {"cat al",  "/",                "cat al/",     1},
+      {"cat al",  "/a",               "cat al/a",    2},
+      {"cat al",  "'",                "cat al'",     1},
+      {"cat al",  "=",                "cat al=",     1},
+      {"cat ",    "al",               "cat al",      1},
+      {"cat al",  "zz",               "cat alzz",    1},
+      {"cat al",  "ee",               "cat alee",    1},
+      {"cat al",  "P",                "cat alP",     1},
+  };
+  bool   ok = true;
+  char   line[BUFFER_SIZE];
+  size_t i;
+
+  if (itl_menu_tier_rank("alpha", 5, "al", 2, false) !=
+          ITL_MENU_TIER_EXACT_PREFIX ||
+      itl_menu_tier_rank("Alpha", 5, "al", 2, false) != ITL_MENU_TIER_PREFIX ||
+      itl_menu_tier_rank("Alpha", 5, "aL", 2, true) != ITL_MENU_TIER_NONE ||
+      itl_menu_tier_rank("foo_bar_baz", 11, "fbb", 3, false) !=
+          ITL_MENU_TIER_SUBSEQUENCE ||
+      itl_menu_tier_rank("fOo_Bar", 7, "fB", 2, true) !=
+          ITL_MENU_TIER_SUBSEQUENCE)
+  {
+    TEST_PRINTF("a completion tier was ranked wrong\n");
+    ok = false;
+  }
+
+  for (i = 0; i < countof(cases); ++i) {
+    size_t gathers =
+        menu_keys_gathers(cases[i].text, cases[i].keys, line, sizeof(line));
+
+    if (gathers != cases[i].gathers || strcmp(line, cases[i].line) != 0) {
+      TEST_PRINTF("case %zu left '%s' after %zu gathers\n", i, line, gathers);
+      ok = false;
+    }
+  }
+
+  if (menu_keys_gathers("cat al", "bu", line, sizeof(line)) != 0 ||
+      strcmp(itl_g_menu_filtered[0], "album") != 0 ||
+      strcmp(itl_g_menu_filtered_descriptions[0], "second") != 0)
+  {
+    TEST_PRINTF("a narrowed row lost its description\n");
+    ok = false;
+  }
+
+  return ok;
+}
+#endif /* ITL_POSIX */
+
 static bool
 test_menu_cells(void)
 {
@@ -6809,6 +7007,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_history_menu_multiline_display),
                                    DEFINE_TEST_CASE(test_merge_visual_spans),
 #if defined ITL_POSIX
+                                   DEFINE_TEST_CASE(
+                                       test_menu_keys_reuse_gathered_list),
                                    DEFINE_TEST_CASE(
                                        test_alt_backspace_sequences),
                                    DEFINE_TEST_CASE(

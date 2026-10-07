@@ -9093,15 +9093,18 @@ typedef bool (*itl_menu_gather_fn)(itl_le_t *le, tl_completion *result);
 /* Everything that separates one menu source from another. gather refills the
    list as the line changes. can_descend belongs to a list of paths and reopens
    the menu inside an accepted directory. should_regather_new_words belongs to
-   a list whose meaning changes at word boundaries. should_show_loading belongs
-   to a source whose gather may take noticeable time. should_submit_on_enter
-   belongs to a list that only extends the line, and Enter then closes the menu
-   and submits what the line already holds. should_highlight belongs to a list
-   whose entries are whole commands, and the host colors them the way it colors
-   the line. help_title names the source on the first row and help_keys lists
-   the keys it answers beside it. should_anchor_to_token belongs to a list of
-   replacements for a token, and the rows then start under the token instead of
-   the leftmost column. */
+   a list whose meaning changes at word boundaries, and the source is asked
+   again for the first byte of a word and for a byte that moves the token.
+   should_show_loading belongs to a source whose gather may take noticeable
+   time. should_submit_on_enter belongs to a list that only extends the line,
+   and Enter then closes the menu and submits what the line already holds.
+   should_highlight belongs to a list whose entries are whole commands, and
+   the host colors them the way it colors the line. help_title names the
+   source on the first row and help_keys lists the keys it answers beside it.
+   should_anchor_to_token belongs to a list of replacements for a token, and
+   the rows then start under the token instead of the leftmost column.
+   should_keep_best_tier belongs to a host that offers only the best tier of
+   its matches, and typing narrows the list by the same tiers. */
 typedef struct itl_menu_source
 {
   itl_menu_gather_fn gather;
@@ -9114,6 +9117,7 @@ typedef struct itl_menu_source
   const char *help_title;
   const char *help_keys;
   bool should_anchor_to_token;
+  bool should_keep_best_tier;
 } itl_menu_source;
 
 /* Ask the host for the candidates of the line as it stands now. The host keeps
@@ -9403,15 +9407,98 @@ ITL_DEF ITL_THREAD_LOCAL unsigned char
 
 /* The list the source last gave and the query it answered. Typing narrows this
    list in place. The source is asked again only when the line no longer
-   extends the query, or when the local list has no row for it. */
+   extends the query, or when the local list has no row for it. base_tier is
+   the best tier any base row reaches against that query. */
 typedef struct itl_menu_filter_state
 {
   tl_completion base;
   char query[ITL_STRING_MAX_LEN];
   size_t query_len;
   size_t name_width;
+  unsigned base_tier;
   bool should_regather;
 } itl_menu_filter_state;
+
+/* The tiers a shell completion host ranks its candidates by, best first. It
+   offers only the rows of the best tier any entry reaches. */
+#define ITL_MENU_TIER_EXACT_PREFIX 0
+#define ITL_MENU_TIER_PREFIX       1
+#define ITL_MENU_TIER_SUBSEQUENCE  2
+#define ITL_MENU_TIER_NONE         3
+
+/* True when the query holds an ASCII capital, which makes every tier compare
+   case sensitively. */
+ITL_DEF bool itl_menu_query_is_case_sensitive(const char *query,
+                                              size_t query_len)
+{
+  size_t position;
+
+  for (position = 0; position < query_len; ++position) {
+    if (query[position] >= 'A' && query[position] <= 'Z') {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/* Rank one entry against the query the way a completion host does. An entry
+   opening with the query byte for byte comes first. One opening with it in
+   another case comes next, unless the query holds a capital. One holding the
+   query bytes in order comes last. */
+ITL_DEF unsigned itl_menu_tier_rank(const char *entry, size_t entry_len,
+                                    const char *query, size_t query_len,
+                                    bool is_case_sensitive)
+{
+  size_t taken = 0;
+  size_t position;
+
+  if (query_len > entry_len) {
+    return ITL_MENU_TIER_NONE;
+  }
+  if (memcmp(entry, query, query_len) == 0) {
+    return ITL_MENU_TIER_EXACT_PREFIX;
+  }
+  if (!is_case_sensitive) {
+    if (itl_ascii_prefix_matches_casefold(entry, query, query_len)) {
+      return ITL_MENU_TIER_PREFIX;
+    }
+
+    return itl_ascii_subsequence_casefold(entry, entry_len, query, query_len)
+               ? ITL_MENU_TIER_SUBSEQUENCE
+               : ITL_MENU_TIER_NONE;
+  }
+
+  for (position = 0; position < entry_len && taken < query_len; ++position) {
+    if (entry[position] == query[taken]) {
+      taken += 1;
+    }
+  }
+
+  return taken == query_len ? ITL_MENU_TIER_SUBSEQUENCE : ITL_MENU_TIER_NONE;
+}
+
+/* The best tier any of the first rows reaches against the query. */
+ITL_DEF unsigned itl_menu_best_tier(const tl_completion *base,
+                                    size_t scanned_count, const char *query,
+                                    size_t query_len)
+{
+  bool is_case_sensitive = itl_menu_query_is_case_sensitive(query, query_len);
+  unsigned best = ITL_MENU_TIER_NONE;
+  size_t index;
+
+  for (index = 0; index < scanned_count && best > 0; ++index) {
+    const char *entry = base->candidates[index];
+    unsigned tier = itl_menu_tier_rank(entry, strlen(entry), query, query_len,
+                                       is_case_sensitive);
+
+    if (tier < best) {
+      best = tier;
+    }
+  }
+
+  return best;
+}
 
 /* Copy the token bytes a candidate replaces into out. The span is given in
    codepoints and the line is walked once. Returns false when the span is off
@@ -9450,28 +9537,19 @@ ITL_DEF bool itl_menu_query_text(itl_le_t *le, const tl_completion *result,
   return true;
 }
 
-/* Narrow the base list to the entries the query matches and hand the rows to
-   the menu. The groups are drawn best match first and each group keeps the
-   order the base gave it. The token span of the result is left alone. Returns
-   false when nothing matches. */
-ITL_DEF bool itl_menu_filter(const tl_completion *base, const char *query,
-                             size_t query_len, tl_completion *result)
+/* Hand the menu the scanned base rows whose rank in itl_g_menu_ranks lies from
+   first_rank up to but not including end_rank. The groups are drawn best rank
+   first and each group keeps the order the base gave it. The token span of
+   the result is left alone. Returns false when no row is kept. */
+ITL_DEF bool itl_menu_keep_ranks(const tl_completion *base,
+                                 size_t scanned_count, unsigned first_rank,
+                                 unsigned end_rank, tl_completion *result)
 {
-  size_t scanned_count = base->count < ITL_MENU_FILTER_SCAN_MAX
-                             ? base->count
-                             : ITL_MENU_FILTER_SCAN_MAX;
   size_t kept_count = 0;
   size_t index;
   unsigned rank;
 
-  for (index = 0; index < scanned_count; ++index) {
-    const char *entry = base->candidates[index];
-
-    itl_g_menu_ranks[index] = (unsigned char) itl_menu_match_rank(
-        entry, strlen(entry), query, query_len);
-  }
-
-  for (rank = 0; rank < ITL_MENU_RANK_NONE && kept_count < ITL_MENU_FILTER_MAX;
+  for (rank = first_rank; rank < end_rank && kept_count < ITL_MENU_FILTER_MAX;
        ++rank)
   {
     for (index = 0; index < scanned_count && kept_count < ITL_MENU_FILTER_MAX;
@@ -9501,6 +9579,63 @@ ITL_DEF bool itl_menu_filter(const tl_completion *base, const char *query,
   return true;
 }
 
+/* Narrow the base list to the entries the query matches and hand the rows to
+   the menu. The groups are drawn best match first and each group keeps the
+   order the base gave it. The token span of the result is left alone. Returns
+   false when nothing matches. */
+ITL_DEF bool itl_menu_filter(const tl_completion *base, const char *query,
+                             size_t query_len, tl_completion *result)
+{
+  size_t scanned_count = base->count < ITL_MENU_FILTER_SCAN_MAX
+                             ? base->count
+                             : ITL_MENU_FILTER_SCAN_MAX;
+  size_t index;
+
+  for (index = 0; index < scanned_count; ++index) {
+    const char *entry = base->candidates[index];
+
+    itl_g_menu_ranks[index] = (unsigned char) itl_menu_match_rank(
+        entry, strlen(entry), query, query_len);
+  }
+
+  return itl_menu_keep_ranks(base, scanned_count, 0, ITL_MENU_RANK_NONE,
+                             result);
+}
+
+/* Narrow the base list the way a completion host answers the query, keeping
+   only the rows of the best tier. The host offered only the rows of
+   base_tier for its own query, so a narrowing whose best tier differs would
+   miss rows the base never held. Returns false then and when nothing
+   matches. */
+ITL_DEF bool itl_menu_filter_tier(const tl_completion *base, const char *query,
+                                  size_t query_len, unsigned base_tier,
+                                  tl_completion *result)
+{
+  size_t scanned_count = base->count < ITL_MENU_FILTER_SCAN_MAX
+                             ? base->count
+                             : ITL_MENU_FILTER_SCAN_MAX;
+  bool is_case_sensitive = itl_menu_query_is_case_sensitive(query, query_len);
+  unsigned best = ITL_MENU_TIER_NONE;
+  size_t index;
+
+  for (index = 0; index < scanned_count; ++index) {
+    const char *entry = base->candidates[index];
+    unsigned tier = itl_menu_tier_rank(entry, strlen(entry), query, query_len,
+                                       is_case_sensitive);
+
+    itl_g_menu_ranks[index] = (unsigned char) tier;
+    if (tier < best) {
+      best = tier;
+    }
+  }
+
+  if (best == ITL_MENU_TIER_NONE || best != base_tier) {
+    return false;
+  }
+
+  return itl_menu_keep_ranks(base, scanned_count, best, best + 1, result);
+}
+
 /* Take the list the source just gave as the base the narrowing reads, together
    with the query it answered. A token the line cannot hand back leaves an
    empty base and the next key reaches the source. */
@@ -9518,6 +9653,12 @@ ITL_DEF void itl_menu_adopt_base(itl_le_t *le, itl_menu_filter_state *state,
     state->query_len = 0;
     state->base.count = 0;
   }
+
+  state->base_tier = itl_menu_best_tier(
+      &state->base,
+      state->base.count < ITL_MENU_FILTER_SCAN_MAX ? state->base.count
+                                                   : ITL_MENU_FILTER_SCAN_MAX,
+      state->query, state->query_len);
 }
 
 /* Ask the source for the line as it stands and adopt what it gives. Returns
@@ -9563,9 +9704,12 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
 
 /* Answer the line as it stands from the base list, and fall back to the source
    when the base cannot answer. The base holds every row the source offered for
-   a shorter query. A line that only grew is narrowed without touching the host.
-   An erase and a line with no local match both reach the source. Returns false
-   when neither has a row. */
+   a shorter query. A line that only grew is narrowed without touching the host,
+   and an erase that keeps the gathered query widens it the same way. An erase
+   below that query, a line with no local match, a source that keeps the best
+   tier when the local best tier is not the one it answered with, and a base
+   longer than one scan reaches all go to the source. Returns false when
+   neither has a row. */
 ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
                              itl_menu_filter_state *state,
                              tl_completion *result)
@@ -9584,7 +9728,12 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
     if (state->base.count == 0) {
       return false;
     }
-    if (itl_menu_filter(&state->base, query, query_len, result)) {
+    if (state->base.count <= ITL_MENU_FILTER_SCAN_MAX &&
+        (source->should_keep_best_tier
+             ? itl_menu_filter_tier(&state->base, query, query_len,
+                                    state->base_tier, result)
+             : itl_menu_filter(&state->base, query, query_len, result)))
+    {
       state->name_width = itl_menu_name_width(result);
 
       return true;
@@ -9592,6 +9741,36 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
   }
 
   return itl_menu_rebase(le, source, state, result);
+}
+
+/* True when the next key starts a word or, in a list of paths, a component
+   after a separator. Its first byte selects what the source lists, such as a
+   dash for flags, a dollar for variables, or a dot for hidden files, so the
+   list gathered before it cannot answer it. The caret sits at the token end
+   while the menu is open. */
+ITL_DEF bool itl_menu_opens_component(const itl_le_t *le,
+                                      const tl_completion *result,
+                                      bool can_descend)
+{
+  itl_utf8_t previous;
+
+  if (result->token_end <= result->token_start || le->cursor_position == 0) {
+    return true;
+  }
+
+  previous = le->line->chars[le->cursor_position - 1];
+
+  return can_descend && previous.size == 1 &&
+         itl_byte_is_path_separator(previous.bytes[0]);
+}
+
+/* True when a typed byte moves where the token starts. A blank opens the next
+   word, a quote changes how the token is read, and an equals sign opens the
+   value of an assignment or a flag. The source then lists a different span. */
+ITL_DEF bool itl_menu_byte_moves_token(uint8_t byte)
+{
+  return ITL_CHAR_IS_SPACE(byte) || byte == '\'' || byte == '"' ||
+         byte == '=';
 }
 
 /* Run the candidate menu until the user accepts a candidate, dismisses it, or
@@ -9614,7 +9793,6 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
   itl_menu_filter_state state;
   size_t selected = 0;
   size_t window_start = 0;
-  bool should_regather_first_character = source->should_regather_new_words;
 
   /* The row the ghost was filled from. It starts outside the candidate range so
      the first pass fills the preview, and a regather puts it back there. */
@@ -9807,10 +9985,10 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
     }
 
     if (kind == TL_KEY_CHAR) {
-      bool is_word_boundary = ITL_CHAR_IS_SPACE(byte);
-      bool should_regather = source->should_regather_new_words &&
-                             (should_regather_first_character ||
-                              is_word_boundary);
+      bool should_regather =
+          source->should_regather_new_words &&
+          (itl_menu_opens_component(le, &result, source->can_descend) ||
+           itl_menu_byte_moves_token(byte));
 
       itl_le_insert(le, itl_utf8_parse(byte));
       result.token_end += 1;
@@ -9825,8 +10003,6 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
         itl_menu_empty_candidates(&result);
       }
 
-      should_regather_first_character =
-          source->should_regather_new_words && is_word_boundary;
       selected = 0;
       window_start = 0;
       previewed = (size_t) -1;
@@ -9917,7 +10093,8 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
   static const itl_menu_source completion_source = {
       itl_menu_regather, true, true, true, true, false, false,
       "selecting completions",
-      "enter to run, tab to accept, esc to close, ctrl-g to restore", true};
+      "enter to run, tab to accept, esc to close, ctrl-g to restore", true,
+      true};
   char line_cstr[ITL_STRING_MAX_LEN];
   tl_completion result;
   size_t token_len, lcp_len;
@@ -10073,7 +10250,7 @@ ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
   static const itl_menu_source history_source = {
       itl_history_menu_gather, false, false, false, false, true, true,
       "incremental history search",
-      "enter/tab to accept, esc/ctrl-g to cancel", false};
+      "enter/tab to accept, esc/ctrl-g to cancel", false, false};
 
   tl_completion result;
   char original_line[ITL_STRING_MAX_LEN];
