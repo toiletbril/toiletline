@@ -5261,48 +5261,199 @@ test_hint_row_is_cut_to_the_width(void)
   bool              is_wide_cut;
   bool              is_short_kept;
   bool              is_tiny_dropped;
-  bool              is_first_line_kept;
+  bool              is_header_split;
   bool              ok;
 
   tl_set_colors_enabled(0);
   tl_set_hint_callback(test_hint_callback);
 
   test_hint_text = "usage: a very long synopsis that cannot fit the row";
-  itl_hint_compose("x", 1, 20);
-  is_ascii_cut = itl_g_hint_next_len == 19 &&
-                 strcmp(itl_g_hint_next + 16, "...") == 0 &&
-                 itl_cstr_display_width(itl_g_hint_next) == 19;
+  itl_hint_compose("x", 1, 20, 1);
+  is_ascii_cut = strcmp(itl_g_hint_next, "  usage: a very...") == 0 &&
+                 itl_g_hint_next_rows == 1;
 
   test_hint_text = CJK;
-  itl_hint_compose("x", 1, 10);
-  is_wide_cut = itl_g_hint_next_len > 3 &&
+  itl_hint_compose("x", 1, 10, 1);
+  is_wide_cut = itl_g_hint_next_len > 5 &&
+                strncmp(itl_g_hint_next, "  ", 2) == 0 &&
                 strcmp(itl_g_hint_next + itl_g_hint_next_len - 3, "...") == 0 &&
                 itl_cstr_display_width(itl_g_hint_next) <= 9;
 
   test_hint_text = "short";
-  itl_hint_compose("x", 1, 20);
-  is_short_kept = itl_g_hint_next_len == 5 &&
-                  strcmp(itl_g_hint_next, "short") == 0;
+  itl_hint_compose("x", 1, 20, 24);
+  is_short_kept = strcmp(itl_g_hint_next, "  short") == 0 &&
+                  itl_g_hint_next_rows == 1;
 
-  itl_hint_compose("x", 1, 4);
-  is_tiny_dropped = itl_g_hint_next_len == 0;
+  itl_hint_compose("x", 1, 7, 24);
+  is_tiny_dropped = itl_g_hint_next_len == 0 && itl_g_hint_next_rows == 0;
 
   test_hint_text = "first\nsecond";
-  itl_hint_compose("x", 1, 20);
-  is_first_line_kept = itl_g_hint_next_len == 5 &&
-                       strcmp(itl_g_hint_next, "first") == 0;
+  itl_hint_compose("x", 1, 20, 24);
+  is_header_split = strcmp(itl_g_hint_next, "  first\n  second") == 0 &&
+                    itl_g_hint_next_rows == 2;
 
   tl_set_hint_callback(NULL);
   tl_set_colors_enabled(was_colors_enabled);
-  itl_g_hint_next_len = 0;
+  itl_hint_drop_next();
 
   ok = is_ascii_cut && is_wide_cut && is_short_kept && is_tiny_dropped &&
-       is_first_line_kept;
+       is_header_split;
 
   if (!ok) {
-    TEST_PRINTF("ascii %d, wide %d, short %d, tiny %d, first line %d\n",
+    TEST_PRINTF("ascii %d, wide %d, short %d, tiny %d, header %d\n",
                 (int) is_ascii_cut, (int) is_wide_cut, (int) is_short_kept,
-                (int) is_tiny_dropped, (int) is_first_line_kept);
+                (int) is_tiny_dropped, (int) is_header_split);
+  }
+
+  return ok;
+}
+
+static bool
+test_hint_rows_are(const char *expected, size_t cols, size_t row_budget,
+                   const char *step)
+{
+  itl_hint_compose("x", 1, cols, row_budget);
+  if (itl_g_hint_next_len != strlen(expected) ||
+      (itl_g_hint_next_len > 0 && strcmp(itl_g_hint_next, expected) != 0))
+  {
+    TEST_PRINTF("%s: hint '%s', want '%s'\n", step, itl_g_hint_next, expected);
+    return false;
+  }
+  return true;
+}
+
+static bool
+test_hint_body_wraps_at_words(void)
+{
+  static const char WRAPPED[] =
+      "builtin synopsis\ncd [-L|-P] [-e] [dir] and some more words here";
+  int  was_colors_enabled = itl_g_colors_enabled;
+  bool ok = true;
+
+  tl_set_colors_enabled(0);
+  tl_set_hint_callback(test_hint_callback);
+
+  test_hint_text = WRAPPED;
+  ok &= test_hint_rows_are("  builtin synopsis\n  cd [-L|-P] [-e]\n"
+                           "  [dir] and some\n  more words here",
+                           21, 24, "word wrap");
+  ok &= itl_g_hint_next_rows == 4;
+
+  test_hint_text = "builtin synopsis\ncd [-L|-P] [-e] [dir] and some more "
+                   "words here and beyond";
+  ok &= test_hint_rows_are("  builtin synopsis\n  cd [-L|-P] [-e]\n"
+                           "  [dir] and some\n  more words here...",
+                           21, 24, "row cap");
+
+  test_hint_text = "header\nabcdefghijklmnopqrstuvwxyz0123 tail";
+  ok &= test_hint_rows_are("  header\n  abcdefghij\n  klmnopqrst\n"
+                           "  uvwxyz0...",
+                           13, 24, "long word");
+
+  test_hint_text = "a header much wider than the row\nbody";
+  ok &= test_hint_rows_are("  a header muc...\n  body", 18, 24, "header cut");
+
+  test_hint_text = "hdr\x01\nab\x1b" "cd\xC2\x9B" "ef\x7f\ngh ij";
+  ok &= test_hint_rows_are("  hdr\n  ab cd\n  ef  gh\n  ij", 9, 24,
+                           "control bytes");
+
+  tl_set_hint_callback(NULL);
+  tl_set_colors_enabled(was_colors_enabled);
+  itl_hint_drop_next();
+
+  return ok;
+}
+
+static bool
+test_hint_rows_fit_a_short_terminal(void)
+{
+  int  was_colors_enabled = itl_g_colors_enabled;
+  bool ok = true;
+
+  tl_set_colors_enabled(0);
+  tl_set_hint_callback(test_hint_callback);
+
+  test_hint_text =
+      "builtin synopsis\ncd [-L|-P] [-e] [dir] and some more words here";
+  ok &= test_hint_rows_are("  builtin synopsis\n  cd [-L|-P] [-e]\n"
+                           "  [dir] and some...",
+                           21, 3, "three rows");
+  ok &= test_hint_rows_are("  builtin synopsis\n  cd [-L|-P] [-e]...", 21, 2,
+                           "two rows");
+  ok &= test_hint_rows_are("  cd [-L|-P] [-e]...", 21, 1, "body alone");
+  ok &= test_hint_rows_are("", 21, 0, "no room");
+
+  test_hint_text = "pressed x\n";
+  ok &= test_hint_rows_are("  pressed x", 21, 1, "header alone");
+
+  tl_set_hint_callback(NULL);
+  tl_set_colors_enabled(was_colors_enabled);
+  itl_hint_drop_next();
+
+  return ok;
+}
+
+static bool
+test_hint_rows_erase_when_shrinking(void)
+{
+  int             was_colors_enabled = itl_g_colors_enabled;
+  itl_char_buf_t *b = itl_char_buf_alloc();
+  bool            was_three_drawn;
+  bool            was_shrunk_to_one;
+  bool            was_shrunk_to_none;
+  bool            was_relaid_out;
+  bool            ok;
+
+  tl_set_colors_enabled(0);
+  tl_set_hint_callback(test_hint_callback);
+  itl_hint_forget_shown();
+
+  test_hint_text = "kind\nalpha beta gamma delta";
+  itl_hint_compose("x", 1, 16, 24);
+  itl_le_tty_draw_hint(b, 24);
+  was_three_drawn = itl_g_hint_shown_rows == 3 &&
+                    test_bytes_have(b->data, b->size, "  alpha beta") &&
+                    test_bytes_have(b->data, b->size, "  gamma delta") &&
+                    test_bytes_have(b->data, b->size, "\x1b[3A");
+
+  b->size = 0;
+  test_hint_text = "one";
+  itl_hint_compose("x", 1, 16, 24);
+  itl_le_tty_draw_hint(b, 24);
+  was_shrunk_to_one =
+      itl_g_hint_shown_rows == 1 &&
+      test_bytes_have(b->data, b->size,
+                      ITL_LF "\x1b[1G  one\x1b[K" ITL_LF "\x1b[1G\r\x1b[0K"
+                      ITL_LF "\x1b[1G\r\x1b[0K\x1b[3A");
+
+  b->size = 0;
+  test_hint_text = "";
+  itl_hint_compose("x", 1, 16, 24);
+  itl_le_tty_draw_hint(b, 24);
+  was_shrunk_to_none =
+      itl_g_hint_shown_rows == 0 && itl_g_hint_shown_len == 0 &&
+      test_bytes_have(b->data, b->size, ITL_LF "\x1b[1G\r\x1b[0K\x1b[1A");
+
+  b->size = 0;
+  test_hint_text = "kind\nalpha beta gamma delta";
+  itl_hint_compose("x", 1, 16, 24);
+  itl_le_tty_draw_hint(b, 2);
+  was_relaid_out = itl_g_hint_shown_rows == 2 &&
+                   test_bytes_have(b->data, b->size, "  alpha beta...");
+
+  itl_hint_forget_shown();
+  tl_set_hint_callback(NULL);
+  tl_set_colors_enabled(was_colors_enabled);
+  itl_hint_drop_next();
+  ITL_CHAR_BUF_FREE(b);
+
+  ok = was_three_drawn && was_shrunk_to_one && was_shrunk_to_none &&
+       was_relaid_out;
+
+  if (!ok) {
+    TEST_PRINTF("three %d, one %d, none %d, relaid %d\n",
+                (int) was_three_drawn, (int) was_shrunk_to_one,
+                (int) was_shrunk_to_none, (int) was_relaid_out);
   }
 
   return ok;
@@ -5334,8 +5485,8 @@ test_hint_finish_frame(itl_string_t *line)
   tl_set_hint_callback(NULL);
   itl_g_hint_is_closed = false;
   itl_g_hint_hold_count = 0;
-  itl_g_hint_shown_len = 0;
-  itl_g_hint_next_len = 0;
+  itl_hint_forget_shown();
+  itl_hint_drop_next();
   itl_g_tty_changed_size = 1;
   itl_g_tty_first_render = true;
   ITL_STRING_FREE(line);
@@ -5409,17 +5560,79 @@ test_hint_row_draws_holds_and_erases(void)
   return ok;
 }
 
+static size_t
+test_frame_capture_count(const char *needle)
+{
+  size_t needle_length = strlen(needle);
+  size_t start;
+  size_t found_count = 0;
+
+  for (start = 0; start + needle_length <= test_frame_capture_size; ++start) {
+    if (memcmp(test_frame_capture + start, needle, needle_length) == 0) {
+      found_count += 1;
+    }
+  }
+
+  return found_count;
+}
+
+static bool
+test_hint_rows_follow_the_frame(void)
+{
+  static const char HINT[] =
+      "builtin synopsis\nec [-n] [-e] [-E] [--first-long-option] "
+      "[--second-long-option] [--third-long-option] [string ...]";
+  char out_buffer[BUFFER_SIZE];
+  int  was_colors_enabled = itl_g_colors_enabled;
+  bool was_wrapped;
+  bool was_held_back;
+  bool was_erased;
+  bool ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer), HINT);
+  tl_set_colors_enabled(0);
+
+  test_frame_capture_refresh(&le);
+  was_wrapped = itl_g_hint_shown_rows == 3 &&
+                test_frame_capture_has("  builtin synopsis") &&
+                test_frame_capture_has("  [--third-long-option]") &&
+                test_frame_capture_has("\x1b[3A");
+
+  itl_g_tty_prev_rows = 3;
+  itl_g_tty_should_refresh_text = true;
+  test_frame_capture_size = 0;
+  itl_le_tty_refresh(&le);
+  was_held_back = itl_g_hint_shown_rows == 2 &&
+                  test_frame_capture_count("\r\x1b[0K") >= 4 &&
+                  test_frame_capture_has("...");
+  itl_g_tty_prev_rows = 24;
+
+  test_frame_capture_size = 0;
+  itl_le_finish_input(&le, TL_PRESSED_ENTER);
+  was_erased = itl_g_hint_shown_rows == 0 &&
+               test_frame_capture_count("\r\x1b[0K") >= 3 &&
+               !test_frame_capture_has("synopsis");
+
+  tl_set_colors_enabled(was_colors_enabled);
+  test_hint_finish_frame(line);
+
+  ok = was_wrapped && was_held_back && was_erased;
+
+  if (!ok) {
+    TEST_PRINTF("wrapped %d, held back %d, erased %d\n", (int) was_wrapped,
+                (int) was_held_back, (int) was_erased);
+  }
+
+  return ok;
+}
+
 static bool
 test_hint_is(const char *expected, size_t cols, const char *step)
 {
-  itl_hint_compose("x", 1, cols);
-  if (itl_g_hint_next_len != strlen(expected) ||
-      (itl_g_hint_next_len > 0 && strcmp(itl_g_hint_next, expected) != 0))
-  {
-    TEST_PRINTF("%s: hint '%s', want '%s'\n", step, itl_g_hint_next, expected);
-    return false;
-  }
-  return true;
+  return test_hint_rows_are(expected, cols, 24, step);
 }
 
 static void
@@ -5444,83 +5657,88 @@ test_prefix_hint_names_the_waiting_keys(void)
   test_hint_text = "usage";
   test_prefix_reset();
 
-  ok &= test_hint_is("usage", 200, "no prefix");
+  ok &= test_hint_is("  usage", 200, "no prefix");
 
   itl_g_prefix_kind = ITL_PREFIX_CTRL_X;
-  ok &= test_hint_is("pressed ctrl-x. waiting for ctrl-e (edit in $VISUAL), "
-                     "ctrl-u (undo)",
+  ok &= test_hint_is("  pressed ctrl-x\n  waiting for ctrl-e (edit in "
+                     "$VISUAL), ctrl-u (undo)",
                      200, "ctrl-x");
-  ok &= test_hint_is("pressed ctrl-x. waiting...", 27, "ctrl-x cut");
+  ok &= test_hint_is("  pressed ctrl-x\n  waiting for ctrl-e (edit\n"
+                     "  in $VISUAL), ctrl-u\n  (undo)",
+                     27, "ctrl-x wrap");
   tl_set_hint_callback(NULL);
   ok &= test_hint_is("", 200, "ctrl-x with the row off");
   tl_set_hint_callback(test_hint_callback);
   test_prefix_reset();
 
   itl_g_vi_pending_operator = ITL_VI_OP_DELETE;
-  ok &= test_hint_is("usage", 200, "vi state outside normal mode");
+  ok &= test_hint_is("  usage", 200, "vi state outside normal mode");
 
   itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
   itl_g_vi_pending_count = 2;
   itl_g_vi_pending_register = 'a';
-  ok &= test_hint_is("pressed \"a2d. waiting for a motion: w, b, e, $, 0, ^, "
-                     "d (line), f, t, F, T, h, l, j, k, W, B, E, ;, ,",
+  ok &= test_hint_is("  pressed \"a2d\n  waiting for a motion: w, b, e, $, 0, "
+                     "^, d (line), f, t, F, T, h, l, j, k, W, B, E, ;, ,",
                      200, "operator");
 
   itl_g_prefix_kind = ITL_PREFIX_VI_FIND;
   itl_g_prefix_key = 't';
-  ok &= test_hint_is("pressed \"a2dt. waiting for a character to stop before",
+  ok &= test_hint_is("  pressed \"a2dt\n  waiting for a character to stop "
+                     "before",
                      200, "operator find");
   test_prefix_reset();
 
   itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
   itl_g_vi_pending_operator = ITL_VI_OP_CHANGE;
-  ok &= test_hint_is("pressed c. waiting for a motion: w, b, e, $, 0, ^, "
+  ok &= test_hint_is("  pressed c\n  waiting for a motion: w, b, e, $, 0, ^, "
                      "c (line), f, t, F, T, h, l, j, k, W, B, E, ;, ,",
                      200, "change");
   itl_g_vi_pending_operator = ITL_VI_OP_YANK;
-  ok &= test_hint_is("pressed y. waiting...", 22, "yank cut");
+  ok &= test_hint_is("  pressed y\n  waiting for a\n  motion: w, b, e, $,\n"
+                     "  0, ^, y (line),...",
+                     22, "yank cut");
   itl_g_vi_pending_operator = ITL_VI_OP_NONE;
 
   itl_g_vi_pending_count = 3;
-  ok &= test_hint_is("pressed 3. waiting for a command or a motion", 200,
+  ok &= test_hint_is("  pressed 3\n  waiting for a command or a motion", 200,
                      "count");
   itl_g_vi_pending_count = 0;
 
   itl_g_vi_pending_register = 'b';
-  ok &= test_hint_is("pressed \"b. waiting for a command: d, c, y, p, P, x, "
-                     "X, D, C, s, S",
+  ok &= test_hint_is("  pressed \"b\n  waiting for a command: d, c, y, p, P, "
+                     "x, X, D, C, s, S",
                      200, "register");
   itl_g_vi_pending_register = 0;
 
   itl_g_prefix_kind = ITL_PREFIX_VI_REGISTER;
-  ok &= test_hint_is("pressed \". waiting for a register name: a-z", 200,
+  ok &= test_hint_is("  pressed \"\n  waiting for a register name: a-z", 200,
                      "register name");
   itl_g_prefix_kind = ITL_PREFIX_VI_REPLACE;
-  ok &= test_hint_is("pressed r. waiting for a replacement character", 200,
+  ok &= test_hint_is("  pressed r\n  waiting for a replacement character", 200,
                      "replace");
   itl_g_prefix_kind = ITL_PREFIX_VI_EX;
-  ok &= test_hint_is("pressed :. waiting for q, q!, quit, wq, wq!, or x "
+  ok &= test_hint_is("  pressed :\n  waiting for q, q!, quit, wq, wq!, or x "
                      "(quit), then enter",
                      200, "ex");
 
   itl_g_edit_mode = TL_EDIT_MODE_VI_VISUAL;
   itl_g_prefix_kind = ITL_PREFIX_VI_FIND;
   itl_g_prefix_key = 'F';
-  ok &= test_hint_is("pressed F. waiting for a character to find backward", 200,
-                     "visual find");
+  ok &= test_hint_is("  pressed F\n  waiting for a character to find backward",
+                     200, "visual find");
   itl_g_prefix_key = 'T';
-  ok &= test_hint_is("pressed T. waiting for a character to stop after", 200,
-                     "visual till");
+  ok &= test_hint_is("  pressed T\n  waiting for a character to stop after",
+                     200, "visual till");
   itl_g_prefix_key = 'f';
-  ok &= test_hint_is("pressed f. waiting for a character to find", 200,
+  ok &= test_hint_is("  pressed f\n  waiting for a character to find", 200,
                      "visual find forward");
 
   test_prefix_reset();
-  ok &= test_hint_is("usage", 200, "closed prefix");
+  ok &= test_hint_is("  usage", 200, "closed prefix");
 
   tl_set_hint_callback(NULL);
   tl_set_colors_enabled(was_colors_enabled);
-  itl_g_hint_next_len = 0;
+  itl_hint_drop_next();
 
   return ok;
 }
@@ -5536,7 +5754,8 @@ test_chord_idle_callback(const char *buffer, size_t cursor)
   (void) buffer;
   (void) cursor;
   test_chord_hint_was_drawn =
-      test_frame_capture_has("pressed ctrl-x. waiting for") &&
+      test_frame_capture_has("  pressed ctrl-x") &&
+      test_frame_capture_has("  waiting for ctrl-e") &&
       !test_frame_capture_has("usage") &&
       itl_g_prefix_kind == ITL_PREFIX_CTRL_X;
   if (write(test_chord_writer, &CTRL_U, 1) != 1) {
@@ -6247,8 +6466,8 @@ test_transient_prompt_redraws_the_submitted_line(void)
                           !test_frame_capture_has("$ ");
 
   tl_set_hint_callback(NULL);
-  itl_g_hint_shown_len = 0;
-  itl_g_hint_next_len = 0;
+  itl_hint_forget_shown();
+  itl_hint_drop_next();
   test_right_prompt_finish_frame(line);
 
   ok = was_block_erased && was_line_redrawn && were_prompts_dropped &&
@@ -6327,10 +6546,10 @@ test_control_bytes_draw_visibly(void)
 
   tl_set_hint_callback(test_hint_callback);
   test_hint_text = "a\xC2\x9B" "b\x1b" "c";
-  itl_hint_compose("x", 1, 20);
-  is_hint_blanked = strcmp(itl_g_hint_next, "a b c") == 0;
+  itl_hint_compose("x", 1, 20, 24);
+  is_hint_blanked = strcmp(itl_g_hint_next, "  a b c") == 0;
   tl_set_hint_callback(NULL);
-  itl_g_hint_next_len = 0;
+  itl_hint_drop_next();
 
   tl_set_colors_enabled(was_colors_enabled);
   ITL_CHAR_BUF_FREE(b);
@@ -6668,6 +6887,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_hint_row_draws_holds_and_erases),
                                    DEFINE_TEST_CASE(
+                                       test_hint_rows_follow_the_frame),
+                                   DEFINE_TEST_CASE(
                                        test_prefix_hint_names_the_waiting_keys),
                                    DEFINE_TEST_CASE(
                                        test_ctrl_x_chord_shows_and_drops_its_hint),
@@ -6692,6 +6913,12 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
 #endif
                                    DEFINE_TEST_CASE(
                                        test_hint_row_is_cut_to_the_width),
+                                   DEFINE_TEST_CASE(
+                                       test_hint_body_wraps_at_words),
+                                   DEFINE_TEST_CASE(
+                                       test_hint_rows_fit_a_short_terminal),
+                                   DEFINE_TEST_CASE(
+                                       test_hint_rows_erase_when_shrinking),
                                    DEFINE_TEST_CASE(
                                        test_control_bytes_draw_visibly),
                                    DEFINE_TEST_CASE(
