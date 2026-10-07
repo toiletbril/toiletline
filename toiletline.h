@@ -7698,7 +7698,15 @@ ITL_DEF bool itl_ghost_extends_completion_miss_plainly(
 ITL_DEF void itl_ghost_record_completion_miss(const char *line_cstr,
                                                size_t line_byte_len)
 {
-  if (line_byte_len >= sizeof(itl_g_ghost_completion_miss_prefix)) {
+  /* A line that ends in a blank asked about an empty word, which names
+     nothing, so its miss says nothing about the word typed next. */
+  bool is_word_empty =
+      line_byte_len == 0 || line_cstr[line_byte_len - 1] == ' ' ||
+      line_cstr[line_byte_len - 1] == '\t';
+
+  if (is_word_empty ||
+      line_byte_len >= sizeof(itl_g_ghost_completion_miss_prefix))
+  {
     itl_g_ghost_completion_miss_prefix[0] = '\0';
     itl_g_ghost_completion_miss_prefix_length = 0;
     return;

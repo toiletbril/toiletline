@@ -2289,6 +2289,22 @@ test_kill_ring_appends_yanks_and_cycles(void)
 }
 
 static bool
+test_ghost_miss_skips_an_empty_word(void)
+{
+  bool ok = true;
+
+  itl_ghost_record_completion_miss("cd ", 3);
+  ok &= itl_g_ghost_completion_miss_prefix_length == 0;
+  ok &= !itl_ghost_extends_completion_miss_plainly("cd zz", 5);
+  itl_ghost_record_completion_miss("cd zq", 5);
+  ok &= itl_ghost_extends_completion_miss_plainly("cd zqx", 6);
+
+  itl_g_ghost_completion_miss_prefix[0] = '\0';
+  itl_g_ghost_completion_miss_prefix_length = 0;
+  return ok;
+}
+
+static bool
 test_vi_dot_skips_a_yank(void)
 {
   char out_buffer[BUFFER_SIZE];
@@ -7527,6 +7543,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_transpose_characters_and_words),
                                    DEFINE_TEST_CASE(test_vi_dot_skips_a_yank),
+                                   DEFINE_TEST_CASE(
+                                       test_ghost_miss_skips_an_empty_word),
                                    DEFINE_TEST_CASE(
                                        test_last_argument_walks_history),
                                    DEFINE_TEST_CASE(
