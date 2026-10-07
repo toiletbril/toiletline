@@ -10744,12 +10744,58 @@ ITL_DEF void itl_le_yank_pop(itl_le_t *le, itl_le_action_kind previous_action)
   itl_g_le_action = ITL_LE_ACTION_YANK;
 }
 
-/* Swaps the character before the cursor with the one under it and steps past
-   both. At the end of the line the last two characters are swapped. */
+/* Whether the character draws on the cell of the one before it, such as a
+   combining mark or a zero-width joiner, so the two form one grapheme. */
+ITL_DEF bool itl_char_joins_previous(itl_utf8_t ch)
+{
+  return ch.size > 1 && !itl_char_has_visible_notation(ch) &&
+         itl_char_width(ch) == 0;
+}
+
+/* The start of the grapheme that holds the character at position. */
+ITL_DEF size_t itl_le_grapheme_start(const itl_string_t *line, size_t position)
+{
+  while (position > 0 && itl_char_joins_previous(line->chars[position])) {
+    position -= 1;
+  }
+
+  return position;
+}
+
+/* The end of the grapheme that starts at position. */
+ITL_DEF size_t itl_le_grapheme_end(const itl_string_t *line, size_t position)
+{
+  position += 1;
+  while (position < line->length &&
+         itl_char_joins_previous(line->chars[position]))
+  {
+    position += 1;
+  }
+
+  return position;
+}
+
+ITL_DEF void itl_chars_reverse(itl_utf8_t *chars, size_t start, size_t end)
+{
+  itl_utf8_t held;
+
+  while (start + 1 < end) {
+    end -= 1;
+    held = chars[start];
+    chars[start] = chars[end];
+    chars[end] = held;
+    start += 1;
+  }
+}
+
+/* Swaps the grapheme before the cursor with the one under it and steps past
+   both, so a combining mark stays on its base character. At the end of the
+   line the last two graphemes are swapped. */
 ITL_DEF void itl_le_transpose_chars(itl_le_t *le)
 {
+  itl_utf8_t *chars = le->line->chars;
   size_t at = le->cursor_position;
-  itl_utf8_t held;
+  size_t first_start, second_start, second_end;
 
   if (le->line->length < 2 || at == 0) {
     itl_g_tty_should_refresh_text = false;
@@ -10759,11 +10805,19 @@ ITL_DEF void itl_le_transpose_chars(itl_le_t *le)
     at = le->line->length - 1;
   }
 
+  second_start = itl_le_grapheme_start(le->line, at);
+  if (second_start == 0) {
+    itl_g_tty_should_refresh_text = false;
+    return;
+  }
+  second_end = itl_le_grapheme_end(le->line, second_start);
+  first_start = itl_le_grapheme_start(le->line, second_start - 1);
+
   itl_le_begin_edit(le);
-  held = le->line->chars[at - 1];
-  le->line->chars[at - 1] = le->line->chars[at];
-  le->line->chars[at] = held;
-  le->cursor_position = at + 1;
+  itl_chars_reverse(chars, first_start, second_start);
+  itl_chars_reverse(chars, second_start, second_end);
+  itl_chars_reverse(chars, first_start, second_end);
+  le->cursor_position = second_end;
 }
 
 #define ITL_LE_IS_WORD_CHAR(ch) ((ch).size > 1 || isalnum((ch).bytes[0]))
@@ -12417,9 +12471,15 @@ ITL_DEF void itl_vi_apply_operator(itl_le_t *le, itl_vi_operator_kind op,
   }
 }
 
+/* A yank changes nothing, so the dot command keeps repeating the change
+   before it, as in vi. */
 ITL_DEF void itl_vi_record_operator(itl_vi_operator_kind op, int motion_key,
                                     itl_utf8_t find_char, size_t count)
 {
+  if (op == ITL_VI_OP_YANK) {
+    return;
+  }
+
   itl_g_vi_last_change.kind = ITL_VI_CHANGE_OPERATOR;
   itl_g_vi_last_change.operator_kind = op;
   itl_g_vi_last_change.motion_key = motion_key;

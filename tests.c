@@ -2289,6 +2289,31 @@ test_kill_ring_appends_yanks_and_cycles(void)
 }
 
 static bool
+test_vi_dot_skips_a_yank(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool ok = true;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  itl_utf8_t none = ITL_ZERO_INIT;
+
+  ITL_STRING_FROM_CSTR(line, "one two three four");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.cursor_position = 0;
+  itl_vi_operator_motion(&le, ITL_VI_OP_DELETE, 'w', none, 1);
+  ok &= test_line_is(line, "two three four", "dw");
+  itl_vi_operator_motion(&le, ITL_VI_OP_YANK, 'w', none, 1);
+  itl_vi_operator_line(&le, ITL_VI_OP_YANK, 'y', 1);
+  le.cursor_position = 0;
+  ok &= itl_vi_repeat_last_change(&le) == TL_SUCCESS;
+  ok &= test_line_is(line, "three four", "dot after yw and yy repeats dw");
+
+  itl_g_vi_last_change.kind = ITL_VI_CHANGE_NONE;
+  ITL_STRING_FREE(line);
+  return ok;
+}
+
+static bool
 test_transpose_characters_and_words(void)
 {
   char out_buffer[BUFFER_SIZE];
@@ -2318,6 +2343,29 @@ test_transpose_characters_and_words(void)
   le.cursor_position = line->length;
   itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
   ok &= test_line_is(line, "привте", "ctrl-t on UTF-8");
+
+  ITL_STRING_FROM_CSTR(line, "xae\xcc\x81");
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
+  ok &= test_line_is(line, "xe\xcc\x81" "a", "ctrl-t keeps a trailing mark");
+  if (le.cursor_position != line->length) {
+    TEST_PRINTF("cursor after ctrl-t over a mark is %zu\n", le.cursor_position);
+    ok = false;
+  }
+
+  le.cursor_position = 2;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
+  ok &= test_line_is(line, "e\xcc\x81xa", "ctrl-t moves a marked base");
+  if (le.cursor_position != 3) {
+    TEST_PRINTF("cursor after ctrl-t on a marked base is %zu\n",
+                le.cursor_position);
+    ok = false;
+  }
+
+  ITL_STRING_FROM_CSTR(line, "\xcc\x81" "a");
+  le.cursor_position = 1;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
+  ok &= test_line_is(line, "a\xcc\x81", "ctrl-t on a leading mark");
 
   ITL_STRING_FROM_CSTR(line, "cp src dst");
   le.cursor_position = 3;
@@ -7478,6 +7526,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_kill_ring_appends_yanks_and_cycles),
                                    DEFINE_TEST_CASE(
                                        test_transpose_characters_and_words),
+                                   DEFINE_TEST_CASE(test_vi_dot_skips_a_yank),
                                    DEFINE_TEST_CASE(
                                        test_last_argument_walks_history),
                                    DEFINE_TEST_CASE(
