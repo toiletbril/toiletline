@@ -10080,6 +10080,48 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
   return status;
 }
 
+/* True when the common prefix that replaced a token leaves the list the host
+   gave for that token whole, so the menu can open on it without asking the
+   host again. The prefix extends the replaced text byte for byte and every
+   candidate opens with it. The bytes it adds follow the rules of typing into
+   an open menu: a token that was empty, a byte that moves the token, and a
+   path separator all send the menu back to the host. */
+ITL_DEF bool itl_completion_prefix_keeps_list(const tl_completion *result,
+                                              const char *replaced,
+                                              size_t replaced_len)
+{
+  const char *prefix = result->longest_common_prefix;
+  size_t prefix_len;
+  size_t position;
+  size_t index;
+
+  if (prefix == NULL || result->candidates == NULL || replaced_len == 0) {
+    return false;
+  }
+
+  prefix_len = strlen(prefix);
+  if (prefix_len <= replaced_len || memcmp(prefix, replaced, replaced_len) != 0)
+  {
+    return false;
+  }
+
+  for (position = replaced_len; position < prefix_len; ++position) {
+    uint8_t byte = (uint8_t) prefix[position];
+
+    if (itl_menu_byte_moves_token(byte) || itl_byte_is_path_separator(byte)) {
+      return false;
+    }
+  }
+
+  for (index = 0; index < result->count; ++index) {
+    if (strncmp(result->candidates[index], prefix, prefix_len) != 0) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 /* Handle the TAB key when a completion callback is registered. Replace the
    whole token under the cursor with the longest common prefix when that prefix
    extends the token, and when several candidates remain and the prefix did not
@@ -10210,17 +10252,36 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
                 : 0;
 
   /* Replace the token with the common prefix when that prefix is longer than
-     the token, which grows the token toward the candidates. */
+     the token, which grows the token toward the candidates. The menu then
+     opens on the list already gathered when the prefix only narrows it, and
+     asks the host again otherwise. */
   if (lcp_len > token_len) {
+    char replaced[ITL_STRING_MAX_LEN];
+    size_t replaced_len = 0;
+    bool is_list_kept =
+        itl_menu_query_text(le, &result, replaced, sizeof(replaced),
+                            &replaced_len) &&
+        itl_completion_prefix_keeps_list(&result, replaced, replaced_len);
+
     if (is_loading_drawn) {
       itl_menu_erase();
     }
-    itl_completion_replace_token(le, &result, result.longest_common_prefix);
+    if (!itl_completion_replace_token(le, &result,
+                                      result.longest_common_prefix))
+    {
+      is_list_kept = false;
+    }
     itl_g_tty_should_refresh_text = true;
     if (itl_g_completion_menu_enabled) {
       tl_completion remaining = ITL_ZERO_INIT;
 
-      if (itl_menu_regather(le, &remaining) && remaining.count > 1) {
+      if (is_list_kept) {
+        remaining = result;
+        remaining.token_end = le->cursor_position;
+      } else if (!itl_menu_regather(le, &remaining)) {
+        remaining.count = 0;
+      }
+      if (remaining.count > 1) {
         *out_code = itl_completion_menu(le, &remaining, &completion_source);
       }
     }

@@ -3473,6 +3473,207 @@ test_menu_keys_reuse_gathered_list(void)
 
   return ok;
 }
+
+static const char *const *test_tab_words;
+static size_t             test_tab_word_count;
+static bool               test_tab_should_fold_prefix;
+static size_t             test_tab_callback_calls;
+
+/* A host whose token is the last word of the line. It offers the words that
+   open with the token, ignoring case when asked to, and reports their common
+   prefix the same way. */
+static int
+test_tab_counting_callback(const char *buffer, size_t cursor,
+                           tl_completion *completion, int for_listing)
+{
+  static const char *candidates[8];
+  static char        prefix[BUFFER_SIZE];
+  size_t             start = cursor;
+  size_t             token_len;
+  size_t             prefix_len = 0;
+  size_t             kept_count = 0;
+  size_t             i;
+
+  (void) for_listing;
+  test_tab_callback_calls += 1;
+
+  while (start > 0 && buffer[start - 1] != ' ') {
+    start -= 1;
+  }
+  token_len = cursor - start;
+
+  for (i = 0; i < test_tab_word_count && kept_count < countof(candidates); ++i)
+  {
+    const char *word = test_tab_words[i];
+    bool        does_match =
+        test_tab_should_fold_prefix
+                   ? strncasecmp(word, buffer + start, token_len) == 0
+                   : strncmp(word, buffer + start, token_len) == 0;
+
+    if (!does_match) {
+      continue;
+    }
+    if (kept_count == 0) {
+      prefix_len = strlen(word);
+      memcpy(prefix, word, prefix_len);
+    }
+    while (prefix_len > 0 &&
+           (test_tab_should_fold_prefix
+                ? strncasecmp(prefix, word, prefix_len) != 0
+                : strncmp(prefix, word, prefix_len) != 0))
+    {
+      prefix_len -= 1;
+    }
+    candidates[kept_count] = word;
+    kept_count += 1;
+  }
+  prefix[prefix_len] = '\0';
+
+  completion->candidates = candidates;
+  completion->descriptions = NULL;
+  completion->longest_common_prefix = prefix;
+  completion->count = kept_count;
+  completion->token_start = start;
+  completion->token_end = cursor;
+
+  return 1;
+}
+
+/* Press TAB once on text with the menu enabled, feed the menu keys until the
+   input ends, and return how many times the host was asked. The line the keys
+   left is written to out_line. */
+static size_t
+tab_completion_calls(const char *text, const char *keys, char *out_line,
+                     size_t out_size)
+{
+  char           out_buffer[BUFFER_SIZE];
+  int            pipe_descriptors[2] = {-1, -1};
+  int            null_descriptor = -1;
+  int            saved_stdin = -1;
+  int            saved_stdout = -1;
+  int            was_menu_enabled = itl_g_completion_menu_enabled;
+  size_t         calls = (size_t) -1;
+  size_t         key_count = strlen(keys);
+  tl_status_code completion_code = TL_SUCCESS;
+  itl_le_t       le = ITL_ZERO_INIT;
+  itl_string_t  *line = itl_string_alloc();
+
+  out_line[0] = '\0';
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+  if (write(pipe_descriptors[1], keys, key_count) != (ssize_t) key_count) {
+    goto cleanup;
+  }
+  close(pipe_descriptors[1]);
+  pipe_descriptors[1] = -1;
+
+  null_descriptor = open("/dev/null", O_WRONLY);
+  if (null_descriptor < 0) goto cleanup;
+
+  saved_stdin = dup(STDIN_FILENO);
+  saved_stdout = dup(STDOUT_FILENO);
+  if (saved_stdin < 0 || saved_stdout < 0) goto cleanup;
+  if (dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
+      dup2(null_descriptor, STDOUT_FILENO) < 0)
+  {
+    goto cleanup;
+  }
+
+  ITL_STRING_FROM_CSTR(line, text);
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  itl_g_completion_menu_enabled = 1;
+
+  test_tab_callback_calls = 0;
+  tl_set_complete_callback(test_tab_counting_callback);
+  (void) itl_completion_handle_tab(&le, &completion_code);
+  tl_set_complete_callback(NULL);
+  calls = test_tab_callback_calls;
+  itl_string_to_cstr(line, out_line, out_size);
+
+cleanup:
+  itl_g_completion_menu_enabled = was_menu_enabled;
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (saved_stdout >= 0) {
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+  }
+  if (null_descriptor >= 0) close(null_descriptor);
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+
+  ITL_STRING_FREE(line);
+  itl_ghost_clear();
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+
+  return calls;
+}
+
+typedef struct tab_calls_case tab_calls_case_t;
+
+struct tab_calls_case
+{
+  const char *const *words;
+  size_t             word_count;
+  bool               should_fold_prefix;
+  const char        *text;
+  const char        *keys;
+  const char        *line;
+  size_t             calls;
+};
+
+/* A TAB that grows the token to the common prefix opens the menu on the list
+   it already gathered, and typing into that menu narrows it without asking the
+   host. The host is asked again when the prefix opens a new path component,
+   moves the token, does not extend the token byte for byte, or grows an empty
+   token. A second TAB that cannot grow the token asks the host once. */
+static bool
+test_tab_prefix_menu_reuses_gather(void)
+{
+  static const char *const tools[] = {"tool-alpha", "tool-beta", "other"};
+  static const char *const paths[] = {"dir/a", "dir/b"};
+  static const char *const values[] = {"key=one", "key=two"};
+  static const char *const capitals[] = {"Alpha", "Album"};
+  static const tab_calls_case_t cases[] = {
+      {tools,    3, false, "run to",       "",   "run tool-",       1},
+      {tools,    3, false, "run to",       "a",  "run tool-a",      1},
+      {tools,    3, false, "run tool-",    "",   "run tool-",       1},
+      {tools,    3, false, "run ",         "",   "run ",            1},
+      {paths,    2, false, "run d",        "",   "run dir/",        2},
+      {values,   2, false, "run k",        "",   "run key=",        2},
+      {capitals, 2, true,  "run a",        "",   "run Al",          2},
+      {tools,    2, false, "run ",         "",   "run tool-",       2},
+  };
+  bool   ok = true;
+  char   line[BUFFER_SIZE];
+  size_t i;
+
+  for (i = 0; i < countof(cases); ++i) {
+    size_t calls;
+
+    test_tab_words = cases[i].words;
+    test_tab_word_count = cases[i].word_count;
+    test_tab_should_fold_prefix = cases[i].should_fold_prefix;
+    calls = tab_completion_calls(cases[i].text, cases[i].keys, line,
+                                 sizeof(line));
+
+    if (calls != cases[i].calls || strcmp(line, cases[i].line) != 0) {
+      TEST_PRINTF("tab case %zu left '%s' after %zu calls\n", i, line, calls);
+      ok = false;
+    }
+  }
+
+  test_tab_words = NULL;
+  test_tab_word_count = 0;
+  test_tab_should_fold_prefix = false;
+
+  return ok;
+}
 #endif /* ITL_POSIX */
 
 static bool
@@ -7009,6 +7210,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
 #if defined ITL_POSIX
                                    DEFINE_TEST_CASE(
                                        test_menu_keys_reuse_gathered_list),
+                                   DEFINE_TEST_CASE(
+                                       test_tab_prefix_menu_reuses_gather),
                                    DEFINE_TEST_CASE(
                                        test_alt_backspace_sequences),
                                    DEFINE_TEST_CASE(
