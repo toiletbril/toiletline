@@ -290,6 +290,10 @@ typedef struct tl_completion
      same tiers. Zero for a list the host did not rank, which the menu narrows
      by prefix and keeps whole. */
   int is_tier_ranked;
+  /* Nonzero when an accepted candidate takes no trailing space even with
+     tl_set_space_after_completion on, the way a bash spec with -o nospace
+     completes a word the user keeps typing. */
+  int is_space_suppressed;
 } tl_completion;
 
 /**
@@ -10110,7 +10114,7 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
         continue;
       }
 
-      if (kind == TL_KEY_TAB)
+      if (kind == TL_KEY_TAB && !result.is_space_suppressed)
         itl_completion_append_space(le);
 
       return TL_SUCCESS;
@@ -10352,7 +10356,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
       return true;
     }
     if (itl_g_completion_menu_enabled && itl_g_space_after_completion &&
-        !should_descend &&
+        !should_descend && !result.is_space_suppressed &&
         le->cursor_position == le->line->length && le->line->length > 0)
     {
       itl_utf8_t last = le->line->chars[le->line->length - 1];
@@ -10383,7 +10387,9 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
         ITL_LE_ERASE_BACKWARD(le, 1);
       }
     }
-    itl_completion_append_space(le);
+    if (!result.is_space_suppressed) {
+      itl_completion_append_space(le);
+    }
     itl_g_tty_should_refresh_text = true;
     return true;
   }

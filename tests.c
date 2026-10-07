@@ -4730,6 +4730,68 @@ test_tab_clears_stale_ghost_target(void)
          itl_g_ghost_sticky_target[0] == '\0';
 }
 
+static int test_space_suppressed_flag;
+
+static int
+test_space_suppressing_callback(const char *buffer, size_t cursor,
+                                tl_completion *completion, int for_listing)
+{
+  static const char *candidates[] = {"alpha"};
+
+  (void) buffer;
+  (void) cursor;
+  (void) for_listing;
+  completion->candidates = candidates;
+  completion->count = 1;
+  completion->token_start = 0;
+  completion->token_end = 2;
+  completion->is_space_suppressed = test_space_suppressed_flag;
+  return 1;
+}
+
+/* A host that suppresses the space keeps the caret on the completed word even
+   with the space-after option on, and the same single candidate takes the
+   space when the host leaves the flag clear. */
+static bool
+test_tab_honors_suppressed_space(void)
+{
+  static const int flags[] = {1, 0};
+  static const char *expected[] = {"alpha", "alpha "};
+  char out_buffer[BUFFER_SIZE];
+  char line_buffer[BUFFER_SIZE];
+  int previous_supports_decorations = itl_g_supports_decorations;
+  int previous_space_after = itl_g_space_after_completion;
+  bool ok = true;
+  size_t index;
+
+  itl_g_supports_decorations = 0;
+  tl_set_space_after_completion(1);
+  tl_set_complete_callback(test_space_suppressing_callback);
+  for (index = 0; index < 2; ++index) {
+    tl_status_code completion_code = TL_SUCCESS;
+    itl_le_t le = ITL_ZERO_INIT;
+    itl_string_t *line = itl_string_alloc();
+
+    ITL_STRING_FROM_CSTR(line, "al");
+    itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+    test_space_suppressed_flag = flags[index];
+    if (!itl_completion_handle_tab(&le, &completion_code)) {
+      ok = false;
+    }
+    itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
+    if (strcmp(line_buffer, expected[index]) != 0) {
+      TEST_PRINTF("flag %d completed to '%s'\n", flags[index], line_buffer);
+      ok = false;
+    }
+    ITL_STRING_FREE(line);
+  }
+  tl_set_complete_callback(NULL);
+  tl_set_space_after_completion(previous_space_after);
+  itl_g_supports_decorations = previous_supports_decorations;
+
+  return ok;
+}
+
 /* The external-screen pair is only meaningful around a live raw-mode session,
    so each half refuses the state the other one owns. Driving a real handoff
    needs a terminal and is covered by the interactive pty harness instead. */
@@ -7416,6 +7478,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_ghost_clips_multiline_suggestion),
                                    DEFINE_TEST_CASE(
                                        test_tab_clears_stale_ghost_target),
+                                   DEFINE_TEST_CASE(
+                                       test_tab_honors_suppressed_space),
                                    DEFINE_TEST_CASE(
                                        test_external_screen_requires_raw_mode),
                                    DEFINE_TEST_CASE(
