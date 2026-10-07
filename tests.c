@@ -4760,12 +4760,13 @@ test_tab_honors_suppressed_space(void)
   char out_buffer[BUFFER_SIZE];
   char line_buffer[BUFFER_SIZE];
   int previous_supports_decorations = itl_g_supports_decorations;
-  int previous_space_after = itl_g_space_after_completion;
+  tl_space_after_completion previous_space_after =
+      itl_g_space_after_completion;
   bool ok = true;
   size_t index;
 
   itl_g_supports_decorations = 0;
-  tl_set_space_after_completion(1);
+  tl_set_space_after_completion(TL_SPACE_AFTER_COMPLETION_ON);
   tl_set_complete_callback(test_space_suppressing_callback);
   for (index = 0; index < 2; ++index) {
     tl_status_code completion_code = TL_SUCCESS;

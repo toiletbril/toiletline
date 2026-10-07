@@ -400,8 +400,18 @@ TL_DEF void tl_set_history_prefix_search(int enabled);
  */
 TL_DEF void tl_set_auto_pair(int enabled);
 
-/** Append a space after a complete non-directory completion when enabled. */
-TL_DEF void tl_set_space_after_completion(int enabled);
+typedef enum
+{
+  TL_SPACE_AFTER_COMPLETION_OFF = 0,
+  TL_SPACE_AFTER_COMPLETION_ON = 1,
+  TL_SPACE_AFTER_COMPLETION_EXCEPT_AFTER_SLASH = 2,
+} tl_space_after_completion;
+
+/**
+ * Chooses whether an accepted complete candidate takes a trailing space: never,
+ * always, or unless it ends in a path separator. Off by default.
+ */
+TL_DEF void tl_set_space_after_completion(tl_space_after_completion mode);
 
 /*
  * Enables or disables the selectable candidate menu opened under the prompt
@@ -7199,7 +7209,8 @@ ITL_DEF bool itl_le_auto_pair_erase(itl_le_t *le)
 ITL_DEF ITL_THREAD_LOCAL int itl_g_completion_menu_enabled = 0;
 
 /* Whether accepted complete candidates receive a trailing separator. */
-ITL_DEF ITL_THREAD_LOCAL int itl_g_space_after_completion = 0;
+ITL_DEF ITL_THREAD_LOCAL tl_space_after_completion
+    itl_g_space_after_completion = TL_SPACE_AFTER_COMPLETION_OFF;
 
 TL_DEF void tl_set_completion_menu_enabled(int enabled)
 {
@@ -7208,9 +7219,9 @@ TL_DEF void tl_set_completion_menu_enabled(int enabled)
   itl_g_completion_menu_enabled = enabled && itl_term_supports_decorations();
 }
 
-TL_DEF void tl_set_space_after_completion(int enabled)
+TL_DEF void tl_set_space_after_completion(tl_space_after_completion mode)
 {
-  itl_g_space_after_completion = enabled != 0;
+  itl_g_space_after_completion = mode;
 }
 
 TL_DEF void tl_set_colors_enabled(int enabled)
@@ -8197,14 +8208,15 @@ ITL_DEF bool itl_byte_is_path_separator(uint8_t byte)
 
 ITL_DEF void itl_completion_append_space(itl_le_t *le)
 {
-  if (!itl_g_space_after_completion ||
+  if (itl_g_space_after_completion == TL_SPACE_AFTER_COMPLETION_OFF ||
       le->cursor_position != le->line->length || le->line->length == 0)
     return;
 
   itl_utf8_t last = le->line->chars[le->line->length - 1];
-  if (last.size == 1 &&
-      (isspace(last.bytes[0]) ||
-       itl_byte_is_path_separator((uint8_t) last.bytes[0])))
+  if (last.size == 1 && isspace(last.bytes[0])) return;
+  if (itl_g_space_after_completion ==
+          TL_SPACE_AFTER_COMPLETION_EXCEPT_AFTER_SLASH &&
+      last.size == 1 && itl_byte_is_path_separator((uint8_t) last.bytes[0]))
     return;
   itl_le_insert(le, itl_utf8_parse(' '));
 }
@@ -10089,9 +10101,11 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
     {
       const char *candidate = result.candidates[selected];
       size_t candidate_length = strlen(candidate);
-      bool should_descend = source->can_descend && candidate_length > 0 &&
-                            itl_byte_is_path_separator(
-                                (uint8_t) candidate[candidate_length - 1]);
+      bool should_descend =
+          source->can_descend && candidate_length > 0 &&
+          itl_g_space_after_completion != TL_SPACE_AFTER_COMPLETION_ON &&
+          itl_byte_is_path_separator(
+              (uint8_t) candidate[candidate_length - 1]);
 
       if (!itl_completion_replace_token(le, &result, candidate)) {
         return TL_SUCCESS;
@@ -10344,9 +10358,10 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
   if (result.count == 1) {
     const char *candidate = result.candidates[0];
     size_t candidate_length = strlen(candidate);
-    bool should_descend = candidate_length > 0 &&
-                          itl_byte_is_path_separator(
-                              (uint8_t) candidate[candidate_length - 1]);
+    bool should_descend =
+        candidate_length > 0 &&
+        itl_g_space_after_completion != TL_SPACE_AFTER_COMPLETION_ON &&
+        itl_byte_is_path_separator((uint8_t) candidate[candidate_length - 1]);
     bool did_insert_next_token_space = false;
 
     if (is_loading_drawn) {
@@ -10355,7 +10370,8 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     if (!itl_completion_replace_token(le, &result, candidate)) {
       return true;
     }
-    if (itl_g_completion_menu_enabled && itl_g_space_after_completion &&
+    if (itl_g_completion_menu_enabled &&
+        itl_g_space_after_completion != TL_SPACE_AFTER_COMPLETION_OFF &&
         !should_descend && !result.is_space_suppressed &&
         le->cursor_position == le->line->length && le->line->length > 0)
     {
