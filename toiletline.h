@@ -285,6 +285,11 @@ typedef struct tl_completion
   const char *longest_common_prefix;
   size_t token_start;
   size_t token_end;
+  /* Nonzero when the host offered only the best of its exact prefix,
+     smart-case prefix, and subsequence tiers. An open menu then narrows by the
+     same tiers. Zero for a list the host did not rank, which the menu narrows
+     by prefix and keeps whole. */
+  int is_tier_ranked;
 } tl_completion;
 
 /**
@@ -9146,8 +9151,9 @@ typedef bool (*itl_menu_gather_fn)(itl_le_t *le, tl_completion *result);
    source on the first row and help_keys lists the keys it answers beside it.
    should_anchor_to_token belongs to a list of replacements for a token, and
    the rows then start under the token instead of the leftmost column.
-   should_keep_best_tier belongs to a host that offers only the best tier of
-   its matches, and typing narrows the list by the same tiers. */
+   should_keep_best_tier belongs to a completion host. Typing narrows a list
+   the host marked as tier ranked by the same tiers, and any other list by
+   prefix. */
 typedef struct itl_menu_source
 {
   itl_menu_gather_fn gather;
@@ -9485,10 +9491,27 @@ ITL_DEF bool itl_menu_query_is_case_sensitive(const char *query,
   return false;
 }
 
+/* True when a query may match as a subsequence. A single byte or one opening
+   with a byte such as an option dash would match almost every entry. */
+ITL_DEF bool itl_menu_query_allows_subsequence(const char *query,
+                                               size_t query_len)
+{
+  uint8_t first;
+
+  if (query_len < 2) {
+    return false;
+  }
+
+  first = (uint8_t) query[0];
+
+  return (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') ||
+         (first >= '0' && first <= '9') || first == '_';
+}
+
 /* Rank one entry against the query the way a completion host does. An entry
    opening with the query byte for byte comes first. One opening with it in
    another case comes next, unless the query holds a capital. One holding the
-   query bytes in order comes last. */
+   query bytes in order comes last, for a query that allows it. */
 ITL_DEF unsigned itl_menu_tier_rank(const char *entry, size_t entry_len,
                                     const char *query, size_t query_len,
                                     bool is_case_sensitive)
@@ -9502,11 +9525,15 @@ ITL_DEF unsigned itl_menu_tier_rank(const char *entry, size_t entry_len,
   if (memcmp(entry, query, query_len) == 0) {
     return ITL_MENU_TIER_EXACT_PREFIX;
   }
+  if (!is_case_sensitive &&
+      itl_ascii_prefix_matches_casefold(entry, query, query_len))
+  {
+    return ITL_MENU_TIER_PREFIX;
+  }
+  if (!itl_menu_query_allows_subsequence(query, query_len)) {
+    return ITL_MENU_TIER_NONE;
+  }
   if (!is_case_sensitive) {
-    if (itl_ascii_prefix_matches_casefold(entry, query, query_len)) {
-      return ITL_MENU_TIER_PREFIX;
-    }
-
     return itl_ascii_subsequence_casefold(entry, entry_len, query, query_len)
                ? ITL_MENU_TIER_SUBSEQUENCE
                : ITL_MENU_TIER_NONE;
@@ -9679,6 +9706,32 @@ ITL_DEF bool itl_menu_filter_tier(const tl_completion *base, const char *query,
   return itl_menu_keep_ranks(base, scanned_count, best, best + 1, result);
 }
 
+/* Narrow a list the host did not rank to the entries that open with the query
+   in either case, in the order the base gave them. Every such row stays, since
+   the host may offer any of them for the longer query. Returns false when
+   nothing matches. */
+ITL_DEF bool itl_menu_filter_prefix(const tl_completion *base,
+                                    const char *query, size_t query_len,
+                                    tl_completion *result)
+{
+  size_t scanned_count = base->count < ITL_MENU_FILTER_SCAN_MAX
+                             ? base->count
+                             : ITL_MENU_FILTER_SCAN_MAX;
+  size_t index;
+
+  for (index = 0; index < scanned_count; ++index) {
+    const char *entry = base->candidates[index];
+    bool is_prefix = strlen(entry) >= query_len &&
+                     itl_ascii_prefix_matches_casefold(entry, query, query_len);
+
+    itl_g_menu_ranks[index] =
+        (unsigned char) (is_prefix ? ITL_MENU_RANK_PREFIX : ITL_MENU_RANK_NONE);
+  }
+
+  return itl_menu_keep_ranks(base, scanned_count, ITL_MENU_RANK_PREFIX,
+                             ITL_MENU_RANK_PREFIX + 1, result);
+}
+
 /* Take the list the source just gave as the base the narrowing reads, together
    with the query it answered. A token the line cannot hand back leaves an
    empty base and the next key reaches the source. */
@@ -9745,6 +9798,25 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
   return true;
 }
 
+/* Narrow the base list the way its source answers a longer query. A host that
+   ranked the list by tiers keeps the best one, a host that did not keeps every
+   row the query opens, and any other source ranks by where the query sits. */
+ITL_DEF bool itl_menu_filter_for(const itl_menu_source *source,
+                                 const itl_menu_filter_state *state,
+                                 const char *query, size_t query_len,
+                                 tl_completion *result)
+{
+  if (!source->should_keep_best_tier) {
+    return itl_menu_filter(&state->base, query, query_len, result);
+  }
+  if (state->base.is_tier_ranked) {
+    return itl_menu_filter_tier(&state->base, query, query_len,
+                                state->base_tier, result);
+  }
+
+  return itl_menu_filter_prefix(&state->base, query, query_len, result);
+}
+
 /* Answer the line as it stands from the base list, and fall back to the source
    when the base cannot answer. The base holds every row the source offered for
    a shorter query. A line that only grew is narrowed without touching the host,
@@ -9772,10 +9844,7 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
       return false;
     }
     if (state->base.count <= ITL_MENU_FILTER_SCAN_MAX &&
-        (source->should_keep_best_tier
-             ? itl_menu_filter_tier(&state->base, query, query_len,
-                                    state->base_tier, result)
-             : itl_menu_filter(&state->base, query, query_len, result)))
+        itl_menu_filter_for(source, state, query, query_len, result))
     {
       state->name_width = itl_menu_name_width(result);
 

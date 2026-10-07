@@ -3370,16 +3370,22 @@ test_menu_narrow_reuses_base(void)
 
 #if defined ITL_POSIX
 static size_t test_word_gather_calls;
+static bool   test_word_gather_is_unranked;
 
 /* A source whose token is the last word of the line. It offers the words the
-   token starts, each with a description. */
+   token starts, each with a description, as a list ranked by tiers. The
+   unranked variant offers the words the token starts in either case, the way
+   a completion function may, and does not rank them. */
 static bool
 test_word_gather(itl_le_t *le, tl_completion *result)
 {
-  static const char *words[] = {"alpha", "album", "alcove", "beta"};
+  static const char *ranked_words[] = {"alpha", "album", "alcove", "beta"};
+  static const char *unranked_words[] = {"alpha", "Album", "alcove", "beta"};
   static const char *notes[] = {"first", "second", "third", "fourth"};
-  static const char *candidates[countof(words)];
-  static const char *descriptions[countof(words)];
+  const char *const *words =
+      test_word_gather_is_unranked ? unranked_words : ranked_words;
+  static const char *candidates[countof(ranked_words)];
+  static const char *descriptions[countof(ranked_words)];
   char               token[BUFFER_SIZE];
   size_t             token_len = 0;
   size_t             kept_count = 0;
@@ -3397,8 +3403,12 @@ test_word_gather(itl_le_t *le, tl_completion *result)
   }
   token[token_len] = '\0';
 
-  for (i = 0; i < countof(words); ++i) {
-    if (strncmp(words[i], token, token_len) == 0) {
+  for (i = 0; i < countof(ranked_words); ++i) {
+    bool does_match = test_word_gather_is_unranked
+                          ? strncasecmp(words[i], token, token_len) == 0
+                          : strncmp(words[i], token, token_len) == 0;
+
+    if (does_match) {
       candidates[kept_count] = words[i];
       descriptions[kept_count] = notes[i];
       kept_count += 1;
@@ -3415,6 +3425,7 @@ test_word_gather(itl_le_t *le, tl_completion *result)
   result->count = kept_count;
   result->token_start = start;
   result->token_end = le->line->length;
+  result->is_tier_ranked = !test_word_gather_is_unranked;
 
   return true;
 }
@@ -3538,11 +3549,23 @@ test_menu_keys_reuse_gathered_list(void)
       itl_menu_tier_rank("foo_bar_baz", 11, "fbb", 3, false) !=
           ITL_MENU_TIER_SUBSEQUENCE ||
       itl_menu_tier_rank("fOo_Bar", 7, "fB", 2, true) !=
-          ITL_MENU_TIER_SUBSEQUENCE)
+          ITL_MENU_TIER_SUBSEQUENCE ||
+      itl_menu_tier_rank("cab", 3, "b", 1, false) != ITL_MENU_TIER_NONE ||
+      itl_menu_tier_rank("a-b-c", 5, "-c", 2, false) != ITL_MENU_TIER_NONE)
   {
     TEST_PRINTF("a completion tier was ranked wrong\n");
     ok = false;
   }
+
+  test_word_gather_is_unranked = true;
+  if (menu_keys_gathers("cat al", "b", line, sizeof(line)) != 0 ||
+      strcmp(line, "cat alb") != 0 ||
+      strcmp(itl_g_menu_filtered[0], "Album") != 0)
+  {
+    TEST_PRINTF("an unranked list lost a row a fresh gather keeps\n");
+    ok = false;
+  }
+  test_word_gather_is_unranked = false;
 
   for (i = 0; i < countof(cases); ++i) {
     size_t gathers =
