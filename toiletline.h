@@ -9499,6 +9499,11 @@ ITL_DEF bool itl_menu_name_extends_token(const itl_le_t *le,
                                            typed_bytes);
 }
 
+/* Set while the menu lists the word after a completed word and its space. The
+   first row is not previewed until a typed byte starts the word, because the
+   dim text after the space would read as the word inserted again. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_menu_is_next_word = false;
+
 ITL_DEF void itl_menu_ghost_preview(itl_le_t *le, const tl_completion *result,
                                     size_t selected)
 {
@@ -9509,6 +9514,9 @@ ITL_DEF void itl_menu_ghost_preview(itl_le_t *le, const tl_completion *result,
   itl_ghost_clear();
 
   if (!itl_g_ghost_enabled || selected >= result->count) {
+    return;
+  }
+  if (itl_g_menu_is_next_word && result->token_end <= result->token_start) {
     return;
   }
   if (le->cursor_position != le->line->length) {
@@ -10413,7 +10421,9 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
   /* A lone candidate is the full replacement for the token. It goes in even
      when it is no longer than what the user typed. A glob token that resolves
      to a single match reaches this path. The key stops there: the next word
-     or the inside of a completed directory is listed by the next TAB. */
+     or the inside of a completed directory is listed by the next TAB. A space
+     the option appends keeps the menu open on the next word, and a next word
+     with no candidates closes quietly. */
   if (result.count == 1) {
     if (is_loading_drawn) {
       itl_menu_erase();
@@ -10422,7 +10432,21 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
       return true;
     }
     if (!result.is_space_suppressed) {
+      size_t length_before_space = le->line->length;
+
       itl_completion_append_space(le);
+      itl_g_tty_should_refresh_text = true;
+      if (itl_g_completion_menu_enabled &&
+          le->line->length > length_before_space)
+      {
+        tl_completion following = ITL_ZERO_INIT;
+
+        if (itl_menu_regather(le, &following)) {
+          itl_g_menu_is_next_word = true;
+          *out_code = itl_completion_menu(le, &following, &completion_source);
+          itl_g_menu_is_next_word = false;
+        }
+      }
     }
     itl_g_tty_should_refresh_text = true;
     return true;

@@ -3858,6 +3858,7 @@ static const char *const *test_tab_words;
 static size_t             test_tab_word_count;
 static bool               test_tab_should_fold_prefix;
 static size_t             test_tab_callback_calls;
+static bool               test_tab_is_blank_token_empty;
 
 /* A host whose token is the last word of the line. It offers the words that
    open with the token, ignoring case when asked to, and reports their common
@@ -3885,6 +3886,10 @@ test_tab_counting_callback(const char *buffer, size_t cursor,
   for (i = 0; i < test_tab_word_count && kept_count < countof(candidates); ++i)
   {
     const char *word = test_tab_words[i];
+
+    if (test_tab_is_blank_token_empty && token_len == 0) {
+      break;
+    }
     bool        does_match =
         test_tab_should_fold_prefix
                    ? strncasecmp(word, buffer + start, token_len) == 0
@@ -4057,10 +4062,10 @@ test_tab_prefix_menu_reuses_gather(void)
   return ok;
 }
 
-/* A sole candidate goes in and the TAB stops, with or without the space after
-   it. No menu opens for the next word or the inside of a completed directory,
-   so the keys after the TAB stay unread and the host is asked once. A second
-   TAB on the completed directory lists what it holds. */
+/* A sole candidate goes in and the TAB stops, unless the space option appends
+   a space. Then the menu stays open on the next word, typing narrows it, and
+   a next word without candidates leaves it closed. The inside of a completed
+   directory is listed only by the next TAB. */
 static bool
 test_tab_sole_candidate_stops(void)
 {
@@ -4073,16 +4078,25 @@ test_tab_sole_candidate_stops(void)
     size_t                    word_count;
     tl_space_after_completion space_after;
     const char               *text;
+    const char               *keys;
     const char               *line;
+    size_t                    calls;
+    bool                      is_next_word_empty;
   } cases[] = {
       {files,       2, TL_SPACE_AFTER_COMPLETION_ON,  "cat fi",
-       "cat file1.txt "                                                    },
+       "\x1b", "cat file1.txt ", 2, false                                  },
+      {files,       2, TL_SPACE_AFTER_COMPLETION_ON,  "cat fi",
+       "o\x1b", "cat file1.txt o", 3, false                              },
+      {files,       2, TL_SPACE_AFTER_COMPLETION_ON,  "cat fi",
+       "\x1b", "cat file1.txt ", 2, true                                   },
       {files,       2, TL_SPACE_AFTER_COMPLETION_OFF, "cat fi",
-       "cat file1.txt"                                                     },
-      {directories, 2, TL_SPACE_AFTER_COMPLETION_ON,  "cd lo",  "cd local/ "},
-      {directories, 2, TL_SPACE_AFTER_COMPLETION_OFF, "cd lo",  "cd local/" },
+       "\x1b", "cat file1.txt", 1, false                                   },
+      {directories, 2, TL_SPACE_AFTER_COMPLETION_ON,  "cd lo",
+       "\x1b", "cd local/ ", 2, false                                      },
+      {directories, 2, TL_SPACE_AFTER_COMPLETION_OFF, "cd lo",
+       "\x1b", "cd local/", 1, false                                       },
       {inside,      2, TL_SPACE_AFTER_COMPLETION_OFF, "cd local/",
-       "cd local/"                                                         },
+       "\x1b", "cd local/", 1, false                                       },
   };
   tl_space_after_completion previous_space_after =
       itl_g_space_after_completion;
@@ -4096,14 +4110,17 @@ test_tab_sole_candidate_stops(void)
     test_tab_words = cases[i].words;
     test_tab_word_count = cases[i].word_count;
     tl_set_space_after_completion(cases[i].space_after);
-    calls = tab_completion_calls(cases[i].text, "\x1b", line, sizeof(line));
+    test_tab_is_blank_token_empty = cases[i].is_next_word_empty;
+    calls = tab_completion_calls(cases[i].text, cases[i].keys, line,
+                                 sizeof(line));
 
-    if (calls != 1 || strcmp(line, cases[i].line) != 0) {
+    if (calls != cases[i].calls || strcmp(line, cases[i].line) != 0) {
       TEST_PRINTF("sole case %zu left '%s' after %zu calls\n", i, line, calls);
       ok = false;
     }
   }
 
+  test_tab_is_blank_token_empty = false;
   tl_set_space_after_completion(previous_space_after);
   test_tab_words = NULL;
   test_tab_word_count = 0;
