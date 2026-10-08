@@ -99,23 +99,18 @@ Configuration macros
 These should be defined before including, in the same file with implementation
 macro.
 
-* TL_USE_STDIO can be defined to use <stdio.h> functions instead of raw
-  `read()`, `open()` and etc.
 * TL_HISTORY_MAX_SIZE configures maximum history size;
 * ITL_HISTORY_ENTRY_MAX_BYTES caps the byte length of a single history entry;
   longer entries are silently dropped from history;
 * TL_NO_SUSPEND prevents Ctrl-Z from sending `SIGTSTP` to the terminal. Note
   that Windows does not have this signal, and if this macro is not defined,
   Ctrl-Z will call `exit(0)`;
-* TL_SIZE_USE_ESCAPES forces to use escape codes instead of native API to
-  retrieve terminal size;
 * TL_DEF and ITL_DEF are put before every definition, public and internal
   respectively.
 * TL_ASSERT configures function used for assertions;
 * TL_MALLOC, TL_REALLOC, TL_FREE configure functions used for memory
   allocation;
 * TL_ABORT sets function that will be called on a failed allocation;
-* TL_NO_ABORT disables checks for failed memory allocations;
 * TL_SEE_BYTES forces tl_get_input() to output terminal codes of pressed keys
   instead of processing and echoing them. This is useful for debugging.
 * TL_DEBUG can be defined to output various debug information at runtime.
@@ -292,14 +287,6 @@ Emit newlines after getting the input.
 *buffer should be the buffer used in tl_get_input().
 
 Returns `TL_SUCCESS` or `TL_ERROR` on errors.
-
-
-tl_status_code tl_set_title(const char *title);
------------------------------------------------
-Sets a new title for the terminal. Returns `TL_ERROR` and does nothing if stdout
-is not a tty.
-
-Returns `TL_SUCCESS` or `TL_ERROR` on other errors.
 
 
 void tl_set_complete_callback(tl_complete_fn callback);

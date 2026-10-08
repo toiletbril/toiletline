@@ -71,8 +71,7 @@ extern "C"
 #define TL_MALLOC(size)         malloc(size)
 #define TL_REALLOC(block, size) realloc(block, size)
 #define TL_FREE(ptr)            free(ptr)
-/* Will be called on failed allocation. `TL_NO_ABORT` can be defined to
- * disable failure checking. */
+/* Will be called on failed allocation. */
 #define TL_ABORT() abort()
 #endif /* !TL_MALLOC */
 
@@ -261,11 +260,6 @@ TL_DEF size_t tl_utf8_strnlen(const char *utf8_str, size_t byte_count);
  * *buffer should be the buffer used in tl_readline().
  */
 TL_DEF tl_status_code tl_emit_newlines(const char *buffer);
-/**
- * Sets a new title for the terminal. Returns -1 and does nothing if stdout is
- * not a tty or amount of bytes written.
- */
-TL_DEF tl_status_code tl_set_title(const char *title);
 
 /**
  * The result a completion callback fills. The host owns the storage and keeps
@@ -628,17 +622,10 @@ TL_DEF void tl_set_edit_mode(int mode);
 
 #define ITL_ISATTY _isatty
 
-#if !defined TL_USE_STDIO
 #define ITL_STDIN  0
 #define ITL_STDOUT 1
 #define ITL_STDERR 2
 #define ITL_FILE   int
-
-#if !defined ENABLE_VIRTUAL_TERMINAL_PROCESSING
-#define ITL_NO_WIN_ESCAPES
-#warning ENABLE_VIRTUAL_TERMINAL_PROCESSING is not defined. Terminal escape    \
-         sequences will not work in some terminals, like conhost.exe.
-#endif /* !ENABLE_VIRTUAL_TERMINAL_PROCESSING */
 
 /* Binary mode keeps byte offsets exact, the CRT text mode would translate each
    newline to a carriage return plus newline and desync the offset ring. */
@@ -657,7 +644,6 @@ TL_DEF void tl_set_edit_mode(int mode);
 
 #define ITL_WRITE(fd, buf, size) _write(fd, buf, (unsigned int) (size))
 #define ITL_READ(fd, buf, size)  _read(fd, buf, (unsigned int) (size))
-#endif /* !ITL_USE_STDIO */
 
 /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation>
  */
@@ -676,23 +662,11 @@ TL_DEF void tl_set_edit_mode(int mode);
 #include <sys/select.h>
 #include <termios.h>
 #include <time.h>
-#include <unistd.h>
-
-/* It makes no sense to use escapes on WIN32 which does not support them
-   anyway */
-#if defined TL_SIZE_USE_ESCAPES
-#if defined ITL_POSIX || defined ENABLE_VIRTUAL_TERMINAL_PROCESSING
-#define ITL_VT_SIZE
-#else
-#warning Will not use terminal escapes for size.
-#endif /* ITL_POSIX */
-#elif defined ITL_POSIX
 #include <sys/ioctl.h>
-#endif /* TL_SIZE_USE_ESCAPES */
+#include <unistd.h>
 
 #define ITL_ISATTY isatty
 
-#if !defined TL_USE_STDIO
 #define ITL_STDIN  0
 #define ITL_STDOUT 1
 #define ITL_STDERR 2
@@ -713,7 +687,6 @@ TL_DEF void tl_set_edit_mode(int mode);
 
 #define ITL_WRITE(fd, buf, size) write(fd, buf, (unsigned long) size)
 #define ITL_READ(fd, buf, size)  read(fd, buf, (unsigned long) size)
-#endif /* !ITL_USE_STDIO */
 
 /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
 #define ITL_STRING_MAX_LEN 4095
@@ -723,45 +696,9 @@ TL_DEF void tl_set_edit_mode(int mode);
 #endif /* ITL_TTY_IS_TTY */
 #endif /* ITL_POSIX */
 
-#if defined TL_DEBUG || defined TL_USE_STDIO || defined TL_SEE_BYTES
+#if defined TL_DEBUG || defined TL_SEE_BYTES
 #include <stdio.h>
 #endif /* TL_DEBUG */
-
-/* This is almost everything that this library requires for IO. If a different
-   underlying API is desired, this may easily be extended. Please note that
-   `errno` is required to be set appropriately for errors. Since `stdio` sucks,
-   there are still some special cases, like the reason of `feof()` existence,
-   so be aware :3 */
-#if defined TL_USE_STDIO
-#define ITL_STDIN  stdin
-#define ITL_STDOUT stdout
-#define ITL_STDERR stderr
-#define ITL_FILE   FILE *
-
-#define ITL_FILE_OPEN_FOR_READ(path)   fopen(path, "rb")
-#define ITL_FILE_OPEN_FOR_WRITE(path)  fopen(path, "wb")
-#define ITL_FILE_OPEN_FOR_APPEND(path) fopen(path, "a+b")
-#define ITL_FILE_IS_BAD(file)          (file == NULL)
-#define ITL_FILE_CLOSE                 fclose
-#define ITL_FILE_SEEK(file, offset)                                            \
-  (fseek(file, (long) (offset), SEEK_SET) == 0)
-/* Seeks to the end and yields the resulting offset, the file size, or -1. */
-#define ITL_FILE_SEEK_END(file)                                                \
-  (fseek(file, 0L, SEEK_END) == 0 ? ftell(file) : -1L)
-#define ITL_FILE_TELL(file) ftell(file)
-
-ITL_DEF int itl_write_impl(FILE *f, const void *buf, size_t size)
-{
-  /* Return the byte count, matching write()/_write(), so callers can detect a
-     short write rather than only a hard error. */
-  size_t written_bytes = fwrite(buf, 1, size, f);
-  fflush(f);
-  return ferror(f) ? -1 : (int) written_bytes;
-}
-
-#define ITL_WRITE(file, buf, size) itl_write_impl(file, buf, size)
-#define ITL_READ(file, buf, size)  fread(buf, 1, size, file)
-#endif /* ITL_USE_STDIO */
 
 #if defined ITL_WIN32
 /* Windows can't read arrow keys otherwise */
@@ -769,16 +706,8 @@ ITL_DEF int itl_write_impl(FILE *f, const void *buf, size_t size)
 #else /* ITL_WIN32 */
 ITL_DEF int ITL_READ_BYTE_RAW(void)
 {
-#if !defined ITL_INJECT_KLEE
   unsigned char byte_value;
   return (ITL_READ(ITL_STDIN, &byte_value, 1) != 1) ? -1 : (int) byte_value;
-#else
-  static size_t i = 0;
-  if (i >= ITL_KLEE_BUFFER_SIZE - 1) {
-    return -1;
-  }
-  return ITL_KLEE_BUFFER[i++];
-#endif
 }
 #endif
 
@@ -807,19 +736,18 @@ ITL_DEF int ITL_READ_BYTE_RAW(void)
 
 #if !defined __STDC_VERSION__ || __STDC_VERSION__ < 199409L
 #define ITL_C89
-#if !defined __cplusplus
-#define ITL_ZERO_INIT {0}
-typedef unsigned char bool;
-#define true  1
-#define false 0
-#else
+#endif /* !__STDC_VERSION__ || __STDC_VERSION__ >= 199409L */
+
+#if defined ITL_C89 && defined __cplusplus
 #define ITL_ZERO_INIT                                                          \
   {}
-#endif /* __cplusplus */
 #else
-#include <stdbool.h>
 #define ITL_ZERO_INIT {0}
-#endif /* !__STDC_VERSION__ || __STDC_VERSION__ >= 199409L */
+#endif /* ITL_C89 && __cplusplus */
+
+#if !defined __cplusplus
+#include <stdbool.h>
+#endif /* !__cplusplus */
 
 #include <ctype.h>
 #include <errno.h>
@@ -834,34 +762,11 @@ typedef unsigned char bool;
 #include <signal.h>
 #endif
 
-#if defined _MSC_VER
-#include <intrin.h>
-#define ITL_THREAD_LOCAL         __declspec(thread)
-#define ITL_NO_RETURN            __declspec(noreturn)
-#define ITL_MAYBE_UNUSED         /* nothing */
-#define ITL_UNREACHABLE_INTRIN() __assume(0)
-#define itl_debug_trap()         __debugbreak()
-#elif defined __GNUC__ || defined __clang__
 #define ITL_THREAD_LOCAL         __thread
 #define ITL_NO_RETURN            __attribute__((noreturn))
 #define ITL_MAYBE_UNUSED         __attribute__((unused))
 #define ITL_UNREACHABLE_INTRIN() __builtin_unreachable()
 #define itl_debug_trap()         __builtin_trap()
-#else
-#define ITL_MAYBE_UNUSED /* nothing */
-#if defined __STDC_VERSION__ && __STDC_VERSION__ >= 201112L
-#define ITL_THREAD_LOCAL _Thread_local
-#define ITL_NO_RETURN    _Noreturn
-#else                    /* __STDC_VERSION__ && __STDC_VERSION__ >= 201112L */
-#define ITL_THREAD_LOCAL /* nothing */
-#define ITL_NO_RETURN    /* nothing */
-#endif
-#define ITL_UNREACHABLE_INTRIN()                                               \
-  do {                                                                         \
-    abort();                                                                   \
-  } while (true)
-#define itl_debug_trap() ITL_UNREACHABLE_INTRIN()
-#endif
 
 #if defined TL_DEBUG
 ITL_NO_RETURN ITL_DEF void itl_unreachable_impl(const char *file, int line,
@@ -942,20 +847,16 @@ ITL_DEF bool itl_enter_raw_mode_impl(void)
      reset the previous code did, so echo, line input, mouse, window, and
      quick-edit events are all off. */
   tty_in_mode = (DWORD) 0;
-#if !defined ITL_NO_WIN_ESCAPES && defined ENABLE_VIRTUAL_TERMINAL_INPUT
+#if defined ENABLE_VIRTUAL_TERMINAL_INPUT
   /* Virtual terminal input makes the console deliver special keys as the escape
      sequences the input parser already decodes. */
   tty_in_mode |= (DWORD) ENABLE_VIRTUAL_TERMINAL_INPUT;
 #endif
 
   itl_g_original_tty_out_mode = tty_out_mode;
-#if !defined ITL_NO_WIN_ESCAPES
   tty_out_mode = (DWORD) ENABLE_PROCESSED_OUTPUT |
                  ENABLE_VIRTUAL_TERMINAL_PROCESSING |
                  DISABLE_NEWLINE_AUTO_RETURN;
-#else /* !ITL_NO_WIN_ESCAPES */
-  tty_out_mode = (DWORD) 0;
-#endif
 
   ITL_TRY(SetConsoleMode(stdin_handle, tty_in_mode), return false);
   ITL_TRY(SetConsoleMode(stdout_handle, tty_out_mode), return false);
@@ -1184,19 +1085,15 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_reading_paste = false;
 /* Returns true when the terminal has a byte to read without blocking. */
 ITL_DEF bool itl_tty_input_is_pending(void)
 {
-#if defined ITL_INJECT_KLEE
-  return false;
-#elif defined ITL_WIN32
+#if defined ITL_WIN32
   return _kbhit() != 0;
-#elif defined ITL_POSIX
+#else  /* ITL_WIN32 */
   struct pollfd pfd;
   pfd.fd = STDIN_FILENO;
   pfd.events = POLLIN;
   pfd.revents = 0;
   return poll(&pfd, 1, 0) > 0;
-#else
-  return false;
-#endif
+#endif /* ITL_WIN32 */
 }
 
 ITL_DEF bool itl_read_tty_byte(uint8_t *buffer)
@@ -1536,7 +1433,7 @@ ITL_DEF bool itl_input_is_pending(void)
   return itl_tty_input_is_pending();
 }
 
-#if defined ITL_POSIX && !defined ITL_INJECT_KLEE
+#if defined ITL_POSIX
 ITL_DEF bool itl_block_input_wake_signals(sigset_t *previous_signals)
 {
   sigset_t blocked_signals;
@@ -1578,24 +1475,20 @@ ITL_DEF bool itl_wait_for_input(const sigset_t *previous_signals)
 {
   return itl_wait_for_input_until(previous_signals, -1) >= 0;
 }
-#endif /* ITL_POSIX && !ITL_INJECT_KLEE */
+#endif /* ITL_POSIX */
 
 /* A clock for the idle delay that never steps backwards. */
 ITL_DEF uint64_t itl_monotonic_ms(void)
 {
-#if defined ITL_INJECT_KLEE
-  return 0;
-#elif defined ITL_WIN32
+#if defined ITL_WIN32
   return (uint64_t) GetTickCount64();
-#elif defined ITL_POSIX
+#else  /* ITL_WIN32 */
   struct timespec now;
   if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
     return 0;
   }
   return (uint64_t) now.tv_sec * 1000u + (uint64_t) now.tv_nsec / 1000000u;
-#else
-  return 0;
-#endif
+#endif /* ITL_WIN32 */
 }
 
 ITL_DEF volatile sig_atomic_t itl_g_tty_changed_size = 1;
@@ -1609,7 +1502,6 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_first_render = true;
 #if defined ITL_POSIX
 ITL_DEF void itl_raise_suspend(void)
 {
-#if !defined ITL_INJECT_KLEE
   /* Leave raw mode, stop, and resume here when continued. raise() returns only
      after SIGCONT, so raw mode is restored in normal context without a handler
      calling unsafe terminal functions. */
@@ -1617,7 +1509,6 @@ ITL_DEF void itl_raise_suspend(void)
   raise(SIGTSTP);
   tl_enter_raw_mode();
   itl_g_tty_changed_size = 1;
-#endif
 }
 
 #else /* ITL_POSIX */
@@ -1640,9 +1531,7 @@ ITL_DEF void *itl_malloc(size_t size)
   allocated = TL_MALLOC(size);
   itl_g_alloc_count += 1;
 
-#if !defined TL_NO_ABORT
   ITL_TRY(allocated != NULL, TL_ABORT());
-#endif /* !TL_NO_ABORT */
 
   return allocated;
 }
@@ -1660,9 +1549,7 @@ ITL_DEF void *itl_realloc(void *block, size_t size)
     allocated = TL_REALLOC(block, size);
   }
 
-#if !defined TL_NO_ABORT
   ITL_TRY(allocated != NULL, TL_ABORT());
-#endif /* !TL_NO_ABORT */
 
   return allocated;
 }
@@ -4068,9 +3955,6 @@ ITL_DEF void itl_char_buf_append_csi(itl_char_buf_t *cb, size_t parameter,
 
 #define ITL_TTY_ERASE_SCREEN(buffer) itl_char_buf_append_cstr(buffer, "\033[2J")
 
-#define ITL_TTY_STATUS_REPORT(buffer)                                          \
-  itl_char_buf_append_cstr(buffer, "\x1b[6n")
-
 /* Toggling autowrap lets the renderer place its own line breaks without the
    terminal also wrapping at the right edge, which would double the break. */
 #define ITL_TTY_AUTOWRAP_OFF(buffer)                                           \
@@ -4949,18 +4833,12 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_is_dumb = true;
 
 ITL_DEF int itl_term_supports_decorations(void);
 
-/* *le, *rows, *cols can be NULL. */
-ITL_DEF bool itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows,
-                              size_t *cols)
+/* *rows, *cols can be NULL. */
+ITL_DEF bool itl_tty_get_size(size_t *rows, size_t *cols)
 {
   size_t temp_rows, temp_cols;
   char *emacs_buf = NULL;
-#if defined ITL_VT_SIZE
-  bool correct_response;
-  size_t i, parse_diff;
-  char size_buf[32], *first;
-  itl_char_buf_t *b;
-#elif defined ITL_WIN32
+#if defined ITL_WIN32
   CONSOLE_SCREEN_BUFFER_INFO buffer_info;
 #else /* ITL_WIN32 */
   struct winsize window;
@@ -4985,55 +4863,7 @@ ITL_DEF bool itl_tty_get_size(ITL_MAYBE_UNUSED itl_le_t *le, size_t *rows,
   }
 
 next:
-#if defined ITL_VT_SIZE
-
-  b = &itl_g_char_buffer;
-  ITL_TTY_MOVE_FORWARD(b, 999);
-  ITL_TTY_STATUS_REPORT(b);
-  ITL_CHAR_BUF_DUMP(b);
-  ITL_CHAR_BUF_CLEAR(b);
-
-  /* There might be pasted input awaiting to be processed. Read and parse all
-     bytes until escape is encountered. */
-  first = &size_buf[0];
-  while (true) {
-    ITL_TRY_READ_BYTE((uint8_t *) first, return false);
-    if (*first == '\x1b') {
-      break;
-    }
-    /* don't print control sequences if they got pasted */
-    if (itl_esc_parse((uint8_t) *first) != TL_KEY_CHAR) {
-      continue;
-    }
-    if (le != NULL) {
-      itl_le_insert(le, itl_utf8_parse((uint8_t) *first));
-    }
-  }
-
-  i = 1; /* already read the escape */
-  correct_response = false;
-  while (i < sizeof(size_buf) - 2) {
-    ITL_TRY_READ_BYTE((uint8_t *) &size_buf[i], return false);
-    if (size_buf[i] == 'R') {
-      correct_response = true;
-      break;
-    }
-    i += 1;
-  }
-  size_buf[i + 1] = '\0';
-
-  ITL_TRY(correct_response, return false);
-  ITL_TRY(size_buf[0] == '\x1b' && size_buf[1] == '[', return false);
-
-  parse_diff = 2; /* skip first two characters */
-  parse_diff += itl_parse_size(size_buf + parse_diff, rows);
-  ITL_TRY(size_buf[parse_diff] == ';', return false);
-  itl_parse_size(size_buf + parse_diff + 1, cols);
-
-  return true;
-
-#elif defined ITL_WIN32
-  (void) le;
+#if defined ITL_WIN32
   ITL_TRY(
       GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &buffer_info),
       return false);
@@ -5045,7 +4875,6 @@ next:
 
   return true;
 #else
-  (void) le;
   ITL_TRY(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0, return false);
 
   ITL_PTR_ASSIGN(rows, (size_t) window.ws_row);
@@ -5053,7 +4882,6 @@ next:
 
   return true;
 #endif
-  return false;
 }
 
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_tty_should_refresh_text = true;
@@ -5268,7 +5096,7 @@ ITL_DEF int itl_term_supports_256_color(void)
 ITL_DEF int itl_term_supports_decorations(void)
 {
   if (itl_g_supports_decorations < 0) {
-#if defined ITL_WIN32 && !defined ITL_NO_WIN_ESCAPES
+#if defined ITL_WIN32
     const char *term = getenv("TERM");
     /* Raw initialization enables VT output before the editor renders, while
        native Windows sessions commonly leave TERM unset. Keep dumb as an
@@ -5543,13 +5371,12 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_cols = 1;
 ITL_DEF bool itl_win_console_resized(void)
 {
   size_t rows = 0, cols = 0;
-  if (!itl_tty_get_size(NULL, &rows, &cols)) {
+  if (!itl_tty_get_size(&rows, &cols)) {
     return false;
   }
   return (cols != itl_g_tty_prev_cols) || (rows != itl_g_tty_prev_rows);
 }
 
-#if !defined ITL_INJECT_KLEE
 /* Blocks on the console input handle until a keystroke or resize is queued,
    the Windows counterpart to the POSIX poll. The handle wakes the moment any
    record arrives. A keypress is served without the latency of a fixed sleep.
@@ -5605,7 +5432,6 @@ ITL_DEF int itl_wait_for_input_until(int timeout_ms)
 }
 
 ITL_DEF void itl_wait_for_input(void) { (void) itl_wait_for_input_until(-1); }
-#endif /* !ITL_INJECT_KLEE */
 #endif /* ITL_WIN32 */
 
 typedef struct itl_le_metrics itl_le_metrics_t;
@@ -6583,7 +6409,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   itl_le_metrics_t m = ITL_ZERO_INIT;
   bool is_metrics_ready = false;
   bool has_resize;
-#if defined ITL_POSIX && !defined ITL_INJECT_KLEE
+#if defined ITL_POSIX
   sigset_t previous_signals;
 
   if (!itl_block_input_wake_signals(&previous_signals)) {
@@ -6623,7 +6449,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
   TL_ASSERT(le->line->length <= ITL_STRING_MAX_LEN);
 
   if (has_resize) {
-    ITL_TRY(itl_tty_get_size(le, &tty_rows, &tty_cols), {
+    ITL_TRY(itl_tty_get_size(&tty_rows, &tty_cols), {
       /* Could not get terminal size? */
       tty_rows = 24;
       tty_cols = 80;
@@ -9288,7 +9114,7 @@ ITL_DEF void itl_idle_run(itl_le_t *le)
    error. */
 ITL_DEF bool itl_le_wait_for_key(itl_le_t *le)
 {
-#if defined ITL_POSIX && !defined ITL_INJECT_KLEE
+#if defined ITL_POSIX
   for (;;) {
     sigset_t previous_signals;
     bool is_idle_due = false;
@@ -9328,7 +9154,7 @@ ITL_DEF bool itl_le_wait_for_key(itl_le_t *le)
     }
     itl_idle_run(le);
   }
-#elif defined ITL_WIN32 && !defined ITL_INJECT_KLEE
+#else  /* ITL_POSIX */
   /* The console raises no resize signal, so the wait blocks on the input
      handle and polls the size on its timeout, redrawing live when it
      changes, the same shape as the POSIX branch above. */
@@ -9344,10 +9170,7 @@ ITL_DEF bool itl_le_wait_for_key(itl_le_t *le)
       itl_idle_run(le);
     }
   }
-#else
-  (void) le;
-  return true;
-#endif /* ITL_POSIX && !ITL_INJECT_KLEE */
+#endif /* ITL_POSIX */
 }
 
 /* Open a prefix and wait for the key that completes it. The hint rows name
@@ -10241,7 +10064,7 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
                   ITL_MENU_EMPTY_TEXT);
     itl_g_menu_name_skip = 0;
 
-#if defined ITL_POSIX && !defined ITL_INJECT_KLEE
+#if defined ITL_POSIX
     {
       sigset_t previous_signals;
       bool should_redraw = false;
@@ -10275,11 +10098,11 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
         continue;
       }
     }
-#elif !defined ITL_INJECT_KLEE
+#else  /* ITL_POSIX */
     while (!itl_input_is_pending()) {
       itl_wait_for_input();
     }
-#endif /* ITL_POSIX && !ITL_INJECT_KLEE */
+#endif /* ITL_POSIX */
 
     if (!ITL_READ_BYTE(&byte)) {
       break;
@@ -14486,17 +14309,6 @@ TL_DEF tl_status_code tl_emit_newlines(const char *char_buffer)
   }
 
   return TL_SUCCESS;
-}
-
-TL_DEF tl_status_code tl_set_title(const char *title)
-{
-  if (ITL_ISATTY(STDOUT_FILENO)) {
-    ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b]0;", 4) != -1, return TL_ERROR);
-    ITL_TRY(ITL_WRITE(ITL_STDOUT, title, strlen(title)) != -1, return TL_ERROR);
-    ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x07", 1) != -1, return TL_ERROR);
-    return TL_SUCCESS;
-  }
-  return TL_ERROR;
 }
 
 #if defined ITL_WIN32_DISABLED_WARNINGS

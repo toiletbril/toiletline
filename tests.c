@@ -947,7 +947,7 @@ test_rejected_ghost_history_prefix_is_cached(void)
   return ok;
 }
 
-#if defined ITL_WIN32 && !defined ITL_NO_WIN_ESCAPES
+#if defined ITL_WIN32
 static bool
 test_windows_ghost_does_not_require_term(void)
 {
@@ -7975,7 +7975,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_history_multiline_file),
                                    DEFINE_TEST_CASE(
                                        test_rejected_ghost_history_prefix_is_cached),
-#if defined ITL_WIN32 && !defined ITL_NO_WIN_ESCAPES
+#if defined ITL_WIN32
                                    DEFINE_TEST_CASE(
                                        test_windows_ghost_does_not_require_term),
 #endif
