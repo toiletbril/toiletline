@@ -5983,6 +5983,91 @@ test_menu_anchor_accounts_for_descriptions(void)
   return ok;
 }
 
+/* A token far to the right would wrap the help text onto more rows than it
+   takes from the leftmost column, so the menu starts there instead, while a
+   token whose column wraps it no further keeps the rows under it. */
+static bool
+test_menu_anchor_counts_the_help_rows(void)
+{
+  static const char *candidates[] = {"bash", "kosh", "posix", "sh"};
+  static const char  help_title[] = "selecting completions";
+  static const char  help_keys[] =
+      "enter to run, tab to accept, esc to close, ctrl-g to restore";
+  static const struct
+  {
+    size_t token_column;
+    size_t anchor;
+  } cases[] = {
+      {50, 0},
+      {10, 8},
+  };
+  tl_completion result = ITL_ZERO_INIT;
+  bool          ok = true;
+  size_t        i;
+
+  itl_g_tty_prev_cols = 80;
+  result.candidates = candidates;
+  result.count = countof(candidates);
+
+  for (i = 0; i < countof(cases); ++i) {
+    itl_menu_geometry geometry;
+
+    itl_g_menu_anchor_column = cases[i].token_column;
+    geometry = itl_menu_geometry_of(&result, 5, "", help_title, help_keys);
+    if (geometry.anchor != cases[i].anchor) {
+      TEST_PRINTF("token at %zu anchored at %zu\n", cases[i].token_column,
+                  geometry.anchor);
+      ok = false;
+    }
+  }
+
+  itl_g_menu_anchor_column = 0;
+  return ok;
+}
+
+/* The rows of a path list leave out the directory every candidate shares, up
+   to its last separator. Names that share only part of a component, or no
+   directory, stay whole, and so does a candidate that is the directory. */
+static bool
+test_menu_rows_show_the_last_component(void)
+{
+  static const char *menu[] = {"menu/menu-apple", "menu/menu-banana"};
+  static const char *nested[] = {"usr/bin/", "usr/bin/ls"};
+  static const char *branches[] = {"origin/main", "upstream/main"};
+  static const struct
+  {
+    const char *const *candidates;
+    size_t             count;
+    size_t             skip;
+    const char        *shown;
+  } cases[] = {
+      {menu,     2, 5, "menu-apple"},
+      {nested,   2, 8, "usr/bin/"  },
+      {branches, 2, 0, "origin/main"},
+  };
+  tl_completion result = ITL_ZERO_INIT;
+  bool          ok = true;
+  size_t        i;
+
+  for (i = 0; i < countof(cases); ++i) {
+    size_t      skip;
+    const char *shown;
+
+    result.candidates = cases[i].candidates;
+    result.count = cases[i].count;
+    skip = itl_menu_common_directory_size(&result);
+    itl_g_menu_name_skip = skip;
+    shown = itl_menu_shown_part(cases[i].candidates[0]);
+    itl_g_menu_name_skip = 0;
+    if (skip != cases[i].skip || strcmp(shown, cases[i].shown) != 0) {
+      TEST_PRINTF("case %zu skipped %zu and showed '%s'\n", i, skip, shown);
+      ok = false;
+    }
+  }
+
+  return ok;
+}
+
 static bool
 test_colors_disabled_drop_span_escapes(void)
 {
@@ -7885,6 +7970,10 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_menu_help_wraps_between_items),
                                    DEFINE_TEST_CASE(
                                        test_menu_anchor_accounts_for_descriptions),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_anchor_counts_the_help_rows),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_rows_show_the_last_component),
                                    DEFINE_TEST_CASE(
                                        test_append_path_keeps_spans),
                                    DEFINE_TEST_CASE(
