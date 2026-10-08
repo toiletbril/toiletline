@@ -1470,11 +1470,6 @@ ITL_DEF int itl_wait_for_input_until(const sigset_t *previous_signals,
   }
   return result > 0 || errno == EINTR ? 1 : -1;
 }
-
-ITL_DEF bool itl_wait_for_input(const sigset_t *previous_signals)
-{
-  return itl_wait_for_input_until(previous_signals, -1) >= 0;
-}
 #endif /* ITL_POSIX */
 
 /* A clock for the idle delay that never steps backwards. */
@@ -3784,10 +3779,13 @@ ITL_DEF size_t itl_visible_width(const char *text, size_t length)
 }
 
 /* Append the leading part of the first length bytes of text that fits in
-   width columns and return the columns drawn. */
+   width columns and return the columns drawn. A double-width character that
+   starts inside the last column is still drawn when should_allow_overrun is
+   set, so the columns drawn can exceed the width by one. */
 ITL_DEF size_t itl_char_buf_append_visible(itl_char_buf_t *cb,
                                            const char *text, size_t length,
-                                           size_t width)
+                                           size_t width,
+                                           bool should_allow_overrun)
 {
   size_t offset = 0;
   size_t drawn = 0;
@@ -3797,7 +3795,9 @@ ITL_DEF size_t itl_char_buf_append_visible(itl_char_buf_t *cb,
     size_t step_width = 0;
 
     itl_visible_step(text + offset, length - offset, &step_bytes, &step_width);
-    if (step_width > 0 && drawn + step_width > width) {
+    if (step_width > 0 && (should_allow_overrun ? drawn >= width
+                                                : drawn + step_width > width))
+    {
       break;
     }
     itl_char_buf_append_visible_step(cb, text + offset, step_bytes);
@@ -4589,6 +4589,20 @@ ITL_DEF int itl_esc_parse_modified_key(unsigned code, unsigned modifier)
   return TL_KEY_UNKN;
 }
 
+ITL_DEF int itl_cursor_final_key(uint8_t byte)
+{
+  switch (byte) {
+  case 'A': return TL_KEY_UP;
+  case 'B': return TL_KEY_DOWN;
+  case 'C': return TL_KEY_RIGHT;
+  case 'D': return TL_KEY_LEFT;
+  case 'F': return TL_KEY_END;
+  case 'H': return TL_KEY_HOME;
+  }
+
+  return TL_KEY_UNKN;
+}
+
 #define ITL_CSI_PARAMETER_MAX 4
 
 /* A CSI or SS3 sequence whose first byte after the introducer is a parameter
@@ -4603,6 +4617,7 @@ ITL_DEF int itl_esc_parse_csi_parameters(uint8_t byte)
   bool is_private = false;
   bool is_subparameter = false;
   int modifier;
+  int cursor_key;
 
   while (byte >= 0x20 && byte < 0x40) {
     if (byte >= '0' && byte <= '9') {
@@ -4628,6 +4643,11 @@ ITL_DEF int itl_esc_parse_csi_parameters(uint8_t byte)
 
   modifier = itl_csi_modifier(parameters[1]);
 
+  cursor_key = itl_cursor_final_key(byte);
+  if (cursor_key != TL_KEY_UNKN) {
+    return modifier | cursor_key;
+  }
+
   switch (byte) {
   case '~':
     switch (parameters[0]) {
@@ -4645,12 +4665,6 @@ ITL_DEF int itl_esc_parse_csi_parameters(uint8_t byte)
 
   case 'u': return itl_esc_parse_modified_key(parameters[0], parameters[1]);
 
-  case 'A': return modifier | TL_KEY_UP;
-  case 'B': return modifier | TL_KEY_DOWN;
-  case 'C': return modifier | TL_KEY_RIGHT;
-  case 'D': return modifier | TL_KEY_LEFT;
-  case 'F': return modifier | TL_KEY_END;
-  case 'H': return modifier | TL_KEY_HOME;
   case 'Z': return TL_MOD_SHIFT | TL_KEY_TAB;
   }
 
@@ -4701,18 +4715,11 @@ ITL_DEF int itl_esc_parse_vt(uint8_t byte)
       return itl_esc_parse_csi_parameters(byte);
     }
 
-    switch (byte) {
-    case 'A': return TL_KEY_UP;
-    case 'B': return TL_KEY_DOWN;
-    case 'C': return TL_KEY_RIGHT;
-    case 'D': return TL_KEY_LEFT;
-
-    case 'F': return TL_KEY_END;
-    case 'H': return TL_KEY_HOME;
-    case 'Z': return TL_MOD_SHIFT | TL_KEY_TAB;
+    if (byte == 'Z') {
+      return TL_MOD_SHIFT | TL_KEY_TAB;
     }
 
-    return TL_KEY_UNKN;
+    return itl_cursor_final_key(byte);
   }
 
   ITL_TRY(!iscntrl(byte), return TL_KEY_UNKN);
@@ -5450,8 +5457,6 @@ ITL_DEF int itl_wait_for_input_until(int timeout_ms)
     }
   }
 }
-
-ITL_DEF void itl_wait_for_input(void) { (void) itl_wait_for_input_until(-1); }
 #endif /* ITL_WIN32 */
 
 typedef struct itl_le_metrics itl_le_metrics_t;
@@ -5696,24 +5701,6 @@ ITL_DEF size_t itl_reflow_row_count(size_t col, size_t ncols)
   return ITL_MAX((size_t) 1, (col + ncols - 1) / ncols);
 }
 
-ITL_DEF size_t itl_reflow_advance_plain_run(size_t col, size_t run_length,
-                                            size_t ocols, size_t ncols,
-                                            size_t indent, size_t *rows_above)
-{
-  size_t first_row_fit = col < ocols ? ocols - col : 0;
-  size_t per_row = indent < ocols ? ocols - indent : 1;
-  size_t remaining;
-
-  if (run_length < first_row_fit) {
-    return col + run_length;
-  }
-
-  remaining = run_length - first_row_fit;
-  *rows_above += (1 + remaining / per_row) * itl_reflow_row_count(ocols, ncols);
-
-  return indent + remaining % per_row;
-}
-
 /* On a resize the terminal reflows each row the previous render emitted to the
    new width independently, since each was terminated by our own newline. This
    returns how many reflowed rows sit above the caret, so the renderer can step
@@ -5742,8 +5729,11 @@ ITL_DEF size_t itl_le_reflow_rows_above_caret(const itl_le_t *le,
     }
 
     if (i > run_start) {
-      col = itl_reflow_advance_plain_run(col, i - run_start, ocols, ncols,
-                                         indent, &rows_above);
+      size_t wrapped_rows = 0;
+
+      col = itl_wrap_advance_plain_run(col, i - run_start, ocols, indent,
+                                       &wrapped_rows);
+      rows_above += wrapped_rows * itl_reflow_row_count(ocols, ncols);
       continue;
     }
 
@@ -5951,7 +5941,7 @@ ITL_DEF bool itl_le_tty_draw_ghost(itl_char_buf_t *b, bool is_cursor_at_end,
 
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_DIM_SGR));
   itl_char_buf_append_visible(b, itl_g_ghost, itl_g_ghost_len,
-                              itl_g_ghost_width);
+                              itl_g_ghost_width, false);
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
   ITL_TTY_CLEAR_TO_END(b);
   itl_g_le_prev_ghost_len = itl_g_ghost_len;
@@ -8030,7 +8020,8 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result,
       size_t len;
       size_t pad;
       itl_char_buf_append_spaces(b, anchor);
-      len = itl_char_buf_append_visible(b, name, strlen(name), (size_t) -1);
+      len = itl_char_buf_append_visible(b, name, strlen(name), (size_t) -1,
+                                        false);
       if (desc != NULL && desc[0] != '\0') {
         size_t line_len = 0;
         const char *p = desc;
@@ -8064,7 +8055,7 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result,
             line_len += 1;
           }
           line_len += itl_char_buf_append_visible(b, word, word_len,
-                                                  (size_t) -1);
+                                                  (size_t) -1, false);
         }
         itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
       }
@@ -8080,7 +8071,8 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result,
       if (column == 0) {
         itl_char_buf_append_spaces(b, anchor);
       }
-      len = itl_char_buf_append_visible(b, name, strlen(name), (size_t) -1);
+      len = itl_char_buf_append_visible(b, name, strlen(name), (size_t) -1,
+                                        false);
       column += 1;
       if (column >= columns || i + 1 == result->count) {
         itl_char_buf_append_cstr(b, ITL_LF);
@@ -8307,27 +8299,12 @@ ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
 {
   size_t text_bytes = strlen(text);
   size_t text_width = itl_menu_cell_text_width(text, text_bytes, width);
-  size_t offset = 0;
-  size_t drawn = 0;
+  size_t drawn;
 
   itl_char_buf_reserve(b, b->size + text_bytes + width);
 
-  while (offset < text_bytes) {
-    size_t step_bytes = 0;
-    size_t step_width = 0;
-
-    itl_visible_step(text + offset, text_bytes - offset, &step_bytes,
-                     &step_width);
-    if (step_width > 0 &&
-        (drawn >= text_width ||
-         (text_width < width && drawn + step_width > text_width)))
-    {
-      break;
-    }
-    itl_char_buf_append_visible_step(b, text + offset, step_bytes);
-    offset += step_bytes;
-    drawn += step_width;
-  }
+  drawn = itl_char_buf_append_visible(b, text, text_bytes, text_width,
+                                      text_width == width);
 
   if (text_width < width) {
     itl_char_buf_append_cstr(b, ITL_MENU_CUT_MARK);
@@ -8619,7 +8596,7 @@ ITL_DEF void itl_menu_append_elided(itl_char_buf_t *b, const char *text,
                                     size_t length, size_t width)
 {
   size_t keep = width > 3 ? width - 3 : width;
-  size_t drawn = itl_char_buf_append_visible(b, text, length, keep);
+  size_t drawn = itl_char_buf_append_visible(b, text, length, keep, false);
 
   if (width > 3 && itl_visible_width(text, length) > drawn) {
     itl_char_buf_append_cstr(b, "...");
@@ -8698,7 +8675,7 @@ ITL_DEF size_t itl_menu_layout_help(itl_char_buf_t *b, const char *title,
         if (item_width > width) {
           itl_menu_append_elided(b, item, length, cut);
         } else {
-          itl_char_buf_append_visible(b, item, length, width);
+          itl_char_buf_append_visible(b, item, length, width, false);
           if (has_next) {
             itl_char_buf_append_byte(b, ',');
           }
@@ -9115,36 +9092,53 @@ ITL_DEF void itl_idle_run(itl_le_t *le)
   }
 }
 
-/* Wait until a key is pending, redrawing for a resize or a wake report and
-   calling the idle hook when a pause reaches its delay. Returns false on an
-   error. */
-ITL_DEF bool itl_le_wait_for_key(itl_le_t *le)
+typedef enum itl_wait_outcome
+{
+  ITL_WAIT_FAILED,
+  ITL_WAIT_KEY,
+  ITL_WAIT_REDRAW
+} itl_wait_outcome;
+
+/* Wait until a key is pending. A resize or a wake report redraws the line and
+   the wait goes on, or when should_return_on_redraw is set the wait ends with
+   ITL_WAIT_REDRAW so a menu can redraw its own rows. The idle hook runs when a
+   pause reaches its delay, except for a caller that returns on a redraw. */
+ITL_DEF itl_wait_outcome itl_le_wait_for_input(itl_le_t *le,
+                                               bool should_return_on_redraw)
 {
 #if defined ITL_POSIX
   for (;;) {
     sigset_t previous_signals;
     bool is_idle_due = false;
+    bool should_redraw = false;
 
     if (!itl_block_input_wake_signals(&previous_signals)) {
-      return false;
+      return ITL_WAIT_FAILED;
     }
 
     for (;;) {
       int wait_result;
 
+      if (itl_g_tty_changed_size && should_return_on_redraw) {
+        should_redraw = true;
+        break;
+      }
       if (itl_g_tty_changed_size) {
         itl_g_tty_should_refresh_text = true;
         itl_le_tty_refresh(le);
       }
-      itl_refresh_after_wake(le);
+      if (itl_refresh_after_wake(le) && should_return_on_redraw) {
+        should_redraw = true;
+        break;
+      }
       if (itl_input_is_pending()) {
         break;
       }
-      wait_result =
-          itl_wait_for_input_until(&previous_signals, itl_idle_wait_ms());
+      wait_result = itl_wait_for_input_until(
+          &previous_signals, should_return_on_redraw ? -1 : itl_idle_wait_ms());
       if (wait_result < 0) {
         itl_restore_input_wake_signals(&previous_signals);
-        return false;
+        return ITL_WAIT_FAILED;
       }
       if (wait_result == 0) {
         is_idle_due = true;
@@ -9153,10 +9147,13 @@ ITL_DEF bool itl_le_wait_for_key(itl_le_t *le)
     }
 
     if (!itl_restore_input_wake_signals(&previous_signals)) {
-      return false;
+      return ITL_WAIT_FAILED;
+    }
+    if (should_redraw) {
+      return ITL_WAIT_REDRAW;
     }
     if (!is_idle_due) {
-      return true;
+      return ITL_WAIT_KEY;
     }
     itl_idle_run(le);
   }
@@ -9166,17 +9163,28 @@ ITL_DEF bool itl_le_wait_for_key(itl_le_t *le)
      changes, the same shape as the POSIX branch above. */
   for (;;) {
     if (itl_g_tty_changed_size) {
+      if (should_return_on_redraw) {
+        return ITL_WAIT_REDRAW;
+      }
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
     }
     if (itl_input_is_pending()) {
-      return true;
+      return ITL_WAIT_KEY;
     }
-    if (itl_wait_for_input_until(itl_idle_wait_ms()) == 0) {
+    if (itl_wait_for_input_until(should_return_on_redraw ? -1
+                                                         : itl_idle_wait_ms()) ==
+        0)
+    {
       itl_idle_run(le);
     }
   }
 #endif /* ITL_POSIX */
+}
+
+ITL_DEF bool itl_le_wait_for_key(itl_le_t *le)
+{
+  return itl_le_wait_for_input(le, false) == ITL_WAIT_KEY;
 }
 
 /* Open a prefix and wait for the key that completes it. The hint rows name
@@ -10039,6 +10047,7 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
     int key, kind;
     bool is_escape;
     bool should_continue_completion;
+    itl_wait_outcome wait_outcome;
 
     /* A resize invalidates the block the rows are measured against. The line is
        repainted first and the new size feeds the layout. */
@@ -10078,45 +10087,13 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
                   ITL_MENU_EMPTY_TEXT);
     itl_g_menu_name_skip = 0;
 
-#if defined ITL_POSIX
-    {
-      sigset_t previous_signals;
-      bool should_redraw = false;
-
-      if (!itl_block_input_wake_signals(&previous_signals)) {
-        return TL_ERROR;
-      }
-
-      for (;;) {
-        if (itl_g_tty_changed_size != 0) {
-          should_redraw = true;
-          break;
-        }
-        if (itl_refresh_after_wake(le)) {
-          should_redraw = true;
-          break;
-        }
-        if (itl_input_is_pending()) {
-          break;
-        }
-        if (!itl_wait_for_input(&previous_signals)) {
-          itl_restore_input_wake_signals(&previous_signals);
-          return TL_ERROR;
-        }
-      }
-
-      if (!itl_restore_input_wake_signals(&previous_signals)) {
-        return TL_ERROR;
-      }
-      if (should_redraw) {
-        continue;
-      }
+    wait_outcome = itl_le_wait_for_input(le, true);
+    if (wait_outcome == ITL_WAIT_FAILED) {
+      return TL_ERROR;
     }
-#else  /* ITL_POSIX */
-    while (!itl_input_is_pending()) {
-      itl_wait_for_input();
+    if (wait_outcome == ITL_WAIT_REDRAW) {
+      continue;
     }
-#endif /* ITL_POSIX */
 
     if (!ITL_READ_BYTE(&byte)) {
       break;

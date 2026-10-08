@@ -4545,7 +4545,8 @@ test_pending_resize_wakes_input_wait(void)
   test_alarm_fired = 0;
   if (raise(SIGWINCH) != 0) goto cleanup;
   alarm(1);
-  result = itl_wait_for_input(&wait_mask) && test_alarm_fired == 0 &&
+  result = itl_wait_for_input_until(&wait_mask, -1) >= 0 &&
+           test_alarm_fired == 0 &&
            itl_g_tty_changed_size != 0;
 
 cleanup:
@@ -7749,7 +7750,7 @@ test_control_bytes_draw_visibly(void)
   is_name_width_counted = itl_menu_name_width(&result) == 12;
 
   b->size = 0;
-  drawn = itl_char_buf_append_visible(b, "x\xFF", 2, 10);
+  drawn = itl_char_buf_append_visible(b, "x\xFF", 2, 10, false);
   is_invalid_byte_visible = drawn == 5 && itl_visible_width("x\xFF", 2) == 5 &&
                             b->size == 5 && memcmp(b->data, "x\\xff", 5) == 0;
 
