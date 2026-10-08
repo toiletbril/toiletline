@@ -10304,9 +10304,10 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 /* True when the common prefix that replaced a token leaves the list the host
    gave for that token whole, so the menu can open on it without asking the
    host again. The prefix extends the replaced text byte for byte and every
-   candidate opens with it. The bytes it adds follow the rules of typing into
-   an open menu: a token that was empty, a byte that moves the token, and a
-   path separator all send the menu back to the host. */
+   candidate opens with it, even when the token was empty: the host may have
+   answered an empty line from a list that a word no longer reaches. The bytes
+   the prefix adds follow the rules of typing into an open menu: a byte that
+   moves the token and a path separator send the menu back to the host. */
 ITL_DEF bool itl_completion_prefix_keeps_list(const tl_completion *result,
                                               const char *replaced,
                                               size_t replaced_len)
@@ -10316,7 +10317,7 @@ ITL_DEF bool itl_completion_prefix_keeps_list(const tl_completion *result,
   size_t position;
   size_t index;
 
-  if (prefix == NULL || result->candidates == NULL || replaced_len == 0) {
+  if (prefix == NULL || result->candidates == NULL) {
     return false;
   }
 

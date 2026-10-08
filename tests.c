@@ -3872,9 +3872,10 @@ struct tab_calls_case
 
 /* A TAB that grows the token to the common prefix opens the menu on the list
    it already gathered, and typing into that menu narrows it without asking the
-   host. The host is asked again when the prefix opens a new path component,
-   moves the token, does not extend the token byte for byte, or grows an empty
-   token. A second TAB that cannot grow the token asks the host once. */
+   host, even when the token was empty. The host is asked again when the
+   prefix opens a new path component, moves the token, or does not extend the
+   token byte for byte. A second TAB that cannot grow the token asks the host
+   once. */
 static bool
 test_tab_prefix_menu_reuses_gather(void)
 {
@@ -3890,7 +3891,8 @@ test_tab_prefix_menu_reuses_gather(void)
       {paths,    2, false, "run d",        "",   "run dir/",        2},
       {values,   2, false, "run k",        "",   "run key=",        2},
       {capitals, 2, true,  "run a",        "",   "run Al",          2},
-      {tools,    2, false, "run ",         "",   "run tool-",       2},
+      {tools,    2, false, "run ",         "",   "run tool-",       1},
+      {tools,    2, false, "run ",         "b",  "run tool-b",      1},
   };
   bool   ok = true;
   char   line[BUFFER_SIZE];
