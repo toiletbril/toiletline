@@ -2597,6 +2597,13 @@ ITL_DEF void itl_undo_push(itl_le_t *le)
   itl_g_redo_count = 0;
 }
 
+/* Snapshots the line before a change that ends the current insert run. */
+ITL_DEF void itl_undo_push_closed(itl_le_t *le)
+{
+  itl_undo_push(le);
+  itl_g_undo_insert_run_open = false;
+}
+
 ITL_DEF bool itl_undo_pop(itl_le_t *le)
 {
   size_t top;
@@ -2658,6 +2665,13 @@ ITL_DEF void itl_undo_reset(void)
   itl_g_undo_head = 0;
   itl_g_redo_count = 0;
   itl_g_undo_insert_run_open = false;
+}
+
+ITL_DEF void itl_vi_reset_pending(void)
+{
+  itl_g_vi_pending_operator = ITL_VI_OP_NONE;
+  itl_g_vi_pending_count = 0;
+  itl_g_vi_pending_register = 0;
 }
 
 ITL_DEF void itl_vi_free(void)
@@ -2893,9 +2907,7 @@ ITL_DEF void itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
   itl_g_tty_first_render = true;
 
   itl_g_edit_mode = itl_g_edit_mode_base;
-  itl_g_vi_pending_operator = ITL_VI_OP_NONE;
-  itl_g_vi_pending_count = 0;
-  itl_g_vi_pending_register = 0;
+  itl_vi_reset_pending();
   itl_g_vi_visual_anchor = 0;
   itl_g_vi_is_recording_insert = false;
   itl_g_vi_block_insert_active = false;
@@ -2953,8 +2965,7 @@ ITL_DEF void itl_le_erase(itl_le_t *le, size_t count, bool backwards)
   }
 
   itl_history_reset_after_edit(le);
-  itl_undo_push(le);
-  itl_g_undo_insert_run_open = false;
+  itl_undo_push_closed(le);
 
   if (backwards && le->cursor_position) {
     itl_string_erase(le->line, le->cursor_position, count, true);
@@ -5182,6 +5193,20 @@ ITL_DEF ITL_THREAD_LOCAL tl_highlight_span
     itl_g_search_spans[ITL_HIGHLIGHT_MAX_SPANS];
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_search_span_count = 0;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_multicursor_active = false;
+
+ITL_DEF void itl_search_spans_clear(void)
+{
+  itl_g_search_spans_active = false;
+  itl_g_search_span_count = 0;
+}
+
+ITL_DEF void itl_search_span_add(size_t start, size_t end, const char *sgr)
+{
+  itl_g_search_spans[itl_g_search_span_count].start = start;
+  itl_g_search_spans[itl_g_search_span_count].end = end;
+  itl_g_search_spans[itl_g_search_span_count].sgr = sgr;
+  itl_g_search_span_count += 1;
+}
 
 ITL_DEF void itl_le_save_prev_spans(const tl_highlight_span *spans,
                                     size_t count)
@@ -10656,8 +10681,7 @@ ITL_DEF void itl_le_kill(itl_le_t *le, size_t count, bool backwards,
 ITL_DEF void itl_le_begin_edit(itl_le_t *le)
 {
   itl_history_reset_after_edit(le);
-  itl_undo_push(le);
-  itl_g_undo_insert_run_open = false;
+  itl_undo_push_closed(le);
 }
 
 /* Replaces the span the previous yank or last-argument insertion put into the
@@ -11023,6 +11047,12 @@ ITL_DEF void itl_le_insert_last_argument(itl_le_t *le,
   ITL_FREE(word.chars);
 }
 
+/* Copies the line into the host's output buffer, false when it does not fit. */
+ITL_DEF bool itl_le_copy_out(itl_le_t *le)
+{
+  return itl_string_to_cstr(le->line, le->out_buf, le->out_size) == TL_SUCCESS;
+}
+
 /* Ctrl-X Ctrl-E hands the line to the host's editor. The edited text replaces
    the whole line as one undo step, and text that is not UTF-8 or does not fit
    the output buffer leaves the line alone. */
@@ -11036,7 +11066,7 @@ ITL_DEF void itl_le_edit_external(itl_le_t *le)
     itl_g_tty_should_refresh_text = false;
     return;
   }
-  if (itl_string_to_cstr(le->line, le->out_buf, le->out_size) != TL_SUCCESS) {
+  if (!itl_le_copy_out(le)) {
     return;
   }
 
@@ -11086,67 +11116,52 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     if (itl_completion_handle_tab(le, &completion_code)) {
       return completion_code;
     }
-    ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
-                TL_SUCCESS,
-            return TL_ERROR_SIZE);
+    ITL_TRY(itl_le_copy_out(le), return TL_ERROR_SIZE);
     return TL_PRESSED_TAB;
   } break;
 
-  case TL_KEY_UP: {
+  case TL_KEY_UP:
+  case TL_KEY_DOWN: {
     itl_le_metrics_t m = itl_le_compute_metrics(le, itl_g_tty_prev_cols);
+    bool is_up = (esc & TL_MASK_KEY) == TL_KEY_UP;
     bool was_vertical = (prev_control & TL_MASK_KEY) == TL_KEY_UP ||
                         (prev_control & TL_MASK_KEY) == TL_KEY_DOWN;
 
-    /* Move up a visual row while inside a multiline or wrapped buffer. The
-       input's first row sits at prompt_rows in the metrics, since a multi-row
-       prompt offsets the rows, so history is recalled there rather than at row
-       zero, which would be inside the prompt. */
-    if (m.cursor_row > le->prompt_rows) {
+    /* Move a visual row while inside a multiline or wrapped buffer. The input's
+       first row sits at prompt_rows in the metrics, since a multi-row prompt
+       offsets the rows, so history is recalled there rather than at row zero,
+       which would be inside the prompt. */
+    if (is_up ? m.cursor_row > le->prompt_rows
+              : m.cursor_row + 1 < m.total_rows)
+    {
       if (!was_vertical) {
         le->goal_column = m.cursor_col;
       }
       le->cursor_position = itl_le_index_at_visual(
-          le, itl_g_tty_prev_cols, m.cursor_row - 1, le->goal_column);
+          le, itl_g_tty_prev_cols, is_up ? m.cursor_row - 1 : m.cursor_row + 1,
+          le->goal_column);
       itl_g_tty_should_refresh_text = false;
       break;
     }
 
     /* A non-empty line on its last visual row recalls only entries that begin
-       with the typed text when prefix search is on. */
-    if (itl_g_history_prefix_search_enabled &&
-        m.cursor_row + 1 >= m.total_rows && itl_g_history_prefix_get_prev(le))
-    {
-      break;
-    }
-
-    /* On the first visual row, navigate to the previous history entry. The
-       draft line is saved inside get_prev on the first step up. */
-    itl_g_history_get_prev(le);
-  } break;
-
-  case TL_KEY_DOWN: {
-    itl_le_metrics_t m = itl_le_compute_metrics(le, itl_g_tty_prev_cols);
-    bool was_vertical = (prev_control & TL_MASK_KEY) == TL_KEY_UP ||
-                        (prev_control & TL_MASK_KEY) == TL_KEY_DOWN;
-
-    /* Move down a visual row while the cursor is not on the last visual row. */
-    if (m.cursor_row + 1 < m.total_rows) {
-      if (!was_vertical) {
-        le->goal_column = m.cursor_col;
+       with the typed text when prefix search is on. The draft line is saved
+       inside get_prev on the first step up. */
+    if (is_up) {
+      if (itl_g_history_prefix_search_enabled &&
+          m.cursor_row + 1 >= m.total_rows && itl_g_history_prefix_get_prev(le))
+      {
+        break;
       }
-      le->cursor_position = itl_le_index_at_visual(
-          le, itl_g_tty_prev_cols, m.cursor_row + 1, le->goal_column);
-      itl_g_tty_should_refresh_text = false;
-      break;
+      itl_g_history_get_prev(le);
+    } else {
+      if (itl_g_history_prefix_search_enabled &&
+          itl_g_history_prefix_get_next(le))
+      {
+        break;
+      }
+      itl_g_history_get_next(le);
     }
-
-    if (itl_g_history_prefix_search_enabled &&
-        itl_g_history_prefix_get_next(le))
-    {
-      break;
-    }
-
-    itl_g_history_get_next(le);
   } break;
 
   case TL_KEY_RIGHT: {
@@ -11252,9 +11267,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     /* Submit the line as typed. The shell joins backslash continuations
        itself, and only where they are not quoted, so history keeps the
        physical lines. */
-    ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
-                TL_SUCCESS,
-            return TL_ERROR_SIZE);
+    ITL_TRY(itl_le_copy_out(le), return TL_ERROR_SIZE);
     /* Persist the accepted command and return to the draft state. */
     itl_g_last_history_event_number = 0;
     if (itl_g_history_enabled) {
@@ -11327,9 +11340,7 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
 #if defined ITL_SUSPEND
     itl_raise_suspend();
 #else
-    ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
-                TL_SUCCESS,
-            {});
+    (void) itl_le_copy_out(le);
     return TL_PRESSED_SUSPEND;
 #endif /* ITL_SUSPEND */
   } break;
@@ -11338,17 +11349,13 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     if (le->line->length > 0) {
       ITL_LE_ERASE_FORWARD(le, 1);
     } else {
-      ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
-                  TL_SUCCESS,
-              {});
+      (void) itl_le_copy_out(le);
       return TL_PRESSED_EOF;
     }
   } break;
 
   case TL_KEY_INTERRUPT: {
-    ITL_TRY(itl_string_to_cstr(le->line, le->out_buf, le->out_size) ==
-                TL_SUCCESS,
-            {});
+    (void) itl_le_copy_out(le);
     return TL_PRESSED_INTERRUPT;
   } break;
 
@@ -11360,20 +11367,14 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     ITL_CHAR_BUF_CLEAR(b);
   } break;
 
-  case TL_KEY_HISTORY_END: {
-    /* Jump to the most recent entry. */
-    if (itl_g_history_count > 0) {
-      itl_history_save_draft(le);
-      le->history_selected_index = itl_g_history_count - 1;
-      itl_history_show_selected(le);
-    }
-  } break;
-
+  case TL_KEY_HISTORY_END:
   case TL_KEY_HISTORY_BEGINNING: {
-    /* Jump to the oldest navigable entry. */
+    /* Jump to the most recent or the oldest navigable entry. */
     if (itl_g_history_count > 0) {
       itl_history_save_draft(le);
-      le->history_selected_index = 0;
+      le->history_selected_index =
+          ((esc & TL_MASK_KEY) == TL_KEY_HISTORY_END) ? itl_g_history_count - 1
+                                                      : 0;
       itl_history_show_selected(le);
     }
   } break;
@@ -11703,10 +11704,7 @@ ITL_DEF void itl_search_push_span(size_t start, size_t end, const char *sgr)
   }
 
   if (start < end && itl_g_search_span_count < ITL_HIGHLIGHT_MAX_SPANS) {
-    itl_g_search_spans[itl_g_search_span_count].start = start;
-    itl_g_search_spans[itl_g_search_span_count].end = end;
-    itl_g_search_spans[itl_g_search_span_count].sgr = sgr;
-    itl_g_search_span_count++;
+    itl_search_span_add(start, end, sgr);
   }
 }
 
@@ -12200,6 +12198,29 @@ ITL_DEF void itl_vi_register_set_span(itl_string_t *reg,
   }
 }
 
+/* Stores a yanked or deleted span in the pending register and, when one was
+   named, in the unnamed register too. A linewise span ends with a newline. */
+ITL_DEF void itl_vi_register_store(const itl_string_t *src, size_t from,
+                                   size_t to, bool is_linewise)
+{
+  size_t indices[2];
+  size_t target_count = (itl_g_vi_pending_register != 0) ? 2 : 1;
+  size_t i;
+
+  indices[0] = itl_vi_register_index(itl_g_vi_pending_register);
+  indices[1] = ITL_VI_REGISTER_UNNAMED;
+
+  for (i = 0; i < target_count; ++i) {
+    itl_string_t *reg = itl_vi_register_at(indices[i]);
+
+    itl_vi_register_set_span(reg, src, from, to);
+    if (is_linewise) {
+      itl_string_insert(reg, reg->length, itl_newline_char);
+    }
+    itl_g_vi_register_is_linewise[indices[i]] = is_linewise;
+  }
+}
+
 ITL_DEF int itl_vi_char_class(itl_utf8_t ch, bool is_big_word)
 {
   uint8_t b = ch.bytes[0];
@@ -12482,7 +12503,6 @@ ITL_DEF void itl_vi_apply_operator(itl_le_t *le, itl_vi_operator_kind op,
 {
   size_t start = (from <= to) ? from : to;
   size_t end = (from <= to) ? to : from;
-  itl_string_t *reg;
   size_t span_count;
 
   if (is_inclusive && end < le->line->length) {
@@ -12496,17 +12516,7 @@ ITL_DEF void itl_vi_apply_operator(itl_le_t *le, itl_vi_operator_kind op,
     return;
   }
 
-  {
-    size_t reg_index = itl_vi_register_index(itl_g_vi_pending_register);
-    reg = itl_vi_register_at(reg_index);
-    itl_vi_register_set_span(reg, le->line, start, end);
-    itl_g_vi_register_is_linewise[reg_index] = false;
-  }
-  if (itl_g_vi_pending_register != 0) {
-    itl_vi_register_set_span(itl_vi_register_at(ITL_VI_REGISTER_UNNAMED),
-                             le->line, start, end);
-    itl_g_vi_register_is_linewise[ITL_VI_REGISTER_UNNAMED] = false;
-  }
+  itl_vi_register_store(le->line, start, end, false);
 
   span_count = end - start;
   le->cursor_position = start;
@@ -12607,8 +12617,6 @@ ITL_DEF void itl_vi_operator_line(itl_le_t *le, itl_vi_operator_kind op,
   itl_utf8_t none = ITL_ZERO_INIT;
   size_t start = itl_le_line_start_of(le, le->cursor_position);
   size_t end = itl_le_line_end_of(le, le->cursor_position);
-  size_t reg_index = itl_vi_register_index(itl_g_vi_pending_register);
-  itl_string_t *reg = itl_vi_register_at(reg_index);
   size_t i;
 
   for (i = 1; i < count; ++i) {
@@ -12623,16 +12631,7 @@ ITL_DEF void itl_vi_operator_line(itl_le_t *le, itl_vi_operator_kind op,
 
   itl_vi_record_operator(op, doubled_key, none, count);
 
-  itl_vi_register_set_span(reg, le->line, start, end);
-  itl_string_insert(reg, reg->length, itl_newline_char);
-  itl_g_vi_register_is_linewise[reg_index] = true;
-
-  if (itl_g_vi_pending_register != 0) {
-    itl_string_t *unnamed = itl_vi_register_at(ITL_VI_REGISTER_UNNAMED);
-    itl_vi_register_set_span(unnamed, le->line, start, end);
-    itl_string_insert(unnamed, unnamed->length, itl_newline_char);
-    itl_g_vi_register_is_linewise[ITL_VI_REGISTER_UNNAMED] = true;
-  }
+  itl_vi_register_store(le->line, start, end, true);
 
   if (op == ITL_VI_OP_YANK) {
     le->cursor_position = start;
@@ -12686,8 +12685,7 @@ ITL_DEF void itl_vi_do_replace(itl_le_t *le, itl_utf8_t ch, size_t count)
     return;
   }
 
-  itl_undo_push(le);
-  itl_g_undo_insert_run_open = false;
+  itl_undo_push_closed(le);
 
   for (i = 0; i < count; ++i) {
     itl_string_erase(le->line, le->cursor_position + i, 1, false);
@@ -12707,8 +12705,7 @@ ITL_DEF void itl_vi_do_tilde(itl_le_t *le, size_t count)
     return;
   }
 
-  itl_undo_push(le);
-  itl_g_undo_insert_run_open = false;
+  itl_undo_push_closed(le);
 
   for (i = 0; i < count && le->cursor_position < le->line->length; ++i) {
     itl_utf8_t *ch = &le->line->chars[le->cursor_position];
@@ -12726,48 +12723,41 @@ ITL_DEF void itl_vi_do_tilde(itl_le_t *le, size_t count)
   itl_vi_clamp_command_cursor(le);
 }
 
+ITL_DEF void itl_vi_insert_repeated(itl_le_t *le, const char *text,
+                                    size_t count)
+{
+  size_t i;
+
+  for (i = 0; i < count; ++i) {
+    itl_le_insert_cstr(le, text);
+  }
+}
+
 ITL_DEF void itl_vi_paste_lines(itl_le_t *le, const char *line_text,
                                 bool is_before, size_t count)
 {
+  size_t line_end = itl_le_line_end_of(le, le->cursor_position);
+  bool is_after_last_line = !is_before && line_end >= le->line->length;
   size_t first;
-  size_t i;
 
   if (is_before) {
     first = itl_le_line_start_of(le, le->cursor_position);
-    le->cursor_position = first;
-    for (i = 0; i < count; ++i) {
-      itl_le_insert_cstr(le, line_text);
-    }
-    le->cursor_position = first;
-    return;
-  }
-
-  {
-    size_t line_end = itl_le_line_end_of(le, le->cursor_position);
-
-    if (line_end < le->line->length) {
-      first = line_end + 1;
-      le->cursor_position = first;
-      for (i = 0; i < count; ++i) {
-        itl_le_insert_cstr(le, line_text);
-      }
-      le->cursor_position = first;
-      return;
-    }
-
+  } else if (!is_after_last_line) {
+    first = line_end + 1;
+  } else {
     le->cursor_position = line_end;
     itl_le_insert_cstr(le, "\n");
     first = le->cursor_position;
-    for (i = 0; i < count; ++i) {
-      itl_le_insert_cstr(le, line_text);
-    }
-    if (le->line->length > 0 &&
-        ITL_LE_IS_NEWLINE(le->line->chars[le->line->length - 1]))
-    {
-      itl_string_erase(le->line, le->line->length, 1, true);
-    }
-    le->cursor_position = first;
   }
+
+  le->cursor_position = first;
+  itl_vi_insert_repeated(le, line_text, count);
+  if (is_after_last_line && le->line->length > 0 &&
+      ITL_LE_IS_NEWLINE(le->line->chars[le->line->length - 1]))
+  {
+    itl_string_erase(le->line, le->line->length, 1, true);
+  }
+  le->cursor_position = first;
 }
 
 ITL_DEF void itl_vi_do_paste(itl_le_t *le, bool is_before, size_t count)
@@ -12776,7 +12766,6 @@ ITL_DEF void itl_vi_do_paste(itl_le_t *le, bool is_before, size_t count)
   itl_string_t *reg = itl_vi_register_at(reg_index);
   bool is_linewise = itl_g_vi_register_is_linewise[reg_index];
   char text[ITL_STRING_MAX_LEN];
-  size_t i;
 
   if (reg->length == 0) {
     return;
@@ -12785,8 +12774,7 @@ ITL_DEF void itl_vi_do_paste(itl_le_t *le, bool is_before, size_t count)
     return;
   }
 
-  itl_undo_push(le);
-  itl_g_undo_insert_run_open = false;
+  itl_undo_push_closed(le);
 
   if (is_linewise) {
     itl_vi_paste_lines(le, text, is_before, count);
@@ -12797,9 +12785,7 @@ ITL_DEF void itl_vi_do_paste(itl_le_t *le, bool is_before, size_t count)
     itl_le_move_right(le, 1);
   }
 
-  for (i = 0; i < count; ++i) {
-    itl_le_insert_cstr(le, text);
-  }
+  itl_vi_insert_repeated(le, text, count);
 
   if (le->cursor_position > 0) {
     le->cursor_position -= 1;
@@ -12902,6 +12888,54 @@ ITL_DEF tl_status_code itl_vi_repeat_last_change(itl_le_t *le)
   return TL_SUCCESS;
 }
 
+/* Reads the target of an f, F, t or T motion. Any other key, or a find the
+   terminal never completes, yields the zero character. */
+ITL_DEF itl_utf8_t itl_vi_read_find_char(itl_le_t *le, uint8_t motion_byte)
+{
+  itl_utf8_t find_char = ITL_ZERO_INIT;
+  uint8_t target_byte;
+
+  if (motion_byte != 'f' && motion_byte != 'F' && motion_byte != 't' &&
+      motion_byte != 'T')
+  {
+    return find_char;
+  }
+  if (itl_le_await_chord(le, ITL_PREFIX_VI_FIND, motion_byte) &&
+      ITL_READ_BYTE(&target_byte))
+  {
+    find_char = itl_utf8_parse(target_byte);
+  }
+
+  return find_char;
+}
+
+/* Reads the next key of a selection loop. A false result ends the loop: the
+   input ended, a bare escape arrived, or the key is unknown. */
+ITL_DEF bool itl_modal_read_key(uint8_t *byte, int *key)
+{
+  if (!ITL_READ_BYTE(byte)) {
+    return false;
+  }
+  if (*byte == 27 && !itl_input_is_pending()) {
+    return false;
+  }
+
+  *key = itl_esc_parse(*byte);
+
+  return (*key & TL_MASK_KEY) != TL_KEY_UNKN;
+}
+
+/* Hands a selection loop's screen state back to the caller's edit mode. */
+ITL_DEF void itl_modal_leave(itl_le_t *le, int mode, bool should_clamp)
+{
+  itl_search_spans_clear();
+  itl_g_edit_mode = mode;
+  if (should_clamp) {
+    itl_vi_clamp_command_cursor(le);
+  }
+  itl_g_tty_should_refresh_text = true;
+}
+
 ITL_DEF void itl_vi_step_visual_row(itl_le_t *le, bool is_up)
 {
   itl_le_metrics_t m = itl_le_compute_metrics(le, itl_g_tty_prev_cols);
@@ -12941,10 +12975,8 @@ ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
           span_end = le->line->length;
         }
       }
-      itl_g_search_spans[0].start = span_start;
-      itl_g_search_spans[0].end = span_end;
-      itl_g_search_spans[0].sgr = ITL_VI_SGR_SELECT;
-      itl_g_search_span_count = 1;
+      itl_g_search_span_count = 0;
+      itl_search_span_add(span_start, span_end, ITL_VI_SGR_SELECT);
     } else {
       itl_g_search_span_count = 0;
     }
@@ -12952,31 +12984,17 @@ ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
 
-    if (!ITL_READ_BYTE(&byte)) {
+    if (!itl_modal_read_key(&byte, &key) || byte == 'v') {
       break;
     }
-
-    if (byte == 27 && !itl_input_is_pending()) {
-      break;
-    }
-
-    key = itl_esc_parse(byte);
     kind = key & TL_MASK_KEY;
-
-    if (kind == TL_KEY_UNKN || byte == 'v') {
-      break;
-    }
 
     switch (kind) {
     case TL_KEY_ENTER:
     case TL_KEY_EOF:
     case TL_KEY_INTERRUPT:
     case TL_KEY_SUSPEND:
-      itl_g_search_spans_active = false;
-      itl_g_search_span_count = 0;
-      itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
-      itl_vi_clamp_command_cursor(le);
-      itl_g_tty_should_refresh_text = true;
+      itl_modal_leave(le, TL_EDIT_MODE_VI_COMMAND, true);
       itl_le_tty_refresh(le);
       return itl_le_key_handle(le, key);
 
@@ -12996,8 +13014,7 @@ ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
           (byte == 'y') ? ITL_VI_OP_YANK
                         : ((byte == 'c') ? ITL_VI_OP_CHANGE : ITL_VI_OP_DELETE);
 
-      itl_g_search_spans_active = false;
-      itl_g_search_span_count = 0;
+      itl_search_spans_clear();
 
       if (is_linewise) {
         size_t top_line = itl_le_line_index_of(le, selection_start);
@@ -13025,18 +13042,9 @@ ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
     }
 
     {
-      itl_utf8_t find_char = ITL_ZERO_INIT;
+      itl_utf8_t find_char = itl_vi_read_find_char(le, byte);
       bool is_inclusive, is_valid;
       size_t target;
-
-      if (byte == 'f' || byte == 'F' || byte == 't' || byte == 'T') {
-        uint8_t target_byte;
-        if (itl_le_await_chord(le, ITL_PREFIX_VI_FIND, byte) &&
-            ITL_READ_BYTE(&target_byte))
-        {
-          find_char = itl_utf8_parse(target_byte);
-        }
-      }
 
       target = itl_vi_resolve_motion(le, (int) byte, find_char, 1, false,
                                      &is_inclusive, &is_valid);
@@ -13046,11 +13054,7 @@ ITL_DEF tl_status_code itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
     }
   }
 
-  itl_g_search_spans_active = false;
-  itl_g_search_span_count = 0;
-  itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
-  itl_vi_clamp_command_cursor(le);
-  itl_g_tty_should_refresh_text = true;
+  itl_modal_leave(le, TL_EDIT_MODE_VI_COMMAND, true);
   itl_le_tty_refresh(le);
 
   return TL_SUCCESS;
@@ -13132,58 +13136,33 @@ ITL_DEF tl_status_code itl_vi_block_loop(itl_le_t *le, int return_mode)
     {
       size_t line_start = itl_le_line_start_at_index(le, row);
       size_t line_end = itl_le_line_end_of(le, line_start);
-      size_t span_start = line_start + left_column;
-      size_t span_end = line_start + right_column + 1;
+      size_t span_start = ITL_MIN(line_start + left_column, line_end);
+      size_t span_end = ITL_MIN(line_start + right_column + 1, line_end);
 
-      if (span_start > line_end) {
-        span_start = line_end;
-      }
-      if (span_end > line_end) {
-        span_end = line_end;
-      }
       if (span_start < span_end) {
-        itl_g_search_spans[itl_g_search_span_count].start = span_start;
-        itl_g_search_spans[itl_g_search_span_count].end = span_end;
-        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_SELECT;
-        itl_g_search_span_count += 1;
+        itl_search_span_add(span_start, span_end, ITL_VI_SGR_SELECT);
       } else if (line_end < le->line->length) {
         /* The block covers no column on this line, an empty line or one shorter
            than the left edge. A one-cell span on its newline draws a reversed
            space there so the selection and the mock cursor still show. */
-        itl_g_search_spans[itl_g_search_span_count].start = line_end;
-        itl_g_search_spans[itl_g_search_span_count].end = line_end + 1;
-        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_SELECT;
-        itl_g_search_span_count += 1;
+        itl_search_span_add(line_end, line_end + 1, ITL_VI_SGR_SELECT);
       }
     }
     itl_g_search_spans_active = true;
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
 
-    if (!ITL_READ_BYTE(&byte)) {
+    if (!itl_modal_read_key(&byte, &key) || byte == 22) {
       break;
     }
-
-    if (byte == 27 && !itl_input_is_pending()) {
-      break;
-    }
-
-    key = itl_esc_parse(byte);
     kind = key & TL_MASK_KEY;
-
-    if (kind == TL_KEY_UNKN || byte == 22) {
-      break;
-    }
 
     switch (kind) {
     case TL_KEY_ENTER:
     case TL_KEY_EOF:
     case TL_KEY_INTERRUPT:
     case TL_KEY_SUSPEND:
-      itl_g_search_spans_active = false;
-      itl_g_search_span_count = 0;
-      itl_g_edit_mode = return_mode;
-      itl_g_tty_should_refresh_text = true;
+      itl_modal_leave(le, return_mode, false);
       itl_le_tty_refresh(le);
       return itl_le_key_handle(le, key);
 
@@ -13217,8 +13196,7 @@ ITL_DEF tl_status_code itl_vi_block_loop(itl_le_t *le, int return_mode)
     }
 
     if (byte == 'd' || byte == 'x') {
-      itl_undo_push(le);
-      itl_g_undo_insert_run_open = false;
+      itl_undo_push_closed(le);
 
       row = bottom_line + 1;
       while (row > top_line) {
@@ -13226,28 +13204,16 @@ ITL_DEF tl_status_code itl_vi_block_loop(itl_le_t *le, int return_mode)
         row -= 1;
         line_start = itl_le_line_start_at_index(le, row);
         line_end = itl_le_line_end_of(le, line_start);
-        span_start = line_start + left_column;
-        span_end = line_start + right_column + 1;
-        if (span_start > line_end) {
-          span_start = line_end;
-        }
-        if (span_end > line_end) {
-          span_end = line_end;
-        }
+        span_start = ITL_MIN(line_start + left_column, line_end);
+        span_end = ITL_MIN(line_start + right_column + 1, line_end);
         if (span_start < span_end) {
           itl_string_erase(le->line, span_end, span_end - span_start, true);
         }
       }
 
-      itl_g_search_spans_active = false;
-      itl_g_search_span_count = 0;
       le->cursor_position =
           itl_le_line_start_at_index(le, top_line) + left_column;
-      itl_g_edit_mode = return_mode;
-      if (return_mode == TL_EDIT_MODE_VI_COMMAND) {
-        itl_vi_clamp_command_cursor(le);
-      }
-      itl_g_tty_should_refresh_text = true;
+      itl_modal_leave(le, return_mode, return_mode == TL_EDIT_MODE_VI_COMMAND);
       return TL_SUCCESS;
     }
 
@@ -13256,8 +13222,7 @@ ITL_DEF tl_status_code itl_vi_block_loop(itl_le_t *le, int return_mode)
       size_t top_length = itl_le_line_end_of(le, top_start) - top_start;
       size_t enter_column = ITL_MIN(left_column, top_length);
 
-      itl_g_search_spans_active = false;
-      itl_g_search_span_count = 0;
+      itl_search_spans_clear();
       itl_g_vi_block_insert_active = true;
       itl_g_vi_block_insert_top_line = top_line;
       itl_g_vi_block_insert_row_count = bottom_line - top_line + 1;
@@ -13269,43 +13234,22 @@ ITL_DEF tl_status_code itl_vi_block_loop(itl_le_t *le, int return_mode)
     }
 
     {
-      itl_utf8_t find_char = ITL_ZERO_INIT;
+      itl_utf8_t find_char = itl_vi_read_find_char(le, byte);
       bool is_inclusive, is_valid;
       size_t target;
-
-      if (byte == 'f' || byte == 'F' || byte == 't' || byte == 'T') {
-        uint8_t target_byte;
-        if (itl_le_await_chord(le, ITL_PREFIX_VI_FIND, byte) &&
-            ITL_READ_BYTE(&target_byte))
-        {
-          find_char = itl_utf8_parse(target_byte);
-        }
-      }
 
       target = itl_vi_resolve_motion(le, (int) byte, find_char, 1, false,
                                      &is_inclusive, &is_valid);
       if (is_valid) {
         size_t line_start = itl_le_line_start_of(le, le->cursor_position);
         size_t line_end = itl_le_line_end_of(le, line_start);
-        if (target < line_start) {
-          target = line_start;
-        }
-        if (target > line_end) {
-          target = line_end;
-        }
-        le->cursor_position = target;
+        le->cursor_position = ITL_MIN(ITL_MAX(target, line_start), line_end);
       }
       was_vertical = false;
     }
   }
 
-  itl_g_search_spans_active = false;
-  itl_g_search_span_count = 0;
-  itl_g_edit_mode = return_mode;
-  if (return_mode == TL_EDIT_MODE_VI_COMMAND) {
-    itl_vi_clamp_command_cursor(le);
-  }
-  itl_g_tty_should_refresh_text = true;
+  itl_modal_leave(le, return_mode, return_mode == TL_EDIT_MODE_VI_COMMAND);
   itl_le_tty_refresh(le);
 
   return TL_SUCCESS;
@@ -13344,18 +13288,12 @@ ITL_DEF tl_status_code itl_emacs_multicursor_loop(itl_le_t *le)
         marker = line_end;
       }
       if (row != active_line && marker < line_end) {
-        itl_g_search_spans[itl_g_search_span_count].start = marker;
-        itl_g_search_spans[itl_g_search_span_count].end = marker + 1;
-        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_SELECT;
-        itl_g_search_span_count += 1;
+        itl_search_span_add(marker, marker + 1, ITL_VI_SGR_SELECT);
       } else if (row != active_line && line_end < le->line->length) {
         /* The line has no character under the marker, an empty line or one
            shorter than the column. A one-cell span on its newline draws a
            reversed space there to stand in for the mock cursor. */
-        itl_g_search_spans[itl_g_search_span_count].start = line_end;
-        itl_g_search_spans[itl_g_search_span_count].end = line_end + 1;
-        itl_g_search_spans[itl_g_search_span_count].sgr = ITL_VI_SGR_SELECT;
-        itl_g_search_span_count += 1;
+        itl_search_span_add(line_end, line_end + 1, ITL_VI_SGR_SELECT);
       }
     }
     itl_g_search_spans_active = true;
@@ -13366,29 +13304,15 @@ ITL_DEF tl_status_code itl_emacs_multicursor_loop(itl_le_t *le)
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
 
-    if (!ITL_READ_BYTE(&byte)) {
+    if (!itl_modal_read_key(&byte, &key) || byte == 7) {
       break;
     }
-
-    if (byte == 7) {
-      break;
-    }
-    if (byte == 27 && !itl_input_is_pending()) {
-      break;
-    }
-
-    key = itl_esc_parse(byte);
     kind = key & TL_MASK_KEY;
-
-    if (kind == TL_KEY_UNKN) {
-      break;
-    }
 
     if (kind == TL_KEY_ENTER || kind == TL_KEY_EOF ||
         kind == TL_KEY_INTERRUPT || kind == TL_KEY_SUSPEND)
     {
-      itl_g_search_spans_active = false;
-      itl_g_search_span_count = 0;
+      itl_search_spans_clear();
       itl_g_multicursor_active = false;
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
@@ -13472,8 +13396,7 @@ ITL_DEF tl_status_code itl_emacs_multicursor_loop(itl_le_t *le)
     }
   }
 
-  itl_g_search_spans_active = false;
-  itl_g_search_span_count = 0;
+  itl_search_spans_clear();
   itl_g_multicursor_active = false;
 
   {
@@ -13601,8 +13524,7 @@ ITL_DEF tl_status_code itl_vi_ex_command(itl_le_t *le)
   le->cursor_position = saved_cursor <= le->line->length ? saved_cursor
                                                          : le->line->length;
   itl_vi_clamp_command_cursor(le);
-  itl_g_search_spans_active = false;
-  itl_g_search_span_count = 0;
+  itl_search_spans_clear();
   itl_g_tty_should_refresh_text = true;
 
   ITL_STRING_FREE(original);
@@ -13612,6 +13534,20 @@ ITL_DEF tl_status_code itl_vi_ex_command(itl_le_t *le)
 
   return result;
 }
+
+/* The one-key forms of an operator and a motion, such as x for dl. */
+typedef struct
+{
+  uint8_t byte;
+  itl_vi_operator_kind op;
+  int motion;
+} itl_vi_shortcut;
+
+static const itl_vi_shortcut itl_vi_shortcuts[] = {
+    {'x', ITL_VI_OP_DELETE, 'l'}, {'X', ITL_VI_OP_DELETE, 'h'},
+    {'D', ITL_VI_OP_DELETE, '$'}, {'C', ITL_VI_OP_CHANGE, '$'},
+    {'s', ITL_VI_OP_CHANGE, 'l'},
+};
 
 ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
                                                 int key)
@@ -13673,9 +13609,7 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
         itl_vi_operator_line(le, op, doubled, bottom_line - top_line + 1);
       }
 
-      itl_g_vi_pending_operator = ITL_VI_OP_NONE;
-      itl_g_vi_pending_count = 0;
-      itl_g_vi_pending_register = 0;
+      itl_vi_reset_pending();
       if (itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND) {
         itl_vi_clamp_command_cursor(le);
       }
@@ -13714,9 +13648,7 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
   case TL_KEY_BACKSPACE: itl_le_move_left(le, 1); return TL_SUCCESS;
 
   case TL_KEY_UNKN:
-    itl_g_vi_pending_operator = ITL_VI_OP_NONE;
-    itl_g_vi_pending_count = 0;
-    itl_g_vi_pending_register = 0;
+    itl_vi_reset_pending();
     return TL_SUCCESS;
 
   default: break;
@@ -13759,21 +13691,11 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
     if (is_doubled) {
       itl_vi_operator_line(le, op, (int) byte, count);
     } else {
-      itl_utf8_t find_char = ITL_ZERO_INIT;
-      if (byte == 'f' || byte == 'F' || byte == 't' || byte == 'T') {
-        uint8_t target_byte;
-        if (itl_le_await_chord(le, ITL_PREFIX_VI_FIND, byte) &&
-            ITL_READ_BYTE(&target_byte))
-        {
-          find_char = itl_utf8_parse(target_byte);
-        }
-      }
+      itl_utf8_t find_char = itl_vi_read_find_char(le, byte);
       itl_vi_operator_motion(le, op, (int) byte, find_char, count);
     }
 
-    itl_g_vi_pending_operator = ITL_VI_OP_NONE;
-    itl_g_vi_pending_count = 0;
-    itl_g_vi_pending_register = 0;
+    itl_vi_reset_pending();
     if (itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND) {
       itl_vi_clamp_command_cursor(le);
     }
@@ -13803,21 +13725,6 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
     itl_vi_begin_insert(true, 'A');
     break;
 
-  case 'x':
-    itl_vi_operator_motion(le, ITL_VI_OP_DELETE, 'l', none, count);
-    break;
-  case 'X':
-    itl_vi_operator_motion(le, ITL_VI_OP_DELETE, 'h', none, count);
-    break;
-  case 'D':
-    itl_vi_operator_motion(le, ITL_VI_OP_DELETE, '$', none, count);
-    break;
-  case 'C':
-    itl_vi_operator_motion(le, ITL_VI_OP_CHANGE, '$', none, count);
-    break;
-  case 's':
-    itl_vi_operator_motion(le, ITL_VI_OP_CHANGE, 'l', none, count);
-    break;
   case 'S': itl_vi_operator_line(le, ITL_VI_OP_CHANGE, 'c', count); break;
 
   case 'r': {
@@ -13843,16 +13750,11 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
     break;
 
   case 'p':
-    itl_g_vi_last_change.kind = ITL_VI_CHANGE_PASTE;
-    itl_g_vi_last_change.is_paste_before = false;
-    itl_g_vi_last_change.repeat_count = count;
-    itl_vi_do_paste(le, false, count);
-    break;
   case 'P':
     itl_g_vi_last_change.kind = ITL_VI_CHANGE_PASTE;
-    itl_g_vi_last_change.is_paste_before = true;
+    itl_g_vi_last_change.is_paste_before = (byte == 'P');
     itl_g_vi_last_change.repeat_count = count;
-    itl_vi_do_paste(le, true, count);
+    itl_vi_do_paste(le, byte == 'P', count);
     break;
 
   case 'u':
@@ -13865,18 +13767,15 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
   case '.': itl_vi_repeat_last_change(le); break;
 
   case 'v':
-    itl_g_vi_pending_count = 0;
-    itl_g_vi_pending_register = 0;
+    itl_vi_reset_pending();
     return itl_vi_visual_loop(le, false);
 
   case 'V':
-    itl_g_vi_pending_count = 0;
-    itl_g_vi_pending_register = 0;
+    itl_vi_reset_pending();
     return itl_vi_visual_loop(le, true);
 
   case ':':
-    itl_g_vi_pending_count = 0;
-    itl_g_vi_pending_register = 0;
+    itl_vi_reset_pending();
     return itl_vi_ex_command(le);
 
   case '/': {
@@ -13884,8 +13783,7 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
     int after_search = itl_history_select(le, &select_code);
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
-    itl_g_vi_pending_count = 0;
-    itl_g_vi_pending_register = 0;
+    itl_vi_reset_pending();
     if (select_code != TL_SUCCESS) {
       return select_code;
     }
@@ -13911,23 +13809,28 @@ ITL_DEF tl_status_code itl_vi_command_dispatch(itl_le_t *le, uint8_t byte,
   case 'f':
   case 'F':
   case 't':
-  case 'T': {
-    uint8_t target_byte;
-    itl_utf8_t find_char = ITL_ZERO_INIT;
-    if (itl_le_await_chord(le, ITL_PREFIX_VI_FIND, byte) &&
-        ITL_READ_BYTE(&target_byte))
-    {
-      find_char = itl_utf8_parse(target_byte);
-    }
-    itl_vi_apply_bare_motion(le, (int) byte, find_char, count);
-  } break;
+  case 'T':
+    itl_vi_apply_bare_motion(le, (int) byte, itl_vi_read_find_char(le, byte),
+                             count);
+    break;
 
-  default: itl_vi_apply_bare_motion(le, (int) byte, none, count); break;
+  default: {
+    size_t s;
+    for (s = 0; s < ITL_COUNTOF(itl_vi_shortcuts); ++s) {
+      if (itl_vi_shortcuts[s].byte == byte) {
+        itl_vi_operator_motion(le, itl_vi_shortcuts[s].op,
+                               itl_vi_shortcuts[s].motion, none, count);
+        break;
+      }
+    }
+    if (s == ITL_COUNTOF(itl_vi_shortcuts)) {
+      itl_vi_apply_bare_motion(le, (int) byte, none, count);
+    }
+  } break;
   }
 
   itl_vi_clamp_command_cursor(le);
-  itl_g_vi_pending_count = 0;
-  itl_g_vi_pending_register = 0;
+  itl_vi_reset_pending();
   return TL_SUCCESS;
 }
 
@@ -14002,9 +13905,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       } else {
         itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
       }
-      itl_g_vi_pending_operator = ITL_VI_OP_NONE;
-      itl_g_vi_pending_count = 0;
-      itl_g_vi_pending_register = 0;
+      itl_vi_reset_pending();
       itl_ghost_clear();
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
