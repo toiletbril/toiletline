@@ -3852,6 +3852,60 @@ test_tab_prefix_menu_reuses_gather(void)
 
   return ok;
 }
+
+/* A sole candidate goes in and the TAB stops, with or without the space after
+   it. No menu opens for the next word or the inside of a completed directory,
+   so the keys after the TAB stay unread and the host is asked once. A second
+   TAB on the completed directory lists what it holds. */
+static bool
+test_tab_sole_candidate_stops(void)
+{
+  static const char *const files[] = {"file1.txt", "other"};
+  static const char *const directories[] = {"local/", "other"};
+  static const char *const inside[] = {"local/a", "local/b"};
+  static const struct
+  {
+    const char *const        *words;
+    size_t                    word_count;
+    tl_space_after_completion space_after;
+    const char               *text;
+    const char               *line;
+  } cases[] = {
+      {files,       2, TL_SPACE_AFTER_COMPLETION_ON,  "cat fi",
+       "cat file1.txt "                                                    },
+      {files,       2, TL_SPACE_AFTER_COMPLETION_OFF, "cat fi",
+       "cat file1.txt"                                                     },
+      {directories, 2, TL_SPACE_AFTER_COMPLETION_ON,  "cd lo",  "cd local/ "},
+      {directories, 2, TL_SPACE_AFTER_COMPLETION_OFF, "cd lo",  "cd local/" },
+      {inside,      2, TL_SPACE_AFTER_COMPLETION_OFF, "cd local/",
+       "cd local/"                                                         },
+  };
+  tl_space_after_completion previous_space_after =
+      itl_g_space_after_completion;
+  bool   ok = true;
+  char   line[BUFFER_SIZE];
+  size_t i;
+
+  for (i = 0; i < countof(cases); ++i) {
+    size_t calls;
+
+    test_tab_words = cases[i].words;
+    test_tab_word_count = cases[i].word_count;
+    tl_set_space_after_completion(cases[i].space_after);
+    calls = tab_completion_calls(cases[i].text, "\x1b", line, sizeof(line));
+
+    if (calls != 1 || strcmp(line, cases[i].line) != 0) {
+      TEST_PRINTF("sole case %zu left '%s' after %zu calls\n", i, line, calls);
+      ok = false;
+    }
+  }
+
+  tl_set_space_after_completion(previous_space_after);
+  test_tab_words = NULL;
+  test_tab_word_count = 0;
+
+  return ok;
+}
 #endif /* ITL_POSIX */
 
 static bool
@@ -7525,6 +7579,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_menu_keys_reuse_gathered_list),
                                    DEFINE_TEST_CASE(
                                        test_tab_prefix_menu_reuses_gather),
+                                   DEFINE_TEST_CASE(
+                                       test_tab_sole_candidate_stops),
                                    DEFINE_TEST_CASE(
                                        test_alt_backspace_sequences),
                                    DEFINE_TEST_CASE(
