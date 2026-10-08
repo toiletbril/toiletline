@@ -6202,13 +6202,13 @@ ITL_DEF bool itl_prefix_hint(char *out, size_t out_size)
   default:
     if (itl_g_vi_pending_operator == ITL_VI_OP_DELETE) {
       waiting_for = "a motion: w, b, e, $, 0, ^, d (line), f, t, F, T, h, l, "
-                    "j, k, W, B, E, ;, ,";
+                    "j, k, W, B, E, ; or , (repeat a find)";
     } else if (itl_g_vi_pending_operator == ITL_VI_OP_CHANGE) {
       waiting_for = "a motion: w, b, e, $, 0, ^, c (line), f, t, F, T, h, l, "
-                    "j, k, W, B, E, ;, ,";
+                    "j, k, W, B, E, ; or , (repeat a find)";
     } else if (itl_g_vi_pending_operator == ITL_VI_OP_YANK) {
       waiting_for = "a motion: w, b, e, $, 0, ^, y (line), f, t, F, T, h, l, "
-                    "j, k, W, B, E, ;, ,";
+                    "j, k, W, B, E, ; or , (repeat a find)";
     } else if (itl_g_vi_pending_count > 0) {
       waiting_for = "a command or a motion";
     } else {
@@ -8435,13 +8435,32 @@ ITL_DEF size_t itl_menu_window_start(size_t count, size_t selected,
   return window_start;
 }
 
+#define ITL_MENU_CUT_MARK       "..."
+#define ITL_MENU_CUT_MARK_WIDTH 3
+
+/* The columns of a cell left for text before the mark that ends a cut cell.
+   A cell too narrow to hold the mark and a character is cut bare. */
+ITL_DEF size_t itl_menu_cell_text_width(const char *text, size_t text_bytes,
+                                        size_t width)
+{
+  if (width <= ITL_MENU_CUT_MARK_WIDTH ||
+      itl_visible_width(text, text_bytes) <= width)
+  {
+    return width;
+  }
+
+  return width - ITL_MENU_CUT_MARK_WIDTH;
+}
+
 /* Append at most width columns of text and pad the remainder with spaces when
-   the caller asked for a fixed cell. Returns the columns written, which can
-   exceed the width by one when a double-width character straddles the edge. */
+   the caller asked for a fixed cell. Text cut to the width ends in an
+   ellipsis. Returns the columns written, which can exceed the width by one
+   when a double-width character straddles the edge. */
 ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
                                     size_t width, bool should_pad)
 {
   size_t text_bytes = strlen(text);
+  size_t text_width = itl_menu_cell_text_width(text, text_bytes, width);
   size_t offset = 0;
   size_t drawn = 0;
 
@@ -8453,12 +8472,20 @@ ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
 
     itl_visible_step(text + offset, text_bytes - offset, &step_bytes,
                      &step_width);
-    if (step_width > 0 && drawn >= width) {
+    if (step_width > 0 &&
+        (drawn >= text_width ||
+         (text_width < width && drawn + step_width > text_width)))
+    {
       break;
     }
     itl_char_buf_append_visible_step(b, text + offset, step_bytes);
     offset += step_bytes;
     drawn += step_width;
+  }
+
+  if (text_width < width) {
+    itl_char_buf_append_cstr(b, ITL_MENU_CUT_MARK);
+    drawn += ITL_MENU_CUT_MARK_WIDTH;
   }
 
   if (!should_pad) {
@@ -8560,14 +8587,15 @@ ITL_DEF const char *itl_menu_display_name(const char *name, char *storage,
 /* Draw a cell whose text carries the colors the host chose for it. The spans
    are codepoint ranges over that same text, sorted and non-overlapping. Each
    colored run opens with its own sequence and closes with a reset. The cell
-   keeps the width its column grants and pads the remainder for a caller that
-   asked for a fixed cell. */
+   keeps the width its column grants, ends cut text in an ellipsis, and pads
+   the remainder for a caller that asked for a fixed cell. */
 ITL_DEF void itl_menu_append_colored_cell(itl_char_buf_t *b, const char *text,
                                           size_t width,
                                           const tl_highlight_span *spans,
                                           size_t span_count, bool should_pad)
 {
   size_t text_bytes = strlen(text);
+  size_t text_width = itl_menu_cell_text_width(text, text_bytes, width);
   size_t byte_offset = 0;
   size_t codepoint_index = 0;
   size_t drawn = 0;
@@ -8576,7 +8604,7 @@ ITL_DEF void itl_menu_append_colored_cell(itl_char_buf_t *b, const char *text,
 
   itl_char_buf_reserve(b, b->size + text_bytes + width);
 
-  while (byte_offset < text_bytes && drawn < width) {
+  while (byte_offset < text_bytes && drawn < text_width) {
     size_t active = span_count;
     size_t step_bytes = 0;
     size_t step_width = 0;
@@ -8604,7 +8632,7 @@ ITL_DEF void itl_menu_append_colored_cell(itl_char_buf_t *b, const char *text,
     itl_visible_step(text + byte_offset, text_bytes - byte_offset, &step_bytes,
                      &step_width);
 
-    if (step_width > 0 && drawn + step_width > width) {
+    if (step_width > 0 && drawn + step_width > text_width) {
       break;
     }
 
@@ -8617,6 +8645,11 @@ ITL_DEF void itl_menu_append_colored_cell(itl_char_buf_t *b, const char *text,
 
   if (open_span != span_count) {
     itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+  }
+
+  if (text_width < width) {
+    itl_char_buf_append_cstr(b, ITL_MENU_CUT_MARK);
+    drawn += ITL_MENU_CUT_MARK_WIDTH;
   }
 
   if (!should_pad) {
@@ -10625,8 +10658,9 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
 
 /* List the history entries that match the line and let the menu keys pick one.
    The line is the search query. Typing narrows the list in place and accepting
-   replaces the whole line with the entry. An empty history and a query nothing
-   matches both leave the line alone. Returns the status the caller must
+   replaces the whole line with the entry. An empty history leaves the line
+   alone, and a query nothing matches opens the menu on its no-match row, so
+   an erase can still widen the search. Returns the status the caller must
    return. */
 ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
 {
@@ -10647,7 +10681,15 @@ ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
   memset(&result, 0, sizeof(result));
 
   if (!itl_history_menu_gather(le, &result)) {
-    return TL_SUCCESS;
+    if (le->line->length == 0 || itl_history_search_count() == 0 ||
+        (!itl_g_history_search_snapshot.is_active &&
+         itl_g_history_path == NULL))
+    {
+      return TL_SUCCESS;
+    }
+    itl_menu_empty_candidates(&result);
+    result.token_start = 0;
+    result.token_end = le->line->length;
   }
 
   status = itl_completion_menu(le, &result, &history_source);
@@ -11886,6 +11928,10 @@ ITL_DEF size_t itl_search_query_bytes(const itl_string_t *query, char *out,
   return size;
 }
 
+/* Follows the search term while no entry holds it. */
+#define ITL_SEARCH_NO_MATCH        " no match"
+#define ITL_SEARCH_NO_MATCH_LENGTH 9
+
 /* Runs a reverse incremental history search. The live prompt stays on screen
    and the matched entry, the search term, and the hint are drawn below it as
    one multiline buffer swapped into the line editor. The block carries its own
@@ -11974,13 +12020,26 @@ ITL_DEF int itl_history_search(itl_le_t *le)
                           ? tty_cols - saved_prompt_width - 1
                           : tty_cols;
       size_t match_width = 0;
+      size_t full_width = 0;
       size_t pi, pj;
+      bool is_cut;
 
       match_bytes = 0;
       match_length = 0;
 
+      for (pi = 0; pi < preview->length; ++pi) {
+        full_width += ITL_LE_IS_NEWLINE(preview->chars[pi])
+                          ? 1
+                          : itl_line_char_width(preview->chars, pi);
+      }
+      is_cut = full_width > budget && budget > ITL_MENU_CUT_MARK_WIDTH;
+      if (is_cut) {
+        budget -= ITL_MENU_CUT_MARK_WIDTH;
+      }
+
       /* Flatten newlines to spaces and clip to the prompt's row remainder so
-         the match never wraps under the prompt. */
+         the match never wraps under the prompt. A clipped match ends in an
+         ellipsis. */
       for (pi = 0; pi < preview->length; ++pi) {
         itl_utf8_t pch = preview->chars[pi];
         bool is_newline = ITL_LE_IS_NEWLINE(pch);
@@ -12028,6 +12087,15 @@ ITL_DEF int itl_history_search(itl_le_t *le)
         }
       }
 
+      if (is_cut &&
+          match_bytes + ITL_MENU_CUT_MARK_WIDTH < ITL_STRING_MAX_LEN)
+      {
+        memcpy(match_render + match_bytes, ITL_MENU_CUT_MARK,
+               ITL_MENU_CUT_MARK_WIDTH + 1);
+        match_bytes += ITL_MENU_CUT_MARK_WIDTH;
+        match_length += ITL_MENU_CUT_MARK_WIDTH;
+      }
+
       rendered_match = match;
       rendered_cols = tty_cols;
       has_rendered_preview = true;
@@ -12057,10 +12125,14 @@ ITL_DEF int itl_history_search(itl_le_t *le)
                            ITL_SEARCH_SGR_YELLOW);
     }
     itl_char_buf_append_byte(&status, '\'');
+    line3_start = query_start + query.length + 2;
+    if (query.length > 0 && match == ITL_HISTORY_NONE) {
+      itl_char_buf_append_cstr(&status, ITL_SEARCH_NO_MATCH);
+      line3_start += ITL_SEARCH_NO_MATCH_LENGTH;
+    }
     itl_char_buf_append_byte(&status, '\n');
 
     /* Line three, the hint with its key tokens bolded. */
-    line3_start = query_start + query.length + 2;
     guide_position = line3_start;
     guide_position =
         itl_search_append_guide(&status, guide_position, "up", true);

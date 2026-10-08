@@ -4192,11 +4192,22 @@ test_menu_cells(void)
   }
 
   b->size = 0;
-  itl_menu_append_colored_cell(b, "a\xE6\x97\xA5\xE6\x9C\xAC", 4, NULL, 0,
+  itl_menu_append_colored_cell(b, "a\xE6\x97\xA5\xE6\x9C\xAC", 2, NULL, 0,
                                true);
 
-  if (b->size != 5 || memcmp(b->data, "a\xE6\x97\xA5 ", 5) != 0) {
+  if (b->size != 2 || memcmp(b->data, "a ", 2) != 0) {
     TEST_PRINTF("a straddling colored cell wrote %zu bytes\n", b->size);
+    goto failed;
+  }
+
+  b->size = 0;
+  itl_menu_append_colored_cell(b, "abcdefgh", 7, NULL, 0, true);
+  drawn = itl_menu_append_cell(b, "abcdefgh", 7, true);
+
+  if (drawn != 7 || b->size != 14 ||
+      memcmp(b->data, "abcd...abcd...", 14) != 0)
+  {
+    TEST_PRINTF("cut cells wrote %zu bytes\n", b->size);
     goto failed;
   }
 
@@ -5767,6 +5778,82 @@ test_frame_capture_refresh(itl_le_t *le)
   itl_le_tty_refresh(le);
 }
 
+/* Run the incremental search over the keys and keep the frames it drew. */
+static void
+test_search_frames(const char *keys)
+{
+  char          out_buffer[BUFFER_SIZE];
+  int           pipe_descriptors[2] = {-1, -1};
+  int           saved_stdin = dup(STDIN_FILENO);
+  size_t        key_count = strlen(keys);
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  test_frame_capture_size = 0;
+  if (saved_stdin >= 0 && pipe(pipe_descriptors) == 0 &&
+      write(pipe_descriptors[1], keys, key_count) == (ssize_t) key_count &&
+      dup2(pipe_descriptors[0], STDIN_FILENO) >= 0)
+  {
+    close(pipe_descriptors[1]);
+    pipe_descriptors[1] = -1;
+    itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+    itl_g_tty_changed_size = 0;
+    itl_g_tty_prev_rows = 24;
+    itl_g_tty_prev_cols = 40;
+    itl_g_debug_frame_sink = test_frame_capture_sink;
+    (void) itl_history_search(&le);
+    itl_g_debug_frame_sink = NULL;
+    itl_g_search_spans_active = false;
+  }
+
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+  itl_g_key_queue_index = 0;
+  itl_g_key_queue_length = 0;
+  itl_g_pushback_byte = -1;
+  itl_g_tty_prev_cols = 80;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  ITL_STRING_FREE(line);
+}
+
+/* The incremental search says when no entry holds its term, and a match too
+   long for the row ends in an ellipsis. */
+static bool
+test_history_search_marks_misses_and_cuts(void)
+{
+  const char *path = "tl_test_search_marks.txt";
+  bool        ok = true;
+
+  itl_g_is_active = true;
+  remove(path);
+  tl_history_load(path);
+  hist_append_cstr("echo a history entry far too long for the search row");
+
+  test_search_frames("zzz");
+  if (!test_frame_capture_has("' no match")) {
+    TEST_PRINTF("a missed term drew no mark\n");
+    ok = false;
+  }
+
+  test_search_frames("echo");
+  if (!test_frame_capture_has("echo a history entry far too long ...") ||
+      test_frame_capture_has("no match"))
+  {
+    TEST_PRINTF("a long match drew no ellipsis\n");
+    ok = false;
+  }
+
+  remove(path);
+  itl_g_history_free();
+  itl_g_is_active = false;
+  return ok;
+}
+
 static size_t test_loading_gather_drain_count;
 
 static bool
@@ -6744,7 +6831,8 @@ test_prefix_hint_names_the_waiting_keys(void)
   itl_g_vi_pending_count = 2;
   itl_g_vi_pending_register = 'a';
   ok &= test_hint_is("  pressed \"a2d\n  waiting for a motion: w, b, e, $, 0, "
-                     "^, d (line), f, t, F, T, h, l, j, k, W, B, E, ;, ,",
+                     "^, d (line), f, t, F, T, h, l, j, k, W, B, E, ; or , "
+                     "(repeat a find)",
                      200, "operator");
 
   itl_g_prefix_kind = ITL_PREFIX_VI_FIND;
@@ -6757,7 +6845,8 @@ test_prefix_hint_names_the_waiting_keys(void)
   itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
   itl_g_vi_pending_operator = ITL_VI_OP_CHANGE;
   ok &= test_hint_is("  pressed c\n  waiting for a motion: w, b, e, $, 0, ^, "
-                     "c (line), f, t, F, T, h, l, j, k, W, B, E, ;, ,",
+                     "c (line), f, t, F, T, h, l, j, k, W, B, E, ; or , "
+                     "(repeat a find)",
                      200, "change");
   itl_g_vi_pending_operator = ITL_VI_OP_YANK;
   ok &= test_hint_is("  pressed y\n  waiting for a\n  motion: w, b, e, $,\n"
@@ -7635,8 +7724,8 @@ test_control_bytes_draw_visibly(void)
                   memcmp(b->data, "c\\x9bd", 6) == 0;
 
   b->size = 0;
-  itl_menu_append_colored_cell(b, TEST_OSC_NAME, 5, NULL, 0, true);
-  is_colored_visible = b->size == 5 && memcmp(b->data, "a^[]0", 5) == 0;
+  itl_menu_append_colored_cell(b, TEST_OSC_NAME, 8, NULL, 0, true);
+  is_colored_visible = b->size == 8 && memcmp(b->data, "a^[]0...", 8) == 0;
 
   result.candidates = names;
   result.count = countof(names);
@@ -8009,6 +8098,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_menu_band_survives_disabled_colors),
 #if defined ITL_POSIX && !defined NDEBUG
+                                   DEFINE_TEST_CASE(
+                                       test_history_search_marks_misses_and_cuts),
                                    DEFINE_TEST_CASE(
                                        test_loading_frame_drains_before_gather),
                                    DEFINE_TEST_CASE(
