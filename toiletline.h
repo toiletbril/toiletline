@@ -5702,9 +5702,6 @@ ITL_DEF void itl_le_tty_move_to_block_top(itl_char_buf_t *b)
   }
 }
 
-/* Columns each wrapped or continuation row is padded by so the text lines up
-   under the first row. Falls back to no padding when the prompt fills the row.
- */
 /* The cells the rendered prompt occupies at this width, the clamped width
    once the prompt is at or past the terminal width, so the metrics, the
    reflow, and the refresh all wrap the same way the render does. */
@@ -5715,7 +5712,28 @@ ITL_DEF size_t itl_le_prompt_indent(const itl_le_t *le, size_t cols)
   return effective_width;
 }
 
-#define ITL_LE_INDENT(le, cols) itl_le_prompt_indent((le), (cols))
+/* The fewest columns a continuation row keeps for text under the prompt. A
+   prompt that leaves fewer would wrap the input into a narrow strip, so its
+   continuation rows start near the left edge instead. */
+#define ITL_LE_MIN_CONTINUATION_COLUMNS 20
+#define ITL_LE_NARROW_CONTINUATION      2
+
+/* Columns each wrapped or continuation row is padded by. The text lines up
+   under the first row when the prompt leaves enough room beside it. */
+ITL_DEF size_t itl_le_continuation_indent(const itl_le_t *le, size_t cols)
+{
+  size_t prompt_indent = itl_le_prompt_indent(le, cols);
+
+  if (prompt_indent > ITL_LE_NARROW_CONTINUATION &&
+      prompt_indent + ITL_LE_MIN_CONTINUATION_COLUMNS > cols)
+  {
+    return ITL_LE_NARROW_CONTINUATION;
+  }
+
+  return prompt_indent;
+}
+
+#define ITL_LE_INDENT(le, cols) itl_le_continuation_indent((le), (cols))
 
 /* A double-width glyph is never split across the right edge. */
 ITL_DEF bool itl_wrap_is_early_break(size_t col, size_t char_width, size_t cols)
@@ -5807,7 +5825,7 @@ ITL_DEF itl_le_metrics_t itl_le_compute_metrics(const itl_le_t *le,
      count from there. A single-row prompt keeps prompt_rows zero, so this is
      the unchanged starting row. */
   size_t row = le->prompt_rows;
-  size_t col = indent;
+  size_t col = itl_le_prompt_indent(le, cols);
   size_t length = le->line->length;
 
   /* The caret sits to the left of chars[cursor_position], so the walk stops
@@ -5861,7 +5879,7 @@ ITL_DEF size_t itl_le_reflow_rows_above_caret(const itl_le_t *le,
   size_t ocols = ITL_MAX(old_cols, 1);
   size_t ncols = ITL_MAX(new_cols, 1);
   size_t indent = ITL_LE_INDENT(le, ocols);
-  size_t col = indent;
+  size_t col = itl_le_prompt_indent(le, ocols);
   /* The rows count from prompt_rows the way itl_le_compute_metrics counts them,
      so the caret is stepped past a multi-row prompt to the true top of the
      block. */
@@ -5929,7 +5947,7 @@ ITL_DEF size_t itl_le_index_at_visual(const itl_le_t *le, size_t tty_cols,
      so a target row from those metrics lands on the same input row under a
      multi-row prompt. */
   size_t row = le->prompt_rows;
-  size_t col = indent;
+  size_t col = itl_le_prompt_indent(le, cols);
   size_t i, best_index = 0;
   bool has_best = false;
 
@@ -6871,7 +6889,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
 
     /* Emit the buffer, reproducing the metrics column accounting so our own
        line breaks stay in sync with the terminal. Continuation rows are padded
-       so their text lines up under the first row. The span cursor closes a span
+       by the continuation indent. The span cursor closes a span
        that ends at this codepoint, then opens the one that starts here. */
     size_t next_span = 0;
     bool in_span = false;
@@ -6880,7 +6898,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
     bool suppress_pad = itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL;
     /* Where the first input row ends. A row that wrapped fills the width. */
     size_t first_row_end_col = cols;
-    col = indent;
+    col = itl_le_prompt_indent(le, cols);
     row = le->prompt_rows;
     /* The flash repaints the whole line in one tone. It opens that SGR once and
        the loop below skips the per-span color. */
@@ -8899,7 +8917,7 @@ ITL_DEF size_t itl_menu_anchor_column_of(const itl_le_t *le,
   size_t cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
   size_t indent = ITL_LE_INDENT(le, cols);
   size_t row = 0;
-  size_t col = indent;
+  size_t col = itl_le_prompt_indent(le, cols);
 
   if (token_start > le->line->length) {
     token_start = le->line->length;

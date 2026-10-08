@@ -5371,8 +5371,8 @@ test_reference_reflow(const itl_le_t *le, size_t old_cols, size_t new_cols)
 {
   size_t ocols = old_cols > 1 ? old_cols : 1;
   size_t ncols = new_cols > 1 ? new_cols : 1;
-  size_t indent = itl_le_prompt_indent(le, ocols);
-  size_t col = indent;
+  size_t indent = itl_le_continuation_indent(le, ocols);
+  size_t col = itl_le_prompt_indent(le, ocols);
   size_t rows_above = le->prompt_rows;
   size_t i;
 
@@ -5492,9 +5492,9 @@ test_reference_metrics(const itl_le_t *le, size_t tty_cols)
 {
   itl_le_metrics_t m = ITL_ZERO_INIT;
   size_t           cols = tty_cols > 1 ? tty_cols : 1;
-  size_t           indent = itl_le_prompt_indent(le, cols);
+  size_t           indent = itl_le_continuation_indent(le, cols);
   size_t           row = le->prompt_rows;
-  size_t           col = indent;
+  size_t           col = itl_le_prompt_indent(le, cols);
   size_t           i;
 
   for (i = 0; i <= le->line->length; ++i) {
@@ -5604,6 +5604,51 @@ test_ascii_runs_agree_with_reference(void)
 
   ITL_STRING_FREE(line);
 
+  return ok;
+}
+
+/* A prompt that leaves fewer than the minimum columns beside it continues the
+   input near the left edge instead of in a strip under the prompt, while a
+   prompt that leaves enough keeps the text lined up under the first row. */
+static bool
+test_narrow_terminal_continues_near_the_left_edge(void)
+{
+  static const struct
+  {
+    size_t cols;
+    size_t indent;
+    size_t caret_row;
+    size_t caret_col;
+  } cases[] = {
+      {40,  2,  1, 12},
+      {100, 30, 0, 50},
+  };
+  char          out_buffer[BUFFER_SIZE];
+  bool          ok = true;
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  size_t        i;
+
+  ITL_STRING_FROM_CSTR(line, "aaaaaaaaaaaaaaaaaaaa");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer),
+              "a prompt thirty columns wide> ");
+  le.cursor_position = line->length;
+
+  for (i = 0; i < countof(cases); ++i) {
+    itl_le_metrics_t metrics = itl_le_compute_metrics(&le, cases[i].cols);
+    size_t           indent = itl_le_continuation_indent(&le, cases[i].cols);
+
+    if (indent != cases[i].indent || metrics.cursor_row != cases[i].caret_row ||
+        metrics.cursor_col != cases[i].caret_col)
+    {
+      TEST_PRINTF("%zu columns indented %zu, caret at row %zu column %zu\n",
+                  cases[i].cols, indent, metrics.cursor_row,
+                  metrics.cursor_col);
+      ok = false;
+    }
+  }
+
+  ITL_STRING_FREE(line);
   return ok;
 }
 
@@ -7958,6 +8003,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_wrap_predicates_agree_with_reference),
                                    DEFINE_TEST_CASE(
                                        test_ascii_runs_agree_with_reference),
+                                   DEFINE_TEST_CASE(
+                                       test_narrow_terminal_continues_near_the_left_edge),
                                    DEFINE_TEST_CASE(test_csi_sequences),
                                    DEFINE_TEST_CASE(
                                        test_menu_band_survives_disabled_colors),
