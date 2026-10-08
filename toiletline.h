@@ -13431,6 +13431,8 @@ ITL_DEF tl_status_code itl_vi_ex_command(itl_le_t *le)
   size_t saved_prompt_size = le->prompt_size;
   size_t saved_prompt_width = le->prompt_width;
   size_t saved_prompt_rows = le->prompt_rows;
+  itl_string_t *saved_line = le->line;
+  size_t saved_cursor = le->cursor_position;
 
   char command[64];
   size_t command_length = 0;
@@ -13517,9 +13519,10 @@ ITL_DEF tl_status_code itl_vi_ex_command(itl_le_t *le)
   le->prompt_size = saved_prompt_size;
   le->prompt_width = saved_prompt_width;
   le->prompt_rows = saved_prompt_rows;
-  le->line = &itl_g_line_buffer;
+  le->line = saved_line;
   itl_string_copy(le->line, original);
-  le->cursor_position = le->line->length;
+  le->cursor_position = saved_cursor <= le->line->length ? saved_cursor
+                                                         : le->line->length;
   itl_vi_clamp_command_cursor(le);
   itl_g_search_spans_active = false;
   itl_g_search_span_count = 0;

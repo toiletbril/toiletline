@@ -2329,6 +2329,71 @@ test_vi_dot_skips_a_yank(void)
   return ok;
 }
 
+#if defined ITL_POSIX
+/* Leaving the vi : command line by Escape, by Backspace on an empty command,
+   or by Enter on an unknown command keeps the line and the caret where they
+   were before the colon. */
+static bool
+test_vi_ex_command_keeps_the_caret(void)
+{
+  static const char *const keys[] = {"\x1b", "\x7f", "ab\x7f\x7f\x7f",
+                                     "zz\r"};
+  char   out_buffer[BUFFER_SIZE];
+  bool   ok = true;
+  size_t i;
+
+  for (i = 0; i < countof(keys); ++i) {
+    int           pipe_descriptors[2] = {-1, -1};
+    int           null_descriptor = open("/dev/null", O_WRONLY);
+    int           saved_stdin = dup(STDIN_FILENO);
+    int           saved_stdout = dup(STDOUT_FILENO);
+    size_t        key_size = strlen(keys[i]);
+    itl_le_t      le = ITL_ZERO_INIT;
+    itl_string_t *line = itl_string_alloc();
+
+    if (pipe(pipe_descriptors) != 0 || null_descriptor < 0 ||
+        saved_stdin < 0 || saved_stdout < 0 ||
+        write(pipe_descriptors[1], keys[i], key_size) != (ssize_t) key_size ||
+        dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
+        dup2(null_descriptor, STDOUT_FILENO) < 0)
+    {
+      TEST_PRINTF("could not feed case %zu\n", i);
+      ok = false;
+    } else {
+      close(pipe_descriptors[1]);
+      pipe_descriptors[1] = -1;
+      ITL_STRING_FROM_CSTR(line, "one two three");
+      itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+      le.cursor_position = 4;
+      (void) itl_vi_ex_command(&le);
+      dup2(saved_stdout, STDOUT_FILENO);
+      ok &= test_line_is(line, "one two three", "leaving the : line");
+      if (le.line != line || le.cursor_position != 4) {
+        TEST_PRINTF("case %zu left the caret at %zu\n", i,
+                    le.cursor_position);
+        ok = false;
+      }
+    }
+
+    dup2(saved_stdin, STDIN_FILENO);
+    dup2(saved_stdout, STDOUT_FILENO);
+    if (saved_stdin >= 0) close(saved_stdin);
+    if (saved_stdout >= 0) close(saved_stdout);
+    if (null_descriptor >= 0) close(null_descriptor);
+    if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+    if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+    itl_g_key_queue_index = 0;
+    itl_g_key_queue_length = 0;
+    itl_g_pushback_byte = -1;
+    itl_g_tty_changed_size = 1;
+    itl_g_tty_first_render = true;
+    ITL_STRING_FREE(line);
+  }
+
+  return ok;
+}
+#endif /* ITL_POSIX */
+
 static bool
 test_transpose_characters_and_words(void)
 {
@@ -7599,6 +7664,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_tab_prefix_menu_reuses_gather),
                                    DEFINE_TEST_CASE(
                                        test_tab_sole_candidate_stops),
+                                   DEFINE_TEST_CASE(
+                                       test_vi_ex_command_keeps_the_caret),
                                    DEFINE_TEST_CASE(
                                        test_alt_backspace_sequences),
                                    DEFINE_TEST_CASE(
