@@ -2394,6 +2394,86 @@ test_vi_ex_command_keeps_the_caret(void)
 }
 #endif /* ITL_POSIX */
 
+#define TEST_FLAG_US   "\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"
+#define TEST_WAVE_DARK "\xF0\x9F\x91\x8B\xF0\x9F\x8F\xBF"
+#define TEST_FAMILY                                                            \
+  "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7"
+
+/* Left, Right, Backspace, and Delete step over a whole emoji sequence, and
+   the line, a prompt, and a C string all count it as two columns, the width
+   a terminal draws it with. */
+static bool
+test_emoji_sequences_move_and_measure_whole(void)
+{
+  static const struct
+  {
+    const char *text;
+    size_t      columns;
+  } widths[] = {
+      {TEST_FLAG_US,   2},
+      {TEST_WAVE_DARK, 2},
+      {TEST_FAMILY,    2},
+  };
+  char              out_buffer[BUFFER_SIZE];
+  bool              ok = true;
+  itl_le_t          le = ITL_ZERO_INIT;
+  itl_le_metrics_t  metrics;
+  itl_string_t     *line = itl_string_alloc();
+  size_t            i;
+
+  for (i = 0; i < countof(widths); ++i) {
+    size_t columns = itl_cstr_display_width(widths[i].text);
+
+    ITL_STRING_FROM_CSTR(line, widths[i].text);
+    itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+    le.cursor_position = line->length;
+    metrics = itl_le_compute_metrics(&le, 80);
+    if (columns != widths[i].columns ||
+        metrics.cursor_col != widths[i].columns)
+    {
+      TEST_PRINTF("sequence %zu measured %zu and %zu columns\n", i, columns,
+                  metrics.cursor_col);
+      ok = false;
+    }
+  }
+
+  ITL_STRING_FROM_CSTR(line, "echo " TEST_WAVE_DARK " end");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.cursor_position = line->length;
+  metrics = itl_le_compute_metrics(&le, 80);
+  if (metrics.cursor_col != 11) {
+    TEST_PRINTF("caret after a skin tone is at column %zu\n",
+                metrics.cursor_col);
+    ok = false;
+  }
+
+  ITL_STRING_FROM_CSTR(line, "a" TEST_FAMILY "b");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.cursor_position = line->length - 1;
+  itl_le_key_handle(&le, TL_KEY_LEFT);
+  if (le.cursor_position != 1) {
+    TEST_PRINTF("left over a joined sequence reached %zu\n",
+                le.cursor_position);
+    ok = false;
+  }
+  itl_le_key_handle(&le, TL_KEY_RIGHT);
+  if (le.cursor_position != line->length - 1) {
+    TEST_PRINTF("right over a joined sequence reached %zu\n",
+                le.cursor_position);
+    ok = false;
+  }
+  itl_le_key_handle(&le, TL_KEY_BACKSPACE);
+  ok &= test_line_is(line, "ab", "backspace after a joined sequence");
+
+  ITL_STRING_FROM_CSTR(line, "a" TEST_FLAG_US TEST_FLAG_US);
+  le.cursor_position = 1;
+  itl_le_key_handle(&le, TL_KEY_DELETE);
+  ok &= test_line_is(line, "a" TEST_FLAG_US, "delete before two flags");
+
+  ITL_STRING_FREE(line);
+  return ok;
+}
+
 static bool
 test_transpose_characters_and_words(void)
 {
@@ -2447,6 +2527,21 @@ test_transpose_characters_and_words(void)
   le.cursor_position = 1;
   itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
   ok &= test_line_is(line, "a\xcc\x81", "ctrl-t on a leading mark");
+
+  ITL_STRING_FROM_CSTR(line, "x" TEST_FLAG_US);
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
+  ok &= test_line_is(line, TEST_FLAG_US "x", "ctrl-t keeps a flag whole");
+
+  ITL_STRING_FROM_CSTR(line, TEST_WAVE_DARK "z");
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
+  ok &= test_line_is(line, "z" TEST_WAVE_DARK, "ctrl-t keeps a skin tone");
+
+  ITL_STRING_FROM_CSTR(line, TEST_FAMILY "z");
+  le.cursor_position = line->length;
+  itl_le_key_handle(&le, TL_KEY_TRANSPOSE);
+  ok &= test_line_is(line, "z" TEST_FAMILY, "ctrl-t keeps a joined sequence");
 
   ITL_STRING_FROM_CSTR(line, "cp src dst");
   le.cursor_position = 3;
@@ -7685,6 +7780,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_kill_ring_appends_yanks_and_cycles),
                                    DEFINE_TEST_CASE(
                                        test_transpose_characters_and_words),
+                                   DEFINE_TEST_CASE(
+                                       test_emoji_sequences_move_and_measure_whole),
                                    DEFINE_TEST_CASE(test_vi_dot_skips_a_yank),
                                    DEFINE_TEST_CASE(
                                        test_ghost_miss_skips_an_empty_word),

@@ -1799,7 +1799,8 @@ struct itl_cp_interval
   uint32_t last;
 };
 
-/* Sorted ranges of zero-width and combining codepoints. */
+/* Sorted ranges of zero-width and combining codepoints. An emoji skin tone
+   modifier draws on the cell of the emoji before it. */
 ITL_DEF const itl_cp_interval_t itl_zero_width_intervals[] = {
     {0x0300, 0x036F},
     {0x0483, 0x0489},
@@ -1812,8 +1813,9 @@ ITL_DEF const itl_cp_interval_t itl_zero_width_intervals[] = {
     {0x0E34, 0x0E3A},
     {0x200B, 0x200F},
     {0x2060, 0x2064},
-    {0xFE00, 0xFE0F},
-    {0xFE20, 0xFE2F},
+    {0xFE00,  0xFE0F },
+    {0xFE20,  0xFE2F },
+    {0x1F3FB, 0x1F3FF},
 };
 
 /* Sorted ranges of East Asian wide, fullwidth, and common emoji codepoints. */
@@ -1946,11 +1948,35 @@ ITL_DEF size_t itl_char_line_width(itl_utf8_t ch)
   return itl_char_width(ch);
 }
 
+#define ITL_ZERO_WIDTH_JOINER 0x200D
+
+ITL_DEF bool itl_char_is_zero_width_joiner(itl_utf8_t ch)
+{
+  return ch.size == 3 && ch.bytes[0] == 0xE2 && ch.bytes[1] == 0x80 &&
+         ch.bytes[2] == 0x8D;
+}
+
+/* The columns the character at position of the line takes as drawn. The
+   character after a zero-width joiner draws on the cell of the emoji before
+   the joiner, so a joined sequence takes the width of its first emoji. */
+ITL_DEF size_t itl_line_char_width(const itl_utf8_t *chars, size_t position)
+{
+  if (position > 0 && chars[position].size > 1 &&
+      itl_char_is_zero_width_joiner(chars[position - 1]) &&
+      !itl_char_has_visible_notation(chars[position]))
+  {
+    return 0;
+  }
+
+  return itl_char_line_width(chars[position]);
+}
+
 /* The walker consumes at most byte_length bytes and stops at a null byte. */
 ITL_DEF size_t itl_strn_width_walk(const char *cstr, size_t byte_length,
                                    size_t stop_after, size_t *out_offset)
 {
   size_t width = 0, i = 0;
+  bool is_after_joiner = false;
 
   if (cstr == NULL) {
     if (out_offset != NULL) {
@@ -2011,6 +2037,7 @@ ITL_DEF size_t itl_strn_width_walk(const char *cstr, size_t byte_length,
 
       width += 1;
       i += 1;
+      is_after_joiner = false;
       continue;
     }
 
@@ -2022,6 +2049,7 @@ ITL_DEF size_t itl_strn_width_walk(const char *cstr, size_t byte_length,
       if (width >= stop_after) break;
       width += 1;
       i += 1;
+      is_after_joiner = false;
       continue;
     }
     for (j = 1; j < rune_width; ++j) {
@@ -2031,6 +2059,7 @@ ITL_DEF size_t itl_strn_width_walk(const char *cstr, size_t byte_length,
       if (width >= stop_after) break;
       width += 1;
       i += 1;
+      is_after_joiner = false;
       continue;
     }
     for (j = 0; j < rune_width; ++j) {
@@ -2038,10 +2067,12 @@ ITL_DEF size_t itl_strn_width_walk(const char *cstr, size_t byte_length,
     }
     ch.size = j;
     {
-      size_t character_width = itl_char_width(ch);
+      size_t character_width =
+          is_after_joiner && ch.size > 1 ? 0 : itl_char_width(ch);
       if (character_width > 0 && width >= stop_after) break;
       width += character_width;
     }
+    is_after_joiner = itl_char_is_zero_width_joiner(ch);
     i += j;
   }
 
@@ -5742,7 +5773,7 @@ ITL_DEF void itl_wrap_walk_range(const itl_string_t *line, size_t from,
       continue;
     }
 
-    char_width = itl_char_line_width(line->chars[i]);
+    char_width = itl_line_char_width(line->chars, i);
 
     if (itl_wrap_is_early_break(*col, char_width, cols)) {
       *row += 1;
@@ -5866,7 +5897,7 @@ ITL_DEF size_t itl_le_reflow_rows_above_caret(const itl_le_t *le,
       continue;
     }
 
-    char_width = itl_char_line_width(le->line->chars[i]);
+    char_width = itl_line_char_width(le->line->chars, i);
 
     if (itl_wrap_is_early_break(col, char_width, ocols)) {
       rows_above += itl_reflow_row_count(col, ncols);
@@ -5922,7 +5953,7 @@ ITL_DEF size_t itl_le_index_at_visual(const itl_le_t *le, size_t tty_cols,
       row += 1;
       col = indent;
     } else {
-      size_t char_width = itl_char_line_width(le->line->chars[i]);
+      size_t char_width = itl_line_char_width(le->line->chars, i);
 
       if (itl_wrap_is_early_break(col, char_width, cols)) {
         row += 1;
@@ -6901,7 +6932,7 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
       }
 
       {
-        size_t char_width = itl_char_line_width(ch);
+        size_t char_width = itl_line_char_width(le->line->chars, i);
 
         if (itl_wrap_is_early_break(col, char_width, cols)) {
           col = itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent,
@@ -10719,18 +10750,54 @@ ITL_DEF void itl_le_yank_pop(itl_le_t *le, itl_le_action_kind previous_action)
   itl_g_le_action = ITL_LE_ACTION_YANK;
 }
 
-/* Whether the character draws on the cell of the one before it, such as a
-   combining mark or a zero-width joiner, so the two form one grapheme. */
-ITL_DEF bool itl_char_joins_previous(itl_utf8_t ch)
+ITL_DEF bool itl_char_is_regional_indicator(itl_utf8_t ch)
 {
-  return ch.size > 1 && !itl_char_has_visible_notation(ch) &&
-         itl_char_width(ch) == 0;
+  uint32_t cp;
+
+  if (ch.size != 4) {
+    return false;
+  }
+
+  cp = itl_utf8_codepoint(ch);
+  return cp >= 0x1F1E6 && cp <= 0x1F1FF;
+}
+
+/* Whether the character at position draws on the cell of the one before it,
+   so the two form one grapheme. That holds for a combining mark, a variation
+   selector, a zero-width joiner, an emoji skin tone modifier, the character
+   after a zero-width joiner, and the second regional indicator of a flag. */
+ITL_DEF bool itl_line_char_joins_previous(const itl_string_t *line,
+                                          size_t position)
+{
+  itl_utf8_t ch = line->chars[position];
+  size_t indicator_count = 0;
+
+  if (position == 0 || ch.size == 1 || itl_char_has_visible_notation(ch)) {
+    return false;
+  }
+  if (itl_char_width(ch) == 0 ||
+      itl_char_is_zero_width_joiner(line->chars[position - 1]))
+  {
+    return true;
+  }
+  if (!itl_char_is_regional_indicator(ch)) {
+    return false;
+  }
+
+  while (indicator_count < position &&
+         itl_char_is_regional_indicator(
+             line->chars[position - indicator_count - 1]))
+  {
+    indicator_count += 1;
+  }
+
+  return indicator_count % 2 == 1;
 }
 
 /* The start of the grapheme that holds the character at position. */
 ITL_DEF size_t itl_le_grapheme_start(const itl_string_t *line, size_t position)
 {
-  while (position > 0 && itl_char_joins_previous(line->chars[position])) {
+  while (position > 0 && itl_line_char_joins_previous(line, position)) {
     position -= 1;
   }
 
@@ -10742,7 +10809,7 @@ ITL_DEF size_t itl_le_grapheme_end(const itl_string_t *line, size_t position)
 {
   position += 1;
   while (position < line->length &&
-         itl_char_joins_previous(line->chars[position]))
+         itl_line_char_joins_previous(line, position))
   {
     position += 1;
   }
@@ -11135,7 +11202,9 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
           itl_le_move_right(le, ITL_LE_STEPS_TO_TOKEN_FORWARD(le));
         }
       } else {
-        itl_le_move_right(le, 1);
+        itl_le_move_right(le, itl_le_grapheme_end(le->line,
+                                                  le->cursor_position) -
+                                  le->cursor_position);
       }
     }
     itl_g_tty_should_refresh_text = false;
@@ -11155,7 +11224,9 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
           itl_le_move_left(le, ITL_LE_STEPS_TO_TOKEN_BACKWARD(le) - 1);
         }
       } else {
-        itl_le_move_left(le, 1);
+        itl_le_move_left(le, le->cursor_position -
+                                 itl_le_grapheme_start(
+                                     le->line, le->cursor_position - 1));
       }
     }
     itl_g_tty_should_refresh_text = false;
@@ -11236,8 +11307,10 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
         }
         itl_le_kill(le, steps - 1, true, previous_action);
       }
-    } else {
-      ITL_LE_ERASE_BACKWARD(le, 1);
+    } else if (le->cursor_position > 0) {
+      ITL_LE_ERASE_BACKWARD(le, le->cursor_position -
+                                    itl_le_grapheme_start(
+                                        le->line, le->cursor_position - 1));
     }
   } break;
 
@@ -11245,8 +11318,10 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     if (esc & TL_MOD_CTRL) {
       itl_le_kill(le, ITL_LE_STEPS_TO_TOKEN_FORWARD(le), false,
                   previous_action);
-    } else {
-      ITL_LE_ERASE_FORWARD(le, 1);
+    } else if (le->cursor_position < le->line->length) {
+      ITL_LE_ERASE_FORWARD(le, itl_le_grapheme_end(le->line,
+                                                   le->cursor_position) -
+                                   le->cursor_position);
     }
   } break;
 
@@ -11804,7 +11879,8 @@ ITL_DEF int itl_history_search(itl_le_t *le)
       for (pi = 0; pi < preview->length; ++pi) {
         itl_utf8_t pch = preview->chars[pi];
         bool is_newline = ITL_LE_IS_NEWLINE(pch);
-        size_t char_width = is_newline ? 1 : itl_char_line_width(pch);
+        size_t char_width =
+            is_newline ? 1 : itl_line_char_width(preview->chars, pi);
 
         if (match_width + char_width > budget) {
           break;
@@ -14072,7 +14148,10 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
       itl_g_tty_plain_append_pending =
           le->cursor_position == le->line->length;
       itl_g_tty_plain_append_width = itl_char_line_width(appended_character);
-      itl_le_insert(le, appended_character);
+      if (itl_le_insert(le, appended_character) && le->cursor_position > 0) {
+        itl_g_tty_plain_append_width =
+            itl_line_char_width(le->line->chars, le->cursor_position - 1);
+      }
       itl_g_tty_should_refresh_text = true;
       /* Recompute the ghost for the token the new character extended. */
       itl_ghost_update(le);
