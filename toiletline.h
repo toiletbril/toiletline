@@ -1858,6 +1858,34 @@ ITL_DEF size_t itl_line_char_width(const itl_utf8_t *chars, size_t position)
   return itl_char_line_width(chars[position]);
 }
 
+/* Decodes the codepoint that starts the text. A false result means the first
+   byte begins no valid sequence that fits in byte_length bytes. */
+ITL_DEF bool itl_utf8_decode_at(const char *text, size_t byte_length,
+                                itl_utf8_t *ch)
+{
+  uint8_t rune_width = itl_utf8_width((uint8_t) text[0]);
+  uint8_t j;
+
+  if (rune_width == 0 || rune_width > sizeof ch->bytes ||
+      (size_t) rune_width > byte_length)
+  {
+    return false;
+  }
+
+  for (j = 1; j < rune_width; ++j) {
+    if (((uint8_t) text[j] & 0xC0) != 0x80) {
+      return false;
+    }
+  }
+
+  for (j = 0; j < rune_width; ++j) {
+    ch->bytes[j] = (uint8_t) text[j];
+  }
+  ch->size = rune_width;
+
+  return true;
+}
+
 /* The walker consumes at most byte_length bytes and stops at a null byte. */
 ITL_DEF size_t itl_strn_width_walk(const char *cstr, size_t byte_length,
                                    size_t stop_after, size_t *out_offset)
@@ -1928,31 +1956,15 @@ ITL_DEF size_t itl_strn_width_walk(const char *cstr, size_t byte_length,
       continue;
     }
 
-    uint8_t rune_width = itl_utf8_width((uint8_t) cstr[i]);
     itl_utf8_t ch;
-    uint8_t j;
 
-    if (rune_width == 0 || i + rune_width > byte_length) {
+    if (!itl_utf8_decode_at(cstr + i, byte_length - i, &ch)) {
       if (width >= stop_after) break;
       width += 1;
       i += 1;
       is_after_joiner = false;
       continue;
     }
-    for (j = 1; j < rune_width; ++j) {
-      if (((uint8_t) cstr[i + j] & 0xC0) != 0x80) break;
-    }
-    if (j != rune_width) {
-      if (width >= stop_after) break;
-      width += 1;
-      i += 1;
-      is_after_joiner = false;
-      continue;
-    }
-    for (j = 0; j < rune_width; ++j) {
-      ch.bytes[j] = (uint8_t) cstr[i + j];
-    }
-    ch.size = j;
     {
       size_t character_width =
           is_after_joiner && ch.size > 1 ? 0 : itl_char_width(ch);
@@ -1960,7 +1972,7 @@ ITL_DEF size_t itl_strn_width_walk(const char *cstr, size_t byte_length,
       width += character_width;
     }
     is_after_joiner = itl_char_is_zero_width_joiner(ch);
-    i += j;
+    i += ch.size;
   }
 
   if (out_offset != NULL) {
@@ -3715,36 +3727,19 @@ ITL_DEF void itl_char_buf_append_line_char(itl_char_buf_t *cb, itl_utf8_t ch)
 ITL_DEF void itl_visible_step(const char *text, size_t byte_length,
                               size_t *out_bytes, size_t *out_width)
 {
-  uint8_t rune_width = itl_utf8_width((uint8_t) text[0]);
   itl_utf8_t ch;
-  uint8_t j;
 
   *out_bytes = 1;
   *out_width = ITL_HEX_NOTATION_WIDTH;
 
-  if (rune_width == 0 || rune_width > sizeof ch.bytes ||
-      (size_t) rune_width > byte_length)
-  {
+  if (!itl_utf8_decode_at(text, byte_length, &ch)) {
     return;
   }
 
-  for (j = 1; j < rune_width; ++j) {
-    if (((uint8_t) text[j] & 0xC0) != 0x80) break;
-  }
-
-  if (j != rune_width) {
-    return;
-  }
-
-  for (j = 0; j < rune_width; ++j) {
-    ch.bytes[j] = (uint8_t) text[j];
-  }
-  ch.size = rune_width;
-
-  *out_bytes = rune_width;
+  *out_bytes = ch.size;
   if (itl_char_has_visible_notation(ch)) {
     *out_width =
-        rune_width == 1 ? ITL_CARET_NOTATION_WIDTH : ITL_HEX_NOTATION_WIDTH;
+        ch.size == 1 ? ITL_CARET_NOTATION_WIDTH : ITL_HEX_NOTATION_WIDTH;
   } else {
     *out_width = itl_char_width(ch);
   }
@@ -8624,23 +8619,9 @@ ITL_DEF void itl_menu_append_elided(itl_char_buf_t *b, const char *text,
                                     size_t length, size_t width)
 {
   size_t keep = width > 3 ? width - 3 : width;
-  size_t offset = 0;
-  size_t drawn = 0;
+  size_t drawn = itl_char_buf_append_visible(b, text, length, keep);
 
-  while (offset < length) {
-    size_t step_bytes = 0;
-    size_t step_width = 0;
-
-    itl_visible_step(text + offset, length - offset, &step_bytes, &step_width);
-    if (drawn + step_width > keep) {
-      break;
-    }
-    itl_char_buf_append_visible_step(b, text + offset, step_bytes);
-    offset += step_bytes;
-    drawn += step_width;
-  }
-
-  if (offset < length && width > 3) {
+  if (width > 3 && itl_visible_width(text, length) > drawn) {
     itl_char_buf_append_cstr(b, "...");
   }
 }
@@ -11587,22 +11568,25 @@ ITL_DEF bool itl_history_candidate_matches(size_t index, const char *query,
   return itl_string_from_bytes(out, decoded, decoded_size);
 }
 
-/* Walks history backward from start_index toward older entries, returning the
-   index of the first that contains query as a substring or ITL_HISTORY_NONE
-   when none match. The matched entry is written into out. */
-ITL_DEF size_t itl_history_find_match(const char *query, size_t query_size,
-                                      size_t start_index, itl_string_t *out)
+/* Walks history from start_index toward older entries, or toward newer ones
+   when is_forward is set, returning the index of the first that contains query
+   as a substring or ITL_HISTORY_NONE when none match. The matched entry is
+   written into out. */
+ITL_DEF size_t itl_history_scan_match(const char *query, size_t query_size,
+                                      size_t start_index, bool is_forward,
+                                      itl_string_t *out)
 {
+  size_t count = itl_history_search_count();
   size_t i;
-  size_t found = ITL_HISTORY_NONE;
 
-  if (itl_history_search_count() == 0 || start_index == ITL_HISTORY_NONE ||
+  if (count == 0 || start_index == ITL_HISTORY_NONE ||
+      (is_forward && start_index >= count) ||
       (!itl_g_history_search_snapshot.is_active && itl_g_history_path == NULL))
   {
     return ITL_HISTORY_NONE;
   }
 
-  TL_ASSERT(start_index < itl_history_search_count());
+  TL_ASSERT(is_forward || start_index < count);
 
   /* One search keystroke can walk every navigable entry, decoded from the
      in-memory file buffer rather than a read per entry. */
@@ -11610,47 +11594,37 @@ ITL_DEF size_t itl_history_find_match(const char *query, size_t query_size,
     return ITL_HISTORY_NONE;
   }
 
+  if (is_forward) {
+    for (i = start_index; i < count; ++i) {
+      if (itl_history_candidate_matches(i, query, query_size, out)) {
+        return i;
+      }
+    }
+    return ITL_HISTORY_NONE;
+  }
+
   /* Count down from start_index to zero inclusive without underflowing. */
   for (i = start_index + 1; i-- > 0;) {
     if (itl_history_candidate_matches(i, query, query_size, out)) {
-      found = i;
-      break;
+      return i;
     }
   }
 
-  return found;
+  return ITL_HISTORY_NONE;
 }
 
-/* Walks history forward from start_index toward newer entries, returning the
-   index of the first that contains query as a substring or ITL_HISTORY_NONE
-   when none match. The mirror of itl_history_find_match. */
+ITL_DEF size_t itl_history_find_match(const char *query, size_t query_size,
+                                      size_t start_index, itl_string_t *out)
+{
+  return itl_history_scan_match(query, query_size, start_index, false, out);
+}
+
 ITL_DEF size_t itl_history_find_match_forward(const char *query,
                                               size_t query_size,
                                               size_t start_index,
                                               itl_string_t *out)
 {
-  size_t i;
-  size_t found = ITL_HISTORY_NONE;
-
-  if (itl_history_search_count() == 0 || start_index == ITL_HISTORY_NONE ||
-      start_index >= itl_history_search_count() ||
-      (!itl_g_history_search_snapshot.is_active && itl_g_history_path == NULL))
-  {
-    return ITL_HISTORY_NONE;
-  }
-
-  if (!itl_history_search_prepare()) {
-    return ITL_HISTORY_NONE;
-  }
-
-  for (i = start_index; i < itl_history_search_count(); ++i) {
-    if (itl_history_candidate_matches(i, query, query_size, out)) {
-      found = i;
-      break;
-    }
-  }
-
-  return found;
+  return itl_history_scan_match(query, query_size, start_index, true, out);
 }
 
 /* The newest navigable entry index, or ITL_HISTORY_NONE when history is empty.
@@ -11723,6 +11697,22 @@ ITL_DEF size_t itl_search_append_guide(itl_char_buf_t *status, size_t position,
 
   return position + text_length;
 }
+
+/* The hint row of the search block, with its key tokens bolded. */
+typedef struct
+{
+  const char *text;
+  bool is_key;
+} itl_search_guide_part;
+
+ITL_DEF const itl_search_guide_part itl_search_guide[] = {
+    {"up", true},         {"/", false},
+    {"down", true},       {" to move, ", false},
+    {"enter", true},      {"/", false},
+    {"tab", true},        {" to accept, ", false},
+    {"esc", true},        {"/", false},
+    {"ctrl-g", true},     {" to cancel", false},
+};
 
 /* Flattens the query runes into bytes so one scan can match on bytes. A rune
    that would not fit is dropped whole, keeping the result valid UTF-8. Returns
@@ -11955,29 +11945,11 @@ ITL_DEF int itl_history_search(itl_le_t *le)
 
     /* Line three, the hint with its key tokens bolded. */
     guide_position = line3_start;
-    guide_position =
-        itl_search_append_guide(&status, guide_position, "up", true);
-    guide_position =
-        itl_search_append_guide(&status, guide_position, "/", false);
-    guide_position =
-        itl_search_append_guide(&status, guide_position, "down", true);
-    guide_position =
-        itl_search_append_guide(&status, guide_position, " to move, ", false);
-    guide_position =
-        itl_search_append_guide(&status, guide_position, "enter", true);
-    guide_position =
-        itl_search_append_guide(&status, guide_position, "/", false);
-    guide_position =
-        itl_search_append_guide(&status, guide_position, "tab", true);
-    guide_position =
-        itl_search_append_guide(&status, guide_position, " to accept, ", false);
-    guide_position =
-        itl_search_append_guide(&status, guide_position, "esc", true);
-    guide_position =
-        itl_search_append_guide(&status, guide_position, "/", false);
-    guide_position =
-        itl_search_append_guide(&status, guide_position, "ctrl-g", true);
-    (void) itl_search_append_guide(&status, guide_position, " to cancel", false);
+    for (s = 0; s < ITL_COUNTOF(itl_search_guide); ++s) {
+      guide_position = itl_search_append_guide(
+          &status, guide_position, itl_search_guide[s].text,
+          itl_search_guide[s].is_key);
+    }
 
     itl_string_from_bytes(&display, status.data, status.size);
 
@@ -12005,25 +11977,22 @@ ITL_DEF int itl_history_search(itl_le_t *le)
       bool is_older_key =
           (kind == TL_KEY_HISTORY_SEARCH) || (kind == TL_KEY_DOWN);
 
-      if (is_newer_key) {
-        size_t from = (match != ITL_HISTORY_NONE) ? match + 1 : 0;
-        size_t next = itl_history_find_match_forward(query_bytes, query_size,
-                                                     from, &match_str);
+      if (is_newer_key || is_older_key) {
+        size_t from;
+        size_t next;
+
+        if (is_newer_key) {
+          from = (match != ITL_HISTORY_NONE) ? match + 1 : 0;
+        } else if (match != ITL_HISTORY_NONE) {
+          from = (match > 0) ? match - 1 : ITL_HISTORY_NONE;
+        } else {
+          from = ITL_HISTORY_NEWEST();
+        }
+        next = itl_history_scan_match(query_bytes, query_size, from,
+                                      is_newer_key, &match_str);
 
         /* A step off the newest match leaves entries above it unexamined for
            the next longer query, so the narrowed scan is no longer valid. */
-        is_narrowable = false;
-
-        if (next != ITL_HISTORY_NONE) {
-          match = next;
-        }
-      } else if (is_older_key) {
-        size_t from = (match != ITL_HISTORY_NONE)
-                          ? (match > 0 ? match - 1 : ITL_HISTORY_NONE)
-                          : ITL_HISTORY_NEWEST();
-        size_t next =
-            itl_history_find_match(query_bytes, query_size, from, &match_str);
-
         is_narrowable = false;
 
         if (next != ITL_HISTORY_NONE) {
@@ -14168,14 +14137,7 @@ TL_DEF tl_status_code tl_history_dump(const char *file_path)
 
 TL_DEF size_t tl_utf8_strlen(const char *utf8_str)
 {
-  size_t len = 0;
-  while (*utf8_str != '\0') {
-    if ((*utf8_str & 0xC0) != 0x80) {
-      len += 1;
-    }
-    utf8_str += 1;
-  }
-  return len;
+  return tl_utf8_strnlen(utf8_str, (size_t) -1);
 }
 
 TL_DEF size_t tl_utf8_strnlen(const char *utf8_str, size_t byte_count)
