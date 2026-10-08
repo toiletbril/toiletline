@@ -6866,6 +6866,24 @@ test_auto_pair_types_steps_and_erases(void)
        test_auto_pair_line_is(&le, "a (')", 4) && itl_g_auto_pair_count == 1;
   tl_set_pair_role_callback(NULL);
 
+  itl_le_clear_line(&le);
+  itl_g_auto_pair_count = 0;
+  ok = ok && itl_le_auto_pair_type(&le, '"') &&
+       itl_le_insert(&le, itl_utf8_parse('$')) &&
+       itl_le_auto_pair_type(&le, '(') &&
+       test_auto_pair_line_is(&le, "\"$()\"", 3) && itl_g_auto_pair_count == 2;
+
+  ITL_STRING_FROM_CSTR(line, "$\"");
+  le.cursor_position = 1;
+  itl_g_auto_pair_count = 0;
+  ok = ok && itl_le_auto_pair_type(&le, '{') &&
+       test_auto_pair_line_is(&le, "${}\"", 2);
+
+  ITL_STRING_FROM_CSTR(line, "\"x\"");
+  le.cursor_position = 0;
+  itl_g_auto_pair_count = 0;
+  ok = ok && !itl_le_auto_pair_type(&le, '"');
+
   tl_set_auto_pair(0);
   ITL_STRING_FREE(line);
 

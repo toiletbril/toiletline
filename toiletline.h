@@ -7166,10 +7166,12 @@ ITL_DEF uint8_t itl_le_ascii_at(const itl_le_t *le, size_t position)
   return le->line->chars[position].bytes[0];
 }
 
-/* An opener is paired only before the line end, a blank, or a closing
-   bracket, and never after a backslash. A quote after a word character or the
-   same quote more likely closes a string or sits inside a word, so it stays
-   single there. */
+/* An opener is paired only before the line end, a blank, a closing bracket, a
+   quote, or a closer the editor inserted, and never after a backslash. So an
+   opener typed inside a pair the editor made, such as $( inside a closed
+   double quote, pairs too. A quote after a word character, or next to the same
+   quote, more likely closes a string or sits inside a word, so it stays single
+   there. */
 ITL_DEF bool itl_le_auto_pair_fits(const itl_le_t *le, uint8_t opener)
 {
   size_t caret = le->cursor_position;
@@ -7177,8 +7179,9 @@ ITL_DEF bool itl_le_auto_pair_fits(const itl_le_t *le, uint8_t opener)
   uint8_t previous = caret > 0 ? itl_le_ascii_at(le, caret - 1) : ' ';
   bool is_previous_wide = caret > 0 && le->line->chars[caret - 1].size != 1;
 
-  if (caret < le->line->length && next != ' ' && next != '\t' &&
-      next != '\n' && next != ')' && next != ']' && next != '}')
+  if (caret < le->line->length && itl_g_auto_pair_count == 0 && next != ' ' &&
+      next != '\t' && next != '\n' && next != ')' && next != ']' &&
+      next != '}' && next != '"' && next != '\'')
   {
     return false;
   }
@@ -7186,7 +7189,8 @@ ITL_DEF bool itl_le_auto_pair_fits(const itl_le_t *le, uint8_t opener)
     return false;
   }
   if (opener == '"' || opener == '\'') {
-    return !is_previous_wide && !isalnum(previous) && previous != opener;
+    return !is_previous_wide && !isalnum(previous) && previous != opener &&
+           next != opener;
   }
   return true;
 }
