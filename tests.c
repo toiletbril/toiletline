@@ -2394,6 +2394,48 @@ test_vi_ex_command_keeps_the_caret(void)
 }
 #endif /* ITL_POSIX */
 
+/* A completion and the space after it are one undo step, and undoing it gives
+   back the token and the caret as they were before the TAB. */
+static bool
+test_completion_is_one_undo_step(void)
+{
+  char                      out_buffer[BUFFER_SIZE];
+  bool                      ok = true;
+  itl_le_t                  le = ITL_ZERO_INIT;
+  itl_string_t             *line = itl_string_alloc();
+  tl_completion             result = ITL_ZERO_INIT;
+  tl_space_after_completion previous_space_after =
+      itl_g_space_after_completion;
+
+  tl_set_space_after_completion(TL_SPACE_AFTER_COMPLETION_ON);
+  ITL_STRING_FROM_CSTR(line, "ls loc x");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.cursor_position = 5;
+  result.token_start = 3;
+  result.token_end = 6;
+  ok &= itl_completion_replace_token(&le, &result, "local");
+  ok &= test_line_is(line, "ls local x", "a completion inside the line");
+
+  ITL_STRING_FROM_CSTR(line, "ls fi");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  le.cursor_position = 5;
+  result.token_end = 5;
+  ok &= itl_completion_replace_token(&le, &result, "file1.txt");
+  itl_completion_append_space(&le);
+  ok &= test_line_is(line, "ls file1.txt ", "a completion with its space");
+  ok &= itl_undo_pop(&le);
+  ok &= test_line_is(line, "ls fi", "undo of the completion");
+  if (le.cursor_position != 5 || itl_undo_pop(&le)) {
+    TEST_PRINTF("undo left the caret at %zu or took two steps\n",
+                le.cursor_position);
+    ok = false;
+  }
+
+  tl_set_space_after_completion(previous_space_after);
+  ITL_STRING_FREE(line);
+  return ok;
+}
+
 #define TEST_FLAG_US   "\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"
 #define TEST_WAVE_DARK "\xF0\x9F\x91\x8B\xF0\x9F\x8F\xBF"
 #define TEST_FAMILY                                                            \
@@ -7782,6 +7824,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_transpose_characters_and_words),
                                    DEFINE_TEST_CASE(
                                        test_emoji_sequences_move_and_measure_whole),
+                                   DEFINE_TEST_CASE(
+                                       test_completion_is_one_undo_step),
                                    DEFINE_TEST_CASE(test_vi_dot_skips_a_yank),
                                    DEFINE_TEST_CASE(
                                        test_ghost_miss_skips_an_empty_word),

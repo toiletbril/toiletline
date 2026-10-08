@@ -8240,7 +8240,8 @@ ITL_DEF void itl_completion_print_list(const tl_completion *result,
 /* Replace the whole token span [token_start, token_end) with text, in codepoint
    units, leaving the cursor at the end of the inserted text. The span is erased
    first so a mid-word cursor does not keep the bytes to its right, then the
-   replacement is inserted at the token start. */
+   replacement is inserted at the token start. Both make one undo step that
+   restores the token and the caret. */
 ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
                                           const tl_completion *result,
                                           const char *text)
@@ -8280,10 +8281,18 @@ ITL_DEF bool itl_completion_replace_token(itl_le_t *le,
 
   {
     size_t token_len = token_end - token_start;
+    bool is_inserted;
 
+    itl_history_reset_after_edit(le);
+    itl_undo_push(le);
     le->cursor_position = token_start;
-    ITL_LE_ERASE_FORWARD(le, token_len);
-    return itl_le_insert_cstr(le, text);
+    if (token_len > 0) {
+      itl_string_erase(le->line, token_start, token_len, false);
+    }
+    itl_g_undo_insert_run_open = true;
+    is_inserted = itl_le_insert_cstr(le, text);
+    itl_g_undo_insert_run_open = false;
+    return is_inserted;
   }
 }
 
@@ -8298,6 +8307,8 @@ ITL_DEF bool itl_byte_is_path_separator(uint8_t byte)
   return byte == '/';
 }
 
+/* Append the space the option asks for after a completed word. The space
+   joins the undo step of the completion it follows. */
 ITL_DEF void itl_completion_append_space(itl_le_t *le)
 {
   if (itl_g_space_after_completion == TL_SPACE_AFTER_COMPLETION_OFF ||
@@ -8310,7 +8321,9 @@ ITL_DEF void itl_completion_append_space(itl_le_t *le)
           TL_SPACE_AFTER_COMPLETION_EXCEPT_AFTER_SLASH &&
       last.size == 1 && itl_byte_is_path_separator((uint8_t) last.bytes[0]))
     return;
+  itl_g_undo_insert_run_open = true;
   itl_le_insert(le, itl_utf8_parse(' '));
+  itl_g_undo_insert_run_open = false;
 }
 
 /* The selectable candidate menu drawn under the input block. Its rows sit
