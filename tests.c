@@ -4648,6 +4648,144 @@ cleanup:
 
   return result;
 }
+
+static int test_pending_gather_calls = 0;
+static int test_pending_idle_calls = 0;
+
+static int
+test_pending_gather_callback(const char *buffer, size_t cursor,
+                             tl_completion *completion, int for_listing)
+{
+  static const char *candidates[] = {"alpha"};
+
+  (void) buffer;
+  (void) for_listing;
+  test_pending_gather_calls += 1;
+  if (test_pending_gather_calls <= 2) {
+    return TL_COMPLETE_PENDING;
+  }
+
+  completion->candidates = candidates;
+  completion->descriptions = NULL;
+  completion->longest_common_prefix = "alpha";
+  completion->count = 1;
+  completion->token_start = 0;
+  completion->token_end = cursor;
+  completion->is_space_suppressed = 1;
+
+  return 1;
+}
+
+static int
+test_pending_idle_callback(const char *buffer, size_t cursor)
+{
+  (void) buffer;
+  (void) cursor;
+  test_pending_idle_calls += 1;
+
+  return test_pending_idle_calls >= 2 ? TL_IDLE_REFRESH : TL_IDLE_AGAIN;
+}
+
+/* Press TAB on "al" with a host that answers pending twice. The keys are
+   written before the press and the pipe stays open so the wait never sees an
+   end of input. Returns false when the press was not handled. */
+static bool
+pending_gather_press(const char *keys, char *out_line, size_t out_size,
+                     bool *out_is_byte_pending)
+{
+  char           out_buffer[BUFFER_SIZE];
+  int            pipe_descriptors[2] = {-1, -1};
+  int            saved_stdin = -1;
+  int            was_menu_enabled = itl_g_completion_menu_enabled;
+  bool           was_handled = false;
+  tl_status_code completion_code = TL_SUCCESS;
+  itl_le_t       le = ITL_ZERO_INIT;
+  itl_string_t  *line = itl_string_alloc();
+
+  *out_is_byte_pending = false;
+  itl_g_pushback_byte = -1;
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+  if (strlen(keys) > 0 &&
+      write(pipe_descriptors[1], keys, strlen(keys)) != (ssize_t) strlen(keys))
+  {
+    goto cleanup;
+  }
+  saved_stdin = dup(STDIN_FILENO);
+  if (saved_stdin < 0 || dup2(pipe_descriptors[0], STDIN_FILENO) < 0)
+    goto cleanup;
+
+  ITL_STRING_FROM_CSTR(line, "al");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_g_tty_changed_size = 0;
+  itl_g_completion_menu_enabled = 0;
+  test_pending_gather_calls = 0;
+  test_pending_idle_calls = 0;
+  tl_set_complete_callback(test_pending_gather_callback);
+  tl_set_idle_callback(test_pending_idle_callback, 0, 5);
+
+  was_handled = itl_completion_handle_tab(&le, &completion_code);
+  *out_is_byte_pending = itl_input_is_pending();
+  itl_string_to_cstr(line, out_line, out_size);
+
+cleanup:
+  tl_set_complete_callback(NULL);
+  tl_set_idle_callback(NULL, 0, 0);
+  itl_g_completion_menu_enabled = was_menu_enabled;
+  itl_g_idle_is_load_poll = false;
+  itl_g_pushback_byte = -1;
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+  ITL_STRING_FREE(line);
+  itl_g_tty_changed_size = 1;
+
+  return was_handled;
+}
+
+static bool
+test_pending_gather_polls_the_idle_hook(void)
+{
+  char line_buffer[BUFFER_SIZE] = "";
+  bool is_byte_pending = false;
+  bool did_finish =
+      pending_gather_press("", line_buffer, sizeof(line_buffer),
+                           &is_byte_pending) &&
+      strcmp(line_buffer, "alpha") == 0 && test_pending_gather_calls == 3 &&
+      test_pending_idle_calls == 3 && !is_byte_pending;
+  bool did_serve_key;
+  bool did_close_on_escape;
+  bool did_close_on_interrupt;
+
+  did_serve_key =
+      pending_gather_press("x", line_buffer, sizeof(line_buffer),
+                           &is_byte_pending) &&
+      strcmp(line_buffer, "al") == 0 && test_pending_gather_calls == 1 &&
+      is_byte_pending;
+  did_close_on_escape =
+      pending_gather_press("\x1b", line_buffer, sizeof(line_buffer),
+                           &is_byte_pending) &&
+      strcmp(line_buffer, "al") == 0 && !is_byte_pending;
+  did_close_on_interrupt =
+      pending_gather_press("\x03", line_buffer, sizeof(line_buffer),
+                           &is_byte_pending) &&
+      strcmp(line_buffer, "al") == 0 && !is_byte_pending;
+
+  if (!(did_finish && did_serve_key && did_close_on_escape &&
+        did_close_on_interrupt))
+  {
+    TEST_PRINTF("line '%s' pending %d calls %d\n", line_buffer,
+                (int) is_byte_pending, test_pending_gather_calls);
+    TEST_PRINTF("finish %d, key %d, escape %d, interrupt %d\n",
+                (int) did_finish, (int) did_serve_key,
+                (int) did_close_on_escape, (int) did_close_on_interrupt);
+  }
+
+  return did_finish && did_serve_key && did_close_on_escape &&
+         did_close_on_interrupt;
+}
 #endif
 
 static int
@@ -8048,6 +8186,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_pending_resize_wakes_input_wait),
                                    DEFINE_TEST_CASE(
                                        test_idle_hook_runs_in_the_input_wait),
+                                   DEFINE_TEST_CASE(
+                                       test_pending_gather_polls_the_idle_hook),
                                    DEFINE_TEST_CASE(
                                        test_write_all_resumes_a_partial_write),
 #endif
