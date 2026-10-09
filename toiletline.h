@@ -9482,8 +9482,10 @@ ITL_DEF int itl_complete_gather(itl_le_t *le, const char *line,
   return handled;
 }
 
-/* Whether the last regather left its loading frame on the screen. */
+/* Whether the last regather left its loading frame on the screen, and whether
+   a key ended it before the host finished. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_regather_is_drawn = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_regather_was_abandoned = false;
 
 /* Ask the host for the candidates of the line as it stands now. The host keeps
    its storage valid until the next call. A fresh result replaces the one the
@@ -9509,6 +9511,7 @@ ITL_DEF bool itl_menu_regather(itl_le_t *le, tl_completion *result)
   handled = itl_complete_gather(le, line_cstr, &fresh, false, &is_abandoned,
                                 &is_drawn);
   itl_g_regather_is_drawn = is_drawn;
+  itl_g_regather_was_abandoned = is_abandoned;
   if (!handled) {
     return false;
   }
@@ -9816,10 +9819,14 @@ ITL_DEF ITL_THREAD_LOCAL unsigned char
 /* The list the source last gave and the query it answered. Typing narrows this
    list in place. The source is asked again only when the line no longer
    extends the query, or when the local list has no row for it. base_tier is
-   the best tier any base row reaches against that query. is_regather_armed is
-   set while the line has left a base longer than ITL_MENU_DEBOUNCE_THRESHOLD:
-   the menu shows no rows and the source is asked once the typing pauses. */
-#define ITL_MENU_DEBOUNCE_THRESHOLD 128
+   the best tier any base row reaches against that query. is_debounced is set
+   when the line leaves a base longer than ITL_MENU_DEBOUNCE_THRESHOLD and
+   holds for the word being typed: every question to the source for that word
+   is put off, whatever size the new base has, and a key that moves the token
+   to a new word clears it. is_regather_armed is set while a question is put
+   off: the menu shows no rows and the source is asked once the typing
+   pauses. */
+#define ITL_MENU_DEBOUNCE_THRESHOLD 512
 
 typedef struct itl_menu_filter_state
 {
@@ -9828,7 +9835,7 @@ typedef struct itl_menu_filter_state
   size_t query_len;
   size_t name_width;
   unsigned base_tier;
-  bool should_regather;
+  bool is_debounced;
   bool is_regather_armed;
 } itl_menu_filter_state;
 
@@ -10096,15 +10103,425 @@ ITL_DEF bool itl_menu_filter_prefix(const tl_completion *base,
                              ITL_MENU_RANK_PREFIX + 1, result);
 }
 
+/* Narrow a base list the way its source answers a longer query. A host that
+   ranked the list by tiers keeps the best one, a host that did not keeps every
+   row the query opens, and any other source ranks by where the query sits. */
+ITL_DEF bool itl_menu_filter_base(const itl_menu_source *source,
+                                  const tl_completion *base,
+                                  unsigned base_tier, const char *query,
+                                  size_t query_len, tl_completion *result)
+{
+  if (!source->should_keep_best_tier) {
+    return itl_menu_filter(base, query, query_len, result);
+  }
+  if (base->is_tier_ranked) {
+    return itl_menu_filter_tier(base, query, query_len, base_tier, result);
+  }
+
+  return itl_menu_filter_prefix(base, query, query_len, result);
+}
+
+/* True when a typed byte moves where the token starts. A blank opens the next
+   word, a quote changes how the token is read, and an equals sign opens the
+   value of an assignment or a flag. The source then lists a different span. */
+ITL_DEF bool itl_menu_byte_moves_token(uint8_t byte)
+{
+  return ITL_CHAR_IS_SPACE(byte) || byte == '\'' || byte == '"' ||
+         byte == '=';
+}
+
+/* The bases a completion menu has gathered, kept until it closes. A base is
+   keyed by the line before its token, the line after the caret, and the query
+   it answered. A key that returns to a word the menu already gathered, or
+   extends one, is answered from here and the host is not asked again. The
+   copies own their bytes, since the host lends its storage only until the next
+   call. The slot a base in use lives in is never reused. */
+#define ITL_MENU_CACHE_MAX       8
+#define ITL_MENU_CACHE_BYTES_MAX 2097152
+
+typedef struct itl_menu_cache_entry
+{
+  char *pool;
+  const char **rows;
+  const char *prefix;
+  size_t prefix_len;
+  const char *suffix;
+  size_t suffix_len;
+  const char *query;
+  size_t query_len;
+  tl_completion base;
+  unsigned base_tier;
+  size_t name_width;
+  size_t tick;
+} itl_menu_cache_entry;
+
+ITL_DEF ITL_THREAD_LOCAL itl_menu_cache_entry
+    itl_g_menu_cache[ITL_MENU_CACHE_MAX];
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_menu_cache_is_open = false;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_menu_cache_tick = 0;
+
+ITL_DEF void itl_menu_cache_entry_free(itl_menu_cache_entry *entry)
+{
+  if (entry->pool != NULL) {
+    ITL_FREE(entry->pool);
+  }
+  if (entry->rows != NULL) {
+    ITL_FREE(entry->rows);
+  }
+
+  memset(entry, 0, sizeof(*entry));
+}
+
+/* Drop every copy and stop keeping new ones. */
+ITL_DEF void itl_menu_cache_close(void)
+{
+  size_t index;
+
+  for (index = 0; index < ITL_MENU_CACHE_MAX; ++index) {
+    itl_menu_cache_entry_free(&itl_g_menu_cache[index]);
+  }
+
+  itl_g_menu_cache_is_open = false;
+}
+
+/* Start a menu with an empty cache. */
+ITL_DEF void itl_menu_cache_open(void)
+{
+  itl_menu_cache_close();
+  itl_g_menu_cache_is_open = true;
+}
+
+/* Where the line splits at the token start and at the caret, in bytes. The
+   line is copied into out. Returns false when the line does not fit or the
+   token starts after the caret. */
+ITL_DEF bool itl_menu_cache_split(const itl_le_t *le, size_t token_start,
+                                  char *out, size_t out_size,
+                                  size_t *out_token_byte,
+                                  size_t *out_cursor_byte)
+{
+  size_t token_byte = 0;
+  size_t cursor_byte = 0;
+  size_t index;
+
+  if (token_start > le->cursor_position ||
+      itl_string_to_cstr(le->line, out, out_size) != TL_SUCCESS)
+  {
+    return false;
+  }
+
+  for (index = 0; index < le->cursor_position; ++index) {
+    if (index == token_start) {
+      token_byte = cursor_byte;
+    }
+    cursor_byte += le->line->chars[index].size;
+  }
+  if (token_start == le->cursor_position) {
+    token_byte = cursor_byte;
+  }
+
+  *out_token_byte = token_byte;
+  *out_cursor_byte = cursor_byte;
+
+  return true;
+}
+
+/* Keep a copy of the base the menu just adopted, with the line it answers.
+   token_start is the codepoint index its token starts at. A base whose token
+   does not end at the caret, one too large, and one not worth a slot are not
+   kept. */
+ITL_DEF void itl_menu_cache_store(const itl_le_t *le,
+                                  const itl_menu_source *source,
+                                  const itl_menu_filter_state *state)
+{
+  const tl_completion *base = &state->base;
+  char line[ITL_STRING_MAX_LEN];
+  size_t token_byte;
+  size_t cursor_byte;
+  size_t line_len;
+  size_t bytes;
+  size_t index;
+  size_t slot = ITL_MENU_CACHE_MAX;
+  bool has_descriptions = base->descriptions != NULL && base->count > 0;
+  itl_menu_cache_entry fresh;
+  char *cursor;
+
+  if (!itl_g_menu_cache_is_open || !source->should_keep_best_tier ||
+      base->token_end != le->cursor_position ||
+      !itl_menu_cache_split(le, base->token_start, line, sizeof(line),
+                            &token_byte, &cursor_byte))
+  {
+    return;
+  }
+  if (cursor_byte - token_byte != state->query_len ||
+      memcmp(line + token_byte, state->query, state->query_len) != 0)
+  {
+    return;
+  }
+
+  line_len = strlen(line);
+  bytes = line_len + 3 + state->query_len;
+  if (base->longest_common_prefix != NULL) {
+    bytes += strlen(base->longest_common_prefix) + 1;
+  }
+  for (index = 0; index < base->count; ++index) {
+    bytes += strlen(base->candidates[index]) + 1;
+    if (has_descriptions && base->descriptions[index] != NULL) {
+      bytes += strlen(base->descriptions[index]) + 1;
+    }
+  }
+  if (bytes + base->count * 2 * sizeof(char *) > ITL_MENU_CACHE_BYTES_MAX) {
+    return;
+  }
+
+  for (index = 0; index < ITL_MENU_CACHE_MAX; ++index) {
+    itl_menu_cache_entry *entry = &itl_g_menu_cache[index];
+
+    if (entry->pool != NULL && entry->base.token_start == base->token_start &&
+        entry->prefix_len == token_byte && entry->query_len == state->query_len &&
+        entry->suffix_len == line_len - cursor_byte &&
+        memcmp(entry->prefix, line, token_byte) == 0 &&
+        memcmp(entry->query, state->query, state->query_len) == 0 &&
+        memcmp(entry->suffix, line + cursor_byte, entry->suffix_len) == 0)
+    {
+      if (entry->base.candidates == base->candidates) {
+        return;
+      }
+      slot = index;
+      break;
+    }
+  }
+  if (slot == ITL_MENU_CACHE_MAX) {
+    size_t oldest = (size_t) -1;
+
+    for (index = 0; index < ITL_MENU_CACHE_MAX; ++index) {
+      itl_menu_cache_entry *entry = &itl_g_menu_cache[index];
+
+      if (entry->pool == NULL) {
+        slot = index;
+        break;
+      }
+      if (entry->base.candidates != base->candidates &&
+          (slot == ITL_MENU_CACHE_MAX || entry->tick < oldest))
+      {
+        slot = index;
+        oldest = entry->tick;
+      }
+    }
+  }
+  if (slot == ITL_MENU_CACHE_MAX) {
+    return;
+  }
+  memset(&fresh, 0, sizeof(fresh));
+  fresh.pool = (char *) itl_malloc(bytes);
+  fresh.rows = (const char **) itl_malloc(
+      (base->count > 0 ? base->count * 2 : 1) * sizeof(char *));
+  cursor = fresh.pool;
+
+  fresh.prefix = cursor;
+  memcpy(cursor, line, token_byte);
+  cursor[token_byte] = '\0';
+  fresh.prefix_len = token_byte;
+  cursor += token_byte + 1;
+
+  fresh.suffix = cursor;
+  fresh.suffix_len = line_len - cursor_byte;
+  memcpy(cursor, line + cursor_byte, fresh.suffix_len);
+  cursor[fresh.suffix_len] = '\0';
+  cursor += fresh.suffix_len + 1;
+
+  fresh.query = cursor;
+  fresh.query_len = state->query_len;
+  memcpy(cursor, state->query, state->query_len);
+  cursor[state->query_len] = '\0';
+  cursor += state->query_len + 1;
+
+  fresh.base = *base;
+  fresh.base.longest_common_prefix = NULL;
+  if (base->longest_common_prefix != NULL) {
+    size_t length = strlen(base->longest_common_prefix);
+
+    fresh.base.longest_common_prefix = cursor;
+    memcpy(cursor, base->longest_common_prefix, length + 1);
+    cursor += length + 1;
+  }
+
+  for (index = 0; index < base->count; ++index) {
+    size_t length = strlen(base->candidates[index]);
+
+    fresh.rows[index] = cursor;
+    memcpy(cursor, base->candidates[index], length + 1);
+    cursor += length + 1;
+    if (has_descriptions) {
+      if (base->descriptions[index] != NULL) {
+        length = strlen(base->descriptions[index]);
+        fresh.rows[base->count + index] = cursor;
+        memcpy(cursor, base->descriptions[index], length + 1);
+        cursor += length + 1;
+      } else {
+        fresh.rows[base->count + index] = NULL;
+      }
+    }
+  }
+
+  fresh.base.candidates = fresh.rows;
+  fresh.base.descriptions = has_descriptions ? fresh.rows + base->count : NULL;
+  fresh.base_tier = state->base_tier;
+  fresh.name_width = state->name_width;
+  itl_g_menu_cache_tick += 1;
+  fresh.tick = itl_g_menu_cache_tick;
+
+  itl_menu_cache_entry_free(&itl_g_menu_cache[slot]);
+  itl_g_menu_cache[slot] = fresh;
+}
+
+/* Make a copy the base the narrowing reads and answer the typed text from it.
+   Returns false when the copy has no row for the text and the source must be
+   asked. */
+ITL_DEF bool itl_menu_cache_apply(const itl_le_t *le,
+                                  const itl_menu_source *source,
+                                  itl_menu_filter_state *state,
+                                  tl_completion *result,
+                                  itl_menu_cache_entry *entry,
+                                  const char *typed, size_t typed_len)
+{
+  tl_completion answer = entry->base;
+  bool is_exact = typed_len == entry->query_len &&
+                  memcmp(typed, entry->query, typed_len) == 0;
+
+  answer.token_end = le->cursor_position;
+  if (!is_exact &&
+      (entry->base.count > ITL_MENU_FILTER_SCAN_MAX ||
+       !itl_menu_filter_base(source, &entry->base, entry->base_tier, typed,
+                             typed_len, &answer)))
+  {
+    return false;
+  }
+
+  state->base = entry->base;
+  state->base.token_end = le->cursor_position;
+  memcpy(state->query, entry->query, entry->query_len + 1);
+  state->query_len = entry->query_len;
+  state->base_tier = entry->base_tier;
+  state->name_width = is_exact ? entry->name_width : itl_menu_name_width(&answer);
+  state->is_regather_armed = false;
+  itl_g_menu_due_ms = 0;
+  itl_g_menu_cache_tick += 1;
+  entry->tick = itl_g_menu_cache_tick;
+  *result = answer;
+
+  return true;
+}
+
+/* Answer the line as it stands from a base the menu already gathered. The base
+   of the longest query the typed text extends is tried first, and a base the
+   text cannot narrow gives way to the next. The bytes the text adds to a
+   query must not move the token. Returns false when no base has a row for the
+   line and the source must be asked. */
+ITL_DEF bool itl_menu_cache_answer(const itl_le_t *le,
+                                   const itl_menu_source *source,
+                                   itl_menu_filter_state *state,
+                                   tl_completion *result)
+{
+  char line[ITL_STRING_MAX_LEN];
+  bool is_tried[ITL_MENU_CACHE_MAX] = {false};
+  size_t token_byte;
+  size_t cursor_byte;
+  size_t line_len;
+  size_t round;
+
+  if (!itl_g_menu_cache_is_open || !source->should_keep_best_tier ||
+      !itl_menu_cache_split(le, le->cursor_position, line, sizeof(line),
+                            &token_byte, &cursor_byte))
+  {
+    return false;
+  }
+
+  line_len = strlen(line);
+
+  for (round = 0; round < ITL_MENU_CACHE_MAX; ++round) {
+    itl_menu_cache_entry *best = NULL;
+    size_t best_index = 0;
+    size_t index;
+
+    for (index = 0; index < ITL_MENU_CACHE_MAX; ++index) {
+      itl_menu_cache_entry *entry = &itl_g_menu_cache[index];
+      size_t typed_len;
+      size_t position;
+      bool is_moved = false;
+
+      if (entry->pool == NULL || is_tried[index] ||
+          entry->prefix_len + entry->query_len > cursor_byte ||
+          entry->suffix_len != line_len - cursor_byte ||
+          memcmp(line, entry->prefix, entry->prefix_len) != 0 ||
+          memcmp(line + cursor_byte, entry->suffix, entry->suffix_len) != 0 ||
+          (best != NULL && entry->query_len < best->query_len))
+      {
+        continue;
+      }
+
+      typed_len = cursor_byte - entry->prefix_len;
+      if (!itl_ascii_prefix_matches_casefold(line + entry->prefix_len,
+                                             entry->query, entry->query_len))
+      {
+        continue;
+      }
+
+      if (typed_len > entry->query_len && source->should_regather_new_words &&
+          (entry->query_len == 0 ||
+           (source->can_descend &&
+            itl_byte_is_path_separator(
+                (uint8_t) entry->query[entry->query_len - 1]))))
+      {
+        continue;
+      }
+
+      for (position = entry->prefix_len + entry->query_len;
+           position < cursor_byte; ++position)
+      {
+        uint8_t byte = (uint8_t) line[position];
+
+        if ((source->should_regather_new_words &&
+             itl_menu_byte_moves_token(byte)) ||
+            (source->can_descend && itl_byte_is_path_separator(byte)))
+        {
+          is_moved = true;
+          break;
+        }
+      }
+      if (is_moved) {
+        continue;
+      }
+
+      best = entry;
+      best_index = index;
+    }
+
+    if (best == NULL) {
+      break;
+    }
+
+    is_tried[best_index] = true;
+    if (itl_menu_cache_apply(le, source, state, result, best,
+                             line + best->prefix_len,
+                             cursor_byte - best->prefix_len))
+    {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /* Take the list the source just gave as the base the narrowing reads, together
-   with the query it answered. A token the line cannot hand back leaves an
-   empty base and the next key reaches the source. */
-ITL_DEF void itl_menu_adopt_base(itl_le_t *le, itl_menu_filter_state *state,
+   with the query it answered, and keep a copy of it for the keys that return
+   to it. A token the line cannot hand back leaves an empty base and the next
+   key reaches the source. */
+ITL_DEF void itl_menu_adopt_base(itl_le_t *le, const itl_menu_source *source,
+                                 itl_menu_filter_state *state,
                                  const tl_completion *result)
 {
   state->base = *result;
   state->name_width = itl_menu_name_width(result);
-  state->should_regather = false;
   state->is_regather_armed = false;
 
   if (!itl_menu_query_text(le, result, state->query, sizeof(state->query),
@@ -10120,6 +10537,10 @@ ITL_DEF void itl_menu_adopt_base(itl_le_t *le, itl_menu_filter_state *state,
       state->base.count < ITL_MENU_FILTER_SCAN_MAX ? state->base.count
                                                    : ITL_MENU_FILTER_SCAN_MAX,
       state->query, state->query_len);
+
+  if (state->base.count > 0) {
+    itl_menu_cache_store(le, source, state);
+  }
 }
 
 /* Ask the source for the line as it stands with its loading frame allowed. A
@@ -10137,6 +10558,7 @@ ITL_DEF bool itl_menu_gather_framed(itl_le_t *le, const itl_menu_source *source,
     itl_loading_frame_draw(le);
   }
 
+  itl_g_regather_was_abandoned = false;
   is_gathered = source->gather(le, result);
   itl_g_loading_source = NULL;
 
@@ -10158,59 +10580,71 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
     }
     state->base.count = 0;
     state->name_width = 0;
-    state->should_regather = false;
     state->is_regather_armed = false;
 
     return false;
   }
 
-  itl_menu_adopt_base(le, state, result);
+  itl_menu_adopt_base(le, source, state, result);
 
   return true;
 }
 
-/* Ask the source for the line as it stands, unless the line left a base longer
-   than ITL_MENU_DEBOUNCE_THRESHOLD. The source then lists a different span,
-   which may cost the host more than a keystroke should wait for, so the menu
-   shows no rows and the question is put off by one idle delay. Every further
-   key moves that moment and the source is asked once, when the typing stops.
-   A shorter base, or a host with no idle delay, asks at once. Returns false
-   when the source was asked and has nothing. */
-ITL_DEF bool itl_menu_regather_soon(itl_le_t *le, const itl_menu_source *source,
-                                    itl_menu_filter_state *state,
-                                    tl_completion *result)
+/* A key moved the token to a new word. The pause of the word before it ends,
+   and the list being left decides again whether the new word waits. */
+ITL_DEF void itl_menu_start_word(itl_menu_filter_state *state)
 {
-  if (!state->is_regather_armed &&
-      (state->base.count <= ITL_MENU_DEBOUNCE_THRESHOLD ||
-       itl_g_idle_callback == NULL || itl_g_idle_delay_ms <= 0))
+  state->is_debounced = false;
+  state->is_regather_armed = false;
+  itl_g_menu_due_ms = 0;
+}
+
+/* Answer the line as it stands from a base the menu already gathered, and when
+   none has a row for it ask the source. When the line leaves a base longer
+   than ITL_MENU_DEBOUNCE_THRESHOLD, or one longer than one scan when
+   is_long_base_asked_at_once is false, the source may list a different span
+   that costs the host more than a keystroke should wait for. The menu then
+   shows no rows and the question is put off by one idle delay, and every
+   question for the same word is put off the same way. Each key moves that
+   moment, so the source is asked once, when the typing stops. A shorter base,
+   or a host with no idle delay, asks at once, and the ask is polled through the
+   pending protocol so a key is served while the host works. Returns false when
+   the source was asked and has nothing. */
+ITL_DEF bool itl_menu_regather_after(itl_le_t *le, const itl_menu_source *source,
+                                     itl_menu_filter_state *state,
+                                     tl_completion *result,
+                                     bool is_long_base_asked_at_once)
+{
+  if (itl_menu_cache_answer(le, source, state, result)) {
+    return true;
+  }
+
+  if (itl_g_idle_callback == NULL || itl_g_idle_delay_ms <= 0 ||
+      (!state->is_debounced && !state->is_regather_armed &&
+       (state->base.count <= ITL_MENU_DEBOUNCE_THRESHOLD ||
+        is_long_base_asked_at_once)))
   {
-    return itl_menu_rebase(le, source, state, result);
+    if (itl_menu_rebase(le, source, state, result)) {
+      return true;
+    }
+    if (!itl_g_regather_was_abandoned) {
+      return false;
+    }
   }
 
   itl_menu_empty_candidates(result);
+  state->is_debounced = true;
   state->is_regather_armed = true;
   itl_g_menu_due_ms = itl_monotonic_ms() + (uint64_t) itl_g_idle_delay_ms;
 
   return true;
 }
 
-/* Narrow the base list the way its source answers a longer query. A host that
-   ranked the list by tiers keeps the best one, a host that did not keeps every
-   row the query opens, and any other source ranks by where the query sits. */
-ITL_DEF bool itl_menu_filter_for(const itl_menu_source *source,
-                                 const itl_menu_filter_state *state,
-                                 const char *query, size_t query_len,
-                                 tl_completion *result)
+ITL_DEF bool itl_menu_regather_soon(itl_le_t *le, const itl_menu_source *source,
+                                    itl_menu_filter_state *state,
+                                    tl_completion *result)
 {
-  if (!source->should_keep_best_tier) {
-    return itl_menu_filter(&state->base, query, query_len, result);
-  }
-  if (state->base.is_tier_ranked) {
-    return itl_menu_filter_tier(&state->base, query, query_len,
-                                state->base_tier, result);
-  }
-
-  return itl_menu_filter_prefix(&state->base, query, query_len, result);
+  return itl_menu_regather_after(le, source, state, result, false);
 }
 
 /* Answer the line as it stands from the base list, and fall back to the source
@@ -10219,9 +10653,9 @@ ITL_DEF bool itl_menu_filter_for(const itl_menu_source *source,
    and an erase that keeps the gathered query widens it the same way. An erase
    below that query, a line with no local match, a source that keeps the best
    tier when the local best tier is not the one it answered with, and a base
-   longer than one scan reaches all go to the source, and a base longer than
-   ITL_MENU_DEBOUNCE_THRESHOLD but within one scan puts the question off until
-   the typing pauses. Returns false when neither has a row. */
+   longer than one scan go on to the bases the menu gathered before, and then to
+   the source, which a debounced menu asks once the typing pauses. Returns
+   false when none has a row. */
 ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
                              itl_menu_filter_state *state,
                              tl_completion *result)
@@ -10229,7 +10663,7 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
   char query[ITL_STRING_MAX_LEN];
   size_t query_len = 0;
 
-  if (state->should_regather || state->is_regather_armed) {
+  if (state->is_regather_armed) {
     return itl_menu_regather_soon(le, source, state, result);
   }
 
@@ -10241,7 +10675,8 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
       return false;
     }
     if (state->base.count <= ITL_MENU_FILTER_SCAN_MAX &&
-        itl_menu_filter_for(source, state, query, query_len, result))
+        itl_menu_filter_base(source, &state->base, state->base_tier, query,
+                             query_len, result))
     {
       state->name_width = itl_menu_name_width(result);
 
@@ -10249,18 +10684,16 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
     }
   }
 
-  if (state->base.count > ITL_MENU_FILTER_SCAN_MAX) {
-    return itl_menu_rebase(le, source, state, result);
-  }
-
-  return itl_menu_regather_soon(le, source, state, result);
+  return itl_menu_regather_after(
+      le, source, state, result, state->base.count > ITL_MENU_FILTER_SCAN_MAX);
 }
 
 /* The pause that a put off gather waited for has come, or Tab asked for the
    rows now. The source is asked once for the line as it stands. A key that
-   ended the gather stays pending for the loop and puts the question off again,
-   and a source with nothing leaves the menu empty and asks again at the next
-   key. */
+   ended the gather before the host finished stays pending for the loop and
+   moves the pause, and the host resumes its work at the next question. A
+   source with nothing leaves the menu empty, and the next key that leaves the
+   list is put off again. */
 ITL_DEF void itl_menu_gather_due(itl_le_t *le, const itl_menu_source *source,
                                  itl_menu_filter_state *state,
                                  tl_completion *result)
@@ -10273,11 +10706,9 @@ ITL_DEF void itl_menu_gather_due(itl_le_t *le, const itl_menu_source *source,
   }
 
   itl_menu_empty_candidates(result);
-  if (itl_input_is_pending()) {
+  if (itl_g_regather_was_abandoned) {
     state->is_regather_armed = true;
     itl_g_menu_due_ms = itl_monotonic_ms() + (uint64_t) itl_g_idle_delay_ms;
-  } else {
-    state->should_regather = true;
   }
 }
 
@@ -10300,15 +10731,6 @@ ITL_DEF bool itl_menu_opens_component(const itl_le_t *le,
 
   return can_descend && previous.size == 1 &&
          itl_byte_is_path_separator(previous.bytes[0]);
-}
-
-/* True when a typed byte moves where the token starts. A blank opens the next
-   word, a quote changes how the token is read, and an equals sign opens the
-   value of an assignment or a flag. The source then lists a different span. */
-ITL_DEF bool itl_menu_byte_moves_token(uint8_t byte)
-{
-  return ITL_CHAR_IS_SPACE(byte) || byte == '\'' || byte == '"' ||
-         byte == '=';
 }
 
 /* Run the candidate menu until the user accepts a candidate, dismisses it, or
@@ -10346,7 +10768,8 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
       itl_string_to_cstr(le->line, original_line, sizeof(original_line)) ==
       TL_SUCCESS;
 
-  itl_menu_adopt_base(le, &state, &result);
+  state.is_debounced = false;
+  itl_menu_adopt_base(le, source, &state, &result);
   itl_g_tty_should_refresh_text = true;
 
   for (;;) {
@@ -10528,6 +10951,13 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
       itl_le_insert(le, itl_utf8_parse(byte));
       result.token_end += 1;
 
+      if ((source->should_regather_new_words &&
+           itl_menu_byte_moves_token(byte)) ||
+          (source->can_descend && itl_byte_is_path_separator(byte)))
+      {
+        itl_menu_start_word(&state);
+      }
+
       if (should_regather ||
           (source->can_descend && itl_byte_is_path_separator(byte)))
       {
@@ -10571,9 +11001,9 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
                               le->cursor_position < result.token_start;
 
       if (did_cross_token_start) {
+        itl_menu_start_word(&state);
         if (!itl_menu_regather_soon(le, source, &state, &result)) {
           itl_menu_empty_candidates(&result);
-          state.should_regather = true;
         }
       } else {
         result.token_end = erased_count >= token_length
@@ -10610,7 +11040,9 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
 
   itl_hint_hold(le);
   itl_g_menu_due_ms = 0;
+  itl_menu_cache_open();
   status = itl_completion_menu_run(le, initial, source);
+  itl_menu_cache_close();
   itl_g_menu_due_ms = 0;
   itl_hint_release();
 

@@ -3854,7 +3854,7 @@ test_menu_keys_reuse_gathered_list(void)
   return ok;
 }
 
-#define TEST_DEBOUNCE_ROW_MAX 200
+#define TEST_DEBOUNCE_ROW_MAX 640
 
 static size_t test_debounce_row_count;
 static size_t test_debounce_gather_calls;
@@ -4019,6 +4019,333 @@ test_menu_debounces_a_long_list(void)
   if (gathers == 0 || strcmp(line, "cat it ab") != 0) {
     TEST_PRINTF("a list at the threshold put the gather off, %zu gathers\n",
                 gathers);
+    ok = false;
+  }
+
+  return ok;
+}
+
+#define TEST_STAGED_LOG_MAX 128
+
+typedef struct test_staged_call
+{
+  uint64_t at_ms;
+  char     line[48];
+} test_staged_call;
+
+typedef struct test_staged_step
+{
+  unsigned    at_ms;
+  const char *keys;
+} test_staged_step;
+
+static test_staged_call test_staged_log[TEST_STAGED_LOG_MAX];
+static size_t           test_staged_call_count;
+static size_t           test_staged_row_count;
+static size_t           test_staged_pending_needed;
+static size_t           test_staged_work_done;
+static size_t           test_staged_finished_count;
+static char             test_staged_work_prefix[48];
+static uint64_t         test_staged_start_ms;
+
+/* A completion host whose token is the last word of the line. It answers
+   TL_COMPLETE_PENDING until test_staged_pending_needed calls of work have been
+   done for the text before that word, keeps the work between questions, and
+   then offers test_staged_row_count rows. Every question is logged with its
+   time. */
+static int
+test_staged_host(const char *buffer, size_t cursor, tl_completion *out,
+                 int for_listing)
+{
+  static char        names[TEST_DEBOUNCE_ROW_MAX][12];
+  static const char *candidates[TEST_DEBOUNCE_ROW_MAX];
+  size_t             start = cursor;
+  size_t             i;
+
+  (void) for_listing;
+
+  while (start > 0 && buffer[start - 1] != ' ') {
+    start -= 1;
+  }
+
+  if (strlen(test_staged_work_prefix) != start ||
+      strncmp(test_staged_work_prefix, buffer, start) != 0)
+  {
+    memcpy(test_staged_work_prefix, buffer, start);
+    test_staged_work_prefix[start] = '\0';
+    test_staged_work_done = 0;
+  }
+
+  if (test_staged_call_count < TEST_STAGED_LOG_MAX) {
+    test_staged_log[test_staged_call_count].at_ms =
+        itl_monotonic_ms() - test_staged_start_ms;
+    snprintf(test_staged_log[test_staged_call_count].line,
+             sizeof(test_staged_log[0].line), "%s", buffer);
+  }
+  test_staged_call_count += 1;
+
+  if (test_staged_work_done < test_staged_pending_needed) {
+    test_staged_work_done += 1;
+
+    return TL_COMPLETE_PENDING;
+  }
+
+  test_staged_work_done = 0;
+  test_staged_finished_count += 1;
+  for (i = 0; i < test_staged_row_count; ++i) {
+    snprintf(names[i], sizeof(names[i]), "item%03zu", i);
+    candidates[i] = names[i];
+  }
+
+  out->candidates = candidates;
+  out->descriptions = NULL;
+  out->longest_common_prefix = NULL;
+  out->count = test_staged_row_count;
+  out->token_start = start;
+  out->token_end = cursor;
+  out->is_tier_ranked = 0;
+  out->is_space_suppressed = 0;
+
+  return 1;
+}
+
+static int
+test_staged_idle(const char *buffer, size_t cursor)
+{
+  (void) buffer;
+  (void) cursor;
+
+  return TL_IDLE_REFRESH;
+}
+
+/* Open a menu of 600 rows on "cat it" over the staged host and play the steps
+   against it. The host then offers row_count rows after pending_needed calls
+   of work. The input ends end_ms after the start. Returns false when the
+   scenario could not run. The idle delay is 40 ms and the poll interval 10. */
+static bool
+staged_menu_run(const test_staged_step *steps, size_t step_count,
+                unsigned end_ms, size_t row_count, size_t pending_needed,
+                char *out_line, size_t out_size)
+{
+  static const itl_menu_source source = {
+      itl_menu_regather, true, true, false, true, false, false, NULL, NULL,
+      true, true};
+  char          out_buffer[BUFFER_SIZE];
+  int           pipe_descriptors[2] = {-1, -1};
+  int           null_descriptor = -1;
+  int           saved_stdin = -1;
+  int           saved_stdout = -1;
+  pid_t         child = -1;
+  bool          did_run = false;
+  tl_completion initial = ITL_ZERO_INIT;
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  out_line[0] = '\0';
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+
+  test_staged_row_count = 600;
+  test_staged_pending_needed = 0;
+  test_staged_work_done = 0;
+  test_staged_work_prefix[0] = '\0';
+  (void) test_staged_host("cat it", 6, &initial, 1);
+  test_staged_row_count = row_count;
+  test_staged_pending_needed = pending_needed;
+  test_staged_work_done = 0;
+  test_staged_work_prefix[0] = '\0';
+  test_staged_call_count = 0;
+  test_staged_finished_count = 0;
+
+  child = fork();
+  if (child < 0) goto cleanup;
+  if (child == 0) {
+    size_t step;
+    unsigned elapsed_ms = 0;
+
+    close(pipe_descriptors[0]);
+    for (step = 0; step < step_count; ++step) {
+      if (steps[step].at_ms > elapsed_ms) {
+        usleep((steps[step].at_ms - elapsed_ms) * 1000);
+        elapsed_ms = steps[step].at_ms;
+      }
+      if (write(pipe_descriptors[1], steps[step].keys,
+                strlen(steps[step].keys)) < 0)
+      {
+        _exit(1);
+      }
+    }
+    if (end_ms > elapsed_ms) {
+      usleep((end_ms - elapsed_ms) * 1000);
+    }
+    _exit(0);
+  }
+  close(pipe_descriptors[1]);
+  pipe_descriptors[1] = -1;
+  test_staged_start_ms = itl_monotonic_ms();
+
+  null_descriptor = open("/dev/null", O_WRONLY);
+  if (null_descriptor < 0) goto cleanup;
+
+  saved_stdin = dup(STDIN_FILENO);
+  saved_stdout = dup(STDOUT_FILENO);
+  if (saved_stdin < 0 || saved_stdout < 0) goto cleanup;
+  if (dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
+      dup2(null_descriptor, STDOUT_FILENO) < 0)
+  {
+    goto cleanup;
+  }
+
+  ITL_STRING_FROM_CSTR(line, "cat it");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  tl_set_complete_callback(test_staged_host);
+  tl_set_idle_callback(test_staged_idle, 40, 10);
+
+  (void) itl_completion_menu(&le, &initial, &source);
+  itl_string_to_cstr(line, out_line, out_size);
+  did_run = true;
+
+cleanup:
+  tl_set_complete_callback(NULL);
+  tl_set_idle_callback(NULL, 0, 0);
+  itl_g_idle_is_load_poll = false;
+  itl_g_pushback_byte = -1;
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (saved_stdout >= 0) {
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+  }
+  if (null_descriptor >= 0) close(null_descriptor);
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+  if (child > 0) waitpid(child, NULL, 0);
+
+  ITL_STRING_FREE(line);
+  itl_ghost_clear();
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+
+  return did_run;
+}
+
+/* A word that put a gather off stays debounced, however small the list the
+   gather gave. Three keys typed together cost one question, asked when they
+   pause. */
+static bool
+test_menu_stays_debounced_within_the_word(void)
+{
+  static const test_staged_step steps[] = {
+      {0, " "}, {120, "a"}, {130, "b"}, {140, "c"}};
+  char line[BUFFER_SIZE];
+  bool ok = true;
+
+  if (!staged_menu_run(steps, countof(steps), 400, 3, 0, line, sizeof(line))) {
+    TEST_PRINTF("the scenario did not run\n");
+    return false;
+  }
+  if (test_staged_call_count != 2 ||
+      strcmp(test_staged_log[1].line, "cat it abc") != 0 ||
+      test_staged_log[1].at_ms < 170 || strcmp(line, "cat it abc") != 0)
+  {
+    TEST_PRINTF("%zu questions, the last for '%s' at %llu ms, line '%s'\n",
+                test_staged_call_count, test_staged_log[1].line,
+                (unsigned long long) test_staged_log[1].at_ms, line);
+    ok = false;
+  }
+
+  return ok;
+}
+
+/* A key that moves the token to a new word clears the pause of the word before
+   it. The list being left is short, so the new word asks the host at once. */
+static bool
+test_menu_new_word_asks_at_once_from_a_short_list(void)
+{
+  static const test_staged_step steps[] = {{0, " "}, {120, "a"}, {200, " "}};
+  char line[BUFFER_SIZE];
+  bool ok = true;
+
+  if (!staged_menu_run(steps, countof(steps), 500, 3, 0, line, sizeof(line))) {
+    TEST_PRINTF("the scenario did not run\n");
+    return false;
+  }
+  if (test_staged_call_count != 3 ||
+      strcmp(test_staged_log[2].line, "cat it a ") != 0 ||
+      test_staged_log[2].at_ms < 195 || test_staged_log[2].at_ms > 230)
+  {
+    TEST_PRINTF("%zu questions, the last for '%s' at %llu ms\n",
+                test_staged_call_count, test_staged_log[2].line,
+                (unsigned long long) test_staged_log[2].at_ms);
+    ok = false;
+  }
+
+  return ok;
+}
+
+/* A key that returns to a word the menu already gathered is answered from the
+   copy it kept, and the host is not asked again. */
+static bool
+test_menu_returns_to_a_gathered_word_without_asking(void)
+{
+  static const test_staged_step steps[] = {
+      {0, " "}, {120, "a"}, {300, "\x7f"}, {330, "a"}, {360, "\x7f"}};
+  char line[BUFFER_SIZE];
+  bool ok = true;
+
+  if (!staged_menu_run(steps, countof(steps), 700, 3, 0, line, sizeof(line))) {
+    TEST_PRINTF("the scenario did not run\n");
+    return false;
+  }
+  if (test_staged_call_count != 2 || strcmp(line, "cat it ") != 0) {
+    TEST_PRINTF("%zu questions for a returned word, line '%s'\n",
+                test_staged_call_count, line);
+    ok = false;
+  }
+
+  return ok;
+}
+
+/* A gather the host has not finished is resumed, not restarted. Keys typed
+   while it is unfinished end the wait and move the pause, so the host is
+   asked again only once the typing has stopped for the idle delay. */
+static bool
+test_menu_unfinished_gather_resumes_after_the_pause(void)
+{
+  static const test_staged_step steps[] = {
+      {0, " "}, {70, "a"}, {100, "b"}, {130, "c"}};
+  char   line[BUFFER_SIZE];
+  size_t gap_count = 0;
+  size_t index;
+  bool   ok = true;
+
+  if (!staged_menu_run(steps, countof(steps), 900, 3, 30, line, sizeof(line))) {
+    TEST_PRINTF("the scenario did not run\n");
+    return false;
+  }
+
+  for (index = 1; index < test_staged_call_count && index < TEST_STAGED_LOG_MAX;
+       ++index)
+  {
+    if (test_staged_log[index].at_ms - test_staged_log[index - 1].at_ms >= 25) {
+      gap_count += 1;
+      if (test_staged_log[index].at_ms < 165) {
+        TEST_PRINTF("the host was asked again at %llu ms\n",
+                    (unsigned long long) test_staged_log[index].at_ms);
+        ok = false;
+      }
+    }
+  }
+
+  if (gap_count != 1 || test_staged_call_count != 31 ||
+      test_staged_finished_count != 1)
+  {
+    TEST_PRINTF("%zu resumes, %zu questions, %zu finished gathers\n", gap_count,
+                test_staged_call_count, test_staged_finished_count);
     ok = false;
   }
 
@@ -8347,6 +8674,14 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_menu_keys_reuse_gathered_list),
                                    DEFINE_TEST_CASE(
                                        test_menu_debounces_a_long_list),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_stays_debounced_within_the_word),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_new_word_asks_at_once_from_a_short_list),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_returns_to_a_gathered_word_without_asking),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_unfinished_gather_resumes_after_the_pause),
                                    DEFINE_TEST_CASE(
                                        test_tab_prefix_menu_reuses_gather),
                                    DEFINE_TEST_CASE(
