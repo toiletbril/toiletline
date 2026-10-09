@@ -10108,6 +10108,9 @@ ITL_DEF bool itl_menu_narrow_ranked(itl_menu_index *shared,
    off: the menu shows no rows and the source is asked once the typing
    pauses. */
 #define ITL_MENU_DEBOUNCE_THRESHOLD 512
+#ifndef ITL_MENU_DEBOUNCE_MS
+#define ITL_MENU_DEBOUNCE_MS 128
+#endif
 
 typedef struct itl_menu_filter_state
 {
@@ -10812,7 +10815,7 @@ ITL_DEF bool itl_menu_regather_after(itl_le_t *le, const itl_menu_source *source
   }
 
   if (itl_g_idle_callback == NULL || itl_g_idle_delay_ms <= 0 ||
-      (!state->is_debounced && !state->is_regather_armed &&
+      (!state->is_debounced &&
        (state->base.count <= ITL_MENU_DEBOUNCE_THRESHOLD ||
         is_long_base_asked_at_once)))
   {
@@ -10822,14 +10825,29 @@ ITL_DEF bool itl_menu_regather_after(itl_le_t *le, const itl_menu_source *source
     if (!itl_g_regather_was_abandoned) {
       return false;
     }
+
+    itl_menu_empty_candidates(result);
+    state->is_regather_armed = true;
+    itl_g_menu_due_ms = itl_monotonic_ms();
+
+    return true;
   }
 
   itl_menu_empty_candidates(result);
   state->is_debounced = true;
   state->is_regather_armed = true;
-  itl_g_menu_due_ms = itl_monotonic_ms() + (uint64_t) itl_g_idle_delay_ms;
+  itl_g_menu_due_ms = itl_monotonic_ms() + (uint64_t) ITL_MENU_DEBOUNCE_MS;
 
   return true;
+}
+
+/* The moment a put off question becomes due after a key: one debounce pause
+   for a word that left a long base, and at once for a question a key only
+   interrupted. */
+ITL_DEF uint64_t itl_menu_question_due_ms(const itl_menu_filter_state *state)
+{
+  return itl_monotonic_ms() +
+         (state->is_debounced ? (uint64_t) ITL_MENU_DEBOUNCE_MS : 0);
 }
 
 ITL_DEF bool itl_menu_regather_soon(itl_le_t *le, const itl_menu_source *source,
@@ -10900,7 +10918,7 @@ ITL_DEF void itl_menu_gather_due(itl_le_t *le, const itl_menu_source *source,
   itl_menu_empty_candidates(result);
   if (itl_g_regather_was_abandoned) {
     state->is_regather_armed = true;
-    itl_g_menu_due_ms = itl_monotonic_ms() + (uint64_t) itl_g_idle_delay_ms;
+    itl_g_menu_due_ms = itl_menu_question_due_ms(state);
   }
 }
 
@@ -11033,7 +11051,7 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
       break;
     }
     if (state.is_regather_armed) {
-      itl_g_menu_due_ms = itl_monotonic_ms() + (uint64_t) itl_g_idle_delay_ms;
+      itl_g_menu_due_ms = itl_menu_question_due_ms(&state);
     }
 
     is_escape = byte == 27;

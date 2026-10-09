@@ -1,5 +1,6 @@
 #define ITL_TTY_IS_TTY() (1)
 #define TL_CTRL_Z_UNDO
+#define ITL_MENU_DEBOUNCE_MS 40
 #define TOILETLINE_IMPLEMENTATION
 #include "toiletline.h"
 
@@ -4227,6 +4228,7 @@ typedef struct test_staged_step
 static test_staged_call test_staged_log[TEST_STAGED_LOG_MAX];
 static size_t           test_staged_call_count;
 static size_t           test_staged_row_count;
+static size_t           test_staged_initial_row_count = 600;
 static size_t           test_staged_pending_needed;
 static size_t           test_staged_work_done;
 static size_t           test_staged_finished_count;
@@ -4329,7 +4331,7 @@ staged_menu_run(const test_staged_step *steps, size_t step_count,
   out_line[0] = '\0';
   if (pipe(pipe_descriptors) != 0) goto cleanup;
 
-  test_staged_row_count = 600;
+  test_staged_row_count = test_staged_initial_row_count;
   test_staged_pending_needed = 0;
   test_staged_work_done = 0;
   test_staged_work_prefix[0] = '\0';
@@ -4489,6 +4491,53 @@ test_menu_returns_to_a_gathered_word_without_asking(void)
   if (test_staged_call_count != 2 || strcmp(line, "cat it ") != 0) {
     TEST_PRINTF("%zu questions for a returned word, line '%s'\n",
                 test_staged_call_count, line);
+    ok = false;
+  }
+
+  return ok;
+}
+
+/* A short list puts no question off. A key that interrupts a question the host
+   has not finished is handled, and the host is asked again right after it with
+   no pause, so the gather goes on from the work it kept. */
+static bool
+test_menu_short_list_asks_again_after_an_interrupting_key(void)
+{
+  static const test_staged_step steps[] = {{0, " "}, {25, "a"}};
+  char   line[BUFFER_SIZE];
+  size_t index;
+  bool   was_asked_for_typed_word = false;
+  bool   ok = true;
+
+  test_staged_initial_row_count = 3;
+  if (!staged_menu_run(steps, countof(steps), 400, 3, 6, line, sizeof(line))) {
+    test_staged_initial_row_count = 600;
+    TEST_PRINTF("the scenario did not run\n");
+    return false;
+  }
+  test_staged_initial_row_count = 600;
+
+  for (index = 0; index < test_staged_call_count && index < TEST_STAGED_LOG_MAX;
+       ++index)
+  {
+    if (strcmp(test_staged_log[index].line, "cat it a") == 0) {
+      was_asked_for_typed_word = true;
+    }
+    if (index > 0 &&
+        test_staged_log[index].at_ms - test_staged_log[index - 1].at_ms >= 35)
+    {
+      TEST_PRINTF("the host waited from %llu to %llu ms\n",
+                  (unsigned long long) test_staged_log[index - 1].at_ms,
+                  (unsigned long long) test_staged_log[index].at_ms);
+      ok = false;
+    }
+  }
+
+  if (!was_asked_for_typed_word || test_staged_finished_count == 0 ||
+      strcmp(line, "cat it a") != 0)
+  {
+    TEST_PRINTF("asked for the typed word %d, %zu finished gathers, line '%s'\n",
+                was_asked_for_typed_word, test_staged_finished_count, line);
     ok = false;
   }
 
@@ -8869,6 +8918,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_menu_returns_to_a_gathered_word_without_asking),
                                    DEFINE_TEST_CASE(
                                        test_menu_unfinished_gather_resumes_after_the_pause),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_short_list_asks_again_after_an_interrupting_key),
                                    DEFINE_TEST_CASE(
                                        test_tab_prefix_menu_reuses_gather),
                                    DEFINE_TEST_CASE(
