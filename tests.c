@@ -3458,7 +3458,7 @@ test_menu_filter_groups(void)
   base.descriptions = descriptions;
   base.count = countof(candidates);
 
-  if (!itl_menu_filter(&base, "al", 2, &result)) {
+  if (!itl_menu_filter(NULL, &base, "al", 2, &result)) {
     TEST_PRINTF("a matching query kept nothing\n");
     return false;
   }
@@ -3485,12 +3485,14 @@ test_menu_filter_groups(void)
     return false;
   }
 
-  if (itl_menu_filter(&base, "zzq", 3, &result)) {
+  if (itl_menu_filter(NULL, &base, "zzq", 3, &result)) {
     TEST_PRINTF("a query matching nothing kept %zu rows\n", result.count);
     return false;
   }
 
-  if (!itl_menu_filter(&base, "", 0, &result) || result.count != base.count) {
+  if (!itl_menu_filter(NULL, &base, "", 0, &result) ||
+      result.count != base.count)
+  {
     TEST_PRINTF("an empty query kept %zu rows\n", result.count);
     return false;
   }
@@ -3510,7 +3512,8 @@ test_menu_filter_groups(void)
 
   base.descriptions = NULL;
 
-  if (!itl_menu_filter(&base, "al", 2, &result) || result.descriptions != NULL)
+  if (!itl_menu_filter(NULL, &base, "al", 2, &result) ||
+      result.descriptions != NULL)
   {
     TEST_PRINTF("a base without descriptions produced some\n");
     return false;
@@ -3541,6 +3544,188 @@ test_menu_gather(itl_le_t *le, tl_completion *result)
   result->token_end = le->line->length;
 
   return true;
+}
+
+#define TEST_REF_ROW_MAX 1500
+
+/* The narrowing as it was written before the byte class index: every row is
+   measured and ranked for every key, and the rows of the wanted ranks are
+   kept in rank order. The indexed narrowing must keep the very same rows. */
+static size_t
+test_reference_keep(const tl_completion *base, const unsigned char *ranks,
+                    unsigned first_rank, unsigned end_rank,
+                    const char **out_rows)
+{
+  size_t kept = 0;
+  size_t row;
+  unsigned rank;
+
+  for (rank = first_rank; rank < end_rank && kept < ITL_MENU_FILTER_MAX;
+       ++rank)
+  {
+    for (row = 0; row < base->count && kept < ITL_MENU_FILTER_MAX; ++row) {
+      if (ranks[row] == rank) {
+        out_rows[kept++] = base->candidates[row];
+      }
+    }
+  }
+
+  return kept;
+}
+
+static size_t
+test_reference_narrow(int mode, const tl_completion *base, const char *query,
+                      size_t query_len, unsigned base_tier,
+                      const char **out_rows)
+{
+  unsigned char ranks[TEST_REF_ROW_MAX];
+  bool is_case_sensitive = itl_menu_query_is_case_sensitive(query, query_len);
+  unsigned best = ITL_MENU_TIER_NONE;
+  size_t row;
+
+  for (row = 0; row < base->count; ++row) {
+    const char *entry = base->candidates[row];
+    size_t entry_len = strlen(entry);
+
+    if (mode == 0) {
+      ranks[row] = (unsigned char) itl_menu_match_rank(entry, entry_len, query,
+                                                       query_len);
+    } else if (mode == 1) {
+      unsigned tier = itl_menu_tier_rank(entry, entry_len, query, query_len,
+                                         is_case_sensitive);
+
+      ranks[row] = (unsigned char) tier;
+      if (tier < best) {
+        best = tier;
+      }
+    } else {
+      ranks[row] = (unsigned char) (entry_len >= query_len &&
+                                            itl_ascii_prefix_matches_casefold(
+                                                entry, query, query_len)
+                                        ? ITL_MENU_RANK_PREFIX
+                                        : ITL_MENU_RANK_NONE);
+    }
+  }
+
+  if (mode == 0) {
+    return test_reference_keep(base, ranks, 0, ITL_MENU_RANK_NONE, out_rows);
+  }
+  if (mode == 1) {
+    if (best == ITL_MENU_TIER_NONE || best != base_tier) {
+      return 0;
+    }
+
+    return test_reference_keep(base, ranks, best, best + 1, out_rows);
+  }
+
+  return test_reference_keep(base, ranks, ITL_MENU_RANK_PREFIX,
+                             ITL_MENU_RANK_PREFIX + 1, out_rows);
+}
+
+static unsigned
+test_reference_random(unsigned *state)
+{
+  *state = *state * 1664525u + 1013904223u;
+
+  return *state >> 8;
+}
+
+/* Typing and erasing over generated lists keeps the rows, the order and the
+   verdict of the plain narrowing for every filter, with one index shared the
+   way a menu shares it. */
+static bool
+test_menu_index_narrows_like_the_plain_scan(void)
+{
+  static const char alphabet[] = "abcdeABCDEfgxyz0129-_./\xc3\xa9";
+  static char names[TEST_REF_ROW_MAX][16];
+  static const char *candidates[TEST_REF_ROW_MAX];
+  unsigned seed = 12345u;
+  size_t round;
+  bool ok = true;
+  itl_menu_index index;
+
+  memset(&index, 0, sizeof(index));
+
+  for (round = 0; round < 40 && ok; ++round) {
+    tl_completion base = ITL_ZERO_INIT;
+    size_t count = 1 + test_reference_random(&seed) % (TEST_REF_ROW_MAX - 1);
+    size_t row;
+    size_t trial;
+
+    for (row = 0; row < count; ++row) {
+      size_t length = 1 + test_reference_random(&seed) % 12;
+      size_t at;
+
+      for (at = 0; at < length; ++at) {
+        names[row][at] =
+            alphabet[test_reference_random(&seed) % (sizeof(alphabet) - 1)];
+      }
+      names[row][length] = '\0';
+      candidates[row] = names[row];
+    }
+    base.candidates = candidates;
+    base.count = count;
+    itl_menu_index_drop(&index);
+
+    for (trial = 0; trial < 12 && ok; ++trial) {
+      char query[8];
+      size_t length = test_reference_random(&seed) % 7;
+      size_t step;
+      int mode = (int) (test_reference_random(&seed) % 3);
+      unsigned base_tier = test_reference_random(&seed) % 3;
+      const char *source = candidates[test_reference_random(&seed) % count];
+
+      for (step = 0; step < length; ++step) {
+        query[step] = step < strlen(source) && test_reference_random(&seed) % 4
+                          ? source[step]
+                          : alphabet[test_reference_random(&seed) %
+                                     (sizeof(alphabet) - 1)];
+      }
+
+      for (step = 0; step <= length * 2 && ok; ++step) {
+        size_t query_len = step <= length ? step : length * 2 - step;
+        const char *expected[ITL_MENU_FILTER_MAX];
+        tl_completion result = ITL_ZERO_INIT;
+        size_t expected_count = test_reference_narrow(
+            mode, &base, query, query_len, base_tier, expected);
+        bool is_kept;
+        size_t at;
+
+        if (mode == 0) {
+          is_kept = itl_menu_filter(&index, &base, query, query_len, &result);
+        } else if (mode == 1) {
+          is_kept = itl_menu_filter_tier(&index, &base, query, query_len,
+                                         base_tier, &result);
+        } else {
+          is_kept = itl_menu_filter_prefix(&index, &base, query, query_len,
+                                           &result);
+        }
+
+        if (is_kept != (expected_count > 0) ||
+            (is_kept && result.count != expected_count))
+        {
+          TEST_PRINTF("mode %d, %zu rows, query '%.*s': kept %zu, expected "
+                      "%zu\n",
+                      mode, count, (int) query_len, query,
+                      is_kept ? result.count : 0, expected_count);
+          ok = false;
+          break;
+        }
+        for (at = 0; is_kept && at < expected_count; ++at) {
+          if (result.candidates[at] != expected[at]) {
+            TEST_PRINTF("mode %d, query '%.*s': row %zu differs\n", mode,
+                        (int) query_len, query, at);
+            ok = false;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  itl_menu_index_free(&index);
+
+  return ok;
 }
 
 static bool
@@ -8663,6 +8848,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_alt_arrows_use_word_movement),
                                    DEFINE_TEST_CASE(test_menu_match_rank),
                                    DEFINE_TEST_CASE(test_menu_filter_groups),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_index_narrows_like_the_plain_scan),
                                    DEFINE_TEST_CASE(
                                        test_menu_narrow_reuses_base),
                                    DEFINE_TEST_CASE(test_menu_cells),

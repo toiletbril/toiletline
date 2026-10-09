@@ -9807,14 +9807,295 @@ ITL_DEF void itl_menu_empty_candidates(tl_completion *result)
 /* The entries one narrowing reads, and the rows it may keep. A source hands the
    menu its whole list once. Every key that follows is answered from that list,
    and it costs a scan of these bounds and no work from the host. */
-#define ITL_MENU_FILTER_SCAN_MAX 4096
+#define ITL_MENU_FILTER_SCAN_MAX 65536
 #define ITL_MENU_FILTER_MAX      512
 
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_menu_filtered[ITL_MENU_FILTER_MAX];
 ITL_DEF ITL_THREAD_LOCAL const char
     *itl_g_menu_filtered_descriptions[ITL_MENU_FILTER_MAX];
-ITL_DEF ITL_THREAD_LOCAL unsigned char
-    itl_g_menu_ranks[ITL_MENU_FILTER_SCAN_MAX];
+
+/* What the narrowing of one base learns once and reuses on every key. lengths
+   and masks hold, for each row, its byte length and a 64-bit set of the folded
+   byte classes it contains, so a row missing a byte of the query is dropped
+   without reading its text. survivors lists, in base order, the rows whose
+   mask holds every class of the last query, and ranks holds the rank each was
+   given. A query whose classes include those of the last one narrows the
+   survivors in place instead of the whole base. The index belongs to the base
+   at candidates and count, and is dropped whenever that storage may change. */
+typedef struct itl_menu_index
+{
+  const char *const *candidates;
+  size_t count;
+  size_t capacity;
+  uint32_t *lengths;
+  uint64_t *masks;
+  uint32_t *survivors;
+  unsigned char *ranks;
+  size_t survivor_count;
+  uint64_t survivor_mask;
+  bool is_valid;
+  bool has_survivors;
+} itl_menu_index;
+
+ITL_DEF ITL_THREAD_LOCAL itl_menu_index itl_g_menu_index;
+
+ITL_DEF void itl_menu_index_free(itl_menu_index *index)
+{
+  if (index->lengths != NULL) {
+    ITL_FREE(index->lengths);
+  }
+  if (index->masks != NULL) {
+    ITL_FREE(index->masks);
+  }
+  if (index->survivors != NULL) {
+    ITL_FREE(index->survivors);
+  }
+  if (index->ranks != NULL) {
+    ITL_FREE(index->ranks);
+  }
+
+  memset(index, 0, sizeof(*index));
+}
+
+/* Forget what the index learned, because the base it describes may hold other
+   rows now. The arrays are kept for the next base. */
+ITL_DEF void itl_menu_index_drop(itl_menu_index *index)
+{
+  index->is_valid = false;
+  index->has_survivors = false;
+}
+
+/* The bit of the byte class a byte belongs to, folding ASCII letters. Letters,
+   digits, and the usual separators each have a class of their own. */
+ITL_DEF uint64_t itl_menu_index_bit(unsigned char byte)
+{
+  unsigned folded = itl_ascii_fold_byte(byte);
+
+  if (folded >= 'a' && folded <= 'z') {
+    return (uint64_t) 1 << (folded - 'a');
+  }
+  if (folded >= '0' && folded <= '9') {
+    return (uint64_t) 1 << (26 + (folded - '0'));
+  }
+
+  return (uint64_t) 1 << (36 + folded % 28);
+}
+
+ITL_DEF uint64_t itl_menu_index_mask_of(const char *text, size_t length)
+{
+  uint64_t mask = 0;
+  size_t position;
+
+  for (position = 0; position < length; ++position) {
+    mask |= itl_menu_index_bit((unsigned char) text[position]);
+  }
+
+  return mask;
+}
+
+/* Make the index describe the base, reading every row once. A base the index
+   already describes costs nothing. */
+ITL_DEF void itl_menu_index_prepare(itl_menu_index *index,
+                                    const tl_completion *base)
+{
+  size_t row;
+
+  if (index->is_valid && index->candidates == base->candidates &&
+      index->count == base->count)
+  {
+    return;
+  }
+
+  if (index->capacity < base->count || index->lengths == NULL) {
+    size_t capacity = base->count > 0 ? base->count : 1;
+
+    itl_menu_index_free(index);
+    index->lengths = (uint32_t *) itl_malloc(capacity * sizeof(uint32_t));
+    index->masks = (uint64_t *) itl_malloc(capacity * sizeof(uint64_t));
+    index->survivors = (uint32_t *) itl_malloc(capacity * sizeof(uint32_t));
+    index->ranks = (unsigned char *) itl_malloc(capacity);
+    index->capacity = capacity;
+  }
+
+  for (row = 0; row < base->count; ++row) {
+    const char *text = base->candidates[row];
+    size_t length = strlen(text);
+
+    index->lengths[row] = (uint32_t) length;
+    index->masks[row] = itl_menu_index_mask_of(text, length);
+  }
+
+  index->candidates = base->candidates;
+  index->count = base->count;
+  index->is_valid = true;
+  index->has_survivors = false;
+}
+
+/* Collect, in base order, the rows whose mask holds every class of the query.
+   A query that keeps the classes of the last one narrows its survivors. */
+ITL_DEF void itl_menu_index_collect(itl_menu_index *index, uint64_t query_mask)
+{
+  size_t read_count;
+  size_t written = 0;
+  size_t position;
+  bool is_narrowing = index->has_survivors &&
+                      (index->survivor_mask & ~query_mask) == 0;
+
+  read_count = is_narrowing ? index->survivor_count : index->count;
+
+  for (position = 0; position < read_count; ++position) {
+    uint32_t row = is_narrowing ? index->survivors[position]
+                                : (uint32_t) position;
+
+    if ((index->masks[row] & query_mask) == query_mask) {
+      index->survivors[written] = row;
+      written += 1;
+    }
+  }
+
+  index->survivor_count = written;
+  index->survivor_mask = query_mask;
+  index->has_survivors = true;
+}
+
+/* Hand the menu the survivors whose rank lies from first_rank up to but not
+   including end_rank. The groups are drawn best rank first and each group
+   keeps the order the base gave it. The token span of the result is left
+   alone. Returns false when no row is kept. */
+ITL_DEF bool itl_menu_keep_ranks(const itl_menu_index *index,
+                                 const tl_completion *base,
+                                 unsigned first_rank, unsigned end_rank,
+                                 tl_completion *result)
+{
+  size_t kept_count = 0;
+  size_t position;
+  unsigned rank;
+
+  for (rank = first_rank; rank < end_rank && kept_count < ITL_MENU_FILTER_MAX;
+       ++rank)
+  {
+    for (position = 0;
+         position < index->survivor_count && kept_count < ITL_MENU_FILTER_MAX;
+         ++position)
+    {
+      uint32_t row;
+
+      if (index->ranks[position] != rank) {
+        continue;
+      }
+
+      row = index->survivors[position];
+      itl_g_menu_filtered[kept_count] = base->candidates[row];
+      itl_g_menu_filtered_descriptions[kept_count] =
+          base->descriptions != NULL ? base->descriptions[row] : NULL;
+      kept_count += 1;
+    }
+  }
+
+  if (kept_count == 0) {
+    return false;
+  }
+
+  result->candidates = itl_g_menu_filtered;
+  result->descriptions =
+      base->descriptions != NULL ? itl_g_menu_filtered_descriptions : NULL;
+  result->longest_common_prefix = NULL;
+  result->count = kept_count;
+
+  return true;
+}
+
+/* The tiers a shell completion host ranks its candidates by, best first. It
+   offers only the rows of the best tier any entry reaches. */
+#define ITL_MENU_TIER_EXACT_PREFIX 0
+#define ITL_MENU_TIER_PREFIX       1
+#define ITL_MENU_TIER_SUBSEQUENCE  2
+#define ITL_MENU_TIER_NONE         3
+
+ITL_DEF bool itl_menu_query_is_case_sensitive(const char *query,
+                                              size_t query_len);
+ITL_DEF unsigned itl_menu_tier_rank(const char *entry, size_t entry_len,
+                                    const char *query, size_t query_len,
+                                    bool is_case_sensitive);
+
+/* How a narrowing ranks the rows that survive the byte classes of the query. */
+typedef enum itl_menu_rank_mode
+{
+  ITL_MENU_RANK_MODE_WHERE,
+  ITL_MENU_RANK_MODE_TIER,
+  ITL_MENU_RANK_MODE_PREFIX
+} itl_menu_rank_mode;
+
+/* Narrow the base with the index: drop the rows missing a byte class of the
+   query, rank the rest by the mode, and keep the rows of the wanted ranks. A
+   NULL index indexes the base for this call alone. Returns false when no row is
+   kept, and in tier mode when the best tier is not base_tier. */
+ITL_DEF bool itl_menu_narrow_ranked(itl_menu_index *shared,
+                                    const tl_completion *base,
+                                    const char *query, size_t query_len,
+                                    itl_menu_rank_mode mode,
+                                    unsigned base_tier, tl_completion *result)
+{
+  itl_menu_index local;
+  itl_menu_index *index = shared;
+  bool is_case_sensitive = itl_menu_query_is_case_sensitive(query, query_len);
+  unsigned best = ITL_MENU_TIER_NONE;
+  size_t base_scanned = base->count < ITL_MENU_FILTER_SCAN_MAX
+                            ? base->count
+                            : ITL_MENU_FILTER_SCAN_MAX;
+  tl_completion scanned = *base;
+  bool is_kept;
+  size_t position;
+
+  if (index == NULL) {
+    memset(&local, 0, sizeof(local));
+    index = &local;
+  }
+
+  scanned.count = base_scanned;
+  itl_menu_index_prepare(index, &scanned);
+  itl_menu_index_collect(index, itl_menu_index_mask_of(query, query_len));
+
+  for (position = 0; position < index->survivor_count; ++position) {
+    uint32_t row = index->survivors[position];
+    const char *entry = base->candidates[row];
+    size_t entry_len = index->lengths[row];
+    unsigned rank;
+
+    if (mode == ITL_MENU_RANK_MODE_TIER) {
+      rank = itl_menu_tier_rank(entry, entry_len, query, query_len,
+                                is_case_sensitive);
+      if (rank < best) {
+        best = rank;
+      }
+    } else if (mode == ITL_MENU_RANK_MODE_PREFIX) {
+      rank = entry_len >= query_len &&
+                     itl_ascii_prefix_matches_casefold(entry, query, query_len)
+                 ? ITL_MENU_RANK_PREFIX
+                 : ITL_MENU_RANK_NONE;
+    } else {
+      rank = itl_menu_match_rank(entry, entry_len, query, query_len);
+    }
+
+    index->ranks[position] = (unsigned char) rank;
+  }
+
+  if (mode == ITL_MENU_RANK_MODE_TIER) {
+    is_kept = best != ITL_MENU_TIER_NONE && best == base_tier &&
+              itl_menu_keep_ranks(index, base, best, best + 1, result);
+  } else if (mode == ITL_MENU_RANK_MODE_PREFIX) {
+    is_kept = itl_menu_keep_ranks(index, base, ITL_MENU_RANK_PREFIX,
+                                  ITL_MENU_RANK_PREFIX + 1, result);
+  } else {
+    is_kept = itl_menu_keep_ranks(index, base, 0, ITL_MENU_RANK_NONE, result);
+  }
+
+  if (index == &local) {
+    itl_menu_index_free(&local);
+  }
+
+  return is_kept;
+}
 
 /* The list the source last gave and the query it answered. Typing narrows this
    list in place. The source is asked again only when the line no longer
@@ -9838,13 +10119,6 @@ typedef struct itl_menu_filter_state
   bool is_debounced;
   bool is_regather_armed;
 } itl_menu_filter_state;
-
-/* The tiers a shell completion host ranks its candidates by, best first. It
-   offers only the rows of the best tier any entry reaches. */
-#define ITL_MENU_TIER_EXACT_PREFIX 0
-#define ITL_MENU_TIER_PREFIX       1
-#define ITL_MENU_TIER_SUBSEQUENCE  2
-#define ITL_MENU_TIER_NONE         3
 
 /* True when the query holds an ASCII capital, which makes every tier compare
    case sensitively. */
@@ -9978,69 +10252,16 @@ ITL_DEF bool itl_menu_query_text(itl_le_t *le, const tl_completion *result,
   return true;
 }
 
-/* Hand the menu the scanned base rows whose rank in itl_g_menu_ranks lies from
-   first_rank up to but not including end_rank. The groups are drawn best rank
-   first and each group keeps the order the base gave it. The token span of
-   the result is left alone. Returns false when no row is kept. */
-ITL_DEF bool itl_menu_keep_ranks(const tl_completion *base,
-                                 size_t scanned_count, unsigned first_rank,
-                                 unsigned end_rank, tl_completion *result)
-{
-  size_t kept_count = 0;
-  size_t index;
-  unsigned rank;
-
-  for (rank = first_rank; rank < end_rank && kept_count < ITL_MENU_FILTER_MAX;
-       ++rank)
-  {
-    for (index = 0; index < scanned_count && kept_count < ITL_MENU_FILTER_MAX;
-         ++index)
-    {
-      if (itl_g_menu_ranks[index] != rank) {
-        continue;
-      }
-
-      itl_g_menu_filtered[kept_count] = base->candidates[index];
-      itl_g_menu_filtered_descriptions[kept_count] =
-          base->descriptions != NULL ? base->descriptions[index] : NULL;
-      kept_count += 1;
-    }
-  }
-
-  if (kept_count == 0) {
-    return false;
-  }
-
-  result->candidates = itl_g_menu_filtered;
-  result->descriptions =
-      base->descriptions != NULL ? itl_g_menu_filtered_descriptions : NULL;
-  result->longest_common_prefix = NULL;
-  result->count = kept_count;
-
-  return true;
-}
-
 /* Narrow the base list to the entries the query matches and hand the rows to
    the menu. The groups are drawn best match first and each group keeps the
    order the base gave it. The token span of the result is left alone. Returns
    false when nothing matches. */
-ITL_DEF bool itl_menu_filter(const tl_completion *base, const char *query,
-                             size_t query_len, tl_completion *result)
+ITL_DEF bool itl_menu_filter(itl_menu_index *index, const tl_completion *base,
+                             const char *query, size_t query_len,
+                             tl_completion *result)
 {
-  size_t scanned_count = base->count < ITL_MENU_FILTER_SCAN_MAX
-                             ? base->count
-                             : ITL_MENU_FILTER_SCAN_MAX;
-  size_t index;
-
-  for (index = 0; index < scanned_count; ++index) {
-    const char *entry = base->candidates[index];
-
-    itl_g_menu_ranks[index] = (unsigned char) itl_menu_match_rank(
-        entry, strlen(entry), query, query_len);
-  }
-
-  return itl_menu_keep_ranks(base, scanned_count, 0, ITL_MENU_RANK_NONE,
-                             result);
+  return itl_menu_narrow_ranked(index, base, query, query_len,
+                                ITL_MENU_RANK_MODE_WHERE, 0, result);
 }
 
 /* Narrow the base list the way a completion host answers the query, keeping
@@ -10048,59 +10269,26 @@ ITL_DEF bool itl_menu_filter(const tl_completion *base, const char *query,
    base_tier for its own query, so a narrowing whose best tier differs would
    miss rows the base never held. Returns false then and when nothing
    matches. */
-ITL_DEF bool itl_menu_filter_tier(const tl_completion *base, const char *query,
+ITL_DEF bool itl_menu_filter_tier(itl_menu_index *index,
+                                  const tl_completion *base, const char *query,
                                   size_t query_len, unsigned base_tier,
                                   tl_completion *result)
 {
-  size_t scanned_count = base->count < ITL_MENU_FILTER_SCAN_MAX
-                             ? base->count
-                             : ITL_MENU_FILTER_SCAN_MAX;
-  bool is_case_sensitive = itl_menu_query_is_case_sensitive(query, query_len);
-  unsigned best = ITL_MENU_TIER_NONE;
-  size_t index;
-
-  for (index = 0; index < scanned_count; ++index) {
-    const char *entry = base->candidates[index];
-    unsigned tier = itl_menu_tier_rank(entry, strlen(entry), query, query_len,
-                                       is_case_sensitive);
-
-    itl_g_menu_ranks[index] = (unsigned char) tier;
-    if (tier < best) {
-      best = tier;
-    }
-  }
-
-  if (best == ITL_MENU_TIER_NONE || best != base_tier) {
-    return false;
-  }
-
-  return itl_menu_keep_ranks(base, scanned_count, best, best + 1, result);
+  return itl_menu_narrow_ranked(index, base, query, query_len,
+                                ITL_MENU_RANK_MODE_TIER, base_tier, result);
 }
 
 /* Narrow a list the host did not rank to the entries that open with the query
    in either case, in the order the base gave them. Every such row stays, since
    the host may offer any of them for the longer query. Returns false when
    nothing matches. */
-ITL_DEF bool itl_menu_filter_prefix(const tl_completion *base,
+ITL_DEF bool itl_menu_filter_prefix(itl_menu_index *index,
+                                    const tl_completion *base,
                                     const char *query, size_t query_len,
                                     tl_completion *result)
 {
-  size_t scanned_count = base->count < ITL_MENU_FILTER_SCAN_MAX
-                             ? base->count
-                             : ITL_MENU_FILTER_SCAN_MAX;
-  size_t index;
-
-  for (index = 0; index < scanned_count; ++index) {
-    const char *entry = base->candidates[index];
-    bool is_prefix = strlen(entry) >= query_len &&
-                     itl_ascii_prefix_matches_casefold(entry, query, query_len);
-
-    itl_g_menu_ranks[index] =
-        (unsigned char) (is_prefix ? ITL_MENU_RANK_PREFIX : ITL_MENU_RANK_NONE);
-  }
-
-  return itl_menu_keep_ranks(base, scanned_count, ITL_MENU_RANK_PREFIX,
-                             ITL_MENU_RANK_PREFIX + 1, result);
+  return itl_menu_narrow_ranked(index, base, query, query_len,
+                                ITL_MENU_RANK_MODE_PREFIX, 0, result);
 }
 
 /* Narrow a base list the way its source answers a longer query. A host that
@@ -10112,13 +10300,15 @@ ITL_DEF bool itl_menu_filter_base(const itl_menu_source *source,
                                   size_t query_len, tl_completion *result)
 {
   if (!source->should_keep_best_tier) {
-    return itl_menu_filter(base, query, query_len, result);
+    return itl_menu_filter(&itl_g_menu_index, base, query, query_len, result);
   }
   if (base->is_tier_ranked) {
-    return itl_menu_filter_tier(base, query, query_len, base_tier, result);
+    return itl_menu_filter_tier(&itl_g_menu_index, base, query, query_len,
+                                base_tier, result);
   }
 
-  return itl_menu_filter_prefix(base, query, query_len, result);
+  return itl_menu_filter_prefix(&itl_g_menu_index, base, query, query_len,
+                                result);
 }
 
 /* True when a typed byte moves where the token starts. A blank opens the next
@@ -10169,6 +10359,7 @@ ITL_DEF void itl_menu_cache_entry_free(itl_menu_cache_entry *entry)
     ITL_FREE(entry->rows);
   }
 
+  itl_menu_index_drop(&itl_g_menu_index);
   memset(entry, 0, sizeof(*entry));
 }
 
@@ -10523,6 +10714,7 @@ ITL_DEF void itl_menu_adopt_base(itl_le_t *le, const itl_menu_source *source,
   state->base = *result;
   state->name_width = itl_menu_name_width(result);
   state->is_regather_armed = false;
+  itl_menu_index_drop(&itl_g_menu_index);
 
   if (!itl_menu_query_text(le, result, state->query, sizeof(state->query),
                            &state->query_len))
@@ -11043,6 +11235,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
   itl_menu_cache_open();
   status = itl_completion_menu_run(le, initial, source);
   itl_menu_cache_close();
+  itl_menu_index_free(&itl_g_menu_index);
   itl_g_menu_due_ms = 0;
   itl_hint_release();
 
