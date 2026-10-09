@@ -604,6 +604,14 @@ typedef int (*tl_idle_fn)(const char *buffer, size_t cursor);
 TL_DEF void tl_set_idle_callback(tl_idle_fn callback, int delay_ms,
                                  int repeat_ms);
 
+/**
+ * Called by the completion callback before work that may take noticeable
+ * time, such as a user completion function. While the first gather of a Tab
+ * runs, it draws the loading frame once; a menu that gathers again keeps its
+ * rows on screen, and any other call does nothing.
+ */
+TL_DEF void tl_show_completion_loading(void);
+
 TL_DEF void tl_set_edit_mode(int mode);
 
 #endif /* TOILETLINE_H_ */ /* End of header file */
@@ -9353,6 +9361,24 @@ ITL_DEF void itl_loading_frame_draw(itl_le_t *le)
   itl_terminal_drain_output();
 }
 
+/* The line editor and the drawn flag of the gather in progress, so a host that
+   calls tl_show_completion_loading from its callback can put the frame up. */
+ITL_DEF ITL_THREAD_LOCAL itl_le_t *itl_g_gather_le = NULL;
+ITL_DEF ITL_THREAD_LOCAL bool *itl_g_gather_is_drawn = NULL;
+
+TL_DEF void tl_show_completion_loading(void)
+{
+  if (itl_g_gather_le == NULL || itl_g_gather_is_drawn == NULL ||
+      itl_g_loading_source == NULL || itl_g_loading_is_menu_reload ||
+      *itl_g_gather_is_drawn)
+  {
+    return;
+  }
+
+  itl_loading_frame_draw(itl_g_gather_le);
+  *itl_g_gather_is_drawn = true;
+}
+
 /* Ask the host for a listing, and while it answers TL_COMPLETE_PENDING keep
    waiting for input with the idle hook polled, asking again once the hook
    reports a finished load or no load left. The loading frame is drawn only
@@ -9371,7 +9397,11 @@ ITL_DEF int itl_complete_gather(itl_le_t *le, const char *line,
   uint64_t frame_due_ms = 0;
 
   *out_is_abandoned = false;
+  itl_g_gather_le = le;
+  itl_g_gather_is_drawn = out_is_drawn;
   handled = itl_g_complete_callback(line, le->cursor_position, out, 1);
+  itl_g_gather_le = NULL;
+  itl_g_gather_is_drawn = NULL;
   if (handled != TL_COMPLETE_PENDING) {
     return handled;
   }
@@ -9403,7 +9433,11 @@ ITL_DEF int itl_complete_gather(itl_le_t *le, const char *line,
                ((itl_g_idle_outcome & TL_IDLE_REFRESH) != 0 ||
                 (itl_g_idle_outcome & TL_IDLE_AGAIN) == 0))
     {
+      itl_g_gather_le = le;
+      itl_g_gather_is_drawn = out_is_drawn;
       handled = itl_g_complete_callback(line, le->cursor_position, out, 1);
+      itl_g_gather_le = NULL;
+      itl_g_gather_is_drawn = NULL;
       if (handled == TL_COMPLETE_PENDING) {
         itl_g_idle_due_ms =
             itl_monotonic_ms() + (uint64_t) itl_g_idle_repeat_ms;
