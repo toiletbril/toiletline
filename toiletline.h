@@ -5075,6 +5075,11 @@ ITL_DEF ITL_THREAD_LOCAL uint64_t itl_g_idle_due_ms = 0;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_idle_is_load_poll = false;
 ITL_DEF ITL_THREAD_LOCAL int itl_g_idle_outcome = 0;
 
+/* The moment an open menu gathers again for a line that left its list, zero
+   while no gather waits. A menu wait ends at this moment instead of blocking on
+   a key, and a key moves it. */
+ITL_DEF ITL_THREAD_LOCAL uint64_t itl_g_menu_due_ms = 0;
+
 /* The reset that closes every colored span, matching the ghost text's own
    reset. Each span carries its own opening SGR from the host. */
 #define ITL_HIGHLIGHT_RESET "\x1b[0m"
@@ -9105,6 +9110,30 @@ ITL_DEF int itl_idle_wait_ms(void)
   return (int) (itl_g_idle_due_ms - now_ms);
 }
 
+/* The wait a caller that returns on a redraw may spend. A menu waits for the
+   moment its gather is due, or -1 for a key alone while none is. Any other
+   caller waits for the idle hook. */
+ITL_DEF int itl_wait_budget_ms(bool should_return_on_redraw)
+{
+  uint64_t now_ms;
+
+  if (!should_return_on_redraw || itl_g_idle_is_load_poll) {
+    return itl_idle_wait_ms();
+  }
+  if (itl_g_menu_due_ms == 0) {
+    return -1;
+  }
+
+  now_ms = itl_monotonic_ms();
+  if (now_ms >= itl_g_menu_due_ms) {
+    return 0;
+  }
+  if (itl_g_menu_due_ms - now_ms > (uint64_t) INT_MAX) {
+    return INT_MAX;
+  }
+  return (int) (itl_g_menu_due_ms - now_ms);
+}
+
 /* Call the idle hook once for the line as it stands. A refresh that asks only
    for the caret composes the hint again and turns into a text refresh only when
    the row changed, so an unchanged hint redraws nothing. */
@@ -9152,7 +9181,9 @@ typedef enum itl_wait_outcome
    ITL_WAIT_REDRAW so a menu can redraw its own rows. The idle hook runs when a
    pause reaches its delay, except for a caller that returns on a redraw. A
    pending gather polls the hook instead: it runs the hook when due even on a
-   redraw return, and each call ends the wait with ITL_WAIT_IDLE. */
+   redraw return, and each call ends the wait with ITL_WAIT_IDLE. A menu that
+   armed its gather ends the wait with ITL_WAIT_IDLE at that moment, and the
+   idle hook is not called. */
 ITL_DEF itl_wait_outcome itl_le_wait_for_input(itl_le_t *le,
                                                bool should_return_on_redraw)
 {
@@ -9160,6 +9191,7 @@ ITL_DEF itl_wait_outcome itl_le_wait_for_input(itl_le_t *le,
   for (;;) {
     sigset_t previous_signals;
     bool is_idle_due = false;
+    bool is_menu_due = false;
     bool should_redraw = false;
 
     if (!itl_block_input_wake_signals(&previous_signals)) {
@@ -9185,16 +9217,14 @@ ITL_DEF itl_wait_outcome itl_le_wait_for_input(itl_le_t *le,
         break;
       }
       wait_result = itl_wait_for_input_until(
-          &previous_signals,
-          should_return_on_redraw && !itl_g_idle_is_load_poll
-              ? -1
-              : itl_idle_wait_ms());
+          &previous_signals, itl_wait_budget_ms(should_return_on_redraw));
       if (wait_result < 0) {
         itl_restore_input_wake_signals(&previous_signals);
         return ITL_WAIT_FAILED;
       }
       if (wait_result == 0) {
-        is_idle_due = true;
+        is_menu_due = should_return_on_redraw && !itl_g_idle_is_load_poll;
+        is_idle_due = !is_menu_due;
         break;
       }
     }
@@ -9204,6 +9234,9 @@ ITL_DEF itl_wait_outcome itl_le_wait_for_input(itl_le_t *le,
     }
     if (should_redraw) {
       return ITL_WAIT_REDRAW;
+    }
+    if (is_menu_due) {
+      return ITL_WAIT_IDLE;
     }
     if (!is_idle_due) {
       return ITL_WAIT_KEY;
@@ -9228,11 +9261,12 @@ ITL_DEF itl_wait_outcome itl_le_wait_for_input(itl_le_t *le,
     if (itl_input_is_pending()) {
       return ITL_WAIT_KEY;
     }
-    if (itl_wait_for_input_until(
-            should_return_on_redraw && !itl_g_idle_is_load_poll
-                ? -1
-                : itl_idle_wait_ms()) == 0)
+    if (itl_wait_for_input_until(itl_wait_budget_ms(should_return_on_redraw)) ==
+        0)
     {
+      if (should_return_on_redraw && !itl_g_idle_is_load_poll) {
+        return ITL_WAIT_IDLE;
+      }
       itl_idle_run(le);
       if (itl_g_idle_is_load_poll) {
         return ITL_WAIT_IDLE;
@@ -9369,8 +9403,7 @@ ITL_DEF ITL_THREAD_LOCAL bool *itl_g_gather_is_drawn = NULL;
 TL_DEF void tl_show_completion_loading(void)
 {
   if (itl_g_gather_le == NULL || itl_g_gather_is_drawn == NULL ||
-      itl_g_loading_source == NULL || itl_g_loading_is_menu_reload ||
-      *itl_g_gather_is_drawn)
+      itl_g_loading_source == NULL || *itl_g_gather_is_drawn)
   {
     return;
   }
@@ -9449,6 +9482,9 @@ ITL_DEF int itl_complete_gather(itl_le_t *le, const char *line,
   return handled;
 }
 
+/* Whether the last regather left its loading frame on the screen. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_regather_is_drawn = false;
+
 /* Ask the host for the candidates of the line as it stands now. The host keeps
    its storage valid until the next call. A fresh result replaces the one the
    menu held and the previous candidates are dropped. */
@@ -9456,10 +9492,12 @@ ITL_DEF bool itl_menu_regather(itl_le_t *le, tl_completion *result)
 {
   bool is_abandoned;
   bool is_drawn = false;
+  int handled;
   char line_cstr[ITL_STRING_MAX_LEN];
   tl_completion fresh;
 
   memset(&fresh, 0, sizeof(fresh));
+  itl_g_regather_is_drawn = false;
 
   if (itl_g_complete_callback == NULL) {
     return false;
@@ -9468,9 +9506,10 @@ ITL_DEF bool itl_menu_regather(itl_le_t *le, tl_completion *result)
   {
     return false;
   }
-  if (!itl_complete_gather(le, line_cstr, &fresh, false, &is_abandoned,
-                           &is_drawn))
-  {
+  handled = itl_complete_gather(le, line_cstr, &fresh, false, &is_abandoned,
+                                &is_drawn);
+  itl_g_regather_is_drawn = is_drawn;
+  if (!handled) {
     return false;
   }
   if (fresh.count == 0) {
@@ -9777,7 +9816,11 @@ ITL_DEF ITL_THREAD_LOCAL unsigned char
 /* The list the source last gave and the query it answered. Typing narrows this
    list in place. The source is asked again only when the line no longer
    extends the query, or when the local list has no row for it. base_tier is
-   the best tier any base row reaches against that query. */
+   the best tier any base row reaches against that query. is_regather_armed is
+   set while the line has left a base longer than ITL_MENU_DEBOUNCE_THRESHOLD:
+   the menu shows no rows and the source is asked once the typing pauses. */
+#define ITL_MENU_DEBOUNCE_THRESHOLD 128
+
 typedef struct itl_menu_filter_state
 {
   tl_completion base;
@@ -9786,6 +9829,7 @@ typedef struct itl_menu_filter_state
   size_t name_width;
   unsigned base_tier;
   bool should_regather;
+  bool is_regather_armed;
 } itl_menu_filter_state;
 
 /* The tiers a shell completion host ranks its candidates by, best first. It
@@ -10061,6 +10105,7 @@ ITL_DEF void itl_menu_adopt_base(itl_le_t *le, itl_menu_filter_state *state,
   state->base = *result;
   state->name_width = itl_menu_name_width(result);
   state->should_regather = false;
+  state->is_regather_armed = false;
 
   if (!itl_menu_query_text(le, result, state->query, sizeof(state->query),
                            &state->query_len))
@@ -10077,23 +10122,34 @@ ITL_DEF void itl_menu_adopt_base(itl_le_t *le, itl_menu_filter_state *state,
       state->query, state->query_len);
 }
 
-/* Ask the source for the line as it stands and adopt what it gives. Returns
-   false when the source has nothing, and the base is emptied. */
-ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
-                             itl_menu_filter_state *state,
-                             tl_completion *result)
+/* Ask the source for the line as it stands with its loading frame allowed. A
+   reload of an open menu repaints the line under the frame, and the gather of a
+   next word anchors the frame under the word. A host with no idle hook gets the
+   frame before it is asked. */
+ITL_DEF bool itl_menu_gather_framed(itl_le_t *le, const itl_menu_source *source,
+                                    bool is_reload, tl_completion *result)
 {
   bool is_gathered;
 
   itl_g_loading_source = source->should_show_loading ? source : NULL;
-  itl_g_loading_is_menu_reload = true;
+  itl_g_loading_is_menu_reload = is_reload;
   if (itl_g_loading_source != NULL && itl_g_idle_callback == NULL) {
     itl_loading_frame_draw(le);
   }
 
   is_gathered = source->gather(le, result);
   itl_g_loading_source = NULL;
-  if (!is_gathered) {
+
+  return is_gathered;
+}
+
+/* Ask the source for the line as it stands and adopt what it gives. Returns
+   false when the source has nothing, and the base is emptied. */
+ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
+                             itl_menu_filter_state *state,
+                             tl_completion *result)
+{
+  if (!itl_menu_gather_framed(le, source, true, result)) {
     if (!itl_menu_query_text(le, result, state->query,
                              sizeof(state->query), &state->query_len))
     {
@@ -10103,11 +10159,37 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
     state->base.count = 0;
     state->name_width = 0;
     state->should_regather = false;
+    state->is_regather_armed = false;
 
     return false;
   }
 
   itl_menu_adopt_base(le, state, result);
+
+  return true;
+}
+
+/* Ask the source for the line as it stands, unless the line left a base longer
+   than ITL_MENU_DEBOUNCE_THRESHOLD. The source then lists a different span,
+   which may cost the host more than a keystroke should wait for, so the menu
+   shows no rows and the question is put off by one idle delay. Every further
+   key moves that moment and the source is asked once, when the typing stops.
+   A shorter base, or a host with no idle delay, asks at once. Returns false
+   when the source was asked and has nothing. */
+ITL_DEF bool itl_menu_regather_soon(itl_le_t *le, const itl_menu_source *source,
+                                    itl_menu_filter_state *state,
+                                    tl_completion *result)
+{
+  if (!state->is_regather_armed &&
+      (state->base.count <= ITL_MENU_DEBOUNCE_THRESHOLD ||
+       itl_g_idle_callback == NULL || itl_g_idle_delay_ms <= 0))
+  {
+    return itl_menu_rebase(le, source, state, result);
+  }
+
+  itl_menu_empty_candidates(result);
+  state->is_regather_armed = true;
+  itl_g_menu_due_ms = itl_monotonic_ms() + (uint64_t) itl_g_idle_delay_ms;
 
   return true;
 }
@@ -10137,8 +10219,9 @@ ITL_DEF bool itl_menu_filter_for(const itl_menu_source *source,
    and an erase that keeps the gathered query widens it the same way. An erase
    below that query, a line with no local match, a source that keeps the best
    tier when the local best tier is not the one it answered with, and a base
-   longer than one scan reaches all go to the source. Returns false when
-   neither has a row. */
+   longer than one scan reaches all go to the source, and a base longer than
+   ITL_MENU_DEBOUNCE_THRESHOLD but within one scan puts the question off until
+   the typing pauses. Returns false when neither has a row. */
 ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
                              itl_menu_filter_state *state,
                              tl_completion *result)
@@ -10146,8 +10229,8 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
   char query[ITL_STRING_MAX_LEN];
   size_t query_len = 0;
 
-  if (state->should_regather) {
-    return itl_menu_rebase(le, source, state, result);
+  if (state->should_regather || state->is_regather_armed) {
+    return itl_menu_regather_soon(le, source, state, result);
   }
 
   if (itl_menu_query_text(le, result, query, sizeof(query), &query_len) &&
@@ -10166,7 +10249,36 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
     }
   }
 
-  return itl_menu_rebase(le, source, state, result);
+  if (state->base.count > ITL_MENU_FILTER_SCAN_MAX) {
+    return itl_menu_rebase(le, source, state, result);
+  }
+
+  return itl_menu_regather_soon(le, source, state, result);
+}
+
+/* The pause that a put off gather waited for has come, or Tab asked for the
+   rows now. The source is asked once for the line as it stands. A key that
+   ended the gather stays pending for the loop and puts the question off again,
+   and a source with nothing leaves the menu empty and asks again at the next
+   key. */
+ITL_DEF void itl_menu_gather_due(itl_le_t *le, const itl_menu_source *source,
+                                 itl_menu_filter_state *state,
+                                 tl_completion *result)
+{
+  itl_g_menu_due_ms = 0;
+  state->is_regather_armed = false;
+
+  if (itl_menu_rebase(le, source, state, result)) {
+    return;
+  }
+
+  itl_menu_empty_candidates(result);
+  if (itl_input_is_pending()) {
+    state->is_regather_armed = true;
+    itl_g_menu_due_ms = itl_monotonic_ms() + (uint64_t) itl_g_idle_delay_ms;
+  } else {
+    state->should_regather = true;
+  }
 }
 
 /* True when the next key starts a word or, in a list of paths, a component
@@ -10245,6 +10357,7 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
     int key, kind;
     bool is_escape;
     bool should_continue_completion;
+    const char *empty_text;
     itl_wait_outcome wait_outcome;
 
     /* A resize invalidates the block the rows are measured against. The line is
@@ -10274,15 +10387,16 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
                                : 0;
     name_width = itl_g_menu_name_skip > 0 ? itl_menu_name_width(&result)
                                           : state.name_width;
-    layout = itl_menu_measure_for(&result, tty_rows, name_width,
-                                  ITL_MENU_EMPTY_TEXT, source->help_title,
-                                  source->help_keys);
+    empty_text = state.is_regather_armed ? ITL_MENU_LOADING_TEXT
+                                         : ITL_MENU_EMPTY_TEXT;
+    layout = itl_menu_measure_for(&result, tty_rows, name_width, empty_text,
+                                  source->help_title, source->help_keys);
 
     window_start = itl_menu_window_start(result.count, selected, window_start,
                                          layout.candidate_rows);
     itl_menu_draw(&result, selected, window_start, layout, source->help_title,
                   source->help_keys, source->should_highlight, name_width,
-                  ITL_MENU_EMPTY_TEXT);
+                  empty_text);
     itl_g_menu_name_skip = 0;
 
     wait_outcome = itl_le_wait_for_input(le, true);
@@ -10292,9 +10406,19 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
     if (wait_outcome == ITL_WAIT_REDRAW) {
       continue;
     }
+    if (wait_outcome == ITL_WAIT_IDLE) {
+      itl_menu_gather_due(le, source, &state, &result);
+      selected = 0;
+      window_start = 0;
+      previewed = (size_t) -1;
+      continue;
+    }
 
     if (!ITL_READ_BYTE(&byte)) {
       break;
+    }
+    if (state.is_regather_armed) {
+      itl_g_menu_due_ms = itl_monotonic_ms() + (uint64_t) itl_g_idle_delay_ms;
     }
 
     is_escape = byte == 27;
@@ -10323,10 +10447,19 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
       continue;
     }
 
+    /* Tab asks for the rows a put off gather has not listed yet. */
+    if (state.is_regather_armed && kind == TL_KEY_TAB) {
+      itl_menu_gather_due(le, source, &state, &result);
+      selected = 0;
+      window_start = 0;
+      previewed = (size_t) -1;
+      continue;
+    }
+
     /* An empty list has no row to accept. The keys that would take one are
        swallowed and the menu waits for the erase that brings the list back. */
     if (result.count == 0 &&
-        (kind == TL_KEY_TAB ||
+        (kind == TL_KEY_TAB || should_continue_completion ||
          (kind == TL_KEY_ENTER && !source->should_submit_on_enter)))
     {
       continue;
@@ -10398,7 +10531,7 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
       if (should_regather ||
           (source->can_descend && itl_byte_is_path_separator(byte)))
       {
-        if (!itl_menu_rebase(le, source, &state, &result)) {
+        if (!itl_menu_regather_soon(le, source, &state, &result)) {
           itl_menu_empty_candidates(&result);
         }
       } else if (!itl_menu_narrow(le, source, &state, &result)) {
@@ -10438,7 +10571,7 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
                               le->cursor_position < result.token_start;
 
       if (did_cross_token_start) {
-        if (!itl_menu_rebase(le, source, &state, &result)) {
+        if (!itl_menu_regather_soon(le, source, &state, &result)) {
           itl_menu_empty_candidates(&result);
           state.should_regather = true;
         }
@@ -10476,7 +10609,9 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
   tl_status_code status;
 
   itl_hint_hold(le);
+  itl_g_menu_due_ms = 0;
   status = itl_completion_menu_run(le, initial, source);
+  itl_g_menu_due_ms = 0;
   itl_hint_release();
 
   return status;
@@ -10523,6 +10658,28 @@ ITL_DEF bool itl_completion_prefix_keeps_list(const tl_completion *result,
   }
 
   return true;
+}
+
+/* Gather the list that follows a token the line just completed, with the
+   loading frame allowed under the new word. The line is repainted first, so the
+   frame sits under the text it belongs to, and the frame is taken down again
+   before the menu draws its rows. */
+ITL_DEF bool itl_completion_gather_following(itl_le_t *le,
+                                             const itl_menu_source *source,
+                                             tl_completion *out)
+{
+  bool is_framed_early = source->should_show_loading &&
+                         itl_g_idle_callback == NULL;
+  bool is_gathered;
+
+  itl_g_tty_should_refresh_text = true;
+  itl_le_tty_refresh(le);
+  is_gathered = itl_menu_gather_framed(le, source, false, out);
+  if (is_framed_early || itl_g_regather_is_drawn) {
+    itl_menu_erase();
+  }
+
+  return is_gathered;
 }
 
 /* Handle the TAB key when a completion callback is registered. Replace the
@@ -10616,7 +10773,9 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
       {
         tl_completion following = ITL_ZERO_INIT;
 
-        if (itl_menu_regather(le, &following)) {
+        if (itl_completion_gather_following(le, &completion_source,
+                                            &following))
+        {
           itl_g_menu_is_next_word = true;
           *out_code = itl_completion_menu(le, &following, &completion_source);
           itl_g_menu_is_next_word = false;
@@ -10661,7 +10820,9 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
       if (is_list_kept) {
         remaining = result;
         remaining.token_end = le->cursor_position;
-      } else if (!itl_menu_regather(le, &remaining)) {
+      } else if (!itl_completion_gather_following(le, &completion_source,
+                                                   &remaining))
+      {
         remaining.count = 0;
       }
       if (remaining.count > 1) {

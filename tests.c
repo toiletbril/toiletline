@@ -3854,6 +3854,177 @@ test_menu_keys_reuse_gathered_list(void)
   return ok;
 }
 
+#define TEST_DEBOUNCE_ROW_MAX 200
+
+static size_t test_debounce_row_count;
+static size_t test_debounce_gather_calls;
+
+/* A source that offers test_debounce_row_count rows for any word, so a word
+   that moves the token always leaves a base the menu keeps. */
+static bool
+test_debounce_gather(itl_le_t *le, tl_completion *result)
+{
+  static char        names[TEST_DEBOUNCE_ROW_MAX][12];
+  static const char *candidates[TEST_DEBOUNCE_ROW_MAX];
+  size_t             start = le->line->length;
+  size_t             i;
+
+  test_debounce_gather_calls += 1;
+
+  while (start > 0 && !ITL_CHAR_IS_SPACE(le->line->chars[start - 1].bytes[0]))
+  {
+    start -= 1;
+  }
+  for (i = 0; i < test_debounce_row_count; ++i) {
+    snprintf(names[i], sizeof(names[i]), "item%03zu", i);
+    candidates[i] = names[i];
+  }
+
+  result->candidates = candidates;
+  result->descriptions = NULL;
+  result->longest_common_prefix = NULL;
+  result->count = test_debounce_row_count;
+  result->token_start = start;
+  result->token_end = le->line->length;
+  result->is_tier_ranked = 0;
+
+  return true;
+}
+
+static int
+test_debounce_idle_callback(const char *buffer, size_t cursor)
+{
+  (void) buffer;
+  (void) cursor;
+
+  return 0;
+}
+
+/* Open a menu of row_count rows on "cat it", type keys at once, and end the
+   input after eof_ms. Returns how many gathers the keys cost, and writes the
+   line they left. The idle delay is 40 ms. */
+static size_t
+debounce_menu_gathers(size_t row_count, const char *keys, unsigned eof_ms,
+                      char *out_line, size_t out_size)
+{
+  static const itl_menu_source source = {
+      test_debounce_gather, true, true, false, true, false, false, NULL, NULL,
+      false, true};
+  char          out_buffer[BUFFER_SIZE];
+  int           pipe_descriptors[2] = {-1, -1};
+  int           null_descriptor = -1;
+  int           saved_stdin = -1;
+  int           saved_stdout = -1;
+  pid_t         child = -1;
+  size_t        calls = (size_t) -1;
+  size_t        key_count = strlen(keys);
+  tl_completion initial = ITL_ZERO_INIT;
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  out_line[0] = '\0';
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+  if (write(pipe_descriptors[1], keys, key_count) != (ssize_t) key_count) {
+    goto cleanup;
+  }
+  child = fork();
+  if (child < 0) goto cleanup;
+  if (child == 0) {
+    usleep(eof_ms * 1000);
+    _exit(0);
+  }
+  close(pipe_descriptors[1]);
+  pipe_descriptors[1] = -1;
+
+  null_descriptor = open("/dev/null", O_WRONLY);
+  if (null_descriptor < 0) goto cleanup;
+
+  saved_stdin = dup(STDIN_FILENO);
+  saved_stdout = dup(STDOUT_FILENO);
+  if (saved_stdin < 0 || saved_stdout < 0) goto cleanup;
+  if (dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
+      dup2(null_descriptor, STDOUT_FILENO) < 0)
+  {
+    goto cleanup;
+  }
+
+  ITL_STRING_FROM_CSTR(line, "cat it");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  tl_set_idle_callback(test_debounce_idle_callback, 40, 10);
+
+  test_debounce_row_count = row_count;
+  (void) test_debounce_gather(&le, &initial);
+  test_debounce_gather_calls = 0;
+  (void) itl_completion_menu(&le, &initial, &source);
+  calls = test_debounce_gather_calls;
+  itl_string_to_cstr(line, out_line, out_size);
+
+cleanup:
+  tl_set_idle_callback(NULL, 0, 0);
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (saved_stdout >= 0) {
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+  }
+  if (null_descriptor >= 0) close(null_descriptor);
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+  if (child > 0) waitpid(child, NULL, 0);
+
+  ITL_STRING_FREE(line);
+  itl_ghost_clear();
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+
+  return calls;
+}
+
+/* A key that leaves the gathered list of a menu longer than the threshold does
+   not ask the source. The line is updated, the menu shows no rows, and the
+   source is asked once when the typing has paused for the idle delay, however
+   many keys came before. A menu at or below the threshold asks at once. */
+static bool
+test_menu_debounces_a_long_list(void)
+{
+  char   line[BUFFER_SIZE];
+  size_t gathers;
+  bool   ok = true;
+
+  gathers = debounce_menu_gathers(ITL_MENU_DEBOUNCE_THRESHOLD + 1, " ab", 10,
+                                  line, sizeof(line));
+  if (gathers != 0 || strcmp(line, "cat it ab") != 0 ||
+      itl_g_menu_due_ms != 0)
+  {
+    TEST_PRINTF("keys before the pause cost %zu gathers, left '%s'\n", gathers,
+                line);
+    ok = false;
+  }
+
+  gathers = debounce_menu_gathers(ITL_MENU_DEBOUNCE_THRESHOLD + 1, " ab", 300,
+                                  line, sizeof(line));
+  if (gathers != 1 || strcmp(line, "cat it ab") != 0) {
+    TEST_PRINTF("a pause after three keys cost %zu gathers, left '%s'\n",
+                gathers, line);
+    ok = false;
+  }
+
+  gathers = debounce_menu_gathers(ITL_MENU_DEBOUNCE_THRESHOLD, " ab", 10, line,
+                                  sizeof(line));
+  if (gathers == 0 || strcmp(line, "cat it ab") != 0) {
+    TEST_PRINTF("a list at the threshold put the gather off, %zu gathers\n",
+                gathers);
+    ok = false;
+  }
+
+  return ok;
+}
+
 static const char *const *test_tab_words;
 static size_t             test_tab_word_count;
 static bool               test_tab_should_fold_prefix;
@@ -8174,6 +8345,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
 #if defined ITL_POSIX
                                    DEFINE_TEST_CASE(
                                        test_menu_keys_reuse_gathered_list),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_debounces_a_long_list),
                                    DEFINE_TEST_CASE(
                                        test_tab_prefix_menu_reuses_gather),
                                    DEFINE_TEST_CASE(
