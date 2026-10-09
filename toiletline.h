@@ -8769,6 +8769,22 @@ ITL_DEF size_t itl_menu_anchor_column_of(const itl_le_t *le,
   return col;
 }
 
+/* Where the shell word under the cursor starts, the place the token of a
+   gather usually starts, so a loading frame drawn before the gather sits where
+   the menu will. */
+ITL_DEF size_t itl_le_shell_word_start(const itl_le_t *le)
+{
+  size_t i = le->cursor_position;
+
+  while (i > 0) {
+    const itl_utf8_t *ch = &le->line->chars[i - 1];
+    if (ch->size == 1 && strchr(" \t;|&<>()", ch->bytes[0]) != NULL) break;
+    i -= 1;
+  }
+
+  return i;
+}
+
 /* Where the rows of a menu start and how wide they are. The rows start under
    the token only when the whole row fits to its right, the prefix, the widest
    name, the widest description and the gap before it included, only when no
@@ -9886,7 +9902,9 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
 
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
-    itl_g_menu_anchor_column = 0;
+    if (!source->should_anchor_to_token) {
+      itl_g_menu_anchor_column = 0;
+    }
     layout = itl_menu_measure_for(&loading, tty_rows, 0, ITL_MENU_LOADING_TEXT,
                                   source->help_title, source->help_keys);
     itl_menu_draw(&loading, 0, 0, layout, source->help_title,
@@ -10365,7 +10383,8 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
         "enter to run, tab to accept, esc to close, ctrl-g to restore";
     itl_menu_layout layout;
 
-    itl_g_menu_anchor_column = 0;
+    itl_g_menu_anchor_column =
+        itl_menu_anchor_column_of(le, itl_le_shell_word_start(le));
     layout = itl_menu_measure_for(&loading, tty_rows, 0, ITL_MENU_LOADING_TEXT,
                                   loading_title, loading_keys);
     itl_menu_draw(&loading, 0, 0, layout, loading_title, loading_keys, false, 0,
