@@ -8762,12 +8762,11 @@ ITL_DEF size_t itl_le_shell_word_start(const itl_le_t *le)
 }
 
 /* Where the rows of a menu start and how wide they are. The rows start under
-   the token only when the whole row fits to its right, the prefix, the widest
-   name, the widest description and the gap before it included, only when no
-   item of the help text would be cut there, and only when the help text takes
-   no more rows there than at the leftmost column. Otherwise the
-   rows start at the leftmost column, and a description too wide for the
-   terminal is cut there. */
+   the token when the whole row fits to its right, the prefix, the widest name,
+   the widest description and the gap before it included, and no item of the
+   help text would be cut there; the help text then wraps under the token.
+   Otherwise the rows start at the leftmost column, and a description too wide
+   for the terminal is cut there. */
 typedef struct itl_menu_geometry
 {
   size_t anchor;
@@ -8846,17 +8845,6 @@ ITL_DEF itl_menu_geometry itl_menu_geometry_of(const tl_completion *result,
   }
 
   if (anchor + needed_cols > full_cols) {
-    anchor = 0;
-  }
-
-  if (anchor > 0 && help_title != NULL &&
-      itl_menu_layout_help(NULL, help_title, help_keys,
-                           full_cols - anchor - ITL_MENU_ROW_PREFIX_WIDTH,
-                           anchor, (size_t) -1) >
-          itl_menu_layout_help(NULL, help_title, help_keys,
-                               full_cols - ITL_MENU_ROW_PREFIX_WIDTH, 0,
-                               (size_t) -1))
-  {
     anchor = 0;
   }
 

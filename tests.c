@@ -6989,11 +6989,11 @@ test_menu_anchor_accounts_for_descriptions(void)
   return ok;
 }
 
-/* A token far to the right would wrap the help text onto more rows than it
-   takes from the leftmost column, so the menu starts there instead, while a
-   token whose column wraps it no further keeps the rows under it. */
+/* A token far to the right keeps the rows under it, and the help text wraps
+   there onto more rows. Only a token so far right that a help item or a row
+   would be cut moves the menu to the leftmost column. */
 static bool
-test_menu_anchor_counts_the_help_rows(void)
+test_menu_anchor_wraps_the_help_rows(void)
 {
   static const char *candidates[] = {"bash", "kosh", "posix", "sh"};
   static const char  help_title[] = "selecting completions";
@@ -7004,8 +7004,9 @@ test_menu_anchor_counts_the_help_rows(void)
     size_t token_column;
     size_t anchor;
   } cases[] = {
-      {50, 0},
-      {10, 8},
+      {50, 48},
+      {10, 8 },
+      {70, 0 },
   };
   tl_completion result = ITL_ZERO_INIT;
   bool          ok = true;
@@ -8956,7 +8957,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_menu_anchor_accounts_for_descriptions),
                                    DEFINE_TEST_CASE(
-                                       test_menu_anchor_counts_the_help_rows),
+                                       test_menu_anchor_wraps_the_help_rows),
                                    DEFINE_TEST_CASE(
                                        test_append_path_keeps_spans),
                                    DEFINE_TEST_CASE(
