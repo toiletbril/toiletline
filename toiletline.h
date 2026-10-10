@@ -288,10 +288,6 @@ typedef struct tl_completion
      tl_set_space_after_completion on, the way a bash spec with -o nospace
      completes a word the user keeps typing. */
   int is_space_suppressed;
-  /* Nonzero when the token is a command word. A menu of paths for a command
-     word lists the last component of each path; any other menu keeps every
-     path whole. */
-  int is_command_word;
 } tl_completion;
 
 /**
@@ -8357,60 +8353,6 @@ ITL_DEF size_t itl_menu_append_cell(itl_char_buf_t *b, const char *text,
   return drawn > width ? drawn : width;
 }
 
-/* The bytes the rows of a completion menu leave out of every candidate: the
-   directory all of them share, so a path list shows only the last component
-   of each path, the way bash lists one. The menu loop sets it for the draw
-   and clears it after, so every other width reads whole names. */
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_menu_name_skip = 0;
-
-/* The size of the directory every candidate shares, up to and including its
-   last path separator, or zero when they share none. */
-ITL_DEF size_t itl_menu_common_directory_size(const tl_completion *result)
-{
-  const char *first;
-  size_t common_size;
-  size_t directory_size = 0;
-  size_t index;
-  size_t position;
-
-  if (result->count == 0 || result->candidates == NULL) {
-    return 0;
-  }
-
-  first = result->candidates[0];
-  common_size = strlen(first);
-  for (index = 1; index < result->count && common_size > 0; ++index) {
-    const char *candidate = result->candidates[index];
-
-    position = 0;
-    while (position < common_size && candidate[position] == first[position]) {
-      position += 1;
-    }
-    common_size = position;
-  }
-
-  for (position = 0; position < common_size; ++position) {
-    if (itl_byte_is_path_separator((uint8_t) first[position])) {
-      directory_size = position + 1;
-    }
-  }
-
-  return directory_size;
-}
-
-/* The part of a candidate a menu row shows. A candidate that is only the
-   shared directory keeps it whole. */
-ITL_DEF const char *itl_menu_shown_part(const char *candidate)
-{
-  if (itl_g_menu_name_skip == 0 ||
-      strlen(candidate) <= itl_g_menu_name_skip)
-  {
-    return candidate;
-  }
-
-  return candidate + itl_g_menu_name_skip;
-}
-
 /* Return a single-line display copy without changing the candidate used for
    matching or acceptance. */
 ITL_DEF const char *itl_menu_display_name(const char *name, char *storage,
@@ -8532,8 +8474,8 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
 {
   char display_name_storage[ITL_STRING_MAX_LEN + 1];
   const char *name =
-      itl_menu_display_name(itl_menu_shown_part(result->candidates[index]),
-                            display_name_storage, sizeof(display_name_storage));
+      itl_menu_display_name(result->candidates[index], display_name_storage,
+                            sizeof(display_name_storage));
   const char *desc =
       result->descriptions != NULL ? result->descriptions[index] : NULL;
   bool has_description = desc != NULL && desc[0] != '\0' && desc_width > 0;
@@ -8767,8 +8709,7 @@ ITL_DEF size_t itl_menu_name_width(const tl_completion *result)
 
   for (i = 0; i < result->count; ++i) {
     const char *name =
-        itl_menu_display_name(itl_menu_shown_part(result->candidates[i]),
-                              display_name_storage,
+        itl_menu_display_name(result->candidates[i], display_name_storage,
                               sizeof(display_name_storage));
     size_t width = itl_visible_width(name, strlen(name));
 
@@ -11001,12 +10942,7 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
         source->should_anchor_to_token
             ? itl_menu_anchor_column_of(le, result.token_start)
             : 0;
-    itl_g_menu_name_skip =
-        source->should_anchor_to_token && result.is_command_word != 0
-            ? itl_menu_common_directory_size(&result)
-            : 0;
-    name_width = itl_g_menu_name_skip > 0 ? itl_menu_name_width(&result)
-                                          : state.name_width;
+    name_width = state.name_width;
     empty_text = state.is_regather_armed ? ITL_MENU_LOADING_TEXT
                                          : ITL_MENU_EMPTY_TEXT;
     layout = itl_menu_measure_for(&result, tty_rows, name_width, empty_text,
@@ -11017,7 +10953,6 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
     itl_menu_draw(&result, selected, window_start, layout, source->help_title,
                   source->help_keys, source->should_highlight, name_width,
                   empty_text);
-    itl_g_menu_name_skip = 0;
 
     wait_outcome = itl_le_wait_for_input(le, true);
     if (wait_outcome == ITL_WAIT_FAILED) {
