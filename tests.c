@@ -4420,9 +4420,10 @@ cleanup:
   return did_run;
 }
 
-/* A word that put a gather off stays debounced, however small the list the
-   gather gave. Three keys typed together cost one question, asked when they
-   pause. */
+/* A key typed after a pause asks at once, and a word that put a gather off
+   stays debounced for the keys of a burst, however small the list the gather
+   gave. The key after the pause costs one question at once, and the two keys
+   typed together after it cost one question, asked when they pause. */
 static bool
 test_menu_stays_debounced_within_the_word(void)
 {
@@ -4435,13 +4436,17 @@ test_menu_stays_debounced_within_the_word(void)
     TEST_PRINTF("the scenario did not run\n");
     return false;
   }
-  if (test_staged_call_count != 2 ||
-      strcmp(test_staged_log[1].line, "cat it abc") != 0 ||
-      test_staged_log[1].at_ms < 170 || strcmp(line, "cat it abc") != 0)
+  if (test_staged_call_count != 3 ||
+      strcmp(test_staged_log[1].line, "cat it a") != 0 ||
+      test_staged_log[1].at_ms > 150 ||
+      strcmp(test_staged_log[2].line, "cat it abc") != 0 ||
+      test_staged_log[2].at_ms < 170 || strcmp(line, "cat it abc") != 0)
   {
-    TEST_PRINTF("%zu questions, the last for '%s' at %llu ms, line '%s'\n",
+    TEST_PRINTF("%zu questions, '%s' at %llu ms, '%s' at %llu ms, line '%s'\n",
                 test_staged_call_count, test_staged_log[1].line,
-                (unsigned long long) test_staged_log[1].at_ms, line);
+                (unsigned long long) test_staged_log[1].at_ms,
+                test_staged_log[2].line,
+                (unsigned long long) test_staged_log[2].at_ms, line);
     ok = false;
   }
 

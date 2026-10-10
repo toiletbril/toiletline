@@ -10106,7 +10106,9 @@ ITL_DEF bool itl_menu_narrow_ranked(itl_menu_index *shared,
    is put off, whatever size the new base has, and a key that moves the token
    to a new word clears it. is_regather_armed is set while a question is put
    off: the menu shows no rows and the source is asked once the typing
-   pauses. */
+   pauses. is_key_in_burst is set when the key being handled came within
+   ITL_MENU_DEBOUNCE_MS of the key before it; a key after a pause asks at once
+   however long the base is, so only a burst of keys is put off. */
 #define ITL_MENU_DEBOUNCE_THRESHOLD 512
 #ifndef ITL_MENU_DEBOUNCE_MS
 #define ITL_MENU_DEBOUNCE_MS 128
@@ -10121,6 +10123,8 @@ typedef struct itl_menu_filter_state
   unsigned base_tier;
   bool is_debounced;
   bool is_regather_armed;
+  bool is_key_in_burst;
+  uint64_t last_key_ms;
 } itl_menu_filter_state;
 
 /* True when the query holds an ASCII capital, which makes every tier compare
@@ -10815,6 +10819,7 @@ ITL_DEF bool itl_menu_regather_after(itl_le_t *le, const itl_menu_source *source
   }
 
   if (itl_g_idle_callback == NULL || itl_g_idle_delay_ms <= 0 ||
+      !state->is_key_in_burst ||
       (!state->is_debounced &&
        (state->base.count <= ITL_MENU_DEBOUNCE_THRESHOLD ||
         is_long_base_asked_at_once)))
@@ -10979,6 +10984,8 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
       TL_SUCCESS;
 
   state.is_debounced = false;
+  state.is_key_in_burst = false;
+  state.last_key_ms = itl_monotonic_ms();
   itl_menu_adopt_base(le, source, &state, &result);
   itl_g_tty_should_refresh_text = true;
 
@@ -11049,6 +11056,13 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
 
     if (!ITL_READ_BYTE(&byte)) {
       break;
+    }
+    {
+      uint64_t key_ms = itl_monotonic_ms();
+
+      state.is_key_in_burst =
+          key_ms - state.last_key_ms < (uint64_t) ITL_MENU_DEBOUNCE_MS;
+      state.last_key_ms = key_ms;
     }
     if (state.is_regather_armed) {
       itl_g_menu_due_ms = itl_menu_question_due_ms(&state);
