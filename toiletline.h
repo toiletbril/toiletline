@@ -288,6 +288,10 @@ typedef struct tl_completion
      tl_set_space_after_completion on, the way a bash spec with -o nospace
      completes a word the user keeps typing. */
   int is_space_suppressed;
+  /* Nonzero when the token is a command word. A menu of paths for a command
+     word lists the last component of each path; any other menu keeps every
+     path whole. */
+  int is_command_word;
 } tl_completion;
 
 /**
@@ -10997,9 +11001,10 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
         source->should_anchor_to_token
             ? itl_menu_anchor_column_of(le, result.token_start)
             : 0;
-    itl_g_menu_name_skip = source->should_anchor_to_token
-                               ? itl_menu_common_directory_size(&result)
-                               : 0;
+    itl_g_menu_name_skip =
+        source->should_anchor_to_token && result.is_command_word != 0
+            ? itl_menu_common_directory_size(&result)
+            : 0;
     name_width = itl_g_menu_name_skip > 0 ? itl_menu_name_width(&result)
                                           : state.name_width;
     empty_text = state.is_regather_armed ? ITL_MENU_LOADING_TEXT
