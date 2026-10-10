@@ -10101,17 +10101,12 @@ ITL_DEF bool itl_menu_narrow_ranked(itl_menu_index *shared,
    list in place. The source is asked again only when the line no longer
    extends the query, or when the local list has no row for it. base_tier is
    the best tier any base row reaches against that query. is_debounced is set
-   when the line leaves a base longer than ITL_MENU_DEBOUNCE_THRESHOLD and
-   holds for the word being typed: every question to the source for that word
-   is put off, whatever size the new base has, and a key that moves the token
-   to a new word clears it. is_regather_armed is set while a question is put
-   off: the menu shows no rows and the source is asked once the typing
-   pauses. is_key_in_burst is set when the key being handled came within
-   ITL_MENU_DEBOUNCE_MS of the key before it; a key after a pause asks at once
-   however long the base is, so only a burst of keys is put off. */
-#define ITL_MENU_DEBOUNCE_THRESHOLD 512
+   once a question for the word being typed was put off, and a key that moves
+   the token to a new word clears it. is_regather_armed is set while a
+   question is put off: the menu keeps the rows it shows and the source is
+   asked once the typing pauses for ITL_MENU_DEBOUNCE_MS. */
 #ifndef ITL_MENU_DEBOUNCE_MS
-#define ITL_MENU_DEBOUNCE_MS 128
+#define ITL_MENU_DEBOUNCE_MS 24
 #endif
 
 typedef struct itl_menu_filter_state
@@ -10123,8 +10118,6 @@ typedef struct itl_menu_filter_state
   unsigned base_tier;
   bool is_debounced;
   bool is_regather_armed;
-  bool is_key_in_burst;
-  uint64_t last_key_ms;
 } itl_menu_filter_state;
 
 /* True when the query holds an ASCII capital, which makes every tier compare
@@ -10790,7 +10783,7 @@ ITL_DEF bool itl_menu_rebase(itl_le_t *le, const itl_menu_source *source,
 }
 
 /* A key moved the token to a new word. The pause of the word before it ends,
-   and the list being left decides again whether the new word waits. */
+   and the new word waits for a pause of its own. */
 ITL_DEF void itl_menu_start_word(itl_menu_filter_state *state)
 {
   state->is_debounced = false;
@@ -10799,31 +10792,21 @@ ITL_DEF void itl_menu_start_word(itl_menu_filter_state *state)
 }
 
 /* Answer the line as it stands from a base the menu already gathered, and when
-   none has a row for it ask the source. When the line leaves a base longer
-   than ITL_MENU_DEBOUNCE_THRESHOLD, or one longer than one scan when
-   is_long_base_asked_at_once is false, the source may list a different span
-   that costs the host more than a keystroke should wait for. The menu then
-   shows no rows and the question is put off by one idle delay, and every
-   question for the same word is put off the same way. Each key moves that
-   moment, so the source is asked once, when the typing stops. A shorter base,
-   or a host with no idle delay, asks at once, and the ask is polled through the
-   pending protocol so a key is served while the host works. Returns false when
-   the source was asked and has nothing. */
-ITL_DEF bool itl_menu_regather_after(itl_le_t *le, const itl_menu_source *source,
-                                     itl_menu_filter_state *state,
-                                     tl_completion *result,
-                                     bool is_long_base_asked_at_once)
+   none has a row for it ask the source after the typing pauses. The line is
+   drawn first, the menu keeps the rows it shows, and the question is put off by
+   ITL_MENU_DEBOUNCE_MS. Each key moves that moment, so the source is asked
+   once, when the typing stops, and the ask is polled through the pending
+   protocol so a key is served while the host works. A host with no idle delay
+   is asked at once. Returns false when the source was asked and has nothing. */
+ITL_DEF bool itl_menu_regather_soon(itl_le_t *le, const itl_menu_source *source,
+                                    itl_menu_filter_state *state,
+                                    tl_completion *result)
 {
   if (itl_menu_cache_answer(le, source, state, result)) {
     return true;
   }
 
-  if (itl_g_idle_callback == NULL || itl_g_idle_delay_ms <= 0 ||
-      !state->is_key_in_burst ||
-      (!state->is_debounced &&
-       (state->base.count <= ITL_MENU_DEBOUNCE_THRESHOLD ||
-        is_long_base_asked_at_once)))
-  {
+  if (itl_g_idle_callback == NULL || itl_g_idle_delay_ms <= 0) {
     if (itl_menu_rebase(le, source, state, result)) {
       return true;
     }
@@ -10838,7 +10821,6 @@ ITL_DEF bool itl_menu_regather_after(itl_le_t *le, const itl_menu_source *source
     return true;
   }
 
-  itl_menu_empty_candidates(result);
   state->is_debounced = true;
   state->is_regather_armed = true;
   itl_g_menu_due_ms = itl_monotonic_ms() + (uint64_t) ITL_MENU_DEBOUNCE_MS;
@@ -10847,19 +10829,12 @@ ITL_DEF bool itl_menu_regather_after(itl_le_t *le, const itl_menu_source *source
 }
 
 /* The moment a put off question becomes due after a key: one debounce pause
-   for a word that left a long base, and at once for a question a key only
-   interrupted. */
+   for a word that put a question off, and at once for a question Tab asked
+   that a key only interrupted. */
 ITL_DEF uint64_t itl_menu_question_due_ms(const itl_menu_filter_state *state)
 {
   return itl_monotonic_ms() +
          (state->is_debounced ? (uint64_t) ITL_MENU_DEBOUNCE_MS : 0);
-}
-
-ITL_DEF bool itl_menu_regather_soon(itl_le_t *le, const itl_menu_source *source,
-                                    itl_menu_filter_state *state,
-                                    tl_completion *result)
-{
-  return itl_menu_regather_after(le, source, state, result, false);
 }
 
 /* Answer the line as it stands from the base list, and fall back to the source
@@ -10889,18 +10864,20 @@ ITL_DEF bool itl_menu_narrow(itl_le_t *le, const itl_menu_source *source,
     if (state->base.count == 0) {
       return false;
     }
-    if (state->base.count <= ITL_MENU_FILTER_SCAN_MAX &&
-        itl_menu_filter_base(source, &state->base, state->base_tier, query,
-                             query_len, result))
-    {
-      state->name_width = itl_menu_name_width(result);
+    if (state->base.count <= ITL_MENU_FILTER_SCAN_MAX) {
+      if (itl_menu_filter_base(source, &state->base, state->base_tier, query,
+                               query_len, result))
+      {
+        state->name_width = itl_menu_name_width(result);
 
-      return true;
+        return true;
+      }
+
+      itl_menu_empty_candidates(result);
     }
   }
 
-  return itl_menu_regather_after(
-      le, source, state, result, state->base.count > ITL_MENU_FILTER_SCAN_MAX);
+  return itl_menu_regather_soon(le, source, state, result);
 }
 
 /* The pause that a put off gather waited for has come, or Tab asked for the
@@ -10984,8 +10961,6 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
       TL_SUCCESS;
 
   state.is_debounced = false;
-  state.is_key_in_burst = false;
-  state.last_key_ms = itl_monotonic_ms();
   itl_menu_adopt_base(le, source, &state, &result);
   itl_g_tty_should_refresh_text = true;
 
@@ -11057,13 +11032,6 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
     if (!ITL_READ_BYTE(&byte)) {
       break;
     }
-    {
-      uint64_t key_ms = itl_monotonic_ms();
-
-      state.is_key_in_burst =
-          key_ms - state.last_key_ms < (uint64_t) ITL_MENU_DEBOUNCE_MS;
-      state.last_key_ms = key_ms;
-    }
     if (state.is_regather_armed) {
       itl_g_menu_due_ms = itl_menu_question_due_ms(&state);
     }
@@ -11075,6 +11043,24 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
         kind == TL_KEY_RIGHT &&
         (key & (TL_MOD_CTRL | TL_MOD_SHIFT | TL_MOD_ALT)) == 0 &&
         source->should_submit_on_enter;
+
+    /* The rows on screen while a gather is put off belong to the line before
+       the last key. A key that walks or takes a row asks first for the rows
+       the line has now. Tab and the walking keys stop at those rows, and a key
+       that takes a row takes it from them. */
+    if (state.is_regather_armed &&
+        (kind == TL_KEY_TAB || kind == TL_KEY_DOWN || kind == TL_KEY_UP ||
+         should_continue_completion ||
+         (kind == TL_KEY_ENTER && !source->should_submit_on_enter)))
+    {
+      itl_menu_gather_due(le, source, &state, &result);
+      selected = 0;
+      window_start = 0;
+      previewed = (size_t) -1;
+      if (kind == TL_KEY_TAB || kind == TL_KEY_DOWN || kind == TL_KEY_UP) {
+        continue;
+      }
+    }
 
     if (kind == TL_KEY_DOWN) {
       if (result.count > 0) {
@@ -11091,15 +11077,6 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
         selected = selected > 0 ? selected - 1 : result.count - 1;
       }
 
-      continue;
-    }
-
-    /* Tab asks for the rows a put off gather has not listed yet. */
-    if (state.is_regather_armed && kind == TL_KEY_TAB) {
-      itl_menu_gather_due(le, source, &state, &result);
-      selected = 0;
-      window_start = 0;
-      previewed = (size_t) -1;
       continue;
     }
 

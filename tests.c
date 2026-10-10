@@ -4171,41 +4171,39 @@ cleanup:
   return calls;
 }
 
-/* A key that leaves the gathered list of a menu longer than the threshold does
-   not ask the source. The line is updated, the menu shows no rows, and the
-   source is asked once when the typing has paused for the idle delay, however
-   many keys came before. A menu at or below the threshold asks at once. */
+/* A key that leaves the gathered list of a menu does not ask the source,
+   whatever the length of the list. The line is updated, and the source is
+   asked once when the typing has paused for ITL_MENU_DEBOUNCE_MS, however many
+   keys came before. */
 static bool
-test_menu_debounces_a_long_list(void)
+test_menu_debounces_every_list(void)
 {
-  char   line[BUFFER_SIZE];
-  size_t gathers;
-  bool   ok = true;
+  static const size_t row_counts[] = {600, 3};
+  char                line[BUFFER_SIZE];
+  size_t              gathers;
+  size_t              index;
+  bool                ok = true;
 
-  gathers = debounce_menu_gathers(ITL_MENU_DEBOUNCE_THRESHOLD + 1, " ab", 10,
-                                  line, sizeof(line));
-  if (gathers != 0 || strcmp(line, "cat it ab") != 0 ||
-      itl_g_menu_due_ms != 0)
-  {
-    TEST_PRINTF("keys before the pause cost %zu gathers, left '%s'\n", gathers,
-                line);
-    ok = false;
-  }
+  for (index = 0; index < countof(row_counts); ++index) {
+    gathers = debounce_menu_gathers(row_counts[index], " ab", 10, line,
+                                    sizeof(line));
+    if (gathers != 0 || strcmp(line, "cat it ab") != 0 ||
+        itl_g_menu_due_ms != 0)
+    {
+      TEST_PRINTF("%zu rows: keys before the pause cost %zu gathers, left "
+                  "'%s'\n",
+                  row_counts[index], gathers, line);
+      ok = false;
+    }
 
-  gathers = debounce_menu_gathers(ITL_MENU_DEBOUNCE_THRESHOLD + 1, " ab", 300,
-                                  line, sizeof(line));
-  if (gathers != 1 || strcmp(line, "cat it ab") != 0) {
-    TEST_PRINTF("a pause after three keys cost %zu gathers, left '%s'\n",
-                gathers, line);
-    ok = false;
-  }
-
-  gathers = debounce_menu_gathers(ITL_MENU_DEBOUNCE_THRESHOLD, " ab", 10, line,
-                                  sizeof(line));
-  if (gathers == 0 || strcmp(line, "cat it ab") != 0) {
-    TEST_PRINTF("a list at the threshold put the gather off, %zu gathers\n",
-                gathers);
-    ok = false;
+    gathers = debounce_menu_gathers(row_counts[index], " ab", 300, line,
+                                    sizeof(line));
+    if (gathers != 1 || strcmp(line, "cat it ab") != 0) {
+      TEST_PRINTF("%zu rows: a pause after three keys cost %zu gathers, left "
+                  "'%s'\n",
+                  row_counts[index], gathers, line);
+      ok = false;
+    }
   }
 
   return ok;
@@ -4420,12 +4418,11 @@ cleanup:
   return did_run;
 }
 
-/* A key typed after a pause asks at once, and a word that put a gather off
-   stays debounced for the keys of a burst, however small the list the gather
-   gave. The key after the pause costs one question at once, and the two keys
-   typed together after it cost one question, asked when they pause. */
+/* Each word asks once its typing pauses, however small the list it leaves.
+   The space costs one question after the pause, and the three keys typed
+   together after it cost one question, asked when they pause. */
 static bool
-test_menu_stays_debounced_within_the_word(void)
+test_menu_asks_once_a_word_pauses(void)
 {
   static const test_staged_step steps[] = {
       {0, " "}, {120, "a"}, {130, "b"}, {140, "c"}};
@@ -4436,17 +4433,17 @@ test_menu_stays_debounced_within_the_word(void)
     TEST_PRINTF("the scenario did not run\n");
     return false;
   }
-  if (test_staged_call_count != 3 ||
-      strcmp(test_staged_log[1].line, "cat it a") != 0 ||
-      test_staged_log[1].at_ms > 150 ||
-      strcmp(test_staged_log[2].line, "cat it abc") != 0 ||
-      test_staged_log[2].at_ms < 170 || strcmp(line, "cat it abc") != 0)
+  if (test_staged_call_count != 2 ||
+      strcmp(test_staged_log[0].line, "cat it ") != 0 ||
+      test_staged_log[0].at_ms < 35 || test_staged_log[0].at_ms > 110 ||
+      strcmp(test_staged_log[1].line, "cat it abc") != 0 ||
+      test_staged_log[1].at_ms < 175 || strcmp(line, "cat it abc") != 0)
   {
     TEST_PRINTF("%zu questions, '%s' at %llu ms, '%s' at %llu ms, line '%s'\n",
-                test_staged_call_count, test_staged_log[1].line,
-                (unsigned long long) test_staged_log[1].at_ms,
-                test_staged_log[2].line,
-                (unsigned long long) test_staged_log[2].at_ms, line);
+                test_staged_call_count, test_staged_log[0].line,
+                (unsigned long long) test_staged_log[0].at_ms,
+                test_staged_log[1].line,
+                (unsigned long long) test_staged_log[1].at_ms, line);
     ok = false;
   }
 
@@ -4454,9 +4451,9 @@ test_menu_stays_debounced_within_the_word(void)
 }
 
 /* A key that moves the token to a new word clears the pause of the word before
-   it. The list being left is short, so the new word asks the host at once. */
+   it, and the new word asks after a pause of its own. */
 static bool
-test_menu_new_word_asks_at_once_from_a_short_list(void)
+test_menu_new_word_asks_after_its_pause(void)
 {
   static const test_staged_step steps[] = {{0, " "}, {120, "a"}, {200, " "}};
   char line[BUFFER_SIZE];
@@ -4468,7 +4465,7 @@ test_menu_new_word_asks_at_once_from_a_short_list(void)
   }
   if (test_staged_call_count != 3 ||
       strcmp(test_staged_log[2].line, "cat it a ") != 0 ||
-      test_staged_log[2].at_ms < 195 || test_staged_log[2].at_ms > 230)
+      test_staged_log[2].at_ms < 235 || test_staged_log[2].at_ms > 300)
   {
     TEST_PRINTF("%zu questions, the last for '%s' at %llu ms\n",
                 test_staged_call_count, test_staged_log[2].line,
@@ -4502,47 +4499,31 @@ test_menu_returns_to_a_gathered_word_without_asking(void)
   return ok;
 }
 
-/* A short list puts no question off. A key that interrupts a question the host
-   has not finished is handled, and the host is asked again right after it with
-   no pause, so the gather goes on from the work it kept. */
+/* A walking key during a pause asks at once for the rows of the line as it
+   stands, so the highlight never moves over the rows of the line before the
+   last key. */
 static bool
-test_menu_short_list_asks_again_after_an_interrupting_key(void)
+test_menu_walking_key_asks_at_once(void)
 {
-  static const test_staged_step steps[] = {{0, " "}, {25, "a"}};
-  char   line[BUFFER_SIZE];
-  size_t index;
-  bool   was_asked_for_typed_word = false;
-  bool   ok = true;
+  static const test_staged_step steps[] = {{0, " "}, {10, "\x1b[B"}};
+  char line[BUFFER_SIZE];
+  bool ok = true;
 
   test_staged_initial_row_count = 3;
-  if (!staged_menu_run(steps, countof(steps), 400, 3, 6, line, sizeof(line))) {
+  if (!staged_menu_run(steps, countof(steps), 300, 3, 0, line, sizeof(line))) {
     test_staged_initial_row_count = 600;
     TEST_PRINTF("the scenario did not run\n");
     return false;
   }
   test_staged_initial_row_count = 600;
 
-  for (index = 0; index < test_staged_call_count && index < TEST_STAGED_LOG_MAX;
-       ++index)
+  if (test_staged_call_count != 1 ||
+      strcmp(test_staged_log[0].line, "cat it ") != 0 ||
+      test_staged_log[0].at_ms > 30 || strcmp(line, "cat it ") != 0)
   {
-    if (strcmp(test_staged_log[index].line, "cat it a") == 0) {
-      was_asked_for_typed_word = true;
-    }
-    if (index > 0 &&
-        test_staged_log[index].at_ms - test_staged_log[index - 1].at_ms >= 35)
-    {
-      TEST_PRINTF("the host waited from %llu to %llu ms\n",
-                  (unsigned long long) test_staged_log[index - 1].at_ms,
-                  (unsigned long long) test_staged_log[index].at_ms);
-      ok = false;
-    }
-  }
-
-  if (!was_asked_for_typed_word || test_staged_finished_count == 0 ||
-      strcmp(line, "cat it a") != 0)
-  {
-    TEST_PRINTF("asked for the typed word %d, %zu finished gathers, line '%s'\n",
-                was_asked_for_typed_word, test_staged_finished_count, line);
+    TEST_PRINTF("%zu questions, the first for '%s' at %llu ms, line '%s'\n",
+                test_staged_call_count, test_staged_log[0].line,
+                (unsigned long long) test_staged_log[0].at_ms, line);
     ok = false;
   }
 
@@ -8914,17 +8895,17 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_menu_keys_reuse_gathered_list),
                                    DEFINE_TEST_CASE(
-                                       test_menu_debounces_a_long_list),
+                                       test_menu_debounces_every_list),
                                    DEFINE_TEST_CASE(
-                                       test_menu_stays_debounced_within_the_word),
+                                       test_menu_asks_once_a_word_pauses),
                                    DEFINE_TEST_CASE(
-                                       test_menu_new_word_asks_at_once_from_a_short_list),
+                                       test_menu_new_word_asks_after_its_pause),
                                    DEFINE_TEST_CASE(
                                        test_menu_returns_to_a_gathered_word_without_asking),
                                    DEFINE_TEST_CASE(
                                        test_menu_unfinished_gather_resumes_after_the_pause),
                                    DEFINE_TEST_CASE(
-                                       test_menu_short_list_asks_again_after_an_interrupting_key),
+                                       test_menu_walking_key_asks_at_once),
                                    DEFINE_TEST_CASE(
                                        test_tab_prefix_menu_reuses_gather),
                                    DEFINE_TEST_CASE(
