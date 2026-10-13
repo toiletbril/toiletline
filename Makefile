@@ -3,7 +3,7 @@ CFLAGS := -g3 -Wall -Wextra -Wconversion -Wno-sign-conversion -Wdouble-promotion
 		  -Werror -Wno-unused -pedantic -std=c99
 
 ifneq ($(OS),Windows_NT)
-CFLAGS += -fsanitize=address -fsanitize=undefined
+CFLAGS += -fsanitize=address -fsanitize=undefined -pthread
 endif
 
 default:

@@ -7,6 +7,7 @@
 #include <stdio.h>
 
 #if defined ITL_POSIX
+#include <pthread.h>
 #include <sys/wait.h>
 #endif
 
@@ -3145,6 +3146,47 @@ extern int   grantpt(int descriptor);
 extern int   unlockpt(int descriptor);
 extern char *ptsname(int descriptor);
 
+typedef struct test_terminal_drain test_terminal_drain_t;
+
+struct test_terminal_drain
+{
+  int    master;
+  char  *buffer;
+  size_t capacity;
+  size_t size;
+  int    should_stop;
+};
+
+static void *
+test_drain_terminal(void *argument)
+{
+  test_terminal_drain_t *drain = (test_terminal_drain_t *) argument;
+  struct pollfd          pfd;
+  char                   discarded[64];
+
+  pfd.fd = drain->master;
+  pfd.events = POLLIN;
+  for (;;) {
+    int     ready = poll(&pfd, 1, 50);
+    ssize_t chunk;
+
+    if (ready > 0 && (pfd.revents & POLLIN) != 0) {
+      if (drain->size < drain->capacity) {
+        chunk = read(drain->master, drain->buffer + drain->size,
+                     drain->capacity - drain->size);
+      } else {
+        chunk = read(drain->master, discarded, sizeof(discarded));
+      }
+      if (chunk <= 0) break;
+      if (drain->size < drain->capacity) drain->size += (size_t) chunk;
+      continue;
+    }
+    if (ready > 0) break;
+    if (__atomic_load_n(&drain->should_stop, __ATOMIC_ACQUIRE)) break;
+  }
+  return NULL;
+}
+
 static bool
 test_extended_keys_follow_raw_mode(void)
 {
@@ -3155,15 +3197,29 @@ test_extended_keys_follow_raw_mode(void)
   bool           was_raw = itl_g_entered_raw_mode;
   int            master = -1, slave = -1;
   int            saved_stdin = -1, saved_stdout = -1;
-  char           written[256];
-  size_t         written_size = 0;
-  bool           ok = false;
+  char                  written[256];
+  size_t                written_size = 0;
+  bool                  ok = false;
+  bool                  is_drain_running = false;
+  pthread_t             drain_thread;
+  test_terminal_drain_t drain;
 
   master = posix_openpt(O_RDWR | O_NOCTTY);
   if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 ||
       ptsname(master) == NULL)
   {
     TEST_PRINTF("could not open a terminal pair\n");
+    goto cleanup;
+  }
+  drain.master = master;
+  drain.buffer = written;
+  drain.capacity = sizeof(written);
+  drain.size = 0;
+  drain.should_stop = 0;
+  is_drain_running =
+      pthread_create(&drain_thread, NULL, test_drain_terminal, &drain) == 0;
+  if (!is_drain_running) {
+    TEST_PRINTF("could not start the terminal reader\n");
     goto cleanup;
   }
   slave = open(ptsname(master), O_RDWR | O_NOCTTY);
@@ -3198,21 +3254,12 @@ cleanup:
     close(saved_stdout);
   }
   if (slave >= 0) close(slave);
-  if (master >= 0) {
-    struct pollfd pfd;
-    ssize_t       chunk;
-
-    pfd.fd = master;
-    pfd.events = POLLIN;
-    while (written_size < sizeof(written) && poll(&pfd, 1, 100) > 0 &&
-           (pfd.revents & POLLIN) != 0 &&
-           (chunk = read(master, written + written_size,
-                         sizeof(written) - written_size)) > 0)
-    {
-      written_size += (size_t) chunk;
-    }
-    close(master);
+  if (is_drain_running) {
+    __atomic_store_n(&drain.should_stop, 1, __ATOMIC_RELEASE);
+    pthread_join(drain_thread, NULL);
+    written_size = drain.size;
   }
+  if (master >= 0) close(master);
   itl_g_entered_raw_mode = was_raw;
   itl_g_original_tty_mode = saved_mode;
   itl_g_extended_keys_active = false;
@@ -3242,15 +3289,29 @@ test_raw_mode_keeps_signal_keys(void)
   bool           was_raw = itl_g_entered_raw_mode;
   int            master = -1, slave = -1;
   int            saved_stdin = -1, saved_stdout = -1;
-  char           written[256];
-  size_t         written_size = 0;
-  bool           ok = false;
+  char                  written[256];
+  size_t                written_size = 0;
+  bool                  ok = false;
+  bool                  is_drain_running = false;
+  pthread_t             drain_thread;
+  test_terminal_drain_t drain;
 
   master = posix_openpt(O_RDWR | O_NOCTTY);
   if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 ||
       ptsname(master) == NULL)
   {
     TEST_PRINTF("could not open a terminal pair\n");
+    goto cleanup;
+  }
+  drain.master = master;
+  drain.buffer = written;
+  drain.capacity = sizeof(written);
+  drain.size = 0;
+  drain.should_stop = 0;
+  is_drain_running =
+      pthread_create(&drain_thread, NULL, test_drain_terminal, &drain) == 0;
+  if (!is_drain_running) {
+    TEST_PRINTF("could not start the terminal reader\n");
     goto cleanup;
   }
   slave = open(ptsname(master), O_RDWR | O_NOCTTY);
@@ -3287,21 +3348,12 @@ cleanup:
     close(saved_stdout);
   }
   if (slave >= 0) close(slave);
-  if (master >= 0) {
-    struct pollfd pfd;
-    ssize_t       chunk;
-
-    pfd.fd = master;
-    pfd.events = POLLIN;
-    while (written_size < sizeof(written) && poll(&pfd, 1, 100) > 0 &&
-           (pfd.revents & POLLIN) != 0 &&
-           (chunk = read(master, written + written_size,
-                         sizeof(written) - written_size)) > 0)
-    {
-      written_size += (size_t) chunk;
-    }
-    close(master);
+  if (is_drain_running) {
+    __atomic_store_n(&drain.should_stop, 1, __ATOMIC_RELEASE);
+    pthread_join(drain_thread, NULL);
+    written_size = drain.size;
   }
+  if (master >= 0) close(master);
   itl_g_entered_raw_mode = was_raw;
   itl_g_original_tty_mode = saved_mode;
   itl_g_extended_keys_active = false;
