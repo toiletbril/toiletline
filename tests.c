@@ -3150,11 +3150,13 @@ typedef struct test_terminal_drain test_terminal_drain_t;
 
 struct test_terminal_drain
 {
-  int    master;
-  char  *buffer;
-  size_t capacity;
-  size_t size;
-  int    should_stop;
+  int       master;
+  char     *buffer;
+  size_t    capacity;
+  size_t    size;
+  int       should_stop;
+  bool      is_running;
+  pthread_t thread;
 };
 
 static void *
@@ -3188,6 +3190,30 @@ test_drain_terminal(void *argument)
 }
 
 static bool
+test_drain_start(test_terminal_drain_t *drain, int master, char *buffer,
+                 size_t capacity)
+{
+  drain->master = master;
+  drain->buffer = buffer;
+  drain->capacity = capacity;
+  drain->size = 0;
+  drain->should_stop = 0;
+  drain->is_running =
+      pthread_create(&drain->thread, NULL, test_drain_terminal, drain) == 0;
+  return drain->is_running;
+}
+
+static size_t
+test_drain_stop(test_terminal_drain_t *drain)
+{
+  if (!drain->is_running) return 0;
+  __atomic_store_n(&drain->should_stop, 1, __ATOMIC_RELEASE);
+  pthread_join(drain->thread, NULL);
+  drain->is_running = false;
+  return drain->size;
+}
+
+static bool
 test_extended_keys_follow_raw_mode(void)
 {
   static const char expected[] = "\x1b[?2004h" ITL_EXTENDED_KEYS_ON
@@ -3197,12 +3223,10 @@ test_extended_keys_follow_raw_mode(void)
   bool           was_raw = itl_g_entered_raw_mode;
   int            master = -1, slave = -1;
   int            saved_stdin = -1, saved_stdout = -1;
-  char                  written[256];
-  size_t                written_size = 0;
-  bool                  ok = false;
-  bool                  is_drain_running = false;
-  pthread_t             drain_thread;
-  test_terminal_drain_t drain;
+  char           written[256];
+  size_t         written_size = 0;
+  bool           ok = false;
+  test_terminal_drain_t drain = {0};
 
   master = posix_openpt(O_RDWR | O_NOCTTY);
   if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 ||
@@ -3211,18 +3235,13 @@ test_extended_keys_follow_raw_mode(void)
     TEST_PRINTF("could not open a terminal pair\n");
     goto cleanup;
   }
-  drain.master = master;
-  drain.buffer = written;
-  drain.capacity = sizeof(written);
-  drain.size = 0;
-  drain.should_stop = 0;
-  is_drain_running =
-      pthread_create(&drain_thread, NULL, test_drain_terminal, &drain) == 0;
-  if (!is_drain_running) {
+  slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+  if (slave >= 0 &&
+      !test_drain_start(&drain, master, written, sizeof(written)))
+  {
     TEST_PRINTF("could not start the terminal reader\n");
     goto cleanup;
   }
-  slave = open(ptsname(master), O_RDWR | O_NOCTTY);
   saved_stdin = dup(STDIN_FILENO);
   saved_stdout = dup(STDOUT_FILENO);
   if (slave < 0 || saved_stdin < 0 || saved_stdout < 0 ||
@@ -3254,11 +3273,7 @@ cleanup:
     close(saved_stdout);
   }
   if (slave >= 0) close(slave);
-  if (is_drain_running) {
-    __atomic_store_n(&drain.should_stop, 1, __ATOMIC_RELEASE);
-    pthread_join(drain_thread, NULL);
-    written_size = drain.size;
-  }
+  written_size = test_drain_stop(&drain);
   if (master >= 0) close(master);
   itl_g_entered_raw_mode = was_raw;
   itl_g_original_tty_mode = saved_mode;
@@ -3289,12 +3304,10 @@ test_raw_mode_keeps_signal_keys(void)
   bool           was_raw = itl_g_entered_raw_mode;
   int            master = -1, slave = -1;
   int            saved_stdin = -1, saved_stdout = -1;
-  char                  written[256];
-  size_t                written_size = 0;
-  bool                  ok = false;
-  bool                  is_drain_running = false;
-  pthread_t             drain_thread;
-  test_terminal_drain_t drain;
+  char           written[256];
+  size_t         written_size = 0;
+  bool           ok = false;
+  test_terminal_drain_t drain = {0};
 
   master = posix_openpt(O_RDWR | O_NOCTTY);
   if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 ||
@@ -3303,18 +3316,13 @@ test_raw_mode_keeps_signal_keys(void)
     TEST_PRINTF("could not open a terminal pair\n");
     goto cleanup;
   }
-  drain.master = master;
-  drain.buffer = written;
-  drain.capacity = sizeof(written);
-  drain.size = 0;
-  drain.should_stop = 0;
-  is_drain_running =
-      pthread_create(&drain_thread, NULL, test_drain_terminal, &drain) == 0;
-  if (!is_drain_running) {
+  slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+  if (slave >= 0 &&
+      !test_drain_start(&drain, master, written, sizeof(written)))
+  {
     TEST_PRINTF("could not start the terminal reader\n");
     goto cleanup;
   }
-  slave = open(ptsname(master), O_RDWR | O_NOCTTY);
   saved_stdin = dup(STDIN_FILENO);
   saved_stdout = dup(STDOUT_FILENO);
   if (slave < 0 || saved_stdin < 0 || saved_stdout < 0 ||
@@ -3348,11 +3356,7 @@ cleanup:
     close(saved_stdout);
   }
   if (slave >= 0) close(slave);
-  if (is_drain_running) {
-    __atomic_store_n(&drain.should_stop, 1, __ATOMIC_RELEASE);
-    pthread_join(drain_thread, NULL);
-    written_size = drain.size;
-  }
+  written_size = test_drain_stop(&drain);
   if (master >= 0) close(master);
   itl_g_entered_raw_mode = was_raw;
   itl_g_original_tty_mode = saved_mode;
