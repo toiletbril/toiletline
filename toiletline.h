@@ -8226,6 +8226,7 @@ ITL_DEF void itl_completion_append_space(itl_le_t *le)
 #define ITL_MENU_SELECTED_MARGIN_WIDTH 1
 #define ITL_MENU_SELECTED_SGR          "\x1b[7m"
 #define ITL_MENU_DESCRIPTION_SGR       ITL_DIM_SGR
+#define ITL_MENU_DIRECTORY_SGR         "\x1b[34m"
 #define ITL_MENU_TITLE_SEPARATOR       ", "
 #define ITL_MENU_TITLE_SEPARATOR_WIDTH 2
 /* The row drawn in place of the candidates once the search has narrowed the
@@ -8461,6 +8462,16 @@ ITL_DEF void itl_menu_append_colored_cell(itl_char_buf_t *b, const char *text,
   }
 }
 
+/* A candidate ending in a path separator is a directory, and the menu draws
+   it in the directory color of ls. */
+ITL_DEF bool itl_menu_is_directory_name(const char *name)
+{
+  size_t name_bytes = strlen(name);
+
+  return name_bytes > 0 &&
+         itl_byte_is_path_separator((uint8_t) name[name_bytes - 1]);
+}
+
 /* Draw one candidate. The name keeps a fixed column when a description follows
    it. Every description starts at the same offset, and a row without one ends
    right after the name. The selected row reverses only the displayed entry.
@@ -8507,6 +8518,16 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
                                    has_description);
       was_name_drawn = true;
     }
+  }
+
+  if (!was_name_drawn && !is_selected && itl_g_colors_enabled &&
+      itl_menu_is_directory_name(name))
+  {
+    tl_highlight_span directory_span = {0, SIZE_MAX, ITL_MENU_DIRECTORY_SGR};
+
+    itl_menu_append_colored_cell(b, name, name_width, &directory_span, 1,
+                                 has_description);
+    was_name_drawn = true;
   }
 
   if (!was_name_drawn) {

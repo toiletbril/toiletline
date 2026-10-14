@@ -5081,6 +5081,52 @@ test_history_menu_multiline_display(void)
 }
 
 static bool
+test_menu_row_colors_directories(void)
+{
+  static const char *const names[] = {"dir/", "file"};
+  tl_completion  result = ITL_ZERO_INIT;
+  int            was_colors_enabled = itl_g_colors_enabled;
+  itl_char_buf_t *b = itl_char_buf_alloc();
+  bool            ok = true;
+
+  result.candidates = names;
+  result.count = countof(names);
+  itl_g_colors_enabled = 1;
+
+  itl_menu_append_row(b, &result, 0, 4, 0, false, false);
+  if (!test_bytes_have(b->data, b->size, ITL_MENU_DIRECTORY_SGR "dir/")) {
+    TEST_PRINTF("a directory row was not drawn in the directory color\n");
+    ok = false;
+  }
+
+  b->size = 0;
+  itl_menu_append_row(b, &result, 1, 4, 0, false, false);
+  if (test_bytes_have(b->data, b->size, ITL_MENU_DIRECTORY_SGR)) {
+    TEST_PRINTF("a file row was drawn in the directory color\n");
+    ok = false;
+  }
+
+  b->size = 0;
+  itl_menu_append_row(b, &result, 0, 4, 0, true, false);
+  if (test_bytes_have(b->data, b->size, ITL_MENU_DIRECTORY_SGR)) {
+    TEST_PRINTF("the selected directory row was colored\n");
+    ok = false;
+  }
+
+  b->size = 0;
+  itl_g_colors_enabled = 0;
+  itl_menu_append_row(b, &result, 0, 4, 0, false, false);
+  if (test_bytes_have(b->data, b->size, ITL_MENU_DIRECTORY_SGR)) {
+    TEST_PRINTF("a directory row was colored with colors disabled\n");
+    ok = false;
+  }
+
+  itl_g_colors_enabled = was_colors_enabled;
+  ITL_CHAR_BUF_FREE(b);
+  return ok;
+}
+
+static bool
 test_merge_visual_spans(void)
 {
   static const char *first = "\x1b[31m";
@@ -8902,6 +8948,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_menu_narrow_reuses_base),
                                    DEFINE_TEST_CASE(test_menu_cells),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_row_colors_directories),
                                    DEFINE_TEST_CASE(
                                        test_history_menu_multiline_display),
                                    DEFINE_TEST_CASE(test_merge_visual_spans),
