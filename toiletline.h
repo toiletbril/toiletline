@@ -8225,8 +8225,25 @@ ITL_DEF void itl_completion_append_space(itl_le_t *le)
 #define ITL_MENU_SELECTED_MARGIN       " "
 #define ITL_MENU_SELECTED_MARGIN_WIDTH 1
 #define ITL_MENU_SELECTED_SGR          "\x1b[7m"
+#define ITL_MENU_SELECTED_TINT_SGR     "\x1b[38;5;231;48;5;26m"
 #define ITL_MENU_DESCRIPTION_SGR       ITL_DIM_SGR
 #define ITL_MENU_DIRECTORY_SGR         "\x1b[34m"
+#define ITL_MENU_DIRECTORY_TINT_SGR    "\x1b[38;5;110m"
+
+/* A terminal with the 256-color palette draws the selected row as white text
+   on a blue background and a directory name in a pastel blue. Another terminal
+   reverses the selected row and draws a directory name in blue. */
+ITL_DEF const char *itl_menu_selected_sgr(void)
+{
+  return itl_g_colors_enabled && itl_term_supports_256_color()
+             ? ITL_MENU_SELECTED_TINT_SGR
+             : ITL_MENU_SELECTED_SGR;
+}
+ITL_DEF const char *itl_menu_directory_sgr(void)
+{
+  return itl_term_supports_256_color() ? ITL_MENU_DIRECTORY_TINT_SGR
+                                       : ITL_MENU_DIRECTORY_SGR;
+}
 #define ITL_MENU_TITLE_SEPARATOR       ", "
 #define ITL_MENU_TITLE_SEPARATOR_WIDTH 2
 /* The row drawn in place of the candidates once the search has narrowed the
@@ -8494,7 +8511,7 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
 
   if (is_selected) {
     itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
-    itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_SGR);
+    itl_char_buf_append_cstr(b, itl_menu_selected_sgr());
     itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
   } else {
     itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
@@ -8523,7 +8540,7 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
   if (!was_name_drawn && !is_selected && itl_g_colors_enabled &&
       itl_menu_is_directory_name(name))
   {
-    tl_highlight_span directory_span = {0, SIZE_MAX, ITL_MENU_DIRECTORY_SGR};
+    tl_highlight_span directory_span = {0, SIZE_MAX, itl_menu_directory_sgr()};
 
     itl_menu_append_colored_cell(b, name, name_width, &directory_span, 1,
                                  has_description);

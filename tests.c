@@ -5088,27 +5088,30 @@ test_menu_row_colors_directories(void)
   int            was_colors_enabled = itl_g_colors_enabled;
   itl_char_buf_t *b = itl_char_buf_alloc();
   bool            ok = true;
+  const char     *directory_sgr = itl_menu_directory_sgr();
+  char            colored_name[64];
 
+  snprintf(colored_name, sizeof(colored_name), "%sdir/", directory_sgr);
   result.candidates = names;
   result.count = countof(names);
   itl_g_colors_enabled = 1;
 
   itl_menu_append_row(b, &result, 0, 4, 0, false, false);
-  if (!test_bytes_have(b->data, b->size, ITL_MENU_DIRECTORY_SGR "dir/")) {
+  if (!test_bytes_have(b->data, b->size, colored_name)) {
     TEST_PRINTF("a directory row was not drawn in the directory color\n");
     ok = false;
   }
 
   b->size = 0;
   itl_menu_append_row(b, &result, 1, 4, 0, false, false);
-  if (test_bytes_have(b->data, b->size, ITL_MENU_DIRECTORY_SGR)) {
+  if (test_bytes_have(b->data, b->size, directory_sgr)) {
     TEST_PRINTF("a file row was drawn in the directory color\n");
     ok = false;
   }
 
   b->size = 0;
   itl_menu_append_row(b, &result, 0, 4, 0, true, false);
-  if (test_bytes_have(b->data, b->size, ITL_MENU_DIRECTORY_SGR)) {
+  if (test_bytes_have(b->data, b->size, directory_sgr)) {
     TEST_PRINTF("the selected directory row was colored\n");
     ok = false;
   }
@@ -5116,7 +5119,7 @@ test_menu_row_colors_directories(void)
   b->size = 0;
   itl_g_colors_enabled = 0;
   itl_menu_append_row(b, &result, 0, 4, 0, false, false);
-  if (test_bytes_have(b->data, b->size, ITL_MENU_DIRECTORY_SGR)) {
+  if (test_bytes_have(b->data, b->size, directory_sgr)) {
     TEST_PRINTF("a directory row was colored with colors disabled\n");
     ok = false;
   }
