@@ -8325,6 +8325,7 @@ ITL_DEF void itl_completion_append_space(itl_le_t *le)
    closes one column after it. The plain first column of the prefix keeps the
    row aligned with an unselected one. */
 #define ITL_MENU_SELECTED_MARGIN       " "
+#define ITL_MENU_SELECTED_TINT_MARGIN  "\xc2\xa0"
 #define ITL_MENU_SELECTED_MARGIN_WIDTH 1
 #define ITL_MENU_SELECTED_SGR          "\x1b[7m"
 #define ITL_MENU_SELECTED_TINT_SGR     "\x1b[38;5;231;48;5;26m"
@@ -8344,6 +8345,12 @@ ITL_DEF const char *itl_menu_selected_sgr(void)
   }
   return itl_term_supports_true_color() ? ITL_MENU_SELECTED_TRUE_TINT_SGR
                                         : ITL_MENU_SELECTED_TINT_SGR;
+}
+ITL_DEF const char *itl_menu_selected_inner_margin(void)
+{
+  return itl_g_colors_enabled && itl_term_supports_256_color()
+             ? ITL_MENU_SELECTED_TINT_MARGIN
+             : ITL_MENU_SELECTED_MARGIN;
 }
 ITL_DEF const char *itl_menu_directory_sgr(void)
 {
@@ -8618,7 +8625,7 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
   if (is_selected) {
     itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
     itl_char_buf_append_cstr(b, itl_menu_selected_sgr());
-    itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
+    itl_char_buf_append_cstr(b, itl_menu_selected_inner_margin());
   } else {
     itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
   }
@@ -8671,7 +8678,7 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
   }
 
   if (is_selected) {
-    itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
+    itl_char_buf_append_cstr(b, itl_menu_selected_inner_margin());
     itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
   }
 }
