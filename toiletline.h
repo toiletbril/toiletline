@@ -5425,6 +5425,8 @@ ITL_DEF size_t itl_spans_keep_valid(const tl_highlight_span *source,
   return kept_count;
 }
 
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_is_submitting = false;
+
 ITL_DEF size_t itl_le_collect_highlight(const char *render,
                                         tl_highlight_span *destination,
                                         size_t line_length, size_t cursor)
@@ -5434,7 +5436,7 @@ ITL_DEF size_t itl_le_collect_highlight(const char *render,
   hl.spans = destination;
   hl.count = 0;
   hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
-  hl.cursor = cursor;
+  hl.cursor = itl_g_le_is_submitting ? TL_HIGHLIGHT_NO_CURSOR : cursor;
 
   if (!itl_g_highlight_callback(render, &hl)) {
     return 0;
@@ -7491,6 +7493,7 @@ ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
 
   itl_ghost_clear();
   itl_g_hint_is_closed = true;
+  itl_g_le_is_submitting = code == TL_PRESSED_ENTER;
 
   if ((code == TL_PRESSED_ENTER || code == TL_PRESSED_INTERRUPT) &&
       itl_g_transient_prompt != NULL)
@@ -7499,8 +7502,11 @@ ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
   } else if (was_ghost_drawn || was_hint_drawn) {
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
+  } else if (itl_g_le_is_submitting && itl_g_highlight_follows_cursor) {
+    itl_le_tty_refresh(le);
   }
 
+  itl_g_le_is_submitting = false;
   itl_le_clear_line(le);
 
   return code;
