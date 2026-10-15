@@ -2508,6 +2508,7 @@ struct itl_le
   size_t prompt_size;  /* N of bytes in the prompt */
   size_t prompt_width; /* N of columns the prompt's last row occupies */
   size_t prompt_rows;  /* N of newlines in the prompt, 0 for a single row */
+  bool has_prompt_pad;
 
   size_t goal_column;
 };
@@ -2917,6 +2918,7 @@ ITL_DEF void itl_le_init(itl_le_t *le, itl_string_t *line_buf, char *out_buf,
   le->prompt                 = prompt;
   le->prompt_size            = (prompt != NULL) ? strlen(prompt) : 0;
   le->prompt_width           = itl_prompt_last_row_width(prompt, &le->prompt_rows);
+  le->has_prompt_pad         = false;
   le->goal_column            = 0;
   /* clang-format on */
 
@@ -6850,6 +6852,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
         itl_char_buf_append_cstr(b, ITL_PROMPT_ELLIPSIS);
         itl_char_buf_append_cstr(b, le->prompt + prompt_cut);
       }
+      if (le->has_prompt_pad && le->prompt_width > 0) {
+        itl_char_buf_append_cstr(b, "\xc2\xa0");
+      }
     }
 
     /* Emit the buffer, reproducing the metrics column accounting so our own
@@ -7467,6 +7472,7 @@ ITL_DEF void itl_le_tty_draw_transient(itl_le_t *le)
   le->prompt_size = strlen(itl_g_transient_prompt);
   le->prompt_width =
       itl_prompt_last_row_width(itl_g_transient_prompt, &le->prompt_rows);
+  le->has_prompt_pad = false;
 
   itl_g_right_prompt_is_held = true;
   itl_g_tty_first_render = true;
@@ -8321,6 +8327,15 @@ ITL_DEF void itl_completion_append_space(itl_le_t *le)
 #define ITL_MENU_MAX_ROWS         16
 #define ITL_MENU_ROW_PREFIX       "  "
 #define ITL_MENU_ROW_PREFIX_WIDTH 2
+
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_menu_is_prefix_narrow = false;
+
+ITL_DEF const char *itl_menu_row_prefix(void)
+{
+  return itl_g_menu_is_prefix_narrow ? &ITL_MENU_ROW_PREFIX[1]
+                                     : ITL_MENU_ROW_PREFIX;
+}
+
 /* The reversed block of a selected row opens one column before the entry and
    closes one column after it. The plain first column of the prefix keeps the
    row aligned with an unselected one. */
@@ -8623,11 +8638,13 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
   bool was_name_drawn = false;
 
   if (is_selected) {
-    itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
+    if (!itl_g_menu_is_prefix_narrow) {
+      itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
+    }
     itl_char_buf_append_cstr(b, itl_menu_selected_sgr());
     itl_char_buf_append_cstr(b, itl_menu_selected_inner_margin());
   } else {
-    itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
+    itl_char_buf_append_cstr(b, itl_menu_row_prefix());
   }
 
   if (should_highlight && !is_selected && itl_should_run_highlight()) {
@@ -8687,7 +8704,7 @@ ITL_DEF void itl_menu_append_row(itl_char_buf_t *b, const tl_completion *result,
 ITL_DEF void itl_menu_append_summary(itl_char_buf_t *b, size_t first,
                                      size_t last, size_t count)
 {
-  itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
+  itl_char_buf_append_cstr(b, itl_menu_row_prefix());
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_MENU_DESCRIPTION_SGR));
   itl_char_buf_append_cstr(b, "showing ");
   itl_char_buf_append_size_t(b, first);
@@ -8703,7 +8720,7 @@ ITL_DEF void itl_menu_append_summary(itl_char_buf_t *b, size_t first,
 ITL_DEF void itl_menu_append_dimmed_row(itl_char_buf_t *b, const char *text,
                                         size_t width)
 {
-  itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
+  itl_char_buf_append_cstr(b, itl_menu_row_prefix());
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_MENU_DESCRIPTION_SGR));
   itl_menu_append_cell(b, text, width, false);
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
@@ -8785,7 +8802,7 @@ ITL_DEF size_t itl_menu_layout_help(itl_char_buf_t *b, const char *title,
             itl_char_buf_append_cstr(b, ITL_LF);
             itl_menu_move_to_anchor(b, anchor);
           }
-          itl_char_buf_append_cstr(b, ITL_MENU_ROW_PREFIX);
+          itl_char_buf_append_cstr(b, itl_menu_row_prefix());
           itl_char_buf_append_cstr(b,
                                    itl_color_sequence(ITL_MENU_DESCRIPTION_SGR));
         }
@@ -9472,6 +9489,8 @@ ITL_DEF void itl_loading_frame_draw(itl_le_t *le)
       itl_g_loading_is_menu_reload && !source->should_anchor_to_token
           ? 0
           : itl_menu_anchor_column_of(le, itl_le_shell_word_start(le));
+  itl_g_menu_is_prefix_narrow =
+      le->has_prompt_pad && itl_g_menu_anchor_column == 1;
   layout = itl_menu_measure_for(&loading, tty_rows, 0, ITL_MENU_LOADING_TEXT,
                                 source->help_title, source->help_keys);
   itl_menu_draw(&loading, 0, 0, layout, source->help_title, source->help_keys,
@@ -11085,6 +11104,8 @@ ITL_DEF tl_status_code itl_completion_menu_loop(itl_le_t *le,
         : state.is_regather_armed
             ? itl_menu_anchor_column_of(le, itl_le_shell_word_start(le))
             : itl_menu_anchor_column_of(le, result.token_start);
+    itl_g_menu_is_prefix_narrow =
+        le->has_prompt_pad && itl_g_menu_anchor_column == 1;
     name_width = state.name_width;
     empty_text = state.is_regather_armed ? ITL_MENU_LOADING_TEXT
                                          : ITL_MENU_EMPTY_TEXT;
@@ -14924,6 +14945,10 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
   TL_ASSERT(buffer != NULL);
 
   itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
+  if (le->prompt_width == 0) {
+    le->has_prompt_pad = true;
+    le->prompt_width = 1;
+  }
   itl_le_end_insertion_walk();
   itl_g_auto_pair_count = 0;
 
