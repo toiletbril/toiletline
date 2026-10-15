@@ -2291,6 +2291,41 @@ test_kill_ring_appends_yanks_and_cycles(void)
 }
 
 static bool
+test_kill_line_removes_an_empty_line(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool ok = true;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  ITL_STRING_FROM_CSTR(line, "one\n\ntwo");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_g_le_action = ITL_LE_ACTION_NONE;
+  le.cursor_position = 4;
+  itl_le_key_handle(&le, TL_KEY_KILL_LINE);
+  ok &= test_line_is(line, "one\ntwo", "ctrl-k on an empty middle line");
+  if (le.cursor_position != 3) {
+    TEST_PRINTF("cursor after ctrl-k is %zu, expected 3\n",
+                le.cursor_position);
+    ok = false;
+  }
+
+  ITL_STRING_FROM_CSTR(line, "\ntwo");
+  le.cursor_position = 0;
+  itl_le_key_handle(&le, TL_KEY_KILL_LINE);
+  ok &= test_line_is(line, "two", "ctrl-k on an empty first line");
+
+  ITL_STRING_FROM_CSTR(line, "");
+  le.cursor_position = 0;
+  itl_le_key_handle(&le, TL_KEY_KILL_LINE);
+  ok &= test_line_is(line, "", "ctrl-k on the only empty line");
+
+  ITL_STRING_FREE(line);
+  itl_kill_ring_free();
+  return ok;
+}
+
+static bool
 test_ghost_miss_skips_an_empty_word(void)
 {
   bool ok = true;
@@ -9021,6 +9056,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_ctrl_right_accepts_one_case_corrected_word),
                                    DEFINE_TEST_CASE(
                                        test_kill_ring_appends_yanks_and_cycles),
+                                   DEFINE_TEST_CASE(
+                                       test_kill_line_removes_an_empty_line),
                                    DEFINE_TEST_CASE(
                                        test_transpose_characters_and_words),
                                    DEFINE_TEST_CASE(
