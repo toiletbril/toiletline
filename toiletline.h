@@ -9467,13 +9467,11 @@ ITL_DEF void itl_loading_frame_draw(itl_le_t *le)
   if (itl_g_loading_is_menu_reload) {
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
-    if (!source->should_anchor_to_token) {
-      itl_g_menu_anchor_column = 0;
-    }
-  } else {
-    itl_g_menu_anchor_column =
-        itl_menu_anchor_column_of(le, itl_le_shell_word_start(le));
   }
+  itl_g_menu_anchor_column =
+      itl_g_loading_is_menu_reload && !source->should_anchor_to_token
+          ? 0
+          : itl_menu_anchor_column_of(le, itl_le_shell_word_start(le));
   layout = itl_menu_measure_for(&loading, tty_rows, 0, ITL_MENU_LOADING_TEXT,
                                 source->help_title, source->help_keys);
   itl_menu_draw(&loading, 0, 0, layout, source->help_title, source->help_keys,
@@ -11082,9 +11080,10 @@ ITL_DEF tl_status_code itl_completion_menu_loop(itl_le_t *le,
 
     tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
     itl_g_menu_anchor_column =
-        source->should_anchor_to_token
-            ? itl_menu_anchor_column_of(le, result.token_start)
-            : 0;
+        !source->should_anchor_to_token ? 0
+        : state.is_regather_armed
+            ? itl_menu_anchor_column_of(le, itl_le_shell_word_start(le))
+            : itl_menu_anchor_column_of(le, result.token_start);
     name_width = state.name_width;
     empty_text = state.is_regather_armed ? ITL_MENU_LOADING_TEXT
                                          : ITL_MENU_EMPTY_TEXT;
