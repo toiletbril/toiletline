@@ -5134,6 +5134,21 @@ ITL_DEF int itl_term_supports_256_color(void)
   return itl_g_supports_256_color;
 }
 
+ITL_DEF ITL_THREAD_LOCAL int itl_g_supports_true_color = -1;
+
+/* Whether the terminal draws 24-bit color, read from COLORTERM naming truecolor
+   or 24bit. */
+ITL_DEF int itl_term_supports_true_color(void)
+{
+  if (itl_g_supports_true_color < 0) {
+    const char *colorterm = getenv("COLORTERM");
+    itl_g_supports_true_color =
+        colorterm != NULL && (strstr(colorterm, "truecolor") != NULL ||
+                              strstr(colorterm, "24bit") != NULL);
+  }
+  return itl_g_supports_true_color;
+}
+
 /* Whether the terminal renders the colors and cursor moves the editor draws, so
    it is a real terminal rather than a dumb or an absent one. A dumb terminal
    turns off the ghost suggestion and the flash. */
@@ -8226,18 +8241,22 @@ ITL_DEF void itl_completion_append_space(itl_le_t *le)
 #define ITL_MENU_SELECTED_MARGIN_WIDTH 1
 #define ITL_MENU_SELECTED_SGR          "\x1b[7m"
 #define ITL_MENU_SELECTED_TINT_SGR     "\x1b[38;5;231;48;5;26m"
+#define ITL_MENU_SELECTED_TRUE_TINT_SGR "\x1b[38;5;231;48;2;58;108;200m"
 #define ITL_MENU_DESCRIPTION_SGR       ITL_DIM_SGR
 #define ITL_MENU_DIRECTORY_SGR         "\x1b[34m"
 #define ITL_MENU_DIRECTORY_TINT_SGR    "\x1b[38;5;110m"
 
 /* A terminal with the 256-color palette draws the selected row as white text
-   on a blue background and a directory name in a pastel blue. Another terminal
-   reverses the selected row and draws a directory name in blue. */
+   on a blue background and a directory name in a pastel blue. A truecolor
+   terminal uses a softer blue for that background. Another terminal reverses
+   the selected row and draws a directory name in blue. */
 ITL_DEF const char *itl_menu_selected_sgr(void)
 {
-  return itl_g_colors_enabled && itl_term_supports_256_color()
-             ? ITL_MENU_SELECTED_TINT_SGR
-             : ITL_MENU_SELECTED_SGR;
+  if (!itl_g_colors_enabled || !itl_term_supports_256_color()) {
+    return ITL_MENU_SELECTED_SGR;
+  }
+  return itl_term_supports_true_color() ? ITL_MENU_SELECTED_TRUE_TINT_SGR
+                                        : ITL_MENU_SELECTED_TINT_SGR;
 }
 ITL_DEF const char *itl_menu_directory_sgr(void)
 {
