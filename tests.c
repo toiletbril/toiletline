@@ -3876,6 +3876,31 @@ test_menu_narrow_reuses_base(void)
   return true;
 }
 
+static bool
+test_menu_at_sign_returns_to_host(void)
+{
+  static const char *candidates[] = {"root@alpha", "root@beta"};
+  tl_completion      result = ITL_ZERO_INIT;
+
+  result.candidates = candidates;
+  result.count = countof(candidates);
+  result.longest_common_prefix = "root@";
+
+  if (itl_completion_prefix_keeps_list(&result, "root", 4)) {
+    TEST_PRINTF("a prefix that adds an at sign kept the host list\n");
+    return false;
+  }
+
+  result.longest_common_prefix = "root";
+
+  if (!itl_completion_prefix_keeps_list(&result, "ro", 2)) {
+    TEST_PRINTF("a prefix without an at sign dropped the host list\n");
+    return false;
+  }
+
+  return true;
+}
+
 #if defined ITL_POSIX
 static size_t test_word_gather_calls;
 static bool   test_word_gather_is_unranked;
@@ -8950,6 +8975,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_menu_index_narrows_like_the_plain_scan),
                                    DEFINE_TEST_CASE(
                                        test_menu_narrow_reuses_base),
+                                   DEFINE_TEST_CASE(
+                                       test_menu_at_sign_returns_to_host),
                                    DEFINE_TEST_CASE(test_menu_cells),
                                    DEFINE_TEST_CASE(
                                        test_menu_row_colors_directories),

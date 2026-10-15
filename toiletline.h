@@ -10398,12 +10398,13 @@ ITL_DEF bool itl_menu_filter_base(const itl_menu_source *source,
 }
 
 /* True when a typed byte moves where the token starts. A blank opens the next
-   word, a quote changes how the token is read, and an equals sign opens the
-   value of an assignment or a flag. The source then lists a different span. */
+   word, a quote changes how the token is read, an equals sign opens the value
+   of an assignment or a flag, and an at sign opens the host of a login. The
+   source then lists a different span. */
 ITL_DEF bool itl_menu_byte_moves_token(uint8_t byte)
 {
   return ITL_CHAR_IS_SPACE(byte) || byte == '\'' || byte == '"' ||
-         byte == '=';
+         byte == '=' || byte == '@';
 }
 
 /* The bases a completion menu has gathered, kept until it closes. A base is
