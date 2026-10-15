@@ -8241,7 +8241,7 @@ ITL_DEF void itl_completion_append_space(itl_le_t *le)
 #define ITL_MENU_SELECTED_MARGIN_WIDTH 1
 #define ITL_MENU_SELECTED_SGR          "\x1b[7m"
 #define ITL_MENU_SELECTED_TINT_SGR     "\x1b[38;5;231;48;5;26m"
-#define ITL_MENU_SELECTED_TRUE_TINT_SGR "\x1b[38;5;231;48;2;58;108;200m"
+#define ITL_MENU_SELECTED_TRUE_TINT_SGR "\x1b[38;5;231;48;2;40;102;206m"
 #define ITL_MENU_DESCRIPTION_SGR       ITL_DIM_SGR
 #define ITL_MENU_DIRECTORY_SGR         "\x1b[34m"
 #define ITL_MENU_DIRECTORY_TINT_SGR    "\x1b[38;5;110m"
