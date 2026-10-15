@@ -3909,11 +3909,92 @@ ITL_DEF void itl_terminal_drain_output(void)
 #endif
 }
 
+ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_frame_batch = ITL_ZERO_INIT;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_frame_batch_depth = 0;
+
+#define ITL_SYNC_UPDATE_BEGIN "\x1b[?2026h"
+#define ITL_SYNC_UPDATE_END   "\x1b[?2026l"
+
+ITL_DEF int itl_term_supports_decorations(void);
+
+ITL_DEF bool itl_frame_batch_is_synchronized(void)
+{
+#if !defined NDEBUG
+  if (itl_g_debug_frame_sink != NULL) {
+    return false;
+  }
+#endif
+
+  return itl_term_supports_decorations() != 0;
+}
+
+ITL_DEF bool itl_frame_batch_write(void)
+{
+  itl_char_buf_t *batch = &itl_g_frame_batch;
+  bool is_written;
+
+  if (batch->size == 0) {
+    return true;
+  }
+
+  if (itl_frame_batch_is_synchronized()) {
+    itl_char_buf_append_cstr(batch, ITL_SYNC_UPDATE_END);
+  }
+
+#if !defined NDEBUG
+  if (itl_g_debug_frame_sink != NULL) {
+    itl_g_debug_frame_sink(batch->data, batch->size);
+    batch->size = 0;
+    return true;
+  }
+#endif
+
+  is_written = itl_write_all(ITL_STDOUT, batch->data, batch->size) ==
+               batch->size;
+  batch->size = 0;
+
+  return is_written;
+}
+
+ITL_DEF void itl_frame_batch_begin(void)
+{
+  itl_g_frame_batch_depth += 1;
+}
+
+ITL_DEF void itl_frame_batch_end(void)
+{
+  TL_ASSERT(itl_g_frame_batch_depth > 0);
+
+  itl_g_frame_batch_depth -= 1;
+  if (itl_g_frame_batch_depth == 0) {
+    (void) itl_frame_batch_write();
+  }
+}
+
+ITL_DEF void itl_frame_batch_free(void)
+{
+  if (itl_g_frame_batch.data != NULL) {
+    ITL_FREE(itl_g_frame_batch.data);
+  }
+  itl_g_frame_batch.data = NULL;
+  itl_g_frame_batch.size = 0;
+  itl_g_frame_batch.capacity = 0;
+}
+
 /* Sends one finished frame to the terminal. An empty frame writes nothing,
    because a zero-length write carries no meaning here. */
 ITL_DEF bool itl_char_buf_flush(itl_char_buf_t *cb)
 {
   if (cb->size == 0) {
+    return true;
+  }
+
+  if (itl_g_frame_batch_depth > 0) {
+    if (itl_g_frame_batch.size == 0 && itl_frame_batch_is_synchronized()) {
+      itl_char_buf_append_cstr(&itl_g_frame_batch, ITL_SYNC_UPDATE_BEGIN);
+    }
+    itl_char_buf_append_bytes(&itl_g_frame_batch, cb->data, cb->size);
+
     return true;
   }
 
@@ -9063,6 +9144,7 @@ ITL_DEF bool itl_refresh_after_wake(itl_le_t *le)
   ITL_TTY_CLEAR_BELOW(wake_buf);
   ITL_CHAR_BUF_DUMP(wake_buf);
   ITL_CHAR_BUF_CLEAR(wake_buf);
+  (void) itl_frame_batch_write();
   itl_g_wake_callback(1);
   itl_g_tty_first_render = true;
   itl_le_invalidate_prev_frame();
@@ -9368,6 +9450,7 @@ ITL_DEF void itl_loading_frame_draw(itl_le_t *le)
   size_t tty_rows = itl_g_tty_prev_rows > 0 ? itl_g_tty_prev_rows : 24;
   itl_menu_layout layout;
 
+  itl_frame_batch_begin();
   if (itl_g_loading_is_menu_reload) {
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
@@ -9382,6 +9465,8 @@ ITL_DEF void itl_loading_frame_draw(itl_le_t *le)
                                 source->help_title, source->help_keys);
   itl_menu_draw(&loading, 0, 0, layout, source->help_title, source->help_keys,
                 source->should_highlight, 0, ITL_MENU_LOADING_TEXT);
+  itl_frame_batch_end();
+  (void) itl_frame_batch_write();
   itl_terminal_drain_output();
 }
 
@@ -10927,9 +11012,9 @@ ITL_DEF bool itl_menu_opens_component(const itl_le_t *le,
    line. The returned status is the one the caller must return, and it carries a
    terminating key back to the host. The source holds everything that separates
    one candidate list from another. */
-ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
-                                               const tl_completion *initial,
-                                               const itl_menu_source *source)
+ITL_DEF tl_status_code itl_completion_menu_loop(itl_le_t *le,
+                                                const tl_completion *initial,
+                                                const itl_menu_source *source)
 {
   tl_completion result = *initial;
   itl_menu_filter_state state;
@@ -10998,6 +11083,8 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
     itl_menu_draw(&result, selected, window_start, layout, source->help_title,
                   source->help_keys, source->should_highlight, name_width,
                   empty_text);
+    itl_frame_batch_end();
+    itl_frame_batch_begin();
 
     wait_outcome = itl_le_wait_for_input(le, true);
     if (wait_outcome == ITL_WAIT_FAILED) {
@@ -11214,6 +11301,19 @@ ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
   itl_g_tty_should_refresh_text = true;
 
   return TL_SUCCESS;
+}
+
+ITL_DEF tl_status_code itl_completion_menu_run(itl_le_t *le,
+                                               const tl_completion *initial,
+                                               const itl_menu_source *source)
+{
+  tl_status_code status;
+
+  itl_frame_batch_begin();
+  status = itl_completion_menu_loop(le, initial, source);
+  itl_frame_batch_end();
+
+  return status;
 }
 
 /* Run the menu with the hint rows held away, so the rows it draws under the
@@ -12509,6 +12609,7 @@ TL_DEF tl_status_code tl_exit(void)
   itl_kill_ring_free();
   ITL_FREE(itl_g_line_buffer.chars);
   ITL_FREE(itl_g_char_buffer.data);
+  itl_frame_batch_free();
 
   ITL_TRACELN("Exited, alloc count: %zu\n", itl_g_alloc_count);
   TL_ASSERT(itl_g_alloc_count == 0);
