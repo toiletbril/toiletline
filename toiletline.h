@@ -14980,7 +14980,7 @@ TL_DEF tl_status_code tl_get_input(char *buffer, size_t buffer_size,
   TL_ASSERT(buffer != NULL);
 
   itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
-  if (le->prompt_width == 0) {
+  if (prompt != NULL && le->prompt_width == 0) {
     le->has_prompt_pad = true;
     le->prompt_width = 1;
   }
