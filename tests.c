@@ -8700,14 +8700,16 @@ test_transient_prompt_redraws_the_submitted_line(void)
   return ok;
 }
 
-/* A kept right prompt stays on a submitted line without a repaint, and a
-   transient redraw draws it again after the short prompt. */
+/* A transient right prompt replaces the right prompt on a submitted line, also
+   after a transient redraw of the left prompt, and the right prompt comes back
+   for the next line. */
 static bool
-test_right_prompt_is_kept_on_submit(void)
+test_transient_right_prompt_redraws_a_finished_line(void)
 {
   char out_buffer[BUFFER_SIZE];
-  bool was_plain_submit_left;
-  bool was_transient_kept;
+  bool was_submit_redrawn;
+  bool was_transient_redrawn;
+  bool is_prompt_restored;
   bool ok;
 
   itl_le_t      le = ITL_ZERO_INIT;
@@ -8715,12 +8717,12 @@ test_right_prompt_is_kept_on_submit(void)
 
   test_right_prompt_prepare_frame(&le, line, out_buffer, sizeof(out_buffer),
                                   "ab", 40);
-  tl_set_keep_right_prompt(1);
+  tl_set_transient_right_prompt("\x1b[2mT\x1b[0m");
   test_frame_capture_refresh(&le);
   test_frame_capture_size = 0;
   itl_le_finish_input(&le, TL_PRESSED_ENTER);
-  was_plain_submit_left = test_frame_capture_size == 0 &&
-                          itl_g_le_prev_right_prompt_is_shown;
+  was_submit_redrawn = test_frame_capture_has("\x1b[40G\x1b[2mT\x1b[0m") &&
+                       !test_frame_capture_has("RP");
 
   tl_set_transient_prompt("$ ");
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
@@ -8729,18 +8731,21 @@ test_right_prompt_is_kept_on_submit(void)
   test_frame_capture_refresh(&le);
   test_frame_capture_size = 0;
   itl_le_finish_input(&le, TL_PRESSED_INTERRUPT);
-  was_transient_kept = test_frame_capture_has("$ ab") &&
-                       test_frame_capture_has(TEST_RIGHT_PROMPT) &&
+  was_transient_redrawn = test_frame_capture_has("$ ab") &&
+                          test_frame_capture_has("\x1b[2mT\x1b[0m") &&
+                          !test_frame_capture_has("RP");
+  is_prompt_restored = itl_g_right_prompt_width == 2 &&
                        !itl_g_right_prompt_is_held;
 
-  tl_set_keep_right_prompt(0);
+  tl_set_transient_right_prompt(NULL);
   test_right_prompt_finish_frame(line);
 
-  ok = was_plain_submit_left && was_transient_kept;
+  ok = was_submit_redrawn && was_transient_redrawn && is_prompt_restored;
 
   if (!ok) {
-    TEST_PRINTF("plain %d, transient %d\n", (int) was_plain_submit_left,
-                (int) was_transient_kept);
+    TEST_PRINTF("submit %d, transient %d, restored %d\n",
+                (int) was_submit_redrawn, (int) was_transient_redrawn,
+                (int) is_prompt_restored);
   }
 
   return ok;
@@ -9223,7 +9228,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_transient_prompt_redraws_the_submitted_line),
                                    DEFINE_TEST_CASE(
-                                       test_right_prompt_is_kept_on_submit),
+                                       test_transient_right_prompt_redraws_a_finished_line),
                                    DEFINE_TEST_CASE(
                                        test_line_render_shows_control_bytes),
 #endif
