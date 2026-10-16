@@ -5869,12 +5869,12 @@ ITL_DEF size_t itl_le_reflow_rows_above_caret(const itl_le_t *le,
     }
 
     if (ITL_LE_IS_NEWLINE(le->line->chars[i])) {
-      /* A right prompt drawn on the first row reached one column short of the
-         old right edge, and the terminal reflowed it with that row. */
+      /* A right prompt drawn on the first row reached the old right edge, and
+         the terminal reflowed it with that row. */
       size_t row_extent = col;
       if (rows_above == le->prompt_rows && itl_g_le_prev_right_prompt_is_shown)
       {
-        row_extent = ITL_MAX(col, ocols - 1);
+        row_extent = ITL_MAX(col, ocols);
       }
       rows_above += itl_reflow_row_count(row_extent, ncols);
       col = indent;
@@ -6517,20 +6517,20 @@ ITL_DEF void itl_le_tty_erase_hint_rows(itl_char_buf_t *b)
 }
 
 /* The column the right prompt starts at when the first input row ends at
-   row_end_col, or zero when it is not drawn. It ends one column short of the
-   right edge and keeps one free column after the row. A prompt cut to fit
+   row_end_col, or zero when it is not drawn. It ends at the right edge and
+   keeps one free column after the row. A prompt cut to fit
    leaves no room for it. */
 ITL_DEF size_t itl_right_prompt_column(const itl_le_t *le, size_t row_end_col,
                                        size_t cols)
 {
   if (itl_g_right_prompt_width == 0 || itl_g_right_prompt_is_held ||
       le->prompt_width >= cols ||
-      row_end_col + itl_g_right_prompt_width + 2 > cols)
+      row_end_col + itl_g_right_prompt_width + 1 > cols)
   {
     return 0;
   }
 
-  return cols - 1 - itl_g_right_prompt_width;
+  return cols - itl_g_right_prompt_width;
 }
 
 /* Draw the right prompt on the current row from start_col. The caller moves
@@ -6768,7 +6768,9 @@ ITL_DEF bool itl_le_tty_refresh(itl_le_t *le)
             itl_right_prompt_column(le, row_end_col, cols);
 
         if (right_prompt_col > 0) {
+          ITL_TTY_AUTOWRAP_OFF(fb);
           itl_le_tty_draw_right_prompt(fb, right_prompt_col);
+          ITL_TTY_AUTOWRAP_ON(fb);
           should_restore_column = true;
         }
         itl_g_le_prev_right_prompt_is_shown = right_prompt_col > 0;
@@ -7496,22 +7498,25 @@ ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
 {
   bool was_ghost_drawn = itl_g_le_prev_ghost_len > 0;
   bool was_hint_drawn = itl_g_hint_shown_len > 0;
+  bool is_line_kept = code == TL_PRESSED_ENTER || code == TL_PRESSED_INTERRUPT;
+  bool was_right_prompt_drawn =
+      is_line_kept && itl_g_le_prev_right_prompt_is_shown;
 
   itl_ghost_clear();
   itl_g_hint_is_closed = true;
   itl_g_le_is_submitting = code == TL_PRESSED_ENTER;
+  itl_g_right_prompt_is_held = is_line_kept;
 
-  if ((code == TL_PRESSED_ENTER || code == TL_PRESSED_INTERRUPT) &&
-      itl_g_transient_prompt != NULL)
-  {
+  if (is_line_kept && itl_g_transient_prompt != NULL) {
     itl_le_tty_draw_transient(le);
-  } else if (was_ghost_drawn || was_hint_drawn) {
+  } else if (was_ghost_drawn || was_hint_drawn || was_right_prompt_drawn) {
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
   } else if (itl_g_le_is_submitting && itl_g_highlight_follows_cursor) {
     itl_le_tty_refresh(le);
   }
 
+  itl_g_right_prompt_is_held = false;
   itl_g_le_is_submitting = false;
   itl_le_clear_line(le);
 

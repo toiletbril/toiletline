@@ -8495,15 +8495,15 @@ test_right_prompt_fits_the_first_row(void)
   is_width_measured = itl_g_right_prompt_width == 2;
 
   test_frame_capture_refresh(&le);
-  was_drawn_short = test_frame_capture_has("\x1b[18G" TEST_RIGHT_PROMPT) &&
+  was_drawn_short = test_frame_capture_has("\x1b[19G" TEST_RIGHT_PROMPT) &&
                     itl_g_le_prev_right_prompt_is_shown;
 
-  ITL_STRING_FROM_CSTR(line, "abcdefghijklmn");
+  ITL_STRING_FROM_CSTR(line, "abcdefghijklmno");
   le.cursor_position = line->length;
   test_frame_capture_refresh(&le);
   was_drawn_at_the_gap = test_frame_capture_has(TEST_RIGHT_PROMPT);
 
-  ITL_STRING_FROM_CSTR(line, "abcdefghijklmno");
+  ITL_STRING_FROM_CSTR(line, "abcdefghijklmnop");
   le.cursor_position = line->length;
   test_frame_capture_refresh(&le);
   was_hidden_at_overlap = !test_frame_capture_has("RP") &&
@@ -8513,7 +8513,7 @@ test_right_prompt_fits_the_first_row(void)
   le.cursor_position = line->length;
   test_frame_capture_refresh(&le);
   was_drawn_above_rows =
-      test_frame_capture_has("\x1b[1A\x1b[18G" TEST_RIGHT_PROMPT) &&
+      test_frame_capture_has("\x1b[1A\x1b[19G" TEST_RIGHT_PROMPT) &&
       itl_g_le_prev_total_rows == 2;
 
   ITL_STRING_FROM_CSTR(line, "abcdefghijklmnopqrstuvwxyz\nab");
@@ -8523,7 +8523,7 @@ test_right_prompt_fits_the_first_row(void)
 
   ITL_STRING_FROM_CSTR(line, "");
   le.cursor_position = 0;
-  itl_g_tty_prev_cols = 5;
+  itl_g_tty_prev_cols = 4;
   test_frame_capture_refresh(&le);
   was_hidden_when_narrow = !test_frame_capture_has("RP");
 
@@ -8559,7 +8559,7 @@ test_right_prompt_fits_the_first_row(void)
 static bool
 test_right_prompt_follows_appends(void)
 {
-  const char *keys = "cdefghijklmno";
+  const char *keys = "cdefghijklmnop";
   char        out_buffer[BUFFER_SIZE];
   size_t      key_index;
   size_t      drawn_count = 0;
@@ -8601,7 +8601,7 @@ test_right_prompt_follows_appends(void)
   tl_set_right_prompt("one\ntwo");
   was_line_break_rejected = itl_g_right_prompt_width == 0;
 
-  ok = drawn_count == 12 && was_hidden_at_end && was_back_after_erase &&
+  ok = drawn_count == 13 && was_hidden_at_end && was_back_after_erase &&
        was_line_break_rejected &&
        itl_g_debug_append_refresh_count == strlen(keys);
 
@@ -8677,7 +8677,9 @@ test_transient_prompt_redraws_the_submitted_line(void)
   test_frame_capture_size = 0;
   itl_le_finish_input(&le, TL_PRESSED_ENTER);
   was_plain_submit_left = !test_frame_capture_has("\x1b[0J") &&
-                          !test_frame_capture_has("$ ");
+                          !test_frame_capture_has("$ ") &&
+                          !test_frame_capture_has("RP") &&
+                          !itl_g_le_prev_right_prompt_is_shown;
 
   tl_set_hint_callback(NULL);
   itl_hint_forget_shown();
