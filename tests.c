@@ -8469,10 +8469,10 @@ test_right_prompt_finish_frame(itl_string_t *line)
   ITL_STRING_FREE(line);
 }
 
-/* The right prompt ends one column short of the edge, and it needs one free
-   column after the first input row. At 20 columns with a two-column prompt it
-   starts at column 17, so input that ends at column 16 keeps it and input that
-   reaches column 17 hides it. */
+/* The right prompt ends at the edge, and it needs one free column after the
+   first input row. At 20 columns with a two-column prompt it starts at column
+   19, so input that ends at column 17 keeps it and input that reaches column
+   18 hides it. */
 static bool
 test_right_prompt_fits_the_first_row(void)
 {
@@ -8695,6 +8695,52 @@ test_transient_prompt_redraws_the_submitted_line(void)
                 (int) was_block_erased, (int) was_line_redrawn,
                 (int) were_prompts_dropped, (int) is_prompt_restored,
                 (int) was_interrupt_redrawn, (int) was_plain_submit_left);
+  }
+
+  return ok;
+}
+
+/* A kept right prompt stays on a submitted line without a repaint, and a
+   transient redraw draws it again after the short prompt. */
+static bool
+test_right_prompt_is_kept_on_submit(void)
+{
+  char out_buffer[BUFFER_SIZE];
+  bool was_plain_submit_left;
+  bool was_transient_kept;
+  bool ok;
+
+  itl_le_t      le = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+
+  test_right_prompt_prepare_frame(&le, line, out_buffer, sizeof(out_buffer),
+                                  "ab", 40);
+  tl_set_keep_right_prompt(1);
+  test_frame_capture_refresh(&le);
+  test_frame_capture_size = 0;
+  itl_le_finish_input(&le, TL_PRESSED_ENTER);
+  was_plain_submit_left = test_frame_capture_size == 0 &&
+                          itl_g_le_prev_right_prompt_is_shown;
+
+  tl_set_transient_prompt("$ ");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  ITL_STRING_FROM_CSTR(line, "ab");
+  le.cursor_position = line->length;
+  test_frame_capture_refresh(&le);
+  test_frame_capture_size = 0;
+  itl_le_finish_input(&le, TL_PRESSED_INTERRUPT);
+  was_transient_kept = test_frame_capture_has("$ ab") &&
+                       test_frame_capture_has(TEST_RIGHT_PROMPT) &&
+                       !itl_g_right_prompt_is_held;
+
+  tl_set_keep_right_prompt(0);
+  test_right_prompt_finish_frame(line);
+
+  ok = was_plain_submit_left && was_transient_kept;
+
+  if (!ok) {
+    TEST_PRINTF("plain %d, transient %d\n", (int) was_plain_submit_left,
+                (int) was_transient_kept);
   }
 
   return ok;
@@ -9176,6 +9222,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_right_prompt_follows_appends),
                                    DEFINE_TEST_CASE(
                                        test_transient_prompt_redraws_the_submitted_line),
+                                   DEFINE_TEST_CASE(
+                                       test_right_prompt_is_kept_on_submit),
                                    DEFINE_TEST_CASE(
                                        test_line_render_shows_control_bytes),
 #endif

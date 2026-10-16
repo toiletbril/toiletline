@@ -546,14 +546,21 @@ TL_DEF void tl_set_hint_callback(tl_hint_fn callback);
 
 /**
  * Set the right prompt, or NULL for none. It is drawn right-aligned on the
- * first input row and ends one column short of the right edge. It is hidden
- * while the input and ghost on that row would come within one column of it,
- * while the prompt is cut to fit, while a history search is open, and when it
- * holds a line break. It is never part of the submitted line. Escape sequences
- * count as zero columns. The width is measured once here, and the host keeps
- * the string valid until the next call.
+ * first input row and ends at the right edge. It is hidden while the input
+ * and ghost on that row would come within one column of it, while the prompt
+ * is cut to fit, while a history search is open, and when it holds a line
+ * break. It is never part of the submitted line. Escape sequences count as
+ * zero columns. The width is measured once here, and the host keeps the string
+ * valid until the next call.
  */
 TL_DEF void tl_set_right_prompt(const char *right_prompt);
+
+/**
+ * Keep the right prompt on a line that Enter submits or Ctrl-C interrupts.
+ * When disabled, which is the default, the right prompt is erased from that
+ * line before it stays in the scrollback.
+ */
+TL_DEF void tl_set_keep_right_prompt(int enabled);
 
 /**
  * Set the prompt a submitted line is redrawn with, or NULL to leave the line
@@ -561,7 +568,8 @@ TL_DEF void tl_set_right_prompt(const char *right_prompt);
  * everything from the top of the prompt
  * down is erased, which takes the right prompt, the ghost, the hint rows, and
  * any rows below the input, and the line is drawn again after this prompt. The
- * host keeps the string valid until the next call.
+ * right prompt returns only when tl_set_keep_right_prompt enabled it. The host
+ * keeps the string valid until the next call.
  */
 TL_DEF void tl_set_transient_prompt(const char *transient_prompt);
 
@@ -5024,11 +5032,14 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_ghost_len = 0;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_right_prompt_is_shown = false;
 
 /* The host right prompt and its display width, zero when nothing is drawn. A
-   hold keeps it away while a history search or a transient redraw owns the
-   first row. */
+   hold keeps it away while a history search is open and from a finished line
+   that does not keep it. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_right_prompt = NULL;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_right_prompt_width = 0;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_right_prompt_is_held = false;
+
+/* Whether a submitted or interrupted line keeps its right prompt. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_right_prompt_is_kept = false;
 
 /* The prompt a submitted line is redrawn with, or NULL to keep the line. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_transient_prompt = NULL;
@@ -7385,6 +7396,11 @@ TL_DEF void tl_set_right_prompt(const char *right_prompt)
   }
 }
 
+TL_DEF void tl_set_keep_right_prompt(int enabled)
+{
+  itl_g_right_prompt_is_kept = enabled != 0;
+}
+
 TL_DEF void tl_set_transient_prompt(const char *transient_prompt)
 {
   itl_g_transient_prompt = transient_prompt;
@@ -7476,7 +7492,7 @@ ITL_DEF void itl_le_tty_draw_transient(itl_le_t *le)
       itl_prompt_last_row_width(itl_g_transient_prompt, &le->prompt_rows);
   le->has_prompt_pad = false;
 
-  itl_g_right_prompt_is_held = true;
+  itl_g_right_prompt_is_held = !itl_g_right_prompt_is_kept;
   itl_g_tty_first_render = true;
   itl_le_invalidate_prev_frame();
   itl_g_tty_should_refresh_text = true;
@@ -7499,13 +7515,14 @@ ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
   bool was_ghost_drawn = itl_g_le_prev_ghost_len > 0;
   bool was_hint_drawn = itl_g_hint_shown_len > 0;
   bool is_line_kept = code == TL_PRESSED_ENTER || code == TL_PRESSED_INTERRUPT;
+  bool is_right_prompt_erased = is_line_kept && !itl_g_right_prompt_is_kept;
   bool was_right_prompt_drawn =
-      is_line_kept && itl_g_le_prev_right_prompt_is_shown;
+      is_right_prompt_erased && itl_g_le_prev_right_prompt_is_shown;
 
   itl_ghost_clear();
   itl_g_hint_is_closed = true;
   itl_g_le_is_submitting = code == TL_PRESSED_ENTER;
-  itl_g_right_prompt_is_held = is_line_kept;
+  itl_g_right_prompt_is_held = is_right_prompt_erased;
 
   if (is_line_kept && itl_g_transient_prompt != NULL) {
     itl_le_tty_draw_transient(le);
