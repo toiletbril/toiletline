@@ -4020,7 +4020,7 @@ menu_keys_gathers(const char *text, const char *keys, char *out_line,
 {
   static const itl_menu_source source = {
       test_word_gather, true, true, false, true, false, false, NULL, NULL,
-      false, true};
+      false, true, false};
   char          out_buffer[BUFFER_SIZE];
   int           pipe_descriptors[2] = {-1, -1};
   int           null_descriptor = -1;
@@ -4224,7 +4224,7 @@ debounce_menu_gathers(size_t row_count, const char *keys, unsigned eof_ms,
 {
   static const itl_menu_source source = {
       test_debounce_gather, true, true, false, true, false, false, NULL, NULL,
-      false, true};
+      false, true, false};
   char          out_buffer[BUFFER_SIZE];
   int           pipe_descriptors[2] = {-1, -1};
   int           null_descriptor = -1;
@@ -4443,7 +4443,7 @@ staged_menu_run(const test_staged_step *steps, size_t step_count,
 {
   static const itl_menu_source source = {
       itl_menu_regather, true, true, false, true, false, false, NULL, NULL,
-      true, true};
+      true, true, false};
   char          out_buffer[BUFFER_SIZE];
   int           pipe_descriptors[2] = {-1, -1};
   int           null_descriptor = -1;
@@ -4909,10 +4909,9 @@ test_tab_prefix_menu_reuses_gather(void)
   return ok;
 }
 
-/* A sole candidate goes in and the TAB stops, unless the space option appends
-   a space. Then the menu stays open on the next word, typing narrows it, and
-   a next word without candidates leaves it closed. The inside of a completed
-   directory is listed only by the next TAB. */
+/* A sole candidate goes in and the menu opens on what follows it: the next
+   word after an appended space, the inside of a completed directory, or the
+   no-match row when nothing follows. Typing narrows it, and esc closes it. */
 static bool
 test_tab_sole_candidate_stops(void)
 {
@@ -4937,11 +4936,11 @@ test_tab_sole_candidate_stops(void)
       {files,       2, TL_SPACE_AFTER_COMPLETION_ON,  "cat fi",
        "\x1b", "cat file1.txt ", 2, true                                   },
       {files,       2, TL_SPACE_AFTER_COMPLETION_OFF, "cat fi",
-       "\x1b", "cat file1.txt", 1, false                                   },
+       "\x1b", "cat file1.txt", 2, false                                   },
       {directories, 2, TL_SPACE_AFTER_COMPLETION_ON,  "cd lo",
        "\x1b", "cd local/ ", 2, false                                      },
       {directories, 2, TL_SPACE_AFTER_COMPLETION_OFF, "cd lo",
-       "\x1b", "cd local/", 1, false                                       },
+       "\x1b", "cd local/", 2, false                                       },
       {inside,      2, TL_SPACE_AFTER_COMPLETION_OFF, "cd local/",
        "\x1b", "cd local/", 1, false                                       },
   };
@@ -4968,6 +4967,35 @@ test_tab_sole_candidate_stops(void)
   }
 
   test_tab_is_blank_token_empty = false;
+  tl_set_space_after_completion(previous_space_after);
+  test_tab_words = NULL;
+  test_tab_word_count = 0;
+
+  return ok;
+}
+
+/* A row accepted with TAB keeps the menu open on the word after it, and only
+   esc closes it. Every accept asks the host for the next word. */
+static bool
+test_tab_menu_stays_open_until_escape(void)
+{
+  static const char *const files[] = {"file1.txt", "file2.txt"};
+  tl_space_after_completion previous_space_after =
+      itl_g_space_after_completion;
+  bool   ok = true;
+  char   line[BUFFER_SIZE];
+  size_t calls;
+
+  test_tab_words = files;
+  test_tab_word_count = 2;
+  tl_set_space_after_completion(TL_SPACE_AFTER_COMPLETION_ON);
+  calls = tab_completion_calls("cat ", "\t\t\x1b", line, sizeof(line));
+
+  if (calls != 3 || strcmp(line, "cat file1.txt file1.txt ") != 0) {
+    TEST_PRINTF("two accepts left '%s' after %zu calls\n", line, calls);
+    ok = false;
+  }
+
   tl_set_space_after_completion(previous_space_after);
   test_tab_words = NULL;
   test_tab_word_count = 0;
@@ -9113,6 +9141,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_tab_prefix_menu_reuses_gather),
                                    DEFINE_TEST_CASE(
                                        test_tab_sole_candidate_stops),
+                                   DEFINE_TEST_CASE(
+                                       test_tab_menu_stays_open_until_escape),
                                    DEFINE_TEST_CASE(
                                        test_vi_ex_command_keeps_the_caret),
                                    DEFINE_TEST_CASE(

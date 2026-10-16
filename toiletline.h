@@ -9478,6 +9478,7 @@ typedef struct itl_menu_source
   const char *help_keys;
   bool should_anchor_to_token;
   bool should_keep_best_tier;
+  bool should_stay_open;
 } itl_menu_source;
 
 /* Read the key that ended the wait of a pending gather. It stays pending for
@@ -11260,14 +11261,32 @@ ITL_DEF tl_status_code itl_completion_menu_loop(itl_le_t *le,
         continue;
       }
 
-      if (should_descend) {
+      if (should_descend && !source->should_stay_open) {
         itl_menu_erase();
         itl_g_tty_should_refresh_text = true;
         return TL_SUCCESS;
       }
 
-      if (kind == TL_KEY_TAB && !result.is_space_suppressed)
+      if (kind == TL_KEY_TAB && !should_descend && !result.is_space_suppressed)
         itl_completion_append_space(le);
+
+      /* A menu that stays open lists the word after the accepted one, or its
+         no-match row when that word has no candidates, until esc closes it. */
+      if (source->should_stay_open) {
+        itl_g_tty_should_refresh_text = true;
+        itl_le_tty_refresh(le);
+        itl_menu_start_word(&state);
+        if (!itl_menu_rebase(le, source, &state, &result)) {
+          itl_menu_empty_candidates(&result);
+          result.token_start = le->cursor_position;
+          result.token_end = le->cursor_position;
+        }
+        itl_g_menu_is_next_word = true;
+        selected = 0;
+        window_start = 0;
+        previewed = (size_t) -1;
+        continue;
+      }
 
       return TL_SUCCESS;
     }
@@ -11397,6 +11416,7 @@ ITL_DEF tl_status_code itl_completion_menu(itl_le_t *le,
   itl_g_menu_due_ms = 0;
   itl_menu_cache_open();
   status = itl_completion_menu_run(le, initial, source);
+  itl_g_menu_is_next_word = false;
   itl_menu_cache_close();
   itl_menu_index_free(&itl_g_menu_index);
   itl_g_menu_due_ms = 0;
@@ -11484,7 +11504,7 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
       itl_menu_regather, true, true, true, true, false, false,
       "selecting completions",
       "enter to run, tab to accept, esc to close, ctrl-g to restore", true,
-      true};
+      true, true};
   char line_cstr[ITL_STRING_MAX_LEN];
   tl_completion result;
   size_t token_len, lcp_len;
@@ -11552,23 +11572,22 @@ ITL_DEF bool itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
       return true;
     }
     if (!result.is_space_suppressed) {
-      size_t length_before_space = le->line->length;
-
       itl_completion_append_space(le);
-      itl_g_tty_should_refresh_text = true;
-      if (itl_g_completion_menu_enabled &&
-          le->line->length > length_before_space)
-      {
-        tl_completion following = ITL_ZERO_INIT;
+    }
+    itl_g_tty_should_refresh_text = true;
+    if (itl_g_completion_menu_enabled) {
+      tl_completion following = ITL_ZERO_INIT;
 
-        if (itl_completion_gather_following(le, &completion_source,
-                                            &following))
-        {
-          itl_g_menu_is_next_word = true;
-          *out_code = itl_completion_menu(le, &following, &completion_source);
-          itl_g_menu_is_next_word = false;
-        }
+      if (!itl_completion_gather_following(le, &completion_source,
+                                           &following))
+      {
+        itl_menu_empty_candidates(&following);
+        following.token_start = le->cursor_position;
+        following.token_end = le->cursor_position;
       }
+      itl_g_menu_is_next_word = true;
+      *out_code = itl_completion_menu(le, &following, &completion_source);
+      itl_g_menu_is_next_word = false;
     }
     itl_g_tty_should_refresh_text = true;
     return true;
@@ -11644,7 +11663,7 @@ ITL_DEF tl_status_code itl_history_menu(itl_le_t *le)
   static const itl_menu_source history_source = {
       itl_history_menu_gather, false, false, false, false, true, true,
       "incremental history search",
-      "enter/tab to accept, esc/ctrl-g to cancel", false, false};
+      "enter/tab to accept, esc/ctrl-g to cancel", false, false, false};
 
   tl_completion result;
   char original_line[ITL_STRING_MAX_LEN];
