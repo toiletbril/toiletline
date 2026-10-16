@@ -2304,8 +2304,21 @@ test_kill_line_removes_an_empty_line(void)
   le.cursor_position = 4;
   itl_le_key_handle(&le, TL_KEY_KILL_LINE);
   ok &= test_line_is(line, "one\ntwo", "ctrl-k on an empty middle line");
+  if (le.cursor_position != 4) {
+    TEST_PRINTF("cursor after ctrl-k is %zu, expected 4\n",
+                le.cursor_position);
+    ok = false;
+  }
+
+  itl_le_key_handle(&le, TL_KEY_YANK);
+  ok &= test_line_is(line, "one\n\ntwo", "yank of the killed newline");
+
+  ITL_STRING_FROM_CSTR(line, "one\n");
+  le.cursor_position = 4;
+  itl_le_key_handle(&le, TL_KEY_KILL_LINE);
+  ok &= test_line_is(line, "one", "ctrl-k on an empty last line");
   if (le.cursor_position != 3) {
-    TEST_PRINTF("cursor after ctrl-k is %zu, expected 3\n",
+    TEST_PRINTF("cursor after ctrl-k on the last line is %zu, expected 3\n",
                 le.cursor_position);
     ok = false;
   }

@@ -12407,10 +12407,10 @@ ITL_DEF tl_status_code itl_le_key_handle(itl_le_t *le, int esc)
     size_t line_end = itl_le_line_end_of(le, le->cursor_position);
     bool is_empty_line = line_start == line_end;
 
-    if (is_empty_line && line_start > 0) {
+    if (is_empty_line && line_end < le->line->length) {
+      itl_le_kill(le, 1, false, previous_action);
+    } else if (is_empty_line && line_start > 0) {
       ITL_LE_ERASE_BACKWARD(le, 1);
-    } else if (is_empty_line && line_end < le->line->length) {
-      ITL_LE_ERASE_FORWARD(le, 1);
     } else {
       itl_le_kill(le, line_end - le->cursor_position, false, previous_action);
     }
