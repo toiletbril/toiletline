@@ -8618,8 +8618,8 @@ test_right_prompt_follows_appends(void)
 }
 
 /* Enter or Ctrl-C with a transient prompt erases from the top of the block
-   down and draws the line after that prompt alone. A submit without one
-   leaves the block standing. */
+   down and draws the line after that prompt and the right prompt alone. A
+   submit without one leaves the block and the right prompt standing. */
 static bool
 test_transient_prompt_redraws_the_submitted_line(void)
 {
@@ -8627,8 +8627,7 @@ test_transient_prompt_redraws_the_submitted_line(void)
   char              out_buffer[BUFFER_SIZE];
   bool              was_block_erased;
   bool              was_line_redrawn;
-  bool              were_prompts_dropped;
-  bool              is_prompt_restored;
+  bool              were_rows_dropped;
   bool              was_interrupt_redrawn;
   bool              was_plain_submit_left;
   bool              ok;
@@ -8653,10 +8652,9 @@ test_transient_prompt_redraws_the_submitted_line(void)
   was_block_erased = test_frame_capture_has("\x1b[2A\x1b[1G\x1b[0J");
   was_line_redrawn = test_frame_capture_has("$ ab") &&
                      itl_g_le_prev_total_rows == 2;
-  were_prompts_dropped = !test_frame_capture_has("RP") &&
-                         !test_frame_capture_has("top") &&
-                         !test_frame_capture_has(HINT);
-  is_prompt_restored = !itl_g_right_prompt_is_held;
+  were_rows_dropped = test_frame_capture_has(TEST_RIGHT_PROMPT) &&
+                      !test_frame_capture_has("top") &&
+                      !test_frame_capture_has(HINT);
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
   ITL_STRING_FROM_CSTR(line, "ab");
@@ -8678,37 +8676,36 @@ test_transient_prompt_redraws_the_submitted_line(void)
   itl_le_finish_input(&le, TL_PRESSED_ENTER);
   was_plain_submit_left = !test_frame_capture_has("\x1b[0J") &&
                           !test_frame_capture_has("$ ") &&
-                          !test_frame_capture_has("RP") &&
-                          !itl_g_le_prev_right_prompt_is_shown;
+                          itl_g_le_prev_right_prompt_is_shown;
 
   tl_set_hint_callback(NULL);
   itl_hint_forget_shown();
   itl_hint_drop_next();
   test_right_prompt_finish_frame(line);
 
-  ok = was_block_erased && was_line_redrawn && were_prompts_dropped &&
-       is_prompt_restored && was_interrupt_redrawn && was_plain_submit_left;
+  ok = was_block_erased && was_line_redrawn && were_rows_dropped &&
+       was_interrupt_redrawn && was_plain_submit_left;
 
   if (!ok) {
-    TEST_PRINTF("erased %d, redrawn %d, dropped %d, restored %d, interrupt %d, "
-                "plain %d\n",
+    TEST_PRINTF("erased %d, redrawn %d, dropped %d, interrupt %d, plain %d\n",
                 (int) was_block_erased, (int) was_line_redrawn,
-                (int) were_prompts_dropped, (int) is_prompt_restored,
-                (int) was_interrupt_redrawn, (int) was_plain_submit_left);
+                (int) were_rows_dropped, (int) was_interrupt_redrawn,
+                (int) was_plain_submit_left);
   }
 
   return ok;
 }
 
 /* A transient right prompt replaces the right prompt on a submitted line, also
-   after a transient redraw of the left prompt, and the right prompt comes back
-   for the next line. */
+   after a transient redraw of the left prompt, an empty one erases it, and the
+   right prompt comes back for the next line. */
 static bool
 test_transient_right_prompt_redraws_a_finished_line(void)
 {
   char out_buffer[BUFFER_SIZE];
   bool was_submit_redrawn;
   bool was_transient_redrawn;
+  bool was_empty_erased;
   bool is_prompt_restored;
   bool ok;
 
@@ -8734,18 +8731,31 @@ test_transient_right_prompt_redraws_a_finished_line(void)
   was_transient_redrawn = test_frame_capture_has("$ ab") &&
                           test_frame_capture_has("\x1b[2mT\x1b[0m") &&
                           !test_frame_capture_has("RP");
+
+  tl_set_transient_prompt(NULL);
+  tl_set_transient_right_prompt("");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  ITL_STRING_FROM_CSTR(line, "ab");
+  le.cursor_position = line->length;
+  test_frame_capture_refresh(&le);
+  test_frame_capture_size = 0;
+  itl_le_finish_input(&le, TL_PRESSED_ENTER);
+  was_empty_erased = test_frame_capture_size > 0 &&
+                     !test_frame_capture_has("RP") &&
+                     !itl_g_le_prev_right_prompt_is_shown;
   is_prompt_restored = itl_g_right_prompt_width == 2 &&
                        !itl_g_right_prompt_is_held;
 
   tl_set_transient_right_prompt(NULL);
   test_right_prompt_finish_frame(line);
 
-  ok = was_submit_redrawn && was_transient_redrawn && is_prompt_restored;
+  ok = was_submit_redrawn && was_transient_redrawn && was_empty_erased &&
+       is_prompt_restored;
 
   if (!ok) {
-    TEST_PRINTF("submit %d, transient %d, restored %d\n",
+    TEST_PRINTF("submit %d, transient %d, empty %d, restored %d\n",
                 (int) was_submit_redrawn, (int) was_transient_redrawn,
-                (int) is_prompt_restored);
+                (int) was_empty_erased, (int) is_prompt_restored);
   }
 
   return ok;

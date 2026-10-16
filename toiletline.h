@@ -557,7 +557,8 @@ TL_DEF void tl_set_right_prompt(const char *right_prompt);
 
 /**
  * Set the right prompt a line that Enter submits or Ctrl-C interrupts is
- * redrawn with, or NULL to erase the right prompt from that line. It is
+ * redrawn with, or NULL to leave the right prompt on that line as it was
+ * drawn. An empty string erases the right prompt from that line. It is
  * measured and hidden like the right prompt, and the host keeps the string
  * valid until the next call.
  */
@@ -568,9 +569,9 @@ TL_DEF void tl_set_transient_right_prompt(const char *right_prompt);
  * as it was drawn. When Enter submits or Ctrl-C interrupts the line,
  * everything from the top of the prompt
  * down is erased, which takes the right prompt, the ghost, the hint rows, and
- * any rows below the input, and the line is drawn again after this prompt. The
- * right prompt returns only as the one tl_set_transient_right_prompt set. The
- * host keeps the string valid until the next call.
+ * any rows below the input, and the line is drawn again after this prompt
+ * with the right prompt that tl_set_transient_right_prompt selects. The host
+ * keeps the string valid until the next call.
  */
 TL_DEF void tl_set_transient_prompt(const char *transient_prompt);
 
@@ -5033,14 +5034,13 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_ghost_len = 0;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_prev_right_prompt_is_shown = false;
 
 /* The host right prompt and its display width, zero when nothing is drawn. A
-   hold keeps it away while a history search is open and from a finished line
-   that does not keep it. */
+   hold keeps it away while a history search is open. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_right_prompt = NULL;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_right_prompt_width = 0;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_right_prompt_is_held = false;
 
 /* The right prompt a finished line is redrawn with and its display width, or
-   NULL to drop the right prompt from that line. */
+   NULL to leave the right prompt on that line. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_transient_right_prompt = NULL;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_transient_right_prompt_width = 0;
 
@@ -7524,15 +7524,12 @@ ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
   bool is_line_kept = code == TL_PRESSED_ENTER || code == TL_PRESSED_INTERRUPT;
   bool has_transient_right_prompt =
       is_line_kept && itl_g_transient_right_prompt != NULL;
-  bool was_right_prompt_drawn =
-      is_line_kept && itl_g_le_prev_right_prompt_is_shown;
   const char *right_prompt = itl_g_right_prompt;
   size_t      right_prompt_width = itl_g_right_prompt_width;
 
   itl_ghost_clear();
   itl_g_hint_is_closed = true;
   itl_g_le_is_submitting = code == TL_PRESSED_ENTER;
-  itl_g_right_prompt_is_held = is_line_kept && !has_transient_right_prompt;
 
   if (has_transient_right_prompt) {
     itl_g_right_prompt = itl_g_transient_right_prompt;
@@ -7541,9 +7538,7 @@ ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
 
   if (is_line_kept && itl_g_transient_prompt != NULL) {
     itl_le_tty_draw_transient(le);
-  } else if (was_ghost_drawn || was_hint_drawn || was_right_prompt_drawn ||
-             has_transient_right_prompt)
-  {
+  } else if (was_ghost_drawn || was_hint_drawn || has_transient_right_prompt) {
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
   } else if (itl_g_le_is_submitting && itl_g_highlight_follows_cursor) {
@@ -7552,7 +7547,6 @@ ITL_DEF tl_status_code itl_le_finish_input(itl_le_t *le, tl_status_code code)
 
   itl_g_right_prompt = right_prompt;
   itl_g_right_prompt_width = right_prompt_width;
-  itl_g_right_prompt_is_held = false;
   itl_g_le_is_submitting = false;
   itl_le_clear_line(le);
 
