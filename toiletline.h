@@ -6548,6 +6548,7 @@ itl_hint_layout(size_t cols, size_t row_budget)
   const char *body     = itl_g_hint_source + itl_g_hint_header_len;
   size_t      body_len = itl_g_hint_source_len - itl_g_hint_header_len;
   size_t      text_room, body_rows;
+  bool        is_split;
 
   itl_g_hint_layout_cols = cols;
   itl_g_hint_layout_rows = row_budget;
@@ -6566,7 +6567,8 @@ itl_hint_layout(size_t cols, size_t row_budget)
     row_budget = ITL_HINT_ROWS_MAX;
   }
 
-  while (body_len > 0 && body[0] == ' ') {
+  is_split = memchr(body, '\n', body_len) != NULL;
+  while (!is_split && body_len > 0 && body[0] == ' ') {
     body += 1;
     body_len -= 1;
   }
@@ -6578,7 +6580,23 @@ itl_hint_layout(size_t cols, size_t row_budget)
   }
   body_rows = ITL_MIN(row_budget, ITL_HINT_ROWS_MAX - 1);
 
-  while (body_len > 0 && body_rows > 0) {
+  /* A body with line breaks keeps one row per line, each cut to the width
+     with its leading blanks kept, so the host can align columns. */
+  while (is_split && body_len > 0 && body_rows > 0) {
+    const char *line_end = (const char *) memchr(body, '\n', body_len);
+    size_t      line_len = line_end != NULL ? (size_t) (line_end - body)
+                                            : body_len;
+
+    itl_hint_append_cut_row(body, line_len, text_room);
+    body_rows -= 1;
+    if (line_end == NULL) {
+      break;
+    }
+    body += line_len + 1;
+    body_len -= line_len + 1;
+  }
+
+  while (!is_split && body_len > 0 && body_rows > 0) {
     size_t fit, end;
 
     if (body_rows == 1) {
@@ -6687,7 +6705,10 @@ itl_hint_compose(const char *line,
     is_notation = step_bytes == 1
                       ? byte < 0x20 || byte >= 0x7F
                       : byte == 0xC2 && (uint8_t) returned[i + 1] < 0xA0;
-    if (is_notation) {
+    /* A line break after the header starts a new body row. */
+    if (byte == '\n' && line_break != NULL && i > header_end) {
+      itl_g_hint_source[kept_bytes++] = '\n';
+    } else if (is_notation) {
       itl_g_hint_source[kept_bytes++] = ' ';
     } else {
       memcpy(itl_g_hint_source + kept_bytes, returned + i, step_bytes);

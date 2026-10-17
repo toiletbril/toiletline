@@ -7544,9 +7544,13 @@ test_hint_body_wraps_at_words(void)
   test_hint_text = "a header much wider than the row\nbody";
   ok &= test_hint_rows_are("  a header muc...\n  body", 18, 24, "header cut");
 
-  test_hint_text = "hdr\x01\nab\x1b" "cd\xC2\x9B" "ef\x7f\ngh ij";
+  test_hint_text = "hdr\x01\nab\x1b" "cd\xC2\x9B" "ef\x7f\x02gh ij";
   ok &= test_hint_rows_are("  hdr\n  ab cd\n  ef  gh\n  ij", 9, 24,
                            "control bytes");
+
+  test_hint_text = "explain\n  ls   list\n> -la  long listing format";
+  ok &= test_hint_rows_are("  explain\n    ls   list\n  > -la  long lis...",
+                           21, 24, "line breaks");
 
   tl_set_hint_callback(NULL);
   tl_set_colors_enabled(was_colors_enabled);
