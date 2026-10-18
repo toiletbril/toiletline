@@ -7654,18 +7654,56 @@ tl_set_completion_menu_enabled(int enabled)
   itl_g_completion_menu_enabled = enabled && itl_term_supports_decorations();
 }
 
+/* The prompt and transient prompt with their rows indented. */
+ITL_DEF ITL_THREAD_LOCAL char itl_g_padded_prompt[ITL_STRING_MAX_LEN];
+ITL_DEF ITL_THREAD_LOCAL char itl_g_padded_transient_prompt[ITL_STRING_MAX_LEN];
+
 /* While the completion menu is on, a prompt whose last row has no width, one
-   that is empty or ends with a line break, is followed by one no-break space,
-   so the first word does not touch the left edge, where the menu draws its row
-   prefix. */
+   that is empty or ends with a line break, keeps every row off the left edge,
+   where the menu draws its row prefix: each non-empty prompt row starts with
+   one no-break space, and one follows the prompt, so the first word moves too.
+   storage receives the indented copy of the prompt. */
 ITL_DEF void
-itl_le_set_prompt_pad(itl_le_t *le)
+itl_le_set_prompt_pad(itl_le_t *le, char *storage, size_t storage_size)
 {
-  le->has_prompt_pad = itl_g_completion_menu_enabled && le->prompt != NULL &&
-                       le->prompt_width == 0;
-  if (le->has_prompt_pad) {
-    le->prompt_width = 1;
+  static const char pad[]      = "\xc2\xa0";
+  size_t            pad_length = sizeof(pad) - 1;
+  size_t            used       = 0;
+  size_t            last_row_start;
+  size_t            i;
+
+  le->has_prompt_pad = false;
+  if (!itl_g_completion_menu_enabled || le->prompt == NULL ||
+      le->prompt_width != 0)
+  {
+    return;
   }
+
+  le->has_prompt_pad = true;
+  le->prompt_width   = 1;
+  if (le->prompt_rows == 0) {
+    return;
+  }
+
+  last_row_start = strrchr(le->prompt, '\n') + 1 - le->prompt;
+  for (i = 0; le->prompt[i] != '\0'; ++i) {
+    bool is_row_start = i == 0 || le->prompt[i - 1] == '\n';
+
+    if (is_row_start && i < last_row_start && le->prompt[i] != '\n') {
+      if (used + pad_length >= storage_size) {
+        return;
+      }
+      memcpy(storage + used, pad, pad_length);
+      used += pad_length;
+    }
+    if (used + 1 >= storage_size) {
+      return;
+    }
+    storage[used++] = le->prompt[i];
+  }
+  storage[used]   = '\0';
+  le->prompt      = storage;
+  le->prompt_size = used;
 }
 
 TL_DEF void
@@ -7880,7 +7918,8 @@ itl_le_tty_draw_transient(itl_le_t *le)
   le->prompt       = itl_g_transient_prompt;
   le->prompt_size  = strlen(le->prompt);
   le->prompt_width = itl_prompt_last_row_width(le->prompt, &le->prompt_rows);
-  itl_le_set_prompt_pad(le);
+  itl_le_set_prompt_pad(le, itl_g_padded_transient_prompt,
+                        sizeof(itl_g_padded_transient_prompt));
 
   itl_g_tty_first_render = true;
   itl_le_invalidate_prev_frame();
@@ -15659,7 +15698,7 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
   TL_ASSERT(buffer != NULL);
 
   itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
-  itl_le_set_prompt_pad(le);
+  itl_le_set_prompt_pad(le, itl_g_padded_prompt, sizeof(itl_g_padded_prompt));
   itl_le_end_insertion_walk();
   itl_g_auto_pair_count = 0;
 
