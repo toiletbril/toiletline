@@ -561,9 +561,12 @@ tl_set_highlight_follows_cursor(int follows_cursor);
  * an empty string for no hint. Text with a line break is a header row before
  * the break and a body after it, and text without one is a body alone. Every
  * row is indented by two columns. The header is cut with an ellipsis at the
- * terminal width, and the body wraps at spaces onto at most three rows, the
- * last of which is cut with an ellipsis. Later line breaks and other control
- * bytes in the body become spaces. A terminal too short for the input and
+ * terminal width. A body without line breaks wraps at spaces onto at most
+ * three rows, the last of which is cut with an ellipsis. A body with line
+ * breaks keeps each line on a row of its own, at most sixteen rows, and when
+ * it has more lines, the rows around the first line that starts with '>' are
+ * kept. Other control bytes in the body become spaces. A terminal too short
+ * for the input and
  * every row gets fewer body rows, then the body alone on one row, then no
  * hint, so the input never scrolls away. The host may set *sgr to the escape
  * sequence that styles the rows, and leaves it alone for the dimmed default.
@@ -5258,10 +5261,13 @@ ITL_DEF ITL_THREAD_LOCAL char itl_g_padded_transient_prompt[ITL_STRING_MAX_LEN];
 ITL_DEF ITL_THREAD_LOCAL tl_hint_fn itl_g_hint_callback = NULL;
 
 /* The most text bytes and style bytes of one hint the editor keeps. */
-#define ITL_HINT_TEXT_MAX 512
+#define ITL_HINT_TEXT_MAX 4096
 #define ITL_HINT_SGR_MAX  32
-/* The most rows one hint takes, the header and three body rows. */
-#define ITL_HINT_ROWS_MAX 4
+/* The most rows one hint takes, the header and as many body rows as the
+   completion menu has candidate rows. */
+#define ITL_HINT_ROWS_MAX 17
+/* The most rows of a body without line breaks. */
+#define ITL_HINT_WRAPPED_ROWS_MAX 3
 /* Every hint row starts with this indent. */
 #define ITL_HINT_INDENT       "  "
 #define ITL_HINT_INDENT_WIDTH 2
@@ -6586,7 +6592,41 @@ itl_hint_layout(size_t cols, size_t row_budget)
                             text_room);
     row_budget -= 1;
   }
-  body_rows = ITL_MIN(row_budget, ITL_HINT_ROWS_MAX - 1);
+  body_rows = ITL_MIN(row_budget, is_split ? ITL_HINT_ROWS_MAX - 1
+                                           : ITL_HINT_WRAPPED_ROWS_MAX);
+
+  /* A body with more lines than rows starts so that its first line marked
+     with '>' sits in the middle of the rows, or as near as the lines allow. */
+  if (is_split && body_rows > 0) {
+    size_t line_count  = 1;
+    size_t marked_line = 0;
+    bool   has_mark    = body_len > 0 && body[0] == '>';
+    size_t i;
+
+    for (i = 0; i + 1 < body_len; ++i) {
+      if (body[i] != '\n') {
+        continue;
+      }
+      if (!has_mark && body[i + 1] == '>') {
+        has_mark    = true;
+        marked_line = line_count;
+      }
+      line_count += 1;
+    }
+
+    if (line_count > body_rows && marked_line > body_rows / 2) {
+      size_t skip = ITL_MIN(marked_line - body_rows / 2,
+                            line_count - body_rows);
+
+      for (i = 0; i < body_len && skip > 0; ++i) {
+        if (body[i] == '\n') {
+          skip -= 1;
+        }
+      }
+      body += i;
+      body_len -= i;
+    }
+  }
 
   /* A body with line breaks keeps one row per line, each cut to the width
      with its leading blanks kept, so the host can align columns. */

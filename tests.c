@@ -7552,6 +7552,13 @@ test_hint_body_wraps_at_words(void)
   ok &= test_hint_rows_are("  explain\n    ls   list\n  > -la  long lis...",
                            21, 24, "line breaks");
 
+  test_hint_text = "head\n a\n b\n c\n> d\n e\n f";
+  ok &= test_hint_rows_are("  head\n   c\n  > d\n   e", 21, 4,
+                           "rows around the marked line");
+  test_hint_text = "head\n a\n b\n c\n d\n e\n> f";
+  ok &= test_hint_rows_are("  head\n   d\n   e\n  > f", 21, 4,
+                           "marked line at the end");
+
   tl_set_hint_callback(NULL);
   tl_set_colors_enabled(was_colors_enabled);
   itl_hint_drop_next();
