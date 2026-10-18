@@ -7514,6 +7514,47 @@ test_hint_rows_are(const char *expected, size_t cols, size_t row_budget,
 }
 
 static bool
+test_paste_line_breaks(void)
+{
+  static const char PASTED[] = "a\rb\r\nc\nd\xc3\xa9\r\ne\x1b[201~";
+  char              out_buffer[BUFFER_SIZE];
+  int               pipe_descriptors[2] = {-1, -1};
+  int               saved_stdin         = -1;
+  itl_le_t          le                  = ITL_ZERO_INIT;
+  itl_string_t     *line                = itl_string_alloc();
+  bool              ok                  = false;
+
+  if (pipe(pipe_descriptors) != 0) goto cleanup;
+  if (write(pipe_descriptors[1], PASTED, sizeof(PASTED) - 1) !=
+      (ssize_t) (sizeof(PASTED) - 1))
+  {
+    goto cleanup;
+  }
+  close(pipe_descriptors[1]);
+  pipe_descriptors[1] = -1;
+  saved_stdin         = dup(STDIN_FILENO);
+  if (saved_stdin < 0 || dup2(pipe_descriptors[0], STDIN_FILENO) < 0) {
+    goto cleanup;
+  }
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), NULL);
+  itl_le_read_paste(&le);
+  ok = test_line_is(line, "a\nb\nc\nd\xc3\xa9\ne",
+                    "carriage returns, line feeds, and their pairs");
+
+cleanup:
+  if (saved_stdin >= 0) {
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+  }
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
+static bool
 test_hint_body_wraps_at_words(void)
 {
   static const char WRAPPED[] =
@@ -9285,6 +9326,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
 #endif
                                    DEFINE_TEST_CASE(
                                        test_hint_row_is_cut_to_the_width),
+                                   DEFINE_TEST_CASE(test_paste_line_breaks),
                                    DEFINE_TEST_CASE(
                                        test_hint_body_wraps_at_words),
                                    DEFINE_TEST_CASE(

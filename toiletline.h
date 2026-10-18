@@ -13155,16 +13155,23 @@ itl_le_key_handle(itl_le_t *le, int esc)
   return TL_SUCCESS;
 }
 
-/* Inserts one byte of pasted content, turning newlines into newline chars,
-   dropping carriage returns and other control bytes, and assembling a UTF-8
-   sequence from a lead byte. */
+/* Whether the last pasted byte was a carriage return. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_paste_was_cr = false;
+
+/* Inserts one byte of pasted content, turning a line break into a newline
+   char, dropping other control bytes, and assembling a UTF-8 sequence from a
+   lead byte. A carriage return, a line feed, and the pair of both are each one
+   line break, since some terminals paste line breaks as carriage returns. */
 ITL_DEF void
 itl_le_paste_insert_byte(itl_le_t *le, uint8_t byte)
 {
-  if (byte == '\r') {
-    return; /* The following '\n' produces the break. */
+  bool was_cr = itl_g_paste_was_cr;
+
+  itl_g_paste_was_cr = byte == '\r';
+  if (byte == '\n' && was_cr) {
+    return;
   }
-  if (byte == '\n') {
+  if (byte == '\r' || byte == '\n') {
     itl_le_insert(le, itl_newline_char);
     return;
   }
@@ -13187,6 +13194,7 @@ itl_le_read_paste(itl_le_t *le)
   uint8_t           byte;
   bool              have_byte = false;
 
+  itl_g_paste_was_cr = false;
   while (true) {
     if (!have_byte && !ITL_READ_BYTE(&byte)) {
       return; /* A read error or EOF ends the paste. */
@@ -13227,7 +13235,8 @@ itl_le_read_paste(itl_le_t *le)
 
       /* Read the continuation bytes here. A byte that is not a continuation is
          left for the next iteration so the terminator is never lost. */
-      ch.bytes[0] = byte;
+      itl_g_paste_was_cr = false;
+      ch.bytes[0]        = byte;
       for (k = 1; k < rune_width; ++k) {
         if (!ITL_READ_BYTE(&byte)) {
           return;
