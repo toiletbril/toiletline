@@ -5246,6 +5246,14 @@ ITL_DEF ITL_THREAD_LOCAL size_t      itl_g_transient_right_prompt_width = 0;
 /* The prompt a submitted line is redrawn with, or NULL to keep the line. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_transient_prompt = NULL;
 
+/* The prompt and transient prompt as drawn while the completion menu is on:
+   every row starts with one no-break space, so no prompt text and no first
+   word touch the left edge, where the menu draws its row prefix. */
+#define ITL_PROMPT_PAD "\xc2\xa0"
+ITL_DEF ITL_THREAD_LOCAL char itl_g_padded_prompt[ITL_STRING_MAX_LEN];
+ITL_DEF ITL_THREAD_LOCAL char itl_g_padded_transient_prompt[ITL_STRING_MAX_LEN];
+
+
 /* The host hint callback, or NULL when the hint rows are off. */
 ITL_DEF ITL_THREAD_LOCAL tl_hint_fn itl_g_hint_callback = NULL;
 
@@ -7155,9 +7163,6 @@ itl_le_tty_refresh(itl_le_t *le)
         itl_char_buf_append_cstr(b, ITL_PROMPT_ELLIPSIS);
         itl_char_buf_append_cstr(b, le->prompt + prompt_cut);
       }
-      if (le->has_prompt_pad && le->prompt_width > 0) {
-        itl_char_buf_append_cstr(b, "\xc2\xa0");
-      }
     }
 
     /* Emit the buffer, reproducing the metrics column accounting so our own
@@ -7612,6 +7617,40 @@ tl_set_completion_menu_enabled(int enabled)
   itl_g_completion_menu_enabled = enabled && itl_term_supports_decorations();
 }
 
+/* Copy prompt into storage with ITL_PROMPT_PAD at the start of every row, or
+   return prompt unchanged when the menu is off or the copy does not fit. */
+ITL_DEF const char *
+itl_padded_prompt(const char *prompt, char *storage, size_t storage_size)
+{
+  size_t pad_length = sizeof(ITL_PROMPT_PAD) - 1;
+  size_t used       = 0;
+  size_t i;
+
+  if (prompt == NULL || !itl_g_completion_menu_enabled) {
+    return prompt;
+  }
+
+  for (i = 0;; ++i) {
+    if (i == 0 || prompt[i - 1] == '\n') {
+      if (used + pad_length >= storage_size) {
+        return prompt;
+      }
+      memcpy(storage + used, ITL_PROMPT_PAD, pad_length);
+      used += pad_length;
+    }
+    if (prompt[i] == '\0') {
+      break;
+    }
+    if (used + 1 >= storage_size) {
+      return prompt;
+    }
+    storage[used++] = prompt[i];
+  }
+  storage[used] = '\0';
+
+  return storage;
+}
+
 TL_DEF void
 tl_set_space_after_completion(tl_space_after_completion mode)
 {
@@ -7821,11 +7860,12 @@ itl_le_tty_draw_transient(itl_le_t *le)
   ITL_TTY_MOVE_TO_COLUMN(b, 1);
   ITL_TTY_CLEAR_BELOW(b);
 
-  le->prompt      = itl_g_transient_prompt;
-  le->prompt_size = strlen(itl_g_transient_prompt);
-  le->prompt_width =
-      itl_prompt_last_row_width(itl_g_transient_prompt, &le->prompt_rows);
-  le->has_prompt_pad = false;
+  le->prompt =
+      itl_padded_prompt(itl_g_transient_prompt, itl_g_padded_transient_prompt,
+                        sizeof(itl_g_padded_transient_prompt));
+  le->prompt_size    = strlen(le->prompt);
+  le->prompt_width   = itl_prompt_last_row_width(le->prompt, &le->prompt_rows);
+  le->has_prompt_pad = le->prompt != itl_g_transient_prompt;
 
   itl_g_tty_first_render = true;
   itl_le_invalidate_prev_frame();
@@ -15594,11 +15634,10 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
       "Size should be less than platform's allowed maximum string length");
   TL_ASSERT(buffer != NULL);
 
-  itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
-  if (prompt != NULL && le->prompt_width == 0) {
-    le->has_prompt_pad = true;
-    le->prompt_width   = 1;
-  }
+  itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size,
+              itl_padded_prompt(prompt, itl_g_padded_prompt,
+                                sizeof(itl_g_padded_prompt)));
+  le->has_prompt_pad = le->prompt != prompt;
   itl_le_end_insertion_walk();
   itl_g_auto_pair_count = 0;
 
