@@ -5393,6 +5393,12 @@ ITL_DEF ITL_THREAD_LOCAL tl_option_fn itl_g_option_callback = NULL;
    until the next key. */
 ITL_DEF ITL_THREAD_LOCAL char itl_g_editor_message[512] = {0};
 
+/* The count of keys the editor has read, and the key that waits for a second
+   press with the count it arrived at. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_key_serial     = 0;
+ITL_DEF ITL_THREAD_LOCAL int    itl_g_confirm_key    = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_confirm_serial = 0;
+
 /* The M-x commands that are not a key of the editor. */
 typedef enum
 {
@@ -12997,6 +13003,53 @@ itl_le_edit_external(itl_le_t *le)
   ITL_FREE(replacement.chars);
 }
 
+/* An edited buffer of several lines, none of them joined by a backslash, is
+   easy to lose, so leaving it for history or submitting it takes a second
+   press. A recalled entry left as it was takes one. */
+ITL_DEF bool
+itl_le_should_confirm(const itl_le_t *le)
+{
+  bool   has_line_break = false;
+  size_t i;
+
+  if (le->history_selected_index != ITL_HISTORY_NONE) {
+    return false;
+  }
+  for (i = 0; i < le->line->length; ++i) {
+    if (le->line->chars[i].size != 1 || le->line->chars[i].bytes[0] != '\n') {
+      continue;
+    }
+    if (i > 0 && ITL_LE_IS_BACKSLASH(le->line->chars[i - 1])) {
+      return false;
+    }
+    has_line_break = true;
+  }
+
+  return has_line_break;
+}
+
+/* Returns true when kind may act, either because the buffer needs no second
+   press or because the previous key was the same one. Otherwise kind waits
+   and message shows on the hint rows. */
+ITL_DEF bool
+itl_le_confirm(const itl_le_t *le, int kind, const char *message)
+{
+  if (!itl_le_should_confirm(le)) {
+    return true;
+  }
+  if (itl_g_confirm_key == kind && itl_g_confirm_serial + 1 == itl_g_key_serial)
+  {
+    itl_g_confirm_key = 0;
+    return true;
+  }
+  itl_g_confirm_key    = kind;
+  itl_g_confirm_serial = itl_g_key_serial;
+  strncpy(itl_g_editor_message, message, sizeof(itl_g_editor_message) - 1);
+  itl_g_tty_should_refresh_text = true;
+
+  return false;
+}
+
 ITL_DEF tl_status_code
 itl_le_key_handle(itl_le_t *le, int esc)
 {
@@ -13054,6 +13107,13 @@ itl_le_key_handle(itl_le_t *le, int esc)
     /* A non-empty line on its last visual row recalls only entries that begin
        with the typed text when prefix search is on. The draft line is saved
        inside get_prev on the first step up. */
+    if (is_up &&
+        !itl_le_confirm(le, TL_KEY_UP,
+                        "edited buffer\npress up again to leave it for "
+                        "history"))
+    {
+      break;
+    }
     if (is_up) {
       if (itl_g_history_prefix_search_enabled &&
           m.cursor_row + 1 >= m.total_rows && itl_g_history_prefix_get_prev(le))
@@ -13168,6 +13228,12 @@ itl_le_key_handle(itl_le_t *le, int esc)
        running the second line in the outer shell after the first returns. */
     if (insert_newline) {
       itl_le_insert(le, itl_newline_char);
+      break;
+    }
+
+    if (!itl_le_confirm(le, TL_KEY_ENTER,
+                        "edited buffer\npress enter again to run it"))
+    {
       break;
     }
 
@@ -16640,6 +16706,7 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
 
     ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
     itl_g_editor_message[0] = '\0';
+    itl_g_key_serial += 1;
 
 #if defined TL_SEE_BYTES
     if (input_byte == 3) return -69; /* ctrl c */
