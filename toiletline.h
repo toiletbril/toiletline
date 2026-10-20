@@ -5374,6 +5374,7 @@ typedef enum
   ITL_PREFIX_VI_REGISTER,
   ITL_PREFIX_VI_FIND,
   ITL_PREFIX_VI_REPLACE,
+  ITL_PREFIX_VI_G,
   ITL_PREFIX_VI_EX,
   /* The M-x minibuffer, whose hint lists the commands that match the text. */
   ITL_PREFIX_EMACS_X,
@@ -6762,6 +6763,10 @@ itl_prefix_hint(char *out, size_t out_size)
   case ITL_PREFIX_VI_REPLACE:
     keys[keys_length++] = 'r';
     waiting_for         = "a replacement character";
+    break;
+  case ITL_PREFIX_VI_G:
+    keys[keys_length++] = 'g';
+    waiting_for         = "g (the first row)";
     break;
   default:
     if (itl_g_vi_pending_operator == ITL_VI_OP_DELETE) {
@@ -16504,6 +16509,29 @@ static const itl_vi_shortcut itl_vi_shortcuts[] = {
     {'s', ITL_VI_OP_CHANGE, 'l'},
 };
 
+/* Moves to the first non-blank character of row line of the buffer, counted
+   from zero, or of the last row when line is past it, as gg and G do. */
+ITL_DEF void
+itl_vi_go_to_line(itl_le_t *le, size_t line)
+{
+  size_t last_line = itl_le_line_index_of(le, le->line->length);
+  size_t position, end;
+
+  if (line > last_line) {
+    line = last_line;
+  }
+  position = itl_le_line_start_at_index(le, line);
+  end      = itl_le_line_end_of(le, position);
+  while (position < end && le->line->chars[position].size == 1 &&
+         (le->line->chars[position].bytes[0] == ' ' ||
+          le->line->chars[position].bytes[0] == '\t'))
+  {
+    position += 1;
+  }
+  le->cursor_position = position;
+  itl_vi_clamp_command_cursor(le);
+}
+
 ITL_DEF tl_status_code
 itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
 {
@@ -16749,6 +16777,29 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
     }
     itl_vi_clamp_command_cursor(le);
     return TL_SUCCESS;
+  }
+
+  case 'G':
+    itl_vi_go_to_line(le, itl_g_vi_pending_count == 0
+                              ? (size_t) -1
+                              : itl_g_vi_pending_count - 1);
+    break;
+  case 'g': {
+    uint8_t second_byte;
+    size_t  line =
+        itl_g_vi_pending_count == 0 ? 0 : itl_g_vi_pending_count - 1;
+
+    if (!itl_le_await_chord(le, ITL_PREFIX_VI_G, byte) ||
+        !ITL_READ_BYTE(&second_byte))
+    {
+      break;
+    }
+    if (second_byte == 'g') {
+      itl_vi_go_to_line(le, line);
+    } else if (second_byte == 27) {
+      (void) itl_esc_parse(second_byte);
+    }
+    break;
   }
 
   case 'k':

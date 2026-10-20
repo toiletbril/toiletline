@@ -7817,6 +7817,33 @@ test_option_commands(void)
 }
 
 static bool
+test_vi_go_to_line(void)
+{
+  char          out_buffer[BUFFER_SIZE];
+  itl_le_t      le   = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  bool          ok   = true;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), NULL);
+  ITL_STRING_FROM_CSTR(line, "first\n  second\nthird");
+  le.cursor_position = 3;
+  itl_vi_go_to_line(&le, 1);
+  ok &= le.cursor_position == 8;
+  itl_vi_go_to_line(&le, (size_t) -1);
+  ok &= le.cursor_position == 15;
+  itl_vi_go_to_line(&le, 0);
+  ok &= le.cursor_position == 0;
+  itl_vi_go_to_line(&le, 7);
+  ok &= le.cursor_position == 15;
+  if (!ok) {
+    printf("gg and G left the cursor at %zu\n", le.cursor_position);
+  }
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
+static bool
 test_hint_body_wraps_at_words(void)
 {
   static const char WRAPPED[] =
@@ -9610,6 +9637,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_vi_ex_substitute),
                                    DEFINE_TEST_CASE(test_emacs_commands),
                                    DEFINE_TEST_CASE(test_option_commands),
+                                   DEFINE_TEST_CASE(test_vi_go_to_line),
                                    DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
                                    DEFINE_TEST_CASE(
                                        test_hint_body_wraps_at_words),
