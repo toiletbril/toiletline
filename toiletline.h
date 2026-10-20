@@ -4397,8 +4397,46 @@ itl_history_is_binary_byte(uint8_t ch)
   return (ch < 0x20 && ch != '\t' && ch != '\v' && ch != '\f') || ch == 0x7f;
 }
 
+/* Tracks the decoded length of one history record as its bytes are scanned,
+   counting the way itl_history_decode_entry_bytes() decodes them. */
+typedef struct
+{
+  size_t decoded_size;
+  bool   was_carriage_return;
+} itl_history_record_meter_t;
+
+ITL_DEF void
+itl_history_record_meter_add(itl_history_record_meter_t *meter,
+                             uint8_t                     ch,
+                             bool                        was_escaped)
+{
+  if (was_escaped) {
+    meter->decoded_size += ch == 'n' || ch == '\\' ? 1 : 2;
+    meter->was_carriage_return = false;
+    return;
+  }
+  meter->decoded_size += 1;
+  meter->was_carriage_return = ch == '\r';
+}
+
+/* Reports whether the record that a newline ends fits the line buffer, and
+   resets the meter for the next record. The decoder drops a carriage return
+   before the newline, so it is not counted. */
+ITL_DEF bool
+itl_history_record_meter_end(itl_history_record_meter_t *meter)
+{
+  size_t decoded_size = meter->decoded_size;
+
+  if (meter->was_carriage_return) decoded_size -= 1;
+  meter->decoded_size        = 0;
+  meter->was_carriage_return = false;
+
+  return decoded_size <= ITL_STRING_MAX_LEN;
+}
+
 /* Scans the open file from the start, rebuilding the offset ring, the recorded
-   file size, and the trailing-newline flag. Returns false on a read error or a
+   file size, and the trailing-newline flag. A record longer than the line
+   buffer is skipped and does not count as an event. Returns false on a read error or a
    non-text byte. Touches neither the path nor the draft. */
 ITL_DEF bool
 itl_history_scan_fd(ITL_FILE file)
@@ -4409,6 +4447,7 @@ itl_history_scan_fd(ITL_FILE file)
   size_t  file_pos       = 0;
   size_t  retained_limit = itl_g_history_limit;
   uint8_t last_byte      = (uint8_t) '\n';
+  itl_history_record_meter_t meter = {0, false};
 
   if (!ITL_FILE_SEEK(file, 0)) {
     return false;
@@ -4442,6 +4481,7 @@ itl_history_scan_fd(ITL_FILE file)
 
       if (escape_pending) {
         escape_pending = false;
+        itl_history_record_meter_add(&meter, ch, true);
         continue;
       }
 
@@ -4451,12 +4491,19 @@ itl_history_scan_fd(ITL_FILE file)
       }
 
       if (ch == '\n') {
-        itl_history_push_offset(entry_start, entry_start);
-        itl_g_history_total_count += 1;
+        if (itl_history_record_meter_end(&meter)) {
+          itl_history_push_offset(entry_start, entry_start);
+          itl_g_history_total_count += 1;
+        } else {
+          ITL_TRACELN("skipping a history record longer than %d bytes at "
+                      "offset %zu\n",
+                      (int) ITL_STRING_MAX_LEN, entry_start);
+        }
         entry_start = file_pos + 1;
         continue;
       }
 
+      itl_history_record_meter_add(&meter, ch, false);
       if (ch == '\r') {
         continue;
       }
@@ -4494,9 +4541,10 @@ itl_history_scan_fd(ITL_FILE file)
 ITL_DEF bool
 itl_history_search_snapshot_scan(const char *contents, size_t size)
 {
-  bool   escape_pending = false;
-  size_t entry_start    = 0;
-  size_t position;
+  bool                       escape_pending = false;
+  size_t                     entry_start    = 0;
+  size_t                     position;
+  itl_history_record_meter_t meter = {0, false};
 
   itl_g_history_search_snapshot.contents = contents;
   itl_g_history_search_snapshot.size     = size;
@@ -4508,6 +4556,7 @@ itl_history_search_snapshot_scan(const char *contents, size_t size)
 
     if (escape_pending) {
       escape_pending = false;
+      itl_history_record_meter_add(&meter, ch, true);
       continue;
     }
     if (ch == '\\') {
@@ -4515,6 +4564,10 @@ itl_history_search_snapshot_scan(const char *contents, size_t size)
       continue;
     }
     if (ch == '\n') {
+      if (!itl_history_record_meter_end(&meter)) {
+        entry_start = position + 1;
+        continue;
+      }
       if (itl_g_history_limit > 0) {
         size_t slot = (itl_g_history_search_snapshot.head +
                        itl_g_history_search_snapshot.count) %
@@ -4530,6 +4583,7 @@ itl_history_search_snapshot_scan(const char *contents, size_t size)
       entry_start = position + 1;
       continue;
     }
+    itl_history_record_meter_add(&meter, ch, false);
     if (ch == '\r') continue;
     if (itl_history_is_binary_byte(ch)) return false;
   }
