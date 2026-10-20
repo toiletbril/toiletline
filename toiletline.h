@@ -428,6 +428,19 @@ TL_DEF void
 tl_set_option_callback(tl_option_fn callback);
 
 /**
+ * The format callback for the colon commands :format and :%format and the M-x
+ * commands format and format-buffer. The host formats the shell source text
+ * and returns 1 with the result in out_text, or returns 0 with a line for the
+ * hint rows in out_text. The text stays valid until the next call.
+ */
+typedef int (*tl_format_fn)(const char *text, const char **out_text);
+
+/** Register the format callback, or NULL to make the format commands do
+    nothing. */
+TL_DEF void
+tl_set_format_callback(tl_format_fn callback);
+
+/**
  * Let the terminal turn the interrupt key back into SIGINT while the editor
  * stays in raw mode. A host callback that runs a slow command turns this on for
  * its duration so the key reaches the command instead of queueing as input.
@@ -5392,6 +5405,9 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_minibuffer_completes_options = false;
 /* The host option callback, or NULL. */
 ITL_DEF ITL_THREAD_LOCAL tl_option_fn itl_g_option_callback = NULL;
 
+/* The host format callback, or NULL. */
+ITL_DEF ITL_THREAD_LOCAL tl_format_fn itl_g_format_callback = NULL;
+
 /* The result of the last option command, shown in place of the hint rows
    until the next key. */
 ITL_DEF ITL_THREAD_LOCAL char itl_g_editor_message[512] = {0};
@@ -5411,7 +5427,9 @@ typedef enum
   ITL_EMACS_REPLACE_REGEXP = -4,
   ITL_EMACS_SET_OPTION     = -5,
   ITL_EMACS_GET_OPTION     = -6,
-  ITL_EMACS_SAVE_OPTION    = -7
+  ITL_EMACS_SAVE_OPTION    = -7,
+  ITL_EMACS_FORMAT         = -8,
+  ITL_EMACS_FORMAT_BUFFER  = -9
 } itl_emacs_action;
 
 /* An M-x command and the key it runs, or an itl_emacs_action. The table is
@@ -5432,6 +5450,8 @@ static const itl_emacs_command itl_emacs_commands[] = {
     {"delete-char", TL_KEY_DELETE},
     {"end-of-history", TL_KEY_HISTORY_END},
     {"end-of-line", TL_KEY_END},
+    {"format", ITL_EMACS_FORMAT},
+    {"format-buffer", ITL_EMACS_FORMAT_BUFFER},
     {"forward-word", TL_KEY_RIGHT | TL_MOD_CTRL},
     {"get-option", ITL_EMACS_GET_OPTION},
     {"kill-kosh", ITL_EMACS_KILL_KOSH},
@@ -6697,7 +6717,8 @@ itl_prefix_hint(char *out, size_t out_size)
                       "& or && (repeat the substitution)\n"
                       "set option=value, set option, set nooption, or set "
                       "option? (options)\n"
-                      "save or save option (store the options)");
+                      "save or save option (store the options)\n"
+                      "format or %format (format the row or the buffer)");
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_EMACS_X) {
@@ -7803,6 +7824,12 @@ TL_DEF void
 tl_set_option_callback(tl_option_fn callback)
 {
   itl_g_option_callback = callback;
+}
+
+TL_DEF void
+tl_set_format_callback(tl_format_fn callback)
+{
+  itl_g_format_callback = callback;
 }
 
 TL_DEF void
@@ -15901,6 +15928,82 @@ itl_le_substitute(itl_le_t *le, const itl_substitution *substitution)
   return is_changed;
 }
 
+/* Formats the row of the buffer that holds the caret, or the whole buffer
+   with is_whole, through the host, as one undo step. A failure shows its line
+   on the hint rows under header. */
+ITL_DEF void
+itl_le_format(itl_le_t *le, bool is_whole, const char *header)
+{
+  char           *text;
+  char           *range;
+  const char     *formatted;
+  itl_char_buf_t *out;
+  itl_string_t   *changed;
+  size_t          begin = 0, end, i, cursor_byte = 0, formatted_length;
+
+  if (itl_g_format_callback == NULL) {
+    return;
+  }
+  text = (char *) itl_malloc(le->line->size + 1);
+  itl_string_to_cstr(le->line, text, le->line->size + 1);
+  for (i = 0; i < le->cursor_position && i < le->line->length; ++i) {
+    cursor_byte += le->line->chars[i].size;
+  }
+  end = le->line->size;
+  if (!is_whole) {
+    for (begin = cursor_byte; begin > 0 && text[begin - 1] != '\n'; --begin) {
+    }
+    for (end = cursor_byte; end < le->line->size && text[end] != '\n'; ++end) {
+    }
+  }
+
+  range = (char *) itl_malloc(end - begin + 1);
+  memcpy(range, text + begin, end - begin);
+  range[end - begin] = '\0';
+  if (!itl_g_format_callback(range, &formatted)) {
+    size_t used = strlen(header);
+
+    if (formatted != NULL && used + 2 < sizeof(itl_g_editor_message)) {
+      memcpy(itl_g_editor_message, header, used);
+      itl_g_editor_message[used++] = '\n';
+      strncpy(itl_g_editor_message + used, formatted,
+              sizeof(itl_g_editor_message) - used - 1);
+      itl_g_editor_message[sizeof(itl_g_editor_message) - 1] = '\0';
+    }
+    ITL_FREE(range);
+    ITL_FREE(text);
+    return;
+  }
+
+  formatted_length = strlen(formatted);
+  while (formatted_length > 0 && formatted[formatted_length - 1] == '\n') {
+    formatted_length -= 1;
+  }
+  out = itl_char_buf_alloc();
+  itl_char_buf_append_bytes(out, text, begin);
+  itl_char_buf_append_bytes(out, formatted, formatted_length);
+  itl_char_buf_append_bytes(out, text + end, le->line->size - end);
+
+  changed = itl_string_alloc();
+  if (out->size < le->out_size && out->size <= ITL_STRING_MAX_LEN &&
+      (out->size != le->line->size ||
+       memcmp(out->data, text, out->size) != 0) &&
+      itl_string_from_bytes(changed, out->data, out->size))
+  {
+    itl_history_reset_after_edit(le);
+    itl_undo_push_closed(le);
+    itl_string_copy(le->line, changed);
+    if (le->cursor_position > le->line->length) {
+      le->cursor_position = le->line->length;
+    }
+    itl_g_tty_should_refresh_text = true;
+  }
+  ITL_STRING_FREE(changed);
+  ITL_CHAR_BUF_FREE(out);
+  ITL_FREE(range);
+  ITL_FREE(text);
+}
+
 /* Parses a colon substitution into substitution: [%]s/old/new/[g], where the
    delimiter is any punctuation byte after 's', and [%]& or [%]&&, which repeat
    the last substitution without or with its g flag. A bare s repeats it as &
@@ -16263,6 +16366,14 @@ itl_vi_ex_command(itl_le_t *le)
       header[0] = ':';
       strcpy(header + 1, command);
       itl_vi_ex_set(strchr(command, ' ') + 1, header);
+    } else if (strcmp(command, "format") == 0 ||
+               strcmp(command, "%format") == 0)
+    {
+      char header[72];
+
+      header[0] = ':';
+      strcpy(header + 1, command);
+      itl_le_format(le, command[0] == '%', header);
     } else if (strcmp(command, "save") == 0 ||
                strncmp(command, "save ", 5) == 0)
     {
@@ -16301,6 +16412,12 @@ itl_emacs_run_command(itl_le_t *le, size_t index)
       action == ITL_EMACS_REPLACE_REGEXP)
   {
     itl_le_substitute(le, &itl_g_emacs_last_substitution);
+    return TL_SUCCESS;
+  }
+  if (action == ITL_EMACS_FORMAT || action == ITL_EMACS_FORMAT_BUFFER) {
+    itl_le_format(le, action == ITL_EMACS_FORMAT_BUFFER,
+                  action == ITL_EMACS_FORMAT ? "M-x format"
+                                             : "M-x format-buffer");
     return TL_SUCCESS;
   }
   if (action == ITL_EMACS_SET_OPTION) {

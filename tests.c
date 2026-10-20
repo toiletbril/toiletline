@@ -7843,6 +7843,53 @@ test_vi_go_to_line(void)
   return ok;
 }
 
+static int
+test_format_callback(const char *text, const char **out_text)
+{
+  static char formatted[256];
+  size_t      i;
+
+  if (strstr(text, "bad") != NULL) {
+    *out_text = "Syntax error";
+    return 0;
+  }
+  for (i = 0; text[i] != '\0' && i + 2 < sizeof(formatted); ++i) {
+    formatted[i] = (char) toupper((unsigned char) text[i]);
+  }
+  formatted[i++] = '\n';
+  formatted[i]   = '\0';
+  *out_text      = formatted;
+
+  return 1;
+}
+
+static bool
+test_format_commands(void)
+{
+  char          out_buffer[BUFFER_SIZE];
+  itl_le_t      le   = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  bool          ok   = true;
+
+  tl_set_format_callback(test_format_callback);
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), NULL);
+  ITL_STRING_FROM_CSTR(line, "one\ntwo");
+  le.cursor_position = 1;
+  itl_le_format(&le, false, ":format");
+  ok &= test_line_is(line, "ONE\ntwo", "format the row");
+  itl_le_format(&le, true, ":%format");
+  ok &= test_line_is(line, "ONE\nTWO", "format the buffer");
+  ITL_STRING_FROM_CSTR(line, "bad");
+  itl_le_format(&le, true, ":%format");
+  ok &= test_line_is(line, "bad", "failed format");
+  ok &= test_option_message_is(":%format\nSyntax error", "failure message");
+  tl_set_format_callback(NULL);
+  itl_g_editor_message[0] = '\0';
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 static bool
 test_hint_body_wraps_at_words(void)
 {
@@ -8260,7 +8307,8 @@ test_prefix_hint_names_the_waiting_keys(void)
                      "  & or && (repeat the substitution)\n"
                      "  set option=value, set option, set nooption, or set "
                      "option? (options)\n"
-                     "  save or save option (store the options)",
+                     "  save or save option (store the options)\n"
+                     "  format or %format (format the row or the buffer)",
                      200, "ex");
   itl_g_prefix_kind     = ITL_PREFIX_EMACS_X;
   itl_g_minibuffer_text = "rep";
@@ -9638,6 +9686,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_emacs_commands),
                                    DEFINE_TEST_CASE(test_option_commands),
                                    DEFINE_TEST_CASE(test_vi_go_to_line),
+                                   DEFINE_TEST_CASE(test_format_commands),
                                    DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
                                    DEFINE_TEST_CASE(
                                        test_hint_body_wraps_at_words),
