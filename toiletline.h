@@ -402,7 +402,8 @@ typedef enum
   TL_OPTION_SET = 0,
   TL_OPTION_GET,
   TL_OPTION_SAVE,
-  TL_OPTION_COMPLETE
+  TL_OPTION_COMPLETE,
+  TL_OPTION_LIST
 } tl_option_action;
 
 /**
@@ -412,9 +413,10 @@ typedef enum
  * the vi :set command does. TL_OPTION_GET asks for the value of name.
  * TL_OPTION_SAVE stores name in the host's settings, or every option when name
  * is NULL. TL_OPTION_COMPLETE asks for the longest name that every option
- * starting with name shares. The callback returns a line that the hint rows
- * show until the next key, or the completed name, or NULL. The text stays
- * valid until the next call.
+ * starting with name shares, and TL_OPTION_LIST for those options, one per
+ * line. The callback returns a line that the hint rows show until the next
+ * key, the completed name, the list, or NULL. The text stays valid until the
+ * next call.
  */
 typedef const char *(*tl_option_fn)(tl_option_action action,
                                     const char      *name,
@@ -6504,6 +6506,108 @@ itl_prefix_append(char *out, size_t out_size, size_t *length, const char *text)
   out[*length] = '\0';
 }
 
+/* The option word of a colon command such as set editor.b or save mood, or
+   NULL when the command takes no option there or the word already holds a
+   value. A set word may carry a no prefix. */
+ITL_DEF const char *
+itl_vi_ex_option_word(const char *command)
+{
+  const char *word;
+
+  if (strncmp(command, "set ", 4) == 0) {
+    word = command + 4;
+  } else if (strncmp(command, "se ", 3) == 0) {
+    word = command + 3;
+  } else if (strncmp(command, "save ", 5) == 0) {
+    word = command + 5;
+  } else {
+    return NULL;
+  }
+  while (*word == ' ') {
+    word += 1;
+  }
+  if (strpbrk(word, "=? ") != NULL) {
+    return NULL;
+  }
+
+  return word;
+}
+
+/* Appends the options that start with prefix, as the host lists them, on rows
+   of at most 72 columns. Returns false when the host lists none. */
+ITL_DEF bool
+itl_option_list_rows(char       *out,
+                     size_t      out_size,
+                     size_t     *out_length,
+                     const char *prefix)
+{
+  const char *list;
+  const char *line;
+  size_t      row_columns = 0;
+
+  if (itl_g_option_callback == NULL) {
+    return false;
+  }
+  list = itl_g_option_callback(TL_OPTION_LIST, prefix, NULL);
+  if (list == NULL || list[0] == '\0') {
+    return false;
+  }
+  for (line = list; *line != '\0';) {
+    const char *line_end = strchr(line, '\n');
+    size_t      length   = line_end != NULL ? (size_t) (line_end - line)
+                                            : strlen(line);
+    char        name[128];
+
+    if (length > 0 && length < sizeof(name)) {
+      memcpy(name, line, length);
+      name[length] = '\0';
+      if (row_columns == 0 || row_columns + 2 + length > 72) {
+        itl_prefix_append(out, out_size, out_length,
+                          row_columns == 0 ? "\n" : ",\n");
+        row_columns = 0;
+      } else {
+        itl_prefix_append(out, out_size, out_length, ", ");
+        row_columns += 2;
+      }
+      itl_prefix_append(out, out_size, out_length, name);
+      row_columns += length;
+    }
+    if (line_end == NULL) {
+      break;
+    }
+    line = line_end + 1;
+  }
+
+  return true;
+}
+
+/* Completes the option word of a colon set or save command in text, keeping a
+   no prefix of a set word. Returns the length of text. */
+ITL_DEF size_t
+itl_vi_ex_complete_option(char *text, size_t text_size)
+{
+  const char *word = itl_vi_ex_option_word(text);
+  const char *completed;
+  size_t      word_start;
+
+  if (word == NULL || itl_g_option_callback == NULL) {
+    return strlen(text);
+  }
+  word_start = (size_t) (word - text);
+  completed  = itl_g_option_callback(TL_OPTION_COMPLETE, word, NULL);
+  if (completed == NULL && text[0] == 's' && text[1] == 'e' &&
+      strncmp(word, "no", 2) == 0)
+  {
+    word_start += 2;
+    completed = itl_g_option_callback(TL_OPTION_COMPLETE, word + 2, NULL);
+  }
+  if (completed != NULL && word_start + strlen(completed) < text_size) {
+    strcpy(text + word_start, completed);
+  }
+
+  return strlen(text);
+}
+
 /* Writes the M-x hint, which lists every command that starts with the text
    typed so far on rows of at most 72 columns. */
 ITL_DEF void
@@ -6567,6 +6671,21 @@ itl_prefix_hint(char *out, size_t out_size)
                       "ctrl-u (undo), z (repeat the last M-x command)");
     return true;
   }
+  if (itl_g_prefix_kind == ITL_PREFIX_VI_EX &&
+      itl_vi_ex_option_word(itl_g_minibuffer_text) != NULL)
+  {
+    const char *word = itl_vi_ex_option_word(itl_g_minibuffer_text);
+
+    itl_prefix_append(out, out_size, &out_length,
+                      "pressed :\nwaiting for an option, tab to complete it, "
+                      "then enter");
+    if (!itl_option_list_rows(out, out_size, &out_length, word) &&
+        strncmp(word, "no", 2) == 0)
+    {
+      (void) itl_option_list_rows(out, out_size, &out_length, word + 2);
+    }
+    return true;
+  }
   if (itl_g_prefix_kind == ITL_PREFIX_VI_EX) {
     itl_prefix_append(out, out_size, &out_length,
                       "pressed :\nwaiting for a command, then enter\n"
@@ -6586,6 +6705,10 @@ itl_prefix_hint(char *out, size_t out_size)
   }
   if (itl_g_prefix_kind == ITL_PREFIX_MINIBUFFER) {
     itl_prefix_append(out, out_size, &out_length, itl_g_minibuffer_hint);
+    if (itl_g_minibuffer_completes_options) {
+      (void) itl_option_list_rows(out, out_size, &out_length,
+                                  itl_g_minibuffer_text);
+    }
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_NONE && !is_vi_held) {
@@ -15982,6 +16105,8 @@ itl_minibuffer_read(itl_le_t       *le,
     case TL_KEY_TAB:
       if (kind == ITL_PREFIX_EMACS_X) {
         text_length = itl_emacs_complete(text, text_size);
+      } else if (kind == ITL_PREFIX_VI_EX) {
+        text_length = itl_vi_ex_complete_option(text, text_size);
       } else if (itl_g_minibuffer_completes_options &&
                  itl_g_option_callback != NULL)
       {

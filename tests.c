@@ -7731,10 +7731,15 @@ static const char *
 test_option_callback(tl_option_action action, const char *name,
                      const char *value)
 {
-  static const char *actions[] = {"set", "get", "save", "complete"};
+  static const char *actions[] = {"set", "get", "save", "complete", "list"};
 
   if (action == TL_OPTION_COMPLETE) {
     return strcmp(name, "editor.b") == 0 ? "editor.base_mode" : NULL;
+  }
+  if (action == TL_OPTION_LIST) {
+    return strncmp("editor.base_mode", name, strlen(name)) == 0
+               ? "editor.base_mode\neditor.hints"
+               : "";
   }
   snprintf(test_option_record, sizeof(test_option_record), "%s %s %s",
            actions[action], name != NULL ? name : "(all)",
@@ -7749,6 +7754,18 @@ test_option_message_is(const char *expected, const char *step)
   if (strcmp(itl_g_editor_message, expected) != 0) {
     printf("%s gave '%s', expected '%s'\n", step, itl_g_editor_message,
            expected);
+    return false;
+  }
+
+  return true;
+}
+
+static bool
+test_option_message_is_text(const char *text, const char *expected,
+                            const char *step)
+{
+  if (strcmp(text, expected) != 0) {
+    printf("%s gave '%s', expected '%s'\n", step, text, expected);
     return false;
   }
 
@@ -7773,6 +7790,26 @@ test_option_commands(void)
                                "save every option");
   ok &= strcmp(itl_g_option_callback(TL_OPTION_COMPLETE, "editor.b", NULL),
                "editor.base_mode") == 0;
+  {
+    char text[64];
+
+    strcpy(text, "set editor.b");
+    itl_vi_ex_complete_option(text, sizeof(text));
+    ok &= test_option_message_is_text(text, "set editor.base_mode",
+                                      "set completion");
+    strcpy(text, "set noeditor.b");
+    itl_vi_ex_complete_option(text, sizeof(text));
+    ok &= test_option_message_is_text(text, "set noeditor.base_mode",
+                                      "no prefix completion");
+    strcpy(text, "save editor.b");
+    itl_vi_ex_complete_option(text, sizeof(text));
+    ok &= test_option_message_is_text(text, "save editor.base_mode",
+                                      "save completion");
+    strcpy(text, "set editor.b=x");
+    itl_vi_ex_complete_option(text, sizeof(text));
+    ok &= test_option_message_is_text(text, "set editor.b=x",
+                                      "value left alone");
+  }
   tl_set_option_callback(NULL);
   itl_g_editor_message[0] = '\0';
 
