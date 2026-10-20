@@ -5463,6 +5463,8 @@ ITL_DEF ITL_THREAD_LOCAL uint64_t itl_g_menu_due_ms = 0;
 /* The grey of every secondary text the editor writes for itself, the ghost
    suggestion, a candidate description, and the menu rows. */
 #define ITL_DIM_SGR "\x1b[90m"
+/* The text typed into a minibuffer, in light green. */
+#define ITL_MINIBUFFER_SGR "\x1b[92m"
 
 /* Whether the colored parts of the editor output are written. The host clears
    it for a session that refuses color. */
@@ -5621,6 +5623,9 @@ ITL_DEF ITL_THREAD_LOCAL bool   itl_g_le_prev_spans_usable = false;
    The flag is set while the search block is on screen so the refresh draws
    those spans rather than highlighting the whole block as a command. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_search_spans_active = false;
+/* The index in the line where an open minibuffer row starts, or 0 when none
+   is open. The buffer before it keeps its syntax highlighting. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_minibuffer_row_start = 0;
 ITL_DEF ITL_THREAD_LOCAL tl_highlight_span
                                 itl_g_search_spans[ITL_HIGHLIGHT_MAX_SPANS];
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_search_span_count  = 0;
@@ -7159,12 +7164,29 @@ itl_le_tty_refresh(itl_le_t *le)
     itl_g_serialized_line_ready = false;
     if (itl_g_search_spans_active &&
         (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
-         itl_g_multicursor_active) &&
+         itl_g_multicursor_active || itl_g_minibuffer_row_start > 0) &&
         have_cur_render && itl_should_run_highlight())
     {
       size_t syntax_count = itl_le_collect_highlight(
           itl_cur_render, itl_syntax_spans, le->line->length,
           itl_le_cursor_byte_offset(le));
+
+      if (itl_g_minibuffer_row_start > 0) {
+        size_t kept_count = 0;
+        size_t i;
+
+        for (i = 0; i < syntax_count; ++i) {
+          if (itl_syntax_spans[i].start >= itl_g_minibuffer_row_start) {
+            continue;
+          }
+          itl_syntax_spans[kept_count] = itl_syntax_spans[i];
+          if (itl_syntax_spans[kept_count].end > itl_g_minibuffer_row_start) {
+            itl_syntax_spans[kept_count].end = itl_g_minibuffer_row_start;
+          }
+          kept_count += 1;
+        }
+        syntax_count = kept_count;
+      }
 
       span_count = itl_merge_visual_spans(
           itl_syntax_spans, syntax_count, itl_g_search_spans,
@@ -11590,7 +11612,9 @@ itl_menu_question_due_ms(const itl_menu_filter_state *state)
 /* Answer the line as it stands from the base list, and fall back to the source
    when the base cannot answer. The base holds every row the source offered for
    a shorter query. A line that only grew is narrowed without touching the host,
-   and an erase that keeps the gathered query widens it the same way. An erase
+   and an erase that keeps the gathered query widens it the same way. An empty
+   answer stays empty until the query grows long enough to match as a
+   subsequence. An erase
    below that query, a line with no local match, a source that keeps the best
    tier when the local best tier is not the one it answered with, and a base
    longer than one scan go on to the bases the menu gathered before, and then to
@@ -11613,10 +11637,17 @@ itl_menu_narrow(itl_le_t              *le,
       query_len >= state->query_len &&
       itl_ascii_prefix_matches_casefold(query, state->query, state->query_len))
   {
-    if (state->base.count == 0) {
+    /* An empty answer stays empty while the query grows, unless the longer
+       query is the first that may match as a subsequence. */
+    if (state->base.count == 0 &&
+        (itl_menu_query_allows_subsequence(state->query, state->query_len) ||
+         !itl_menu_query_allows_subsequence(query, query_len)))
+    {
       return false;
     }
-    if (state->base.count <= ITL_MENU_FILTER_SCAN_MAX) {
+    if (state->base.count > 0 &&
+        state->base.count <= ITL_MENU_FILTER_SCAN_MAX)
+    {
       if (itl_menu_filter_base(source, &state->base, state->base_tier, query,
                                query_len, result))
       {
@@ -15791,9 +15822,12 @@ itl_minibuffer_read(itl_le_t       *le,
 
     itl_string_from_bytes(display, status->data, status->size);
 
-    le->line                      = display;
-    le->cursor_position           = display->length;
-    itl_g_search_span_count       = 0;
+    le->line                   = display;
+    le->cursor_position        = display->length;
+    itl_g_minibuffer_row_start = display->length - text_length - label_length;
+    itl_g_search_span_count    = 0;
+    itl_search_push_span(display->length - text_length, display->length,
+                         ITL_MINIBUFFER_SGR);
     itl_g_search_spans_active     = true;
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
@@ -15843,9 +15877,10 @@ itl_minibuffer_read(itl_le_t       *le,
     }
   }
 
-  itl_g_prefix_kind     = ITL_PREFIX_NONE;
-  itl_g_minibuffer_text = "";
-  le->prompt            = saved_prompt;
+  itl_g_prefix_kind          = ITL_PREFIX_NONE;
+  itl_g_minibuffer_text      = "";
+  itl_g_minibuffer_row_start = 0;
+  le->prompt                 = saved_prompt;
   le->prompt_size       = saved_prompt_size;
   le->prompt_width      = saved_prompt_width;
   le->prompt_rows       = saved_prompt_rows;
