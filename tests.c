@@ -273,9 +273,7 @@ test_char_buf(void)
   itl_char_buf_append_cstr(cb, " ЛОЛ");
 
   /* null-terminate cb->data */
-  while (cb->capacity < cb->size + 1) {
-    itl_char_buf_extend(cb);
-  }
+  itl_char_buf_reserve(cb, cb->size + 1);
   cb->data[cb->size] = '\0';
 
   if (cb->size != strlen(should_be) || strcmp(should_be, cb->data) != 0) {
@@ -3563,7 +3561,9 @@ test_menu_filter_groups(void)
   base.descriptions = descriptions;
   base.count = countof(candidates);
 
-  if (!itl_menu_filter(NULL, &base, "al", 2, &result)) {
+  if (!itl_menu_narrow_ranked(&base, "al", 2, ITL_MENU_RANK_MODE_WHERE, 0,
+                              &result))
+  {
     TEST_PRINTF("a matching query kept nothing\n");
     return false;
   }
@@ -3590,12 +3590,14 @@ test_menu_filter_groups(void)
     return false;
   }
 
-  if (itl_menu_filter(NULL, &base, "zzq", 3, &result)) {
+  if (itl_menu_narrow_ranked(&base, "zzq", 3, ITL_MENU_RANK_MODE_WHERE, 0,
+                             &result))
+  {
     TEST_PRINTF("a query matching nothing kept %zu rows\n", result.count);
     return false;
   }
 
-  if (!itl_menu_filter(NULL, &base, "", 0, &result) ||
+  if (!itl_menu_narrow_ranked(&base, "", 0, ITL_MENU_RANK_MODE_WHERE, 0, &result) ||
       result.count != base.count)
   {
     TEST_PRINTF("an empty query kept %zu rows\n", result.count);
@@ -3617,7 +3619,7 @@ test_menu_filter_groups(void)
 
   base.descriptions = NULL;
 
-  if (!itl_menu_filter(NULL, &base, "al", 2, &result) ||
+  if (!itl_menu_narrow_ranked(&base, "al", 2, ITL_MENU_RANK_MODE_WHERE, 0, &result) ||
       result.descriptions != NULL)
   {
     TEST_PRINTF("a base without descriptions produced some\n");
@@ -3747,9 +3749,6 @@ test_menu_index_narrows_like_the_plain_scan(void)
   unsigned seed = 12345u;
   size_t round;
   bool ok = true;
-  itl_menu_index index;
-
-  memset(&index, 0, sizeof(index));
 
   for (round = 0; round < 40 && ok; ++round) {
     tl_completion base = ITL_ZERO_INIT;
@@ -3770,7 +3769,7 @@ test_menu_index_narrows_like_the_plain_scan(void)
     }
     base.candidates = candidates;
     base.count = count;
-    itl_menu_index_drop(&index);
+    itl_menu_index_drop(&itl_g_menu_index);
 
     for (trial = 0; trial < 12 && ok; ++trial) {
       char query[8];
@@ -3797,12 +3796,16 @@ test_menu_index_narrows_like_the_plain_scan(void)
         size_t at;
 
         if (mode == 0) {
-          is_kept = itl_menu_filter(&index, &base, query, query_len, &result);
+          is_kept = itl_menu_narrow_ranked(&base, query, query_len,
+                                           ITL_MENU_RANK_MODE_WHERE, 0,
+                                           &result);
         } else if (mode == 1) {
-          is_kept = itl_menu_filter_tier(&index, &base, query, query_len,
-                                         base_tier, &result);
+          is_kept = itl_menu_narrow_ranked(&base, query, query_len,
+                                           ITL_MENU_RANK_MODE_TIER, base_tier,
+                                           &result);
         } else {
-          is_kept = itl_menu_filter_prefix(&index, &base, query, query_len,
+          is_kept = itl_menu_narrow_ranked(&base, query, query_len,
+                                           ITL_MENU_RANK_MODE_PREFIX, 0,
                                            &result);
         }
 
@@ -3828,7 +3831,6 @@ test_menu_index_narrows_like_the_plain_scan(void)
     }
   }
 
-  itl_menu_index_free(&index);
 
   return ok;
 }

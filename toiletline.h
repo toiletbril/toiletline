@@ -761,8 +761,8 @@ tl_set_edit_mode(int mode);
 #define ITL_FILE_SEEK_END(file) ((long) lseek(file, (off_t) 0, SEEK_END))
 #define ITL_FILE_TELL(file)     ((long) lseek(file, (off_t) 0, SEEK_CUR))
 
-#define ITL_WRITE(fd, buf, size) write(fd, buf, (unsigned long) size)
-#define ITL_READ(fd, buf, size)  read(fd, buf, (unsigned long) size)
+#define ITL_WRITE(fd, buf, size) write(fd, buf, (unsigned long) (size))
+#define ITL_READ(fd, buf, size)  read(fd, buf, (unsigned long) (size))
 
 /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
 #define ITL_STRING_MAX_LEN       4095
@@ -822,10 +822,6 @@ ITL_READ_BYTE_RAW(void)
 #define ITL_ZERO_INIT {0}
 #endif /* ITL_C89 && __cplusplus */
 
-#if !defined __cplusplus
-#include <stdbool.h>
-#endif /* !__cplusplus */
-
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -835,11 +831,7 @@ ITL_READ_BYTE_RAW(void)
 #include <stdlib.h>
 #include <string.h>
 
-#if defined ITL_POSIX || defined ITL_SUSPEND
-#include <signal.h>
-#endif
-
-#define ITL_THREAD_LOCAL         __thread
+#define ITL_THREAD_LOCAL        __thread
 #define ITL_NO_RETURN            __attribute__((noreturn))
 #define ITL_MAYBE_UNUSED         __attribute__((unused))
 #define ITL_UNREACHABLE_INTRIN() __builtin_unreachable()
@@ -1766,6 +1758,18 @@ itl_utf8_parse(uint8_t first_byte)
     return itl_replacement_character;
   }
 
+  /* Overlong forms and codepoints past U+10FFFF are invalid, as in
+     itl_string_from_bytes. A line that holds one could not be stored. */
+  if ((size == 2 && first_byte < 0xC2) ||
+      (first_byte == 0xE0 && bytes[1] < 0xA0) ||
+      (first_byte == 0xF0 && bytes[1] < 0x90) || first_byte > 0xF4 ||
+      (first_byte == 0xF4 && bytes[1] >= 0x90))
+  {
+    ITL_TRACELN("Invalid UTF-8 codepoint range: '%02X %02X'\n", first_byte,
+                bytes[1]);
+    return itl_replacement_character;
+  }
+
 #if defined TL_DEBUG
   ITL_TRACELN("utf8 char size: %u\n", size);
   ITL_TRACELN("utf8 char bytes: '");
@@ -1975,7 +1979,7 @@ itl_utf8_decode_at(const char *text, size_t byte_length, itl_utf8_t *ch)
   uint8_t rune_width = itl_utf8_width((uint8_t) text[0]);
   uint8_t j;
 
-  if (rune_width == 0 || rune_width > sizeof ch->bytes ||
+  if (rune_width == 0 || rune_width > (int) sizeof ch->bytes ||
       (size_t) rune_width > byte_length)
   {
     return false;
@@ -2215,9 +2219,6 @@ itl_string_equal(const itl_string_t *str1, const itl_string_t *str2)
 
   if (str1->size != str2->size) {
     return false;
-  }
-  if (str1->size == 0) {
-    return true;
   }
 
   for (i = 0; i < str1->length && i < str2->length; ++i) {
@@ -3132,7 +3133,7 @@ itl_le_erase(itl_le_t *le, size_t count, bool backwards)
   itl_history_reset_after_edit(le);
   itl_undo_push_closed(le);
 
-  if (backwards && le->cursor_position) {
+  if (backwards) {
     itl_string_erase(le->line, le->cursor_position, count, true);
     itl_le_move_left(le, count);
 
@@ -3146,7 +3147,7 @@ itl_le_erase(itl_le_t *le, size_t count, bool backwards)
                          trim_count, true);
       }
     }
-  } else if (!backwards) {
+  } else {
     itl_string_erase(le->line, le->cursor_position, count, false);
   }
 
@@ -3257,7 +3258,7 @@ itl_string_steps_to_token(const itl_string_t *str,
     }
   }
 
-  ITL_TRACELN("mode: %d, steps: %zu", token_kind, steps);
+  ITL_TRACELN("mode: %d, steps: %zu\n", token_kind, steps);
 
   return steps;
 }
@@ -3529,13 +3530,6 @@ itl_char_buf_alloc(void)
 
 #define ITL_CHAR_BUF_REALLOC_CAPACITY(old_capacity) (old_capacity * 2)
 
-ITL_DEF void
-itl_char_buf_extend(itl_char_buf_t *cb)
-{
-  cb->capacity = ITL_CHAR_BUF_REALLOC_CAPACITY(cb->capacity);
-  cb->data     = (char *) itl_realloc(cb->data, cb->capacity);
-}
-
 /* Grow the buffer to hold at least needed bytes in one reallocation. A bulk
    load reserves up front rather than doubling through repeated appends. */
 ITL_DEF void
@@ -3766,9 +3760,7 @@ itl_char_buf_append_size_t(itl_char_buf_t *cb, size_t n)
 
   new_size = cb->size + data_len;
 
-  while (cb->capacity < new_size) {
-    itl_char_buf_extend(cb);
-  }
+  itl_char_buf_reserve(cb, new_size);
 
   /* Digits are put in reverse order */
   for (i = new_size; i > cb->size; --i) {
@@ -3784,9 +3776,7 @@ itl_char_buf_append_string(itl_char_buf_t *cb, const itl_string_t *str)
 {
   char *data;
 
-  while (cb->capacity < cb->size + str->size + 1) {
-    itl_char_buf_extend(cb);
-  }
+  itl_char_buf_reserve(cb, cb->size + str->size + 1);
 
   data = cb->data + (cb->size * sizeof(char));
   ITL_TRY(itl_string_to_cstr(str, data, str->size + 1) == TL_SUCCESS,
@@ -3799,9 +3789,7 @@ itl_char_buf_append_string(itl_char_buf_t *cb, const itl_string_t *str)
 ITL_DEF void
 itl_char_buf_append_byte(itl_char_buf_t *cb, uint8_t data)
 {
-  while (cb->capacity < cb->size + 1) {
-    itl_char_buf_extend(cb);
-  }
+  itl_char_buf_reserve(cb, cb->size + 1);
 
   cb->data[cb->size] = (char) data;
   cb->size += 1;
@@ -4311,6 +4299,15 @@ itl_history_offsets_shift(size_t removed_byte_count)
   itl_history_read_fd_invalidate();
 }
 
+/* Reports a byte that a text history file does not hold. The bytes are
+   classified without ctype, because a locale decides which of them are control
+   bytes and a history file has to read the same way everywhere. */
+ITL_DEF bool
+itl_history_is_binary_byte(uint8_t ch)
+{
+  return (ch < 0x20 && ch != '\t' && ch != '\v' && ch != '\f') || ch == 0x7f;
+}
+
 /* Scans the open file from the start, rebuilding the offset ring, the recorded
    file size, and the trailing-newline flag. Returns false on a read error or a
    non-text byte. Touches neither the path nor the draft. */
@@ -4375,10 +4372,7 @@ itl_history_scan_fd(ITL_FILE file)
         continue;
       }
 
-      /* Loaded a binary file on accident? The bytes are classified here without
-         ctype, because a locale decides which of them are control bytes and a
-         history file has to read the same way everywhere. */
-      if ((ch < 0x20 && ch != '\t' && ch != '\v' && ch != '\f') || ch == 0x7f) {
+      if (itl_history_is_binary_byte(ch)) {
         ITL_TRACELN("non-text byte '%X' detected in history file at offset "
                     "%zu\n",
                     (uint8_t) ch, file_pos);
@@ -4448,8 +4442,7 @@ itl_history_search_snapshot_scan(const char *contents, size_t size)
       continue;
     }
     if (ch == '\r') continue;
-    if ((ch < 0x20 && ch != '\t' && ch != '\v' && ch != '\f') || ch == 0x7f)
-      return false;
+    if (itl_history_is_binary_byte(ch)) return false;
   }
 
   return true;
@@ -4632,6 +4625,12 @@ itl_history_append_to_file(const itl_string_t *str,
   if (is_duplicate && !should_allow_duplicate) {
     itl_g_last_history_event_number = itl_g_history_total_count;
     return true;
+  }
+
+  /* An unterminated tail is scanned in the read buffer, which an empty
+     history has not loaded yet. */
+  if (!itl_g_history_ends_with_newline && !itl_history_ensure_read_buffer()) {
+    return false;
   }
 
   private_end =
@@ -4998,7 +4997,7 @@ itl_esc_parse_vt(uint8_t byte)
       case 'f': return TL_KEY_RIGHT | TL_MOD_CTRL;
 
       case 'd': return TL_KEY_DELETE | TL_MOD_CTRL;
-      case 'h': return TL_KEY_BACKSPACE | TL_MOD_CTRL;
+      case 'h':
       case 8:
       case 127: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
 
@@ -5050,7 +5049,7 @@ itl_esc_parse_win32(uint8_t byte)
 
   /* https://learn.microsoft.com/en-us/previous-versions/visualstudio/visual-studio-6.0/aa299374(v=vs.60)
    */
-  if (byte == 224 || byte == 0) { /* esc */
+  if (byte == 224 || byte == 0) { /* scan code lead */
     ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
 
     switch (byte) {
@@ -5109,8 +5108,8 @@ itl_esc_parse(uint8_t byte)
   case 1: return TL_KEY_HOME; /* ctrl a */
   case 5: return TL_KEY_END;  /* ctrl e */
 
-  case 2: return TL_KEY_LEFT;  /* ctrl f */
-  case 6: return TL_KEY_RIGHT; /* ctrl b */
+  case 2: return TL_KEY_LEFT;  /* ctrl b */
+  case 6: return TL_KEY_RIGHT; /* ctrl f */
 
   case 3:  return TL_KEY_INTERRUPT; /* ctrl c */
   case 4:  return TL_KEY_EOF;       /* ctrl d */
@@ -5428,7 +5427,7 @@ ITL_DEF ITL_THREAD_LOCAL int itl_g_supports_decorations = -1;
 /* Whether the terminal supports the 256-color set, read from COLORTERM naming
    truecolor or 24bit, or from TERM naming 256color or direct. The check is the
    environment heuristic modern tools rely on, since reading the terminfo
-   database would pull in a curses dependency shit does without. */
+   database would pull in a curses dependency. */
 ITL_DEF int
 itl_term_supports_256_color(void)
 {
@@ -5760,7 +5759,7 @@ itl_merge_visual_spans(const tl_highlight_span *syntax,
   return count;
 }
 
-/* $COLUMNS and $LINES, same as above. */
+/* The terminal size the previous refresh drew for. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_rows = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_prev_cols = 1;
 
@@ -6433,10 +6432,15 @@ itl_prefix_hint(char *out, size_t out_size)
     break;
   case ITL_PREFIX_VI_FIND:
     keys[keys_length++] = (char) itl_g_prefix_key;
-    waiting_for         = (itl_g_prefix_key == 'f') ? "a character to find"
-                          : (itl_g_prefix_key == 'F') ? "a character to find backward"
-                          : (itl_g_prefix_key == 't') ? "a character to stop before"
-                                                      : "a character to stop after";
+    if (itl_g_prefix_key == 'f') {
+      waiting_for = "a character to find";
+    } else if (itl_g_prefix_key == 'F') {
+      waiting_for = "a character to find backward";
+    } else if (itl_g_prefix_key == 't') {
+      waiting_for = "a character to stop before";
+    } else {
+      waiting_for = "a character to stop after";
+    }
     break;
   case ITL_PREFIX_VI_REPLACE:
     keys[keys_length++] = 'r';
@@ -8190,7 +8194,7 @@ itl_ghost_extends_completion_miss_plainly(const char *line_cstr,
 ITL_DEF void
 itl_ghost_record_completion_miss(const char *line_cstr, size_t line_byte_len)
 {
-  /* A line that ends in a blank asked about an empty word, which names
+  /* A line that ends in a blank asked about an empty word, which matches
      nothing, so its miss says nothing about the word typed next. */
   bool is_word_empty = line_byte_len == 0 ||
                        line_cstr[line_byte_len - 1] == ' ' ||
@@ -8219,72 +8223,71 @@ itl_ghost_fill_from_token_text(itl_le_t   *le,
                                size_t      token_start,
                                const char *text)
 {
+  size_t typed_len;
+  size_t skip_offset       = 0;
+  size_t skipped           = 0;
+  size_t suffix_len;
+  size_t token_start_bytes = 0;
+  size_t cp;
+  size_t typed_byte_len;
+  size_t text_byte_len;
+  bool   differs;
+
   if (text == NULL || token_start > le->line->length) {
     return;
   }
 
-  {
-    /* The token under the cursor runs from token_start to the end of the line.
-       Its length in codepoints is the line length minus the start. token_start
-       is a codepoint index. The replacement is measured in codepoints and then
-       walked to its byte offset. */
-    size_t typed_len = le->line->length - token_start;
-    size_t text_len  = tl_utf8_strlen(text);
-    if (text_len <= typed_len) {
-      return;
+  /* The token under the cursor runs from token_start to the end of the line.
+     Its length in codepoints is the line length minus the start. token_start is
+     a codepoint index. The replacement is measured in codepoints and then
+     walked to its byte offset. */
+  typed_len = le->line->length - token_start;
+  if (tl_utf8_strlen(text) <= typed_len) {
+    return;
+  }
+
+  /* Skip the typed codepoints to find where the untyped byte suffix begins,
+     since the bytes the user already typed are not part of the ghost. */
+  while (skipped < typed_len && text[skip_offset] != '\0') {
+    if ((text[skip_offset] & 0xC0) != 0x80) {
+      skipped += 1;
     }
+    skip_offset += 1;
+  }
+  /* A continuation byte that belongs to the last skipped codepoint must not
+     start the suffix, so advance past the whole codepoint. */
+  while (text[skip_offset] != '\0' && (text[skip_offset] & 0xC0) == 0x80) {
+    skip_offset += 1;
+  }
+
+  text_byte_len = strlen(text);
+  suffix_len    = text_byte_len - skip_offset;
+  if (suffix_len >= sizeof(itl_g_ghost)) {
+    return;
+  }
+  memcpy(itl_g_ghost, text + skip_offset, suffix_len);
+  itl_g_ghost[suffix_len] = '\0';
+  itl_g_ghost_len         = suffix_len;
+
+  for (cp = 0; cp < token_start && line_cstr[token_start_bytes] != '\0'; cp++) {
+    token_start_bytes += 1;
+    while (line_cstr[token_start_bytes] != '\0' &&
+           (line_cstr[token_start_bytes] & 0xC0) == 0x80)
     {
-      /* Skip the typed codepoints to find where the untyped byte suffix begins,
-         since the bytes the user already typed are not part of the ghost. */
-      size_t skip_offset = 0;
-      size_t skipped     = 0;
-      while (skipped < typed_len && text[skip_offset] != '\0') {
-        if ((text[skip_offset] & 0xC0) != 0x80) {
-          skipped += 1;
-        }
-        skip_offset += 1;
-      }
-      /* A continuation byte that belongs to the last skipped codepoint must not
-         start the suffix, so advance past the whole codepoint. */
-      while (text[skip_offset] != '\0' && (text[skip_offset] & 0xC0) == 0x80) {
-        skip_offset += 1;
-      }
-      size_t suffix_len = strlen(text + skip_offset);
-      if (suffix_len >= sizeof(itl_g_ghost)) {
-        return;
-      }
-      memcpy(itl_g_ghost, text + skip_offset, suffix_len);
-      itl_g_ghost[suffix_len] = '\0';
-      itl_g_ghost_len         = suffix_len;
-      {
-        size_t token_start_bytes = 0;
-        size_t cp;
-        for (cp = 0; cp < token_start && line_cstr[token_start_bytes] != '\0';
-             cp++)
-        {
-          token_start_bytes += 1;
-          while (line_cstr[token_start_bytes] != '\0' &&
-                 (line_cstr[token_start_bytes] & 0xC0) == 0x80)
-          {
-            token_start_bytes += 1;
-          }
-        }
-        {
-          size_t typed_byte_len = line_byte_len - token_start_bytes;
-          size_t text_byte_len  = strlen(text);
-          size_t fixed_len      = token_start_bytes + text_byte_len;
-          int    differs =
-              skip_offset != typed_byte_len ||
-              memcmp(text, line_cstr + token_start_bytes, typed_byte_len) != 0;
-          if (differs && fixed_len < sizeof(itl_g_ghost_sticky_target)) {
-            memcpy(itl_g_ghost_sticky_target, line_cstr, token_start_bytes);
-            memcpy(itl_g_ghost_sticky_target + token_start_bytes, text,
-                   text_byte_len + 1);
-            itl_g_ghost_should_replace_line = true;
-          }
-        }
-      }
+      token_start_bytes += 1;
     }
+  }
+
+  typed_byte_len = line_byte_len - token_start_bytes;
+  differs        = skip_offset != typed_byte_len ||
+            memcmp(text, line_cstr + token_start_bytes, typed_byte_len) != 0;
+  if (differs &&
+      token_start_bytes + text_byte_len < sizeof(itl_g_ghost_sticky_target))
+  {
+    memcpy(itl_g_ghost_sticky_target, line_cstr, token_start_bytes);
+    memcpy(itl_g_ghost_sticky_target + token_start_bytes, text,
+           text_byte_len + 1);
+    itl_g_ghost_should_replace_line = true;
   }
 }
 
@@ -8388,8 +8391,7 @@ itl_ghost_fill_from_history(const char *line_cstr, size_t line_byte_len)
       continue;
     }
     /* The host vets the entry before it becomes the suggestion, so a command
-       that no longer resolves is skipped and the scan keeps looking, the way
-       fish validates its autosuggestions. */
+       that no longer resolves is skipped and the scan keeps looking. */
     if (itl_g_ghost_validate_callback != NULL &&
         !itl_g_ghost_validate_callback(entry_cstr))
     {
@@ -8611,13 +8613,14 @@ itl_completion_print_list(const tl_completion *result, size_t anchor)
   }
 
   /* With descriptions the list is one candidate per line, the description
-     dimmed in a column after the name, the way fish shows them. Without them
-     the names pack into columns. */
+     dimmed in a column after the name. Without them the candidates pack into
+     columns. */
   if (result->descriptions != NULL) {
     /* The room left for a description after the name column, so a long one
        wraps onto continuation lines instead of running off the terminal. The
        wrap width is held to 80 columns even on a wider terminal so a line stays
-       readable, and a little room is kept even when the names are very wide. */
+       readable, and a little room is kept even when the name column is very
+       wide. */
     size_t wrap_cols = tty_cols < 80 ? tty_cols : 80;
     size_t desc_room =
         wrap_cols > column_width + 1 ? wrap_cols - column_width : 20;
@@ -8650,7 +8653,9 @@ itl_completion_print_list(const tl_completion *result, size_t anchor)
           while (*p != '\0' && *p != ' ' && *p != '\t')
             p++;
           word_len = (size_t) (p - word);
-          if (line_len > 0 && line_len + 1 + word_len > desc_room) {
+          if (line_len > 0 &&
+              line_len + 1 + itl_visible_width(word, word_len) > desc_room)
+          {
             size_t k;
             itl_char_buf_append_cstr(b, ITL_LF);
             for (k = 0; k < anchor + column_width; ++k)
@@ -8718,10 +8723,9 @@ itl_completion_replace_token(itl_le_t            *le,
   size_t remaining_size;
   size_t position;
 
-  /* A host callback can return a span off the end of the line or inverted, the
-     same off-by-one the highlight path validates and drops. Clamp both ends to
-     the line and ignore the completion otherwise, so a bad span never traps the
-     shift assert inside itl_string_insert. */
+  /* A host callback can return a span off the end of the line or inverted. The
+     end is clamped to the line and the completion is ignored otherwise, so a
+     bad span never traps the shift assert inside itl_string_insert. */
   if (token_start > line_length) {
     return false;
   }
@@ -9107,7 +9111,7 @@ itl_menu_is_directory_name(const char *name)
 /* Draw one candidate. The name keeps a fixed column when a description follows
    it. Every description starts at the same offset, and a row without one ends
    right after the name. The selected row reverses only the displayed entry.
-   A source that asked for highlighting has its names colored by the host. The
+   A source that asked for highlighting has its entries colored by the host. The
    selected row stays plain. Reverse video already marks it, and the ghost
    preview shows it colored on the line above. */
 ITL_DEF void
@@ -9247,8 +9251,8 @@ itl_menu_append_elided(itl_char_buf_t *b,
 }
 
 /* Lay the help text out over rows of at most width columns, and draw it when b
-   is not null. The phrase naming the active source and the keys it answers
-   read as one list of items split at the item separator, and a row breaks only
+   is not null. The phrase for the active source and the keys it answers form
+   one list of items split at the item separator, and a row breaks only
    between two items. Every row opens with the row prefix, carries the dim of
    every other secondary text, and starts at the anchor column. An item wider
    than a row is cut and ends in an ellipsis. Items past max_rows are dropped.
@@ -9709,25 +9713,32 @@ itl_idle_arm(void)
                           : itl_monotonic_ms() + (uint64_t) itl_g_idle_delay_ms;
 }
 
+/* The milliseconds from now until due_ms, zero when it has passed, capped at
+   INT_MAX. */
+ITL_DEF int
+itl_ms_until(uint64_t due_ms)
+{
+  uint64_t now_ms = itl_monotonic_ms();
+
+  if (now_ms >= due_ms) {
+    return 0;
+  }
+  if (due_ms - now_ms > (uint64_t) INT_MAX) {
+    return INT_MAX;
+  }
+  return (int) (due_ms - now_ms);
+}
+
 /* The wait the input loop may spend before the idle hook is due, or -1 when no
    call is due. */
 ITL_DEF int
 itl_idle_wait_ms(void)
 {
-  uint64_t now_ms;
-
   if (itl_g_idle_due_ms == 0 || itl_g_idle_callback == NULL) {
     return -1;
   }
 
-  now_ms = itl_monotonic_ms();
-  if (now_ms >= itl_g_idle_due_ms) {
-    return 0;
-  }
-  if (itl_g_idle_due_ms - now_ms > (uint64_t) INT_MAX) {
-    return INT_MAX;
-  }
-  return (int) (itl_g_idle_due_ms - now_ms);
+  return itl_ms_until(itl_g_idle_due_ms);
 }
 
 /* The wait a caller that returns on a redraw may spend. A menu waits for the
@@ -9736,8 +9747,6 @@ itl_idle_wait_ms(void)
 ITL_DEF int
 itl_wait_budget_ms(bool should_return_on_redraw)
 {
-  uint64_t now_ms;
-
   if (!should_return_on_redraw || itl_g_idle_is_load_poll) {
     return itl_idle_wait_ms();
   }
@@ -9745,14 +9754,7 @@ itl_wait_budget_ms(bool should_return_on_redraw)
     return -1;
   }
 
-  now_ms = itl_monotonic_ms();
-  if (now_ms >= itl_g_menu_due_ms) {
-    return 0;
-  }
-  if (itl_g_menu_due_ms - now_ms > (uint64_t) INT_MAX) {
-    return INT_MAX;
-  }
-  return (int) (itl_g_menu_due_ms - now_ms);
+  return itl_ms_until(itl_g_menu_due_ms);
 }
 
 /* Call the idle hook once for the line as it stands. A refresh that asks only
@@ -10366,10 +10368,6 @@ itl_history_menu_gather(itl_le_t *le, tl_completion *result)
   return true;
 }
 
-/* Show the highlighted candidate as ghost text on the line the menu opened on.
-   The line above the rows reads as the line that accepting it produces. The
-   ghost only appends. A candidate that does not extend the typed token leaves
-   the line bare. */
 /* True when name opens with the typed token in either case, so the ghost of
    its rest reads as the name. A row matched elsewhere in its text, such as a
    subsequence, would draw the typed bytes followed by a suffix that does not
@@ -10402,6 +10400,10 @@ itl_menu_name_extends_token(const itl_le_t *le,
    dim text after the space would read as the word inserted again. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_menu_is_next_word = false;
 
+/* Show the highlighted candidate as ghost text on the line the menu opened on.
+   The line above the rows reads as the line that accepting it produces. The
+   ghost only appends. A candidate that does not extend the typed token leaves
+   the line bare. */
 ITL_DEF void
 itl_menu_ghost_preview(itl_le_t            *le,
                        const tl_completion *result,
@@ -10683,21 +10685,19 @@ typedef enum itl_menu_rank_mode
   ITL_MENU_RANK_MODE_PREFIX
 } itl_menu_rank_mode;
 
-/* Narrow the base with the index: drop the rows missing a byte class of the
-   query, rank the rest by the mode, and keep the rows of the wanted ranks. A
-   NULL index indexes the base for this call alone. Returns false when no row is
-   kept, and in tier mode when the best tier is not base_tier. */
+/* Narrow the base with the shared index: drop the rows missing a byte class of
+   the query, rank the rest by the mode, and keep the rows of the wanted ranks.
+   Returns false when no row is kept, and in tier mode when the best tier is not
+   base_tier. */
 ITL_DEF bool
-itl_menu_narrow_ranked(itl_menu_index      *shared,
-                       const tl_completion *base,
+itl_menu_narrow_ranked(const tl_completion *base,
                        const char          *query,
                        size_t               query_len,
                        itl_menu_rank_mode   mode,
                        unsigned             base_tier,
                        tl_completion       *result)
 {
-  itl_menu_index  local;
-  itl_menu_index *index  = shared;
+  itl_menu_index *index  = &itl_g_menu_index;
   bool is_case_sensitive = itl_menu_query_is_case_sensitive(query, query_len);
   unsigned      best     = ITL_MENU_TIER_NONE;
   size_t        base_scanned = base->count < ITL_MENU_FILTER_SCAN_MAX
@@ -10706,11 +10706,6 @@ itl_menu_narrow_ranked(itl_menu_index      *shared,
   tl_completion scanned      = *base;
   bool          is_kept;
   size_t        position;
-
-  if (index == NULL) {
-    memset(&local, 0, sizeof(local));
-    index = &local;
-  }
 
   scanned.count = base_scanned;
   itl_menu_index_prepare(index, &scanned);
@@ -10748,10 +10743,6 @@ itl_menu_narrow_ranked(itl_menu_index      *shared,
                                   ITL_MENU_RANK_PREFIX + 1, result);
   } else {
     is_kept = itl_menu_keep_ranks(index, base, 0, ITL_MENU_RANK_NONE, result);
-  }
-
-  if (index == &local) {
-    itl_menu_index_free(&local);
   }
 
   return is_kept;
@@ -10921,56 +10912,15 @@ itl_menu_query_text(itl_le_t            *le,
   return true;
 }
 
-/* Narrow the base list to the entries the query matches and hand the rows to
-   the menu. The groups are drawn best match first and each group keeps the
-   order the base gave it. The token span of the result is left alone. Returns
-   false when nothing matches. */
-ITL_DEF bool
-itl_menu_filter(itl_menu_index      *index,
-                const tl_completion *base,
-                const char          *query,
-                size_t               query_len,
-                tl_completion       *result)
-{
-  return itl_menu_narrow_ranked(index, base, query, query_len,
-                                ITL_MENU_RANK_MODE_WHERE, 0, result);
-}
-
-/* Narrow the base list the way a completion host answers the query, keeping
-   only the rows of the best tier. The host offered only the rows of
-   base_tier for its own query, so a narrowing whose best tier differs would
-   miss rows the base never held. Returns false then and when nothing
-   matches. */
-ITL_DEF bool
-itl_menu_filter_tier(itl_menu_index      *index,
-                     const tl_completion *base,
-                     const char          *query,
-                     size_t               query_len,
-                     unsigned             base_tier,
-                     tl_completion       *result)
-{
-  return itl_menu_narrow_ranked(index, base, query, query_len,
-                                ITL_MENU_RANK_MODE_TIER, base_tier, result);
-}
-
-/* Narrow a list the host did not rank to the entries that open with the query
-   in either case, in the order the base gave them. Every such row stays, since
-   the host may offer any of them for the longer query. Returns false when
-   nothing matches. */
-ITL_DEF bool
-itl_menu_filter_prefix(itl_menu_index      *index,
-                       const tl_completion *base,
-                       const char          *query,
-                       size_t               query_len,
-                       tl_completion       *result)
-{
-  return itl_menu_narrow_ranked(index, base, query, query_len,
-                                ITL_MENU_RANK_MODE_PREFIX, 0, result);
-}
-
-/* Narrow a base list the way its source answers a longer query. A host that
-   ranked the list by tiers keeps the best one, a host that did not keeps every
-   row the query opens, and any other source ranks by where the query sits. */
+/* Narrow a base list the way its source answers a longer query and hand the
+   rows to the menu. The token span of the result is left alone. A host that
+   ranked the list by tiers keeps only the rows of the best tier. It offered
+   only the rows of base_tier for its own query, so a narrowing whose best tier
+   differs would miss rows the base never held. A host that did not rank keeps
+   every row the query opens in either case, in the order the base gave them,
+   since the host may offer any of them for the longer query. Any other source
+   draws the rows best match first, each group in the order the base gave it.
+   Returns false when nothing matches. */
 ITL_DEF bool
 itl_menu_filter_base(const itl_menu_source *source,
                      const tl_completion   *base,
@@ -10979,15 +10929,14 @@ itl_menu_filter_base(const itl_menu_source *source,
                      size_t                 query_len,
                      tl_completion         *result)
 {
-  if (!source->should_keep_best_tier) {
-    return itl_menu_filter(&itl_g_menu_index, base, query, query_len, result);
-  }
-  if (base->is_tier_ranked) {
-    return itl_menu_filter_tier(&itl_g_menu_index, base, query, query_len,
-                                base_tier, result);
+  itl_menu_rank_mode mode = ITL_MENU_RANK_MODE_WHERE;
+
+  if (source->should_keep_best_tier) {
+    mode = base->is_tier_ranked ? ITL_MENU_RANK_MODE_TIER
+                                : ITL_MENU_RANK_MODE_PREFIX;
   }
 
-  return itl_menu_filter_prefix(&itl_g_menu_index, base, query, query_len,
+  return itl_menu_narrow_ranked(base, query, query_len, mode, base_tier,
                                 result);
 }
 
@@ -11255,9 +11204,9 @@ itl_menu_cache_store(const itl_le_t              *le,
   itl_g_menu_cache[slot] = fresh;
 }
 
-/* Make a copy the base the narrowing reads and answer the typed text from it.
-   Returns false when the copy has no row for the text and the source must be
-   asked. */
+/* Make a cached entry the base the narrowing reads and answer the typed text
+   from it. Returns false when the entry has no row for the text and the source
+   must be asked. */
 ITL_DEF bool
 itl_menu_cache_apply(const itl_le_t        *le,
                      const itl_menu_source *source,
@@ -14515,17 +14464,27 @@ ITL_DEF void
 itl_vi_do_replace(itl_le_t *le, itl_utf8_t ch, size_t count)
 {
   size_t i;
+  size_t new_size = le->line->size;
 
-  if (le->cursor_position + count > le->line->length) {
+  if (count == 0 || le->cursor_position + count > le->line->length) {
+    return;
+  }
+
+  /* A wider replacement can grow the line past the output buffer. */
+  for (i = 0; i < count; ++i) {
+    new_size = new_size - le->line->chars[le->cursor_position + i].size +
+               ch.size;
+  }
+  if (new_size >= le->out_size) {
     return;
   }
 
   itl_undo_push_closed(le);
 
   for (i = 0; i < count; ++i) {
-    itl_string_erase(le->line, le->cursor_position + i, 1, false);
-    itl_string_insert(le->line, le->cursor_position + i, ch);
+    le->line->chars[le->cursor_position + i] = ch;
   }
+  le->line->size = new_size;
 
   le->cursor_position += count - 1;
 }
@@ -15217,7 +15176,8 @@ itl_emacs_multicursor_loop(itl_le_t *le)
       continue;
     }
 
-    if (kind == TL_KEY_CHAR) {
+    /* An Alt-modified key arrives with its escape byte, which is not text. */
+    if (key == TL_KEY_CHAR) {
       itl_utf8_t ch        = itl_utf8_parse(byte);
       size_t     row_count = bottom_line - top_line + 1;
 
@@ -15350,7 +15310,8 @@ itl_vi_ex_command(itl_le_t *le)
       break;
 
     case TL_KEY_CHAR:
-      if (command_length < sizeof(command) - 1) {
+      /* An Alt-modified key arrives with its escape byte, which is not text. */
+      if (key == TL_KEY_CHAR && command_length < sizeof(command) - 1) {
         command[command_length++] = (char) byte;
         command[command_length]   = '\0';
       }
@@ -15580,10 +15541,17 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
 
   case 'r': {
     uint8_t replace_byte;
-    if (itl_le_await_chord(le, ITL_PREFIX_VI_REPLACE, byte) &&
-        ITL_READ_BYTE(&replace_byte) &&
-        le->cursor_position + count <= le->line->length)
+    if (!itl_le_await_chord(le, ITL_PREFIX_VI_REPLACE, byte) ||
+        !ITL_READ_BYTE(&replace_byte))
     {
+      break;
+    }
+    /* An escape cancels, and the rest of its key sequence is consumed. */
+    if (replace_byte == 27) {
+      (void) itl_esc_parse(replace_byte);
+      break;
+    }
+    if (le->cursor_position + count <= le->line->length) {
       itl_utf8_t ch                     = itl_utf8_parse(replace_byte);
       itl_g_vi_last_change.kind         = ITL_VI_CHANGE_REPLACE;
       itl_g_vi_last_change.replace_char = ch;
