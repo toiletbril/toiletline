@@ -86,6 +86,10 @@ extern "C"
 #define ITL_DEF static
 #endif /* !ITL_DEF */
 
+/* The longest line in bytes may be set with TL_STRING_MAX_LEN, which defaults
+ * to 4095 on POSIX and 8191 on Windows. Every line buffer and several stack
+ * buffers take this size. */
+
 /* Max size of in-memory history, must be a power of 2. */
 #if !defined TL_HISTORY_MAX_SIZE
 #define TL_HISTORY_MAX_SIZE (256)
@@ -755,7 +759,11 @@ tl_set_edit_mode(int mode);
 
 /* <https://learn.microsoft.com/en-US/troubleshoot/windows-client/shell-experience/command-line-string-limitation>
  */
+#if defined TL_STRING_MAX_LEN
+#define ITL_STRING_MAX_LEN TL_STRING_MAX_LEN
+#else
 #define ITL_STRING_MAX_LEN 8191
+#endif
 
 #if !defined ITL_TTY_IS_TTY
 #define ITL_TTY_IS_TTY() ITL_ISATTY(STDIN_FILENO)
@@ -797,7 +805,11 @@ tl_set_edit_mode(int mode);
 #define ITL_READ(fd, buf, size)  read(fd, buf, (unsigned long) (size))
 
 /* <https://man7.org/linux/man-pages/man3/termios.3.html> */
-#define ITL_STRING_MAX_LEN       4095
+#if defined TL_STRING_MAX_LEN
+#define ITL_STRING_MAX_LEN TL_STRING_MAX_LEN
+#else
+#define ITL_STRING_MAX_LEN 4095
+#endif
 
 #if !defined ITL_TTY_IS_TTY
 #define ITL_TTY_IS_TTY() ITL_ISATTY(STDIN_FILENO)
