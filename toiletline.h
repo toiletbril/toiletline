@@ -169,6 +169,8 @@ typedef enum
   TL_KEY_EXECUTE_COMMAND,
   /* Ctrl-X Z runs the last M-x command again in emacs mode. */
   TL_KEY_REPEAT,
+  /* Ctrl-X Ctrl-C leaves the shell in emacs mode, as M-x kill-kosh does. */
+  TL_KEY_QUIT,
 
   /* Reported when a bracketed paste sequence begins. Handled internally. */
   TL_KEY_PASTE_BEGIN
@@ -5161,6 +5163,7 @@ itl_esc_parse_ctrl_x(void)
   case 5:   return TL_KEY_EDIT_EXTERNAL; /* ctrl e */
   case 21:  return TL_KEY_UNDO;          /* ctrl u */
   case 'z': return TL_KEY_REPEAT;
+  case 3:   return TL_KEY_QUIT; /* ctrl c */
   }
 
   /* The chord is not bound, so the byte starts the next key and an arrow after
@@ -6689,7 +6692,8 @@ itl_prefix_hint(char *out, size_t out_size)
   if (itl_g_prefix_kind == ITL_PREFIX_CTRL_X) {
     itl_prefix_append(out, out_size, &out_length,
                       "pressed ctrl-x\nwaiting for ctrl-e (edit in $VISUAL), "
-                      "ctrl-u (undo), z (repeat the last M-x command)");
+                      "ctrl-u (undo), z (repeat the last M-x command), "
+                      "ctrl-c (leave the shell)");
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_VI_EX &&
@@ -13542,6 +13546,13 @@ itl_le_key_handle(itl_le_t *le, int esc)
     }
     itl_g_tty_should_refresh_text = false;
     break;
+
+  case TL_KEY_QUIT:
+    if (itl_g_edit_mode == TL_EDIT_MODE_EMACS) {
+      return TL_PRESSED_QUIT;
+    }
+    itl_g_tty_should_refresh_text = false;
+    break;
   }
 
   return TL_SUCCESS;
@@ -17040,6 +17051,10 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
     /* Ctrl-X waits for its chord in the editor's own wait, so the hint rows can
        name the chord and a resize or the idle hook is still served. The parser
        then reads the chord, and an unbound key starts the next key. */
+    /* Ctrl-X chords belong to emacs mode, so vi mode ignores the key. */
+    if (input_byte == 24 && itl_g_edit_mode != TL_EDIT_MODE_EMACS) {
+      continue;
+    }
     if (input_byte == 24 && !itl_le_await_chord(le, ITL_PREFIX_CTRL_X, 24)) {
       return TL_ERROR;
     }

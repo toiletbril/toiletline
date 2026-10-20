@@ -8241,7 +8241,7 @@ test_prefix_hint_names_the_waiting_keys(void)
   itl_g_prefix_kind = ITL_PREFIX_CTRL_X;
   ok &= test_hint_is("  pressed ctrl-x\n  waiting for ctrl-e (edit in "
                      "$VISUAL), ctrl-u (undo), z (repeat the last M-x "
-                     "command)",
+                     "command), ctrl-c (leave the shell)",
                      200, "ctrl-x");
   ok &= test_hint_is("  pressed ctrl-x\n  waiting for ctrl-e (edit\n"
                      "  in $VISUAL), ctrl-u\n  (undo), z (repeat the...",
