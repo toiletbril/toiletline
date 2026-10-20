@@ -5300,6 +5300,14 @@ itl_esc_parse(uint8_t byte)
 }
 
 ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_char_buffer = ITL_ZERO_INIT;
+/* Receives the bytes of rows outside the window of a block taller than the
+   terminal, so the render loop keeps its column accounting without drawing
+   them. */
+ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_view_discard = ITL_ZERO_INIT;
+/* The block row at the top of the window while the block is taller than the
+   terminal, and whether the last frame drew such a window. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_view_top_row   = 0;
+ITL_DEF ITL_THREAD_LOCAL bool   itl_g_view_is_active = false;
 ITL_DEF ITL_THREAD_LOCAL bool           itl_g_tty_is_dumb = true;
 
 ITL_DEF int
@@ -6609,6 +6617,87 @@ itl_le_tty_break_line(itl_char_buf_t *b,
   return indent;
 }
 
+/* The rows a block taller than the terminal shows at once. Two rows stay free
+   for the hint rows under it. */
+ITL_DEF size_t
+itl_le_view_rows(size_t tty_rows)
+{
+  return tty_rows > 3 ? tty_rows - 2 : 1;
+}
+
+/* Reports whether the block could be taller than view_rows, from a bound that
+   counts every newline and every wrap a double-width glyph could cause. The
+   metrics pass runs only when this holds. */
+ITL_DEF bool
+itl_le_may_exceed_view(const itl_le_t *le, size_t cols, size_t view_rows)
+{
+  size_t newline_count = 0;
+  size_t i;
+
+  if (itl_g_view_is_active) return true;
+  /* Every codepoint could be a newline, so this bound needs no scan. */
+  if (le->prompt_rows + 2 + le->line->length + (2 * le->line->length) / cols <=
+      view_rows)
+  {
+    return false;
+  }
+  for (i = 0; i < le->line->length; ++i) {
+    if (ITL_LE_IS_NEWLINE(le->line->chars[i])) {
+      newline_count += 1;
+    }
+  }
+
+  return le->prompt_rows + newline_count + 1 + (2 * le->line->length) / cols +
+             1 >
+         view_rows;
+}
+
+/* Breaks the row like itl_le_tty_break_line, or like itl_le_tty_break_row when
+   line_number is 0, while only the rows from view_top up to view_end reach b.
+   The first row of the window starts without a line feed at the top of the
+   block, and a span still open there is opened again. */
+ITL_DEF size_t
+itl_le_tty_view_break(itl_char_buf_t *b,
+                      bool            is_span_open,
+                      bool            should_suppress_pad,
+                      const char     *open_sgr,
+                      size_t          indent,
+                      size_t         *row,
+                      size_t          line_number,
+                      size_t          view_top,
+                      size_t          view_end)
+{
+  itl_char_buf_t *discard = &itl_g_view_discard;
+  size_t          next    = *row + 1;
+  size_t          lf_size = strlen(ITL_LF);
+  size_t          col;
+
+  if (next > view_top && next < view_end) {
+    return line_number > 0
+               ? itl_le_tty_break_line(b, is_span_open, should_suppress_pad,
+                                       open_sgr, indent, row, line_number)
+               : itl_le_tty_break_row(b, is_span_open, should_suppress_pad,
+                                      open_sgr, indent, row);
+  }
+
+  ITL_CHAR_BUF_CLEAR(discard);
+  col = line_number > 0
+            ? itl_le_tty_break_line(discard, is_span_open, should_suppress_pad,
+                                    open_sgr, indent, row, line_number)
+            : itl_le_tty_break_row(discard, is_span_open, should_suppress_pad,
+                                   open_sgr, indent, row);
+  if (next == view_top && discard->size >= lf_size) {
+    itl_char_buf_append_bytes(b, discard->data + lf_size,
+                              discard->size - lf_size);
+    if (is_span_open) {
+      itl_char_buf_append_cstr(b, open_sgr);
+    }
+  }
+  ITL_CHAR_BUF_CLEAR(discard);
+
+  return col;
+}
+
 /* Draw the ghost suggestion dimmed after the line. It is shown only when the
    cursor sits at the very end of the buffer and the suggestion fits on the
    current row without wrapping, so it never pushes a line break and the
@@ -7422,6 +7511,46 @@ itl_le_tty_refresh(itl_le_t *le)
   cols   = ITL_MAX(tty_cols, 1);
   indent = ITL_LE_INDENT(le, cols);
 
+  /* A block taller than the terminal shows a window of rows that keeps the
+     caret in view, and every frame of it is a full redraw of that window. */
+  bool   was_view_active = itl_g_view_is_active;
+  bool   is_view_active  = false;
+  size_t view_rows       = itl_le_view_rows(tty_rows);
+  size_t view_top        = 0;
+  size_t view_end        = (size_t) -1;
+  if (itl_le_may_exceed_view(le, cols, view_rows)) {
+#if !defined NDEBUG
+    itl_g_debug_metrics_scan_count += 1;
+#endif
+    m                = itl_le_compute_metrics(le, tty_cols);
+    is_metrics_ready = true;
+    if (m.total_rows > view_rows) {
+      is_view_active = true;
+      view_top       = itl_g_view_top_row;
+      if (m.cursor_row < view_top) {
+        view_top = m.cursor_row;
+      } else if (m.cursor_row >= view_top + view_rows) {
+        view_top = m.cursor_row - view_rows + 1;
+      }
+      if (view_top > m.total_rows - view_rows) {
+        view_top = m.total_rows - view_rows;
+      }
+      /* The prompt is drawn only with the top of the block. */
+      if (view_top <= le->prompt_rows) {
+        view_top = 0;
+      }
+      view_end                      = view_top + view_rows;
+      itl_g_tty_should_refresh_text = true;
+    }
+    /* The stored geometry of a window does not match a block that fits again,
+       so leaving the window redraws everything. */
+    if (was_view_active) {
+      itl_g_tty_should_refresh_text = true;
+    }
+  }
+  itl_g_view_top_row   = view_top;
+  itl_g_view_is_active = is_view_active;
+
   tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
   size_t            span_count = 0;
 
@@ -7468,8 +7597,10 @@ itl_le_tty_refresh(itl_le_t *le)
     }
   }
 
-  if (itl_g_tty_plain_append_pending && !is_resize && !itl_g_tty_first_render &&
-      itl_g_le_prev_cursor_at_end &&
+  if (is_metrics_ready) {
+    /* The window check above already measured the block. */
+  } else if (itl_g_tty_plain_append_pending && !is_resize &&
+             !itl_g_tty_first_render && itl_g_le_prev_cursor_at_end &&
       itl_g_le_prev_cursor_col + itl_g_tty_plain_append_width < cols)
   {
     m.total_rows     = itl_g_le_prev_total_rows;
@@ -7643,7 +7774,11 @@ itl_le_tty_refresh(itl_le_t *le)
   ITL_TTY_AUTOWRAP_OFF(b);
 
   if (itl_g_tty_should_refresh_text) {
-    if (is_resize) {
+    if (is_resize && (was_view_active || is_view_active)) {
+      /* A window fills the screen, so a resize starts over from the top-left
+         corner of a cleared screen. */
+      itl_char_buf_append_cstr(b, "\x1b[H\x1b[2J");
+    } else if (is_resize) {
       /* The terminal reflowed the previous render and the stored row counts are
          stale. The cursor sits on the caret's reflowed row. Step up by the
          reflowed rows above it to reach the block top, then clear everything
@@ -7676,7 +7811,7 @@ itl_le_tty_refresh(itl_le_t *le)
     }
     itl_hint_forget_shown();
 
-    if (le->prompt != NULL) {
+    if (le->prompt != NULL && view_top == 0) {
       /* A prompt at or past the terminal width renders as the ellipsis
          marker and its tail, the same cut the indent math uses, so the
          render and the cursor accounting agree. */
@@ -7711,7 +7846,14 @@ itl_le_tty_refresh(itl_le_t *le)
       itl_char_buf_append_cstr(b, itl_flash_sgr_on());
     }
     for (i = 0; i < le->line->length; ++i) {
-      itl_utf8_t ch = le->line->chars[i];
+      itl_utf8_t      ch  = le->line->chars[i];
+      itl_char_buf_t *out = row >= view_top && row < view_end
+                                ? b
+                                : &itl_g_view_discard;
+
+      if (out != b) {
+        ITL_CHAR_BUF_CLEAR(out);
+      }
 
       if (!is_metrics_ready && i == le->cursor_position) {
         m.cursor_row = row;
@@ -7720,13 +7862,13 @@ itl_le_tty_refresh(itl_le_t *le)
 
       if (!itl_g_tty_flash_active) {
         if (in_span && i == open_end) {
-          itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+          itl_char_buf_append_cstr(out, ITL_HIGHLIGHT_RESET);
           in_span = false;
         }
         if (!in_span && next_span < span_count &&
             i == itl_spans[next_span].start)
         {
-          itl_char_buf_append_cstr(b, itl_spans[next_span].sgr);
+          itl_char_buf_append_cstr(out, itl_spans[next_span].sgr);
           in_span  = true;
           open_end = itl_spans[next_span].end;
           open_sgr = itl_spans[next_span].sgr;
@@ -7740,8 +7882,8 @@ itl_le_tty_refresh(itl_le_t *le)
            space is drawn in its place so the selected cell and the mock cursor
            still show, then the span is closed since it ends at this cell. */
         if (in_span && i + 1 == open_end) {
-          itl_char_buf_append_byte(b, ' ');
-          itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+          itl_char_buf_append_byte(out, ' ');
+          itl_char_buf_append_cstr(out, ITL_HIGHLIGHT_RESET);
           in_span = false;
         }
 
@@ -7749,8 +7891,14 @@ itl_le_tty_refresh(itl_le_t *le)
           first_row_end_col = col;
         }
         line_number += 1;
-        col = itl_le_tty_break_line(b, in_span, suppress_pad, open_sgr, indent,
-                                    &row, line_number);
+        /* The minibuffer row under the buffer is not a buffer line, so it
+           takes the plain indent instead of a number. */
+        col = itl_le_tty_view_break(
+            b, in_span, suppress_pad, open_sgr, indent, &row,
+            itl_g_minibuffer_row_start > 0 && i + 1 >= itl_g_minibuffer_row_start
+                ? 0
+                : line_number,
+            view_top, view_end);
 
         continue;
       }
@@ -7759,19 +7907,21 @@ itl_le_tty_refresh(itl_le_t *le)
         size_t char_width = itl_line_char_width(le->line->chars, i);
 
         if (itl_wrap_is_early_break(col, char_width, cols)) {
-          col = itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent,
-                                     &row);
+          col = itl_le_tty_view_break(b, in_span, suppress_pad, open_sgr,
+                                      indent, &row, 0, view_top, view_end);
+          out = row >= view_top && row < view_end ? b : &itl_g_view_discard;
         }
 
-        itl_char_buf_append_line_char(b, ch);
+        itl_char_buf_append_line_char(out, ch);
         col += char_width;
 
         if (itl_wrap_is_break_after(col, cols)) {
-          col = itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent,
-                                     &row);
+          col = itl_le_tty_view_break(b, in_span, suppress_pad, open_sgr,
+                                      indent, &row, 0, view_top, view_end);
         }
       }
     }
+    ITL_CHAR_BUF_CLEAR(&itl_g_view_discard);
 
     if (!is_metrics_ready) {
       if (le->cursor_position == le->line->length) {
@@ -7785,7 +7935,7 @@ itl_le_tty_refresh(itl_le_t *le)
 
     /* A span that runs to the end of the line never hit its close in the loop,
        so its reset is emitted here. */
-    if (in_span) {
+    if (in_span || is_view_active) {
       itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
     }
     /* Close the flash SGR so the trailing clear and the ghost draw run normal.
@@ -7795,15 +7945,21 @@ itl_le_tty_refresh(itl_le_t *le)
     }
     ITL_TTY_CLEAR_TO_END(b);
 
-    bool was_ghost_drawn = itl_le_tty_draw_ghost(
-        b, le->cursor_position == le->line->length, col, cols);
-    itl_le_tty_draw_hint(b, itl_hint_row_budget(tty_rows, m.total_rows));
+    /* A window counts only its own rows, and the caret row is taken from its
+       top. The ghost and the right prompt are left out of a window. */
+    size_t screen_rows = is_view_active ? view_rows : m.total_rows;
+    bool   was_ghost_drawn =
+        !is_view_active &&
+        itl_le_tty_draw_ghost(b, le->cursor_position == le->line->length, col,
+                              cols);
+    itl_le_tty_draw_hint(b, itl_hint_row_budget(tty_rows, screen_rows));
 
     if (row == le->prompt_rows) {
       first_row_end_col = col + (was_ghost_drawn ? itl_g_ghost_width : 0);
     }
     size_t right_prompt_col =
-        itl_right_prompt_column(le, first_row_end_col, cols);
+        is_view_active ? 0
+                       : itl_right_prompt_column(le, first_row_end_col, cols);
     itl_g_le_prev_right_prompt_is_shown = right_prompt_col > 0;
 
     if (right_prompt_col > 0) {
@@ -7818,7 +7974,7 @@ itl_le_tty_refresh(itl_le_t *le)
       }
     } else {
       /* Move from the end of the rendered text up to the cursor's row. */
-      move_up = (m.total_rows - 1) - m.cursor_row;
+      move_up = (screen_rows - 1) - (m.cursor_row - view_top);
       if (move_up > 0) {
         ITL_TTY_MOVE_UP(b, move_up);
       }
@@ -7835,6 +7991,10 @@ itl_le_tty_refresh(itl_le_t *le)
 
   ITL_TTY_MOVE_TO_COLUMN(b, m.cursor_col + 1);
 
+  if (is_view_active) {
+    m.total_rows = view_rows;
+    m.cursor_row -= view_top;
+  }
   itl_le_commit_geometry(m, le->cursor_position == le->line->length);
 
   /* A cursor-only refresh leaves the line untouched and keeps the stored
@@ -13841,6 +14001,9 @@ tl_init(void)
 
   itl_string_init(&itl_g_line_buffer);
   itl_char_buf_init(&itl_g_char_buffer);
+  itl_char_buf_init(&itl_g_view_discard);
+  itl_g_view_top_row   = 0;
+  itl_g_view_is_active = false;
 
   itl_g_is_active = true;
 
@@ -13868,6 +14031,7 @@ tl_exit(void)
   itl_kill_ring_free();
   ITL_FREE(itl_g_line_buffer.chars);
   ITL_FREE(itl_g_char_buffer.data);
+  ITL_FREE(itl_g_view_discard.data);
   itl_frame_batch_free();
 
   ITL_TRACELN("Exited, alloc count: %zu\n", itl_g_alloc_count);
