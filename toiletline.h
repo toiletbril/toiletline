@@ -6839,6 +6839,7 @@ itl_prefix_hint(char *out, size_t out_size)
                       "q, q!, or quit (quit), wq, wq!, wqa, wqa!, or x "
                       "(save and quit)\n"
                       "u or undo, red or redo\n"
+                      "e or edit (edit in $VISUAL)\n"
                       "s/old/new/ or %s/old/new/ with an optional g "
                       "(substitute)\n"
                       "& or && (repeat the substitution)\n"
@@ -16517,6 +16518,9 @@ itl_vi_ex_command(itl_le_t *le)
       /* The host saves the buffer, so it is handed over as Enter hands it. */
       ITL_TRY(itl_le_copy_out(le), return TL_ERROR_SIZE);
       result = TL_PRESSED_WRITE_QUIT;
+    } else if (strcmp(command, "e") == 0 || strcmp(command, "edit") == 0) {
+      /* Vi mode ignores Ctrl-X, so this is its way to the external editor. */
+      result = itl_le_key_handle(le, TL_KEY_EDIT_EXTERNAL);
     } else if (strcmp(command, "u") == 0 || strcmp(command, "undo") == 0) {
       result = itl_le_key_handle(le, TL_KEY_UNDO);
     } else if (strcmp(command, "red") == 0 || strcmp(command, "redo") == 0) {

@@ -8332,6 +8332,7 @@ test_prefix_hint_names_the_waiting_keys(void)
                      "  q, q!, or quit (quit), wq, wq!, wqa, wqa!, or x "
                      "(save and quit)\n"
                      "  u or undo, red or redo\n"
+                     "  e or edit (edit in $VISUAL)\n"
                      "  s/old/new/ or %s/old/new/ with an optional g "
                      "(substitute)\n"
                      "  & or && (repeat the substitution)\n"
