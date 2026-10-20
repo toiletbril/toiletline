@@ -604,6 +604,10 @@ typedef struct tl_highlight
   size_t             count;
   size_t             capacity;
   size_t             cursor;
+  /* The codepoint where the drawn text starts. A span that ends at or before
+     it is not drawn, so the host may leave it out and keep the capacity for
+     the spans after it. */
+  size_t visible_start;
 } tl_highlight;
 
 /**
@@ -5765,9 +5769,10 @@ itl_flash_sleep(void)
 #endif
 }
 
-/* The most spans one line carries. A span per token on a normal line stays well
-   under this, and the host stops filling at capacity. */
-#define ITL_HIGHLIGHT_MAX_SPANS 256
+/* The most spans one frame draws. A span per token over a full screen of dense
+   code stays under this, since spans above a window of rows take no slot, and
+   the host stops filling at capacity. */
+#define ITL_HIGHLIGHT_MAX_SPANS 2048
 
 /* The longest SGR escape a saved span keeps, including the terminator. A span
    whose escape exceeds this cannot be compared across frames, so the append
@@ -5912,6 +5917,9 @@ itl_spans_keep_valid(const tl_highlight_span *source,
 }
 
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_le_is_submitting = false;
+/* The codepoint at the top of a window of rows, or 0 when the whole input is
+   drawn. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_highlight_visible_start = 0;
 
 ITL_DEF size_t
 itl_le_collect_highlight(const char        *render,
@@ -5923,8 +5931,9 @@ itl_le_collect_highlight(const char        *render,
 
   hl.spans    = destination;
   hl.count    = 0;
-  hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
-  hl.cursor   = itl_g_le_is_submitting ? TL_HIGHLIGHT_NO_CURSOR : cursor;
+  hl.capacity      = ITL_HIGHLIGHT_MAX_SPANS;
+  hl.cursor        = itl_g_le_is_submitting ? TL_HIGHLIGHT_NO_CURSOR : cursor;
+  hl.visible_start = itl_g_highlight_visible_start;
 
   if (!itl_g_highlight_callback(render, &hl)) {
     return 0;
@@ -7550,6 +7559,8 @@ itl_le_tty_refresh(itl_le_t *le)
   }
   itl_g_view_top_row   = view_top;
   itl_g_view_is_active = is_view_active;
+  itl_g_highlight_visible_start =
+      is_view_active ? itl_le_index_at_visual(le, tty_cols, view_top, 0) : 0;
 
   tl_highlight_span itl_spans[ITL_HIGHLIGHT_MAX_SPANS];
   size_t            span_count = 0;
@@ -9784,10 +9795,11 @@ itl_menu_append_row(itl_char_buf_t      *b,
     tl_highlight_span name_spans[ITL_HIGHLIGHT_MAX_SPANS];
     tl_highlight      hl;
 
-    hl.spans    = name_spans;
-    hl.count    = 0;
-    hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
-    hl.cursor   = TL_HIGHLIGHT_NO_CURSOR;
+    hl.spans         = name_spans;
+    hl.count         = 0;
+    hl.capacity      = ITL_HIGHLIGHT_MAX_SPANS;
+    hl.cursor        = TL_HIGHLIGHT_NO_CURSOR;
+    hl.visible_start = 0;
 
     if (itl_g_highlight_callback(name, &hl)) {
       size_t span_count = hl.count < ITL_HIGHLIGHT_MAX_SPANS
@@ -14411,10 +14423,11 @@ itl_history_search(itl_le_t *le)
          index the display buffer unchanged. */
       if (itl_should_run_highlight()) {
         tl_highlight hl;
-        hl.spans    = cached_spans;
-        hl.count    = 0;
-        hl.capacity = ITL_HIGHLIGHT_MAX_SPANS;
-        hl.cursor   = TL_HIGHLIGHT_NO_CURSOR;
+        hl.spans         = cached_spans;
+        hl.count         = 0;
+        hl.capacity      = ITL_HIGHLIGHT_MAX_SPANS;
+        hl.cursor        = TL_HIGHLIGHT_NO_CURSOR;
+        hl.visible_start = 0;
 
 #if !defined NDEBUG
         itl_g_debug_search_highlight_count += 1;
