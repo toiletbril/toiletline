@@ -2637,7 +2637,6 @@ struct itl_le
   size_t      prompt_size;  /* N of bytes in the prompt */
   size_t      prompt_width; /* N of columns the prompt's last row occupies */
   size_t      prompt_rows; /* N of newlines in the prompt, 0 for a single row */
-  bool        has_prompt_pad;
 
   size_t goal_column;
 };
@@ -3066,7 +3065,6 @@ itl_le_init(itl_le_t     *le,
   le->prompt                 = prompt;
   le->prompt_size            = (prompt != NULL) ? strlen(prompt) : 0;
   le->prompt_width           = itl_prompt_last_row_width(prompt, &le->prompt_rows);
-  le->has_prompt_pad         = false;
   le->goal_column            = 0;
   /* clang-format on */
 
@@ -5281,6 +5279,9 @@ ITL_DEF ITL_THREAD_LOCAL tl_hint_fn itl_g_hint_callback = NULL;
 /* Every hint row starts with this indent. */
 #define ITL_HINT_INDENT       "  "
 #define ITL_HINT_INDENT_WIDTH 2
+
+/* The indent of the hint rows, ITL_HINT_INDENT_WIDTH or 0. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_indent_width = ITL_HINT_INDENT_WIDTH;
 /* The bytes of one laid-out hint, every row with its style, indent, text,
    ellipsis, reset, and line feed. */
 #define ITL_HINT_LAYOUT_MAX                                                    \
@@ -6638,8 +6639,8 @@ itl_hint_append_row(const char *text, size_t length, bool is_cut)
   }
   memcpy(out, open, open_len);
   out += open_len;
-  memcpy(out, ITL_HINT_INDENT, ITL_HINT_INDENT_WIDTH);
-  out += ITL_HINT_INDENT_WIDTH;
+  memcpy(out, ITL_HINT_INDENT, itl_g_hint_indent_width);
+  out += itl_g_hint_indent_width;
   memcpy(out, text, length);
   out += length;
   if (is_cut) {
@@ -6689,12 +6690,12 @@ itl_hint_layout(size_t cols, size_t row_budget)
   itl_g_hint_next[0]     = '\0';
 
   if (itl_g_hint_source_len == 0 || row_budget == 0 ||
-      room <= ITL_HINT_INDENT_WIDTH + ITL_PROMPT_ELLIPSIS_WIDTH + 1)
+      room <= itl_g_hint_indent_width + ITL_PROMPT_ELLIPSIS_WIDTH + 1)
   {
     return;
   }
 
-  text_room = room - ITL_HINT_INDENT_WIDTH;
+  text_room = room - itl_g_hint_indent_width;
   if (row_budget > ITL_HINT_ROWS_MAX) {
     row_budget = ITL_HINT_ROWS_MAX;
   }
@@ -7321,9 +7322,6 @@ itl_le_tty_refresh(itl_le_t *le)
         itl_char_buf_append_cstr(b, ITL_PROMPT_ELLIPSIS);
         itl_char_buf_append_cstr(b, le->prompt + prompt_cut);
       }
-      if (le->has_prompt_pad) {
-        itl_char_buf_append_cstr(b, "\xc2\xa0");
-      }
     }
 
     /* Emit the buffer, reproducing the metrics column accounting so our own
@@ -7778,56 +7776,14 @@ tl_set_completion_menu_enabled(int enabled)
   itl_g_completion_menu_enabled = enabled && itl_term_supports_decorations();
 }
 
-/* The prompt and transient prompt with their rows indented. */
-ITL_DEF ITL_THREAD_LOCAL char itl_g_padded_prompt[ITL_STRING_MAX_LEN];
-ITL_DEF ITL_THREAD_LOCAL char itl_g_padded_transient_prompt[ITL_STRING_MAX_LEN];
 
-/* While the completion menu is on, a prompt whose last row has no width, one
-   that is empty or ends with a line break, keeps every row off the left edge,
-   where the menu draws its row prefix: each non-empty prompt row starts with
-   one no-break space, and one follows the prompt, so the first word moves too.
-   storage receives the indented copy of the prompt. */
+/* Hint rows start at the left edge while the last row of the prompt has no
+   width, so they line up with input on the first column, and are indented
+   otherwise. */
 ITL_DEF void
-itl_le_set_prompt_pad(itl_le_t *le, char *storage, size_t storage_size)
+itl_le_set_hint_indent(const itl_le_t *le)
 {
-  static const char pad[]      = "\xc2\xa0";
-  size_t            pad_length = sizeof(pad) - 1;
-  size_t            used       = 0;
-  size_t            last_row_start;
-  size_t            i;
-
-  le->has_prompt_pad = false;
-  if (!itl_g_completion_menu_enabled || le->prompt == NULL ||
-      le->prompt_width != 0)
-  {
-    return;
-  }
-
-  le->has_prompt_pad = true;
-  le->prompt_width   = 1;
-  if (le->prompt_rows == 0) {
-    return;
-  }
-
-  last_row_start = strrchr(le->prompt, '\n') + 1 - le->prompt;
-  for (i = 0; le->prompt[i] != '\0'; ++i) {
-    bool is_row_start = i == 0 || le->prompt[i - 1] == '\n';
-
-    if (is_row_start && i < last_row_start && le->prompt[i] != '\n') {
-      if (used + pad_length >= storage_size) {
-        return;
-      }
-      memcpy(storage + used, pad, pad_length);
-      used += pad_length;
-    }
-    if (used + 1 >= storage_size) {
-      return;
-    }
-    storage[used++] = le->prompt[i];
-  }
-  storage[used]   = '\0';
-  le->prompt      = storage;
-  le->prompt_size = used;
+  itl_g_hint_indent_width = le->prompt_width == 0 ? 0 : ITL_HINT_INDENT_WIDTH;
 }
 
 TL_DEF void
@@ -8042,8 +7998,7 @@ itl_le_tty_draw_transient(itl_le_t *le)
   le->prompt       = itl_g_transient_prompt;
   le->prompt_size  = strlen(le->prompt);
   le->prompt_width = itl_prompt_last_row_width(le->prompt, &le->prompt_rows);
-  itl_le_set_prompt_pad(le, itl_g_padded_transient_prompt,
-                        sizeof(itl_g_padded_transient_prompt));
+  itl_le_set_hint_indent(le);
 
   itl_g_tty_first_render = true;
   itl_le_invalidate_prev_frame();
@@ -8923,13 +8878,17 @@ itl_completion_append_space(itl_le_t *le)
 #define ITL_MENU_ROW_PREFIX       "  "
 #define ITL_MENU_ROW_PREFIX_WIDTH 2
 
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_menu_is_prefix_narrow = false;
+/* The width of the row prefix, which shrinks below ITL_MENU_ROW_PREFIX_WIDTH
+   when the token starts closer to the left edge, so the entries still sit
+   under it. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_menu_prefix_width =
+    ITL_MENU_ROW_PREFIX_WIDTH;
 
 ITL_DEF const char *
 itl_menu_row_prefix(void)
 {
-  return itl_g_menu_is_prefix_narrow ? &ITL_MENU_ROW_PREFIX[1]
-                                     : ITL_MENU_ROW_PREFIX;
+  return &ITL_MENU_ROW_PREFIX[ITL_MENU_ROW_PREFIX_WIDTH -
+                              itl_g_menu_prefix_width];
 }
 
 /* The reversed block of a selected row opens one column before the entry and
@@ -9257,11 +9216,13 @@ itl_menu_append_row(itl_char_buf_t      *b,
   bool was_name_drawn  = false;
 
   if (is_selected) {
-    if (!itl_g_menu_is_prefix_narrow) {
+    if (itl_g_menu_prefix_width == ITL_MENU_ROW_PREFIX_WIDTH) {
       itl_char_buf_append_cstr(b, ITL_MENU_SELECTED_MARGIN);
     }
     itl_char_buf_append_cstr(b, itl_menu_selected_sgr());
-    itl_char_buf_append_cstr(b, itl_menu_selected_inner_margin());
+    if (itl_g_menu_prefix_width > 0) {
+      itl_char_buf_append_cstr(b, itl_menu_selected_inner_margin());
+    }
   } else {
     itl_char_buf_append_cstr(b, itl_menu_row_prefix());
   }
@@ -9546,6 +9507,18 @@ itl_menu_anchor_column_of(const itl_le_t *le, size_t token_start)
   return col;
 }
 
+/* The row prefix narrows only while the last row of the prompt is narrower
+   than it, so the entries stay under a token near the left edge. */
+ITL_DEF size_t
+itl_menu_prefix_width_for(const itl_le_t *le)
+{
+  if (le->prompt_width >= ITL_MENU_ROW_PREFIX_WIDTH) {
+    return ITL_MENU_ROW_PREFIX_WIDTH;
+  }
+
+  return ITL_MIN(itl_g_menu_anchor_column, ITL_MENU_ROW_PREFIX_WIDTH);
+}
+
 /* Where the shell word under the cursor starts, the place the token of a
    gather usually starts, so a loading frame drawn before the gather sits where
    the menu will. */
@@ -9627,13 +9600,13 @@ itl_menu_geometry_of(const tl_completion *result,
   itl_menu_geometry geometry;
   size_t tty_cols  = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
   size_t full_cols = tty_cols > 1 ? tty_cols - 1 : 1;
-  size_t anchor    = itl_g_menu_anchor_column >= ITL_MENU_ROW_PREFIX_WIDTH
-                         ? itl_g_menu_anchor_column - ITL_MENU_ROW_PREFIX_WIDTH
+  size_t anchor    = itl_g_menu_anchor_column >= itl_g_menu_prefix_width
+                         ? itl_g_menu_anchor_column - itl_g_menu_prefix_width
                          : 0;
   size_t widest_desc =
       result->count == 0 ? 0 : itl_menu_description_width(result);
-  size_t needed_cols = ITL_MENU_ROW_PREFIX_WIDTH;
-  size_t help_cols   = ITL_MENU_ROW_PREFIX_WIDTH +
+  size_t needed_cols = itl_g_menu_prefix_width;
+  size_t help_cols   = itl_g_menu_prefix_width +
                      itl_menu_widest_help_item(help_title, help_keys);
 
   if (result->count == 0) {
@@ -9655,24 +9628,24 @@ itl_menu_geometry_of(const tl_completion *result,
 
   geometry.anchor     = anchor;
   geometry.row_cols   = full_cols - anchor;
-  geometry.text_width = geometry.row_cols > ITL_MENU_ROW_PREFIX_WIDTH
-                            ? geometry.row_cols - ITL_MENU_ROW_PREFIX_WIDTH
+  geometry.text_width = geometry.row_cols > itl_g_menu_prefix_width
+                            ? geometry.row_cols - itl_g_menu_prefix_width
                             : 1;
 
-  if (name_width + ITL_MENU_ROW_PREFIX_WIDTH + ITL_MENU_SELECTED_MARGIN_WIDTH >=
+  if (name_width + itl_g_menu_prefix_width + ITL_MENU_SELECTED_MARGIN_WIDTH >=
       geometry.row_cols)
   {
-    name_width = geometry.row_cols > ITL_MENU_ROW_PREFIX_WIDTH +
+    name_width = geometry.row_cols > itl_g_menu_prefix_width +
                                          ITL_MENU_SELECTED_MARGIN_WIDTH
-                     ? geometry.row_cols - ITL_MENU_ROW_PREFIX_WIDTH -
+                     ? geometry.row_cols - itl_g_menu_prefix_width -
                            ITL_MENU_SELECTED_MARGIN_WIDTH
                      : 1;
   }
   geometry.name_width = name_width;
   geometry.desc_width =
-      geometry.row_cols > ITL_MENU_ROW_PREFIX_WIDTH + name_width + 1 +
+      geometry.row_cols > itl_g_menu_prefix_width + name_width + 1 +
                               ITL_MENU_SELECTED_MARGIN_WIDTH
-          ? geometry.row_cols - ITL_MENU_ROW_PREFIX_WIDTH - name_width - 1 -
+          ? geometry.row_cols - itl_g_menu_prefix_width - name_width - 1 -
                 ITL_MENU_SELECTED_MARGIN_WIDTH
           : 0;
 
@@ -10140,8 +10113,7 @@ itl_loading_frame_draw(itl_le_t *le)
       itl_g_loading_is_menu_reload && !source->should_anchor_to_token
           ? 0
           : itl_menu_anchor_column_of(le, itl_le_shell_word_start(le));
-  itl_g_menu_is_prefix_narrow =
-      le->has_prompt_pad && itl_g_menu_anchor_column == 1;
+  itl_g_menu_prefix_width = itl_menu_prefix_width_for(le);
   layout = itl_menu_measure_for(&loading, tty_rows, 0, ITL_MENU_LOADING_TEXT,
                                 source->help_title, source->help_keys);
   itl_menu_draw(&loading, 0, 0, layout, source->help_title, source->help_keys,
@@ -11782,8 +11754,7 @@ itl_completion_menu_loop(itl_le_t              *le,
         : state.is_regather_armed
             ? itl_menu_anchor_column_of(le, itl_le_shell_word_start(le))
             : itl_menu_anchor_column_of(le, result.token_start);
-    itl_g_menu_is_prefix_narrow =
-        le->has_prompt_pad && itl_g_menu_anchor_column == 1;
+    itl_g_menu_prefix_width = itl_menu_prefix_width_for(le);
     name_width = state.name_width;
     empty_text =
         state.is_regather_armed ? ITL_MENU_LOADING_TEXT : ITL_MENU_EMPTY_TEXT;
@@ -16370,7 +16341,7 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
   TL_ASSERT(buffer != NULL);
 
   itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
-  itl_le_set_prompt_pad(le, itl_g_padded_prompt, sizeof(itl_g_padded_prompt));
+  itl_le_set_hint_indent(le);
   itl_le_end_insertion_walk();
   itl_g_auto_pair_count = 0;
 

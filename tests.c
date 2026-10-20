@@ -7003,6 +7003,38 @@ test_loading_frame_drains_before_gather(void)
 }
 
 static bool
+test_empty_prompt_drops_the_indents(void)
+{
+  char          out_buffer[BUFFER_SIZE];
+  itl_le_t      le   = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  bool          ok   = true;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_le_set_hint_indent(&le);
+  ok &= itl_g_hint_indent_width == 0;
+  itl_g_menu_anchor_column = 0;
+  ok &= itl_menu_prefix_width_for(&le) == 0;
+  itl_g_menu_anchor_column = 1;
+  ok &= itl_menu_prefix_width_for(&le) == 1;
+  itl_g_menu_anchor_column = 5;
+  ok &= itl_menu_prefix_width_for(&le) == ITL_MENU_ROW_PREFIX_WIDTH;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
+  itl_le_set_hint_indent(&le);
+  ok &= itl_g_hint_indent_width == ITL_HINT_INDENT_WIDTH;
+  itl_g_menu_anchor_column = 0;
+  ok &= itl_menu_prefix_width_for(&le) == ITL_MENU_ROW_PREFIX_WIDTH;
+
+  itl_g_hint_indent_width  = ITL_HINT_INDENT_WIDTH;
+  itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
+  itl_g_menu_anchor_column = 0;
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
+static bool
 test_menu_rows_start_under_the_token(void)
 {
   static const char *candidates[] = {"alpha", "album"};
@@ -7035,6 +7067,7 @@ test_menu_rows_start_under_the_token(void)
   itl_g_debug_frame_sink = test_frame_capture_sink;
   test_frame_capture_size = 0;
   itl_g_menu_anchor_column = anchor_column;
+  itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
   itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 5, "");
   ok = ok && test_frame_capture_has("\x1b[6G");
 
@@ -7048,6 +7081,8 @@ test_menu_rows_start_under_the_token(void)
   }
 
   itl_g_menu_anchor_column = 0;
+
+  itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
   itl_g_debug_frame_sink = NULL;
   itl_g_tty_prev_cols = 80;
   itl_g_tty_changed_size = 1;
@@ -7078,6 +7113,7 @@ test_menu_help_wraps_between_items(void)
   itl_g_le_prev_total_rows = 1;
   itl_g_le_prev_cursor_row = 1;
   itl_g_menu_anchor_column = 0;
+  itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
   result.candidates = candidates;
   result.count = countof(candidates);
 
@@ -7156,6 +7192,7 @@ test_menu_anchor_accounts_for_descriptions(void)
 
   itl_g_debug_frame_sink = test_frame_capture_sink;
   itl_g_menu_anchor_column = 30;
+  itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
 
   /* Names and descriptions fit to the right of the token. */
   test_frame_capture_size = 0;
@@ -7189,6 +7226,8 @@ test_menu_anchor_accounts_for_descriptions(void)
   }
 
   itl_g_menu_anchor_column = 0;
+
+  itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
   itl_g_debug_frame_sink = NULL;
   itl_g_tty_prev_cols = 80;
   itl_g_tty_changed_size = 1;
@@ -7228,6 +7267,8 @@ test_menu_anchor_wraps_the_help_rows(void)
     itl_menu_geometry geometry;
 
     itl_g_menu_anchor_column = cases[i].token_column;
+
+    itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
     geometry = itl_menu_geometry_of(&result, 5, "", help_title, help_keys);
     if (geometry.anchor != cases[i].anchor) {
       TEST_PRINTF("token at %zu anchored at %zu\n", cases[i].token_column,
@@ -7237,6 +7278,8 @@ test_menu_anchor_wraps_the_help_rows(void)
   }
 
   itl_g_menu_anchor_column = 0;
+
+  itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
   return ok;
 }
 
@@ -9472,6 +9515,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_paste_line_breaks),
                                    DEFINE_TEST_CASE(test_vi_ex_substitute),
                                    DEFINE_TEST_CASE(test_emacs_commands),
+                                   DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
                                    DEFINE_TEST_CASE(
                                        test_hint_body_wraps_at_words),
                                    DEFINE_TEST_CASE(
