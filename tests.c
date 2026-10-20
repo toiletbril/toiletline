@@ -8024,7 +8024,8 @@ test_prefix_hint_names_the_waiting_keys(void)
                      "replace");
   itl_g_prefix_kind = ITL_PREFIX_VI_EX;
   ok &= test_hint_is("  pressed :\n  waiting for q, q!, quit, wq, wq!, or x "
-                     "(quit), then enter",
+                     "(quit), s/old/new/ or %s/old/new/ with an optional g "
+                     "(substitute), then enter",
                      200, "ex");
 
   itl_g_edit_mode = TL_EDIT_MODE_VI_VISUAL;

@@ -1,5 +1,5 @@
 /*
- *  toiletline 1.0.0
+ *  toiletline 2.0.0
  *  Small single-header replacement of GNU Readline :3
  *
  *  #define TOILETLINE_IMPLEMENTATION
@@ -6406,7 +6406,8 @@ itl_prefix_hint(char *out, size_t out_size)
   if (itl_g_prefix_kind == ITL_PREFIX_VI_EX) {
     itl_prefix_append(out, out_size, &out_length,
                       "pressed :\nwaiting for q, q!, quit, wq, wq!, or x "
-                      "(quit), then enter");
+                      "(quit), s/old/new/ or %s/old/new/ with an optional g "
+                      "(substitute), then enter");
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_NONE && !is_vi_held) {
