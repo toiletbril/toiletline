@@ -108,6 +108,8 @@ typedef enum
   TL_PRESSED_CONTROL_SEQUENCE = 5,
   TL_PRESSED_TAB              = 6,
   TL_PRESSED_QUIT             = 7,
+  /* :wq, :wq!, :x, :wqa, and :wqa! ask to save and leave. */
+  TL_PRESSED_WRITE_QUIT       = 8,
 
   /**
    * Codes below 0 are errors.
@@ -441,6 +443,23 @@ typedef int (*tl_format_fn)(const char *text, const char **out_text);
     nothing. */
 TL_DEF void
 tl_set_format_callback(tl_format_fn callback);
+
+/**
+ * Number the lines of the buffer. Each line after the first starts with its
+ * number, right-aligned and dimmed in width columns, followed by a space, in
+ * place of the continuation indent, and the host draws the number of the
+ * first line in the prompt. A width of 0 turns the numbers off.
+ */
+TL_DEF void
+tl_set_line_numbers(size_t width);
+
+/**
+ * The verb that the hint rows use for submitting an edited buffer of several
+ * lines, as in "press enter again to run it". NULL restores "run". The text
+ * must stay valid while it is set.
+ */
+TL_DEF void
+tl_set_submit_verb(const char *verb);
 
 /**
  * Let the terminal turn the interrupt key back into SIGINT while the editor
@@ -5411,6 +5430,12 @@ ITL_DEF ITL_THREAD_LOCAL tl_option_fn itl_g_option_callback = NULL;
 /* The host format callback, or NULL. */
 ITL_DEF ITL_THREAD_LOCAL tl_format_fn itl_g_format_callback = NULL;
 
+/* The width of the line numbers drawn before each buffer line, or 0. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_line_number_width = 0;
+
+/* The verb of the hint that asks for a second Enter. */
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_submit_verb = "run";
+
 /* The result of the last option command, shown in place of the hint rows
    until the next key. */
 ITL_DEF ITL_THREAD_LOCAL char itl_g_editor_message[512] = {0};
@@ -6487,6 +6512,49 @@ itl_le_tty_break_row(itl_char_buf_t *b,
   return indent;
 }
 
+/* Starts the row after a line break, drawing the number of the line that
+   begins there in the indent when line numbers are on and fit. */
+ITL_DEF size_t
+itl_le_tty_break_line(itl_char_buf_t *b,
+                      bool            is_span_open,
+                      bool            should_suppress_pad,
+                      const char     *open_sgr,
+                      size_t          indent,
+                      size_t         *row,
+                      size_t          line_number)
+{
+  char   digits[24];
+  size_t digit_count = 0;
+
+  if (itl_g_line_number_width == 0 || indent < itl_g_line_number_width + 1) {
+    return itl_le_tty_break_row(b, is_span_open, should_suppress_pad, open_sgr,
+                                indent, row);
+  }
+  do {
+    digits[digit_count++] = (char) ('0' + line_number % 10);
+    line_number /= 10;
+  } while (line_number > 0 && digit_count < sizeof(digits));
+
+  if (is_span_open) {
+    itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+  }
+  itl_char_buf_append_cstr(b, ITL_LF);
+  itl_char_buf_append_spaces(
+      b, indent - 1 - ITL_MIN(digit_count, itl_g_line_number_width));
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_DIM_SGR));
+  while (digit_count > 0) {
+    itl_char_buf_append_byte(b, (uint8_t) digits[--digit_count]);
+  }
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+  itl_char_buf_append_byte(b, ' ');
+  if (is_span_open) {
+    itl_char_buf_append_cstr(b, open_sgr);
+  }
+  *row += 1;
+
+  return indent;
+}
+
 /* Draw the ghost suggestion dimmed after the line. It is shown only when the
    cursor sits at the very end of the buffer and the suggestion fits on the
    current row without wrapping, so it never pushes a line break and the
@@ -6714,7 +6782,8 @@ itl_prefix_hint(char *out, size_t out_size)
   if (itl_g_prefix_kind == ITL_PREFIX_VI_EX) {
     itl_prefix_append(out, out_size, &out_length,
                       "pressed :\nwaiting for a command, then enter\n"
-                      "q, q!, quit, wq, wq!, or x (quit)\n"
+                      "q, q!, or quit (quit), wq, wq!, wqa, wqa!, or x "
+                      "(save and quit)\n"
                       "u or undo, red or redo\n"
                       "s/old/new/ or %s/old/new/ with an optional g "
                       "(substitute)\n"
@@ -7572,6 +7641,7 @@ itl_le_tty_refresh(itl_le_t *le)
        by the continuation indent. The span cursor closes a span
        that ends at this codepoint, then opens the one that starts here. */
     size_t      next_span    = 0;
+    size_t      line_number  = 1;
     bool        in_span      = false;
     size_t      open_end     = 0;
     const char *open_sgr     = NULL;
@@ -7623,8 +7693,9 @@ itl_le_tty_refresh(itl_le_t *le)
         if (row == le->prompt_rows) {
           first_row_end_col = col;
         }
-        col = itl_le_tty_break_row(b, in_span, suppress_pad, open_sgr, indent,
-                                   &row);
+        line_number += 1;
+        col = itl_le_tty_break_line(b, in_span, suppress_pad, open_sgr, indent,
+                                    &row, line_number);
 
         continue;
       }
@@ -7834,6 +7905,18 @@ TL_DEF void
 tl_set_format_callback(tl_format_fn callback)
 {
   itl_g_format_callback = callback;
+}
+
+TL_DEF void
+tl_set_line_numbers(size_t width)
+{
+  itl_g_line_number_width = width;
+}
+
+TL_DEF void
+tl_set_submit_verb(const char *verb)
+{
+  itl_g_submit_verb = verb != NULL ? verb : "run";
 }
 
 TL_DEF void
@@ -13390,10 +13473,16 @@ itl_le_key_handle(itl_le_t *le, int esc)
       break;
     }
 
-    if (!itl_le_confirm(le, TL_KEY_ENTER,
-                        "edited buffer\npress enter again to run it"))
     {
-      break;
+      char message[96];
+
+      strcpy(message, "edited buffer\npress enter again to ");
+      strncat(message, itl_g_submit_verb,
+              sizeof(message) - strlen(message) - 5);
+      strcat(message, " it");
+      if (!itl_le_confirm(le, TL_KEY_ENTER, message)) {
+        break;
+      }
     }
 
     /* Submit the line as typed. The shell joins backslash continuations
@@ -15666,8 +15755,15 @@ ITL_DEF bool
 itl_vi_ex_is_quit(const char *command)
 {
   return strcmp(command, "q") == 0 || strcmp(command, "q!") == 0 ||
-         strcmp(command, "wq") == 0 || strcmp(command, "wq!") == 0 ||
-         strcmp(command, "x") == 0 || strcmp(command, "quit") == 0;
+         strcmp(command, "quit") == 0;
+}
+
+ITL_DEF bool
+itl_vi_ex_is_write_quit(const char *command)
+{
+  return strcmp(command, "wq") == 0 || strcmp(command, "wq!") == 0 ||
+         strcmp(command, "wqa") == 0 || strcmp(command, "wqa!") == 0 ||
+         strcmp(command, "x") == 0;
 }
 
 /* Reads one field of an ex substitution up to an unescaped delimiter into
@@ -16363,6 +16459,10 @@ itl_vi_ex_command(itl_le_t *le)
   {
     if (itl_vi_ex_is_quit(command)) {
       result = TL_PRESSED_QUIT;
+    } else if (itl_vi_ex_is_write_quit(command)) {
+      /* The host saves the buffer, so it is handed over as Enter hands it. */
+      ITL_TRY(itl_le_copy_out(le), return TL_ERROR_SIZE);
+      result = TL_PRESSED_WRITE_QUIT;
     } else if (strcmp(command, "u") == 0 || strcmp(command, "undo") == 0) {
       result = itl_le_key_handle(le, TL_KEY_UNDO);
     } else if (strcmp(command, "red") == 0 || strcmp(command, "redo") == 0) {

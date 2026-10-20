@@ -7891,6 +7891,35 @@ test_format_commands(void)
 }
 
 static bool
+test_line_number_gutter(void)
+{
+  itl_char_buf_t *b   = itl_char_buf_alloc();
+  size_t          row = 0;
+  bool            ok  = true;
+
+  itl_g_colors_enabled = 0;
+  tl_set_line_numbers(4);
+  ok &= itl_le_tty_break_line(b, false, false, NULL, 5, &row, 12) == 5;
+  ok &= b->size == strlen(ITL_LF) + 5 &&
+        memcmp(b->data + strlen(ITL_LF), "  12 ", 5) == 0;
+  ITL_CHAR_BUF_CLEAR(b);
+  ok &= itl_le_tty_break_line(b, false, false, NULL, 3, &row, 7) == 3;
+  ok &= memcmp(b->data + strlen(ITL_LF), "   ", 3) == 0;
+  tl_set_line_numbers(0);
+  ITL_CHAR_BUF_CLEAR(b);
+  ok &= itl_le_tty_break_line(b, false, false, NULL, 5, &row, 2) == 5;
+  ok &= memcmp(b->data + strlen(ITL_LF), "     ", 5) == 0;
+  ok &= row == 3;
+  itl_g_colors_enabled = 1;
+  ok &= itl_vi_ex_is_write_quit("wqa!") && itl_vi_ex_is_write_quit("x") &&
+        !itl_vi_ex_is_write_quit("q") && itl_vi_ex_is_quit("q!") &&
+        !itl_vi_ex_is_quit("wq");
+  ITL_CHAR_BUF_FREE(b);
+
+  return ok;
+}
+
+static bool
 test_hint_body_wraps_at_words(void)
 {
   static const char WRAPPED[] =
@@ -8300,7 +8329,8 @@ test_prefix_hint_names_the_waiting_keys(void)
                      "replace");
   itl_g_prefix_kind = ITL_PREFIX_VI_EX;
   ok &= test_hint_is("  pressed :\n  waiting for a command, then enter\n"
-                     "  q, q!, quit, wq, wq!, or x (quit)\n"
+                     "  q, q!, or quit (quit), wq, wq!, wqa, wqa!, or x "
+                     "(save and quit)\n"
                      "  u or undo, red or redo\n"
                      "  s/old/new/ or %s/old/new/ with an optional g "
                      "(substitute)\n"
@@ -9687,6 +9717,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_option_commands),
                                    DEFINE_TEST_CASE(test_vi_go_to_line),
                                    DEFINE_TEST_CASE(test_format_commands),
+                                   DEFINE_TEST_CASE(test_line_number_gutter),
                                    DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
                                    DEFINE_TEST_CASE(
                                        test_hint_body_wraps_at_words),
