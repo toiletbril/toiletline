@@ -7725,6 +7725,60 @@ test_emacs_commands(void)
   return ok;
 }
 
+static char test_option_record[128];
+
+static const char *
+test_option_callback(tl_option_action action, const char *name,
+                     const char *value)
+{
+  static const char *actions[] = {"set", "get", "save", "complete"};
+
+  if (action == TL_OPTION_COMPLETE) {
+    return strcmp(name, "editor.b") == 0 ? "editor.base_mode" : NULL;
+  }
+  snprintf(test_option_record, sizeof(test_option_record), "%s %s %s",
+           actions[action], name != NULL ? name : "(all)",
+           value != NULL ? value : "(none)");
+
+  return test_option_record;
+}
+
+static bool
+test_option_message_is(const char *expected, const char *step)
+{
+  if (strcmp(itl_g_editor_message, expected) != 0) {
+    printf("%s gave '%s', expected '%s'\n", step, itl_g_editor_message,
+           expected);
+    return false;
+  }
+
+  return true;
+}
+
+static bool
+test_option_commands(void)
+{
+  bool ok = true;
+
+  tl_set_option_callback(test_option_callback);
+  itl_vi_ex_set("mood=bash", ":set mood=bash");
+  ok &= test_option_message_is(":set mood=bash\nset mood bash", "set value");
+  itl_vi_ex_set("mood?", ":set mood?");
+  ok &= test_option_message_is(":set mood?\nget mood (none)", "query");
+  itl_vi_ex_set(" nonounset ", ":set nonounset");
+  ok &= test_option_message_is(":set nonounset\nset nonounset (none)",
+                               "bare option");
+  itl_option_run(TL_OPTION_SAVE, NULL, NULL, "M-x save-option");
+  ok &= test_option_message_is("M-x save-option\nsave (all) (none)",
+                               "save every option");
+  ok &= strcmp(itl_g_option_callback(TL_OPTION_COMPLETE, "editor.b", NULL),
+               "editor.base_mode") == 0;
+  tl_set_option_callback(NULL);
+  itl_g_editor_message[0] = '\0';
+
+  return ok;
+}
+
 static bool
 test_hint_body_wraps_at_words(void)
 {
@@ -8139,7 +8193,10 @@ test_prefix_hint_names_the_waiting_keys(void)
                      "  u or undo, red or redo\n"
                      "  s/old/new/ or %s/old/new/ with an optional g "
                      "(substitute)\n"
-                     "  & or && (repeat the substitution)",
+                     "  & or && (repeat the substitution)\n"
+                     "  set option=value, set option, set nooption, or set "
+                     "option? (options)\n"
+                     "  save or save option (store the options)",
                      200, "ex");
   itl_g_prefix_kind     = ITL_PREFIX_EMACS_X;
   itl_g_minibuffer_text = "rep";
@@ -9515,6 +9572,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_paste_line_breaks),
                                    DEFINE_TEST_CASE(test_vi_ex_substitute),
                                    DEFINE_TEST_CASE(test_emacs_commands),
+                                   DEFINE_TEST_CASE(test_option_commands),
                                    DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
                                    DEFINE_TEST_CASE(
                                        test_hint_body_wraps_at_words),

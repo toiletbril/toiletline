@@ -393,6 +393,34 @@ typedef int (*tl_edit_fn)(const char *buffer, const char **out_edited);
 TL_DEF void
 tl_set_edit_callback(tl_edit_fn callback);
 
+typedef enum
+{
+  TL_OPTION_SET = 0,
+  TL_OPTION_GET,
+  TL_OPTION_SAVE,
+  TL_OPTION_COMPLETE
+} tl_option_action;
+
+/**
+ * The option callback for the colon commands :set and :save and the M-x
+ * commands set-option, get-option, and save-option. TL_OPTION_SET changes
+ * name to value, and a NULL value asks the host to treat a bare name the way
+ * the vi :set command does. TL_OPTION_GET asks for the value of name.
+ * TL_OPTION_SAVE stores name in the host's settings, or every option when name
+ * is NULL. TL_OPTION_COMPLETE asks for the longest name that every option
+ * starting with name shares. The callback returns a line that the hint rows
+ * show until the next key, or the completed name, or NULL. The text stays
+ * valid until the next call.
+ */
+typedef const char *(*tl_option_fn)(tl_option_action action,
+                                    const char      *name,
+                                    const char      *value);
+
+/** Register the option callback, or NULL to make the option commands do
+    nothing. */
+TL_DEF void
+tl_set_option_callback(tl_option_fn callback);
+
 /**
  * Let the terminal turn the interrupt key back into SIGINT while the editor
  * stays in raw mode. A host callback that runs a slow command turns this on for
@@ -5343,6 +5371,15 @@ typedef enum
    asks for text. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_minibuffer_text = "";
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_minibuffer_hint = "";
+/* Whether Tab in the open minibuffer completes an option name. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_minibuffer_completes_options = false;
+
+/* The host option callback, or NULL. */
+ITL_DEF ITL_THREAD_LOCAL tl_option_fn itl_g_option_callback = NULL;
+
+/* The result of the last option command, shown in place of the hint rows
+   until the next key. */
+ITL_DEF ITL_THREAD_LOCAL char itl_g_editor_message[512] = {0};
 
 /* The M-x commands that are not a key of the editor. */
 typedef enum
@@ -5350,7 +5387,10 @@ typedef enum
   ITL_EMACS_KILL_KOSH = -1,
   ITL_EMACS_REPEAT    = -2,
   ITL_EMACS_REPLACE_STRING = -3,
-  ITL_EMACS_REPLACE_REGEXP = -4
+  ITL_EMACS_REPLACE_REGEXP = -4,
+  ITL_EMACS_SET_OPTION     = -5,
+  ITL_EMACS_GET_OPTION     = -6,
+  ITL_EMACS_SAVE_OPTION    = -7
 } itl_emacs_action;
 
 /* An M-x command and the key it runs, or an itl_emacs_action. The table is
@@ -5372,12 +5412,15 @@ static const itl_emacs_command itl_emacs_commands[] = {
     {"end-of-history", TL_KEY_HISTORY_END},
     {"end-of-line", TL_KEY_END},
     {"forward-word", TL_KEY_RIGHT | TL_MOD_CTRL},
+    {"get-option", ITL_EMACS_GET_OPTION},
     {"kill-kosh", ITL_EMACS_KILL_KOSH},
     {"kill-line", TL_KEY_KILL_LINE},
     {"kill-word", TL_KEY_DELETE | TL_MOD_CTRL},
     {"repeat", ITL_EMACS_REPEAT},
     {"replace-regexp", ITL_EMACS_REPLACE_REGEXP},
     {"replace-string", ITL_EMACS_REPLACE_STRING},
+    {"save-option", ITL_EMACS_SAVE_OPTION},
+    {"set-option", ITL_EMACS_SET_OPTION},
     {"transpose-chars", TL_KEY_TRANSPOSE},
     {"transpose-words", TL_KEY_TRANSPOSE | TL_MOD_ALT},
     {"undo", TL_KEY_UNDO},
@@ -6513,7 +6556,10 @@ itl_prefix_hint(char *out, size_t out_size)
                       "u or undo, red or redo\n"
                       "s/old/new/ or %s/old/new/ with an optional g "
                       "(substitute)\n"
-                      "& or && (repeat the substitution)");
+                      "& or && (repeat the substitution)\n"
+                      "set option=value, set option, set nooption, or set "
+                      "option? (options)\n"
+                      "save or save option (store the options)");
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_EMACS_X) {
@@ -6525,6 +6571,10 @@ itl_prefix_hint(char *out, size_t out_size)
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_NONE && !is_vi_held) {
+    if (itl_g_editor_message[0] != '\0') {
+      itl_prefix_append(out, out_size, &out_length, itl_g_editor_message);
+      return true;
+    }
     return false;
   }
 
@@ -7601,6 +7651,12 @@ TL_DEF void
 tl_set_edit_callback(tl_edit_fn callback)
 {
   itl_g_edit_callback = callback;
+}
+
+TL_DEF void
+tl_set_option_callback(tl_option_fn callback)
+{
+  itl_g_option_callback = callback;
 }
 
 TL_DEF void
@@ -15848,6 +15904,16 @@ itl_minibuffer_read(itl_le_t       *le,
     case TL_KEY_TAB:
       if (kind == ITL_PREFIX_EMACS_X) {
         text_length = itl_emacs_complete(text, text_size);
+      } else if (itl_g_minibuffer_completes_options &&
+                 itl_g_option_callback != NULL)
+      {
+        const char *completed =
+            itl_g_option_callback(TL_OPTION_COMPLETE, text, NULL);
+
+        if (completed != NULL && strlen(completed) < text_size) {
+          strcpy(text, completed);
+          text_length = strlen(text);
+        }
       }
       break;
 
@@ -15897,6 +15963,72 @@ itl_minibuffer_read(itl_le_t       *le,
   return is_accepted;
 }
 
+/* Runs an option command through the host and keeps its result line under
+   header for the hint rows. */
+ITL_DEF void
+itl_option_run(tl_option_action action,
+               const char      *name,
+               const char      *value,
+               const char      *header)
+{
+  const char *result;
+  size_t      used;
+
+  if (itl_g_option_callback == NULL) {
+    return;
+  }
+  result = itl_g_option_callback(action, name, value);
+  if (result == NULL) {
+    return;
+  }
+  used = strlen(header);
+  if (used + 2 >= sizeof(itl_g_editor_message)) {
+    return;
+  }
+  memcpy(itl_g_editor_message, header, used);
+  itl_g_editor_message[used++] = '\n';
+  strncpy(itl_g_editor_message + used, result,
+          sizeof(itl_g_editor_message) - used - 1);
+  itl_g_editor_message[sizeof(itl_g_editor_message) - 1] = '\0';
+}
+
+/* Runs the colon form set ARGUMENT. option=value sets the option, option?
+   shows it, and a bare option, or one with a no prefix, goes to the host the
+   way vi treats it. */
+ITL_DEF void
+itl_vi_ex_set(const char *argument, const char *header)
+{
+  char        name[64];
+  const char *equals;
+  size_t      length;
+
+  while (*argument == ' ') {
+    argument += 1;
+  }
+  length = strlen(argument);
+  while (length > 0 && argument[length - 1] == ' ') {
+    length -= 1;
+  }
+  if (length == 0 || length >= sizeof(name)) {
+    return;
+  }
+  memcpy(name, argument, length);
+  name[length] = '\0';
+
+  if (name[length - 1] == '?') {
+    name[length - 1] = '\0';
+    itl_option_run(TL_OPTION_GET, name, NULL, header);
+    return;
+  }
+  equals = strchr(name, '=');
+  if (equals != NULL) {
+    name[equals - name] = '\0';
+    itl_option_run(TL_OPTION_SET, name, equals + 1, header);
+    return;
+  }
+  itl_option_run(TL_OPTION_SET, name, NULL, header);
+}
+
 ITL_DEF tl_status_code
 itl_vi_ex_command(itl_le_t *le)
 {
@@ -15915,6 +16047,25 @@ itl_vi_ex_command(itl_le_t *le)
       result = itl_le_key_handle(le, TL_KEY_REDO);
     } else if (itl_vi_ex_parse_substitute(command, &substitution) > 0) {
       itl_le_substitute(le, &substitution);
+    } else if (strncmp(command, "set ", 4) == 0 ||
+               strncmp(command, "se ", 3) == 0)
+    {
+      char header[72];
+
+      header[0] = ':';
+      strcpy(header + 1, command);
+      itl_vi_ex_set(strchr(command, ' ') + 1, header);
+    } else if (strcmp(command, "save") == 0 ||
+               strncmp(command, "save ", 5) == 0)
+    {
+      const char *name = command[4] == ' ' ? command + 5 : NULL;
+      char        header[72];
+
+      header[0] = ':';
+      strcpy(header + 1, command);
+      itl_option_run(TL_OPTION_SAVE,
+                     name != NULL && *name != '\0' ? name : NULL, NULL,
+                     header);
     }
   }
   itl_vi_clamp_command_cursor(le);
@@ -15923,10 +16074,12 @@ itl_vi_ex_command(itl_le_t *le)
   return result;
 }
 
-/* The last command M-x ran and the substitution it took, for repeat and
-   Ctrl-X Z. */
+/* The last command M-x ran and the answers it took, for repeat and Ctrl-X
+   Z. */
 ITL_DEF ITL_THREAD_LOCAL int              itl_g_emacs_last_command = -1;
 ITL_DEF ITL_THREAD_LOCAL itl_substitution itl_g_emacs_last_substitution;
+ITL_DEF ITL_THREAD_LOCAL char             itl_g_emacs_last_option[64];
+ITL_DEF ITL_THREAD_LOCAL char             itl_g_emacs_last_value[64];
 
 ITL_DEF tl_status_code
 itl_emacs_run_command(itl_le_t *le, size_t index)
@@ -15940,6 +16093,23 @@ itl_emacs_run_command(itl_le_t *le, size_t index)
       action == ITL_EMACS_REPLACE_REGEXP)
   {
     itl_le_substitute(le, &itl_g_emacs_last_substitution);
+    return TL_SUCCESS;
+  }
+  if (action == ITL_EMACS_SET_OPTION) {
+    itl_option_run(TL_OPTION_SET, itl_g_emacs_last_option,
+                   itl_g_emacs_last_value, "M-x set-option");
+    return TL_SUCCESS;
+  }
+  if (action == ITL_EMACS_GET_OPTION) {
+    itl_option_run(TL_OPTION_GET, itl_g_emacs_last_option, NULL,
+                   "M-x get-option");
+    return TL_SUCCESS;
+  }
+  if (action == ITL_EMACS_SAVE_OPTION) {
+    itl_option_run(TL_OPTION_SAVE,
+                   itl_g_emacs_last_option[0] != '\0' ? itl_g_emacs_last_option
+                                                      : NULL,
+                   NULL, "M-x save-option");
     return TL_SUCCESS;
   }
 
@@ -16016,6 +16186,57 @@ itl_emacs_read_replacement(itl_le_t         *le,
   return true;
 }
 
+/* Asks for the option of set-option, get-option, or save-option, and for the
+   value of set-option. Tab completes the option. An empty answer to
+   save-option saves every option. Returns false when a minibuffer is closed
+   or a required answer is empty. */
+ITL_DEF bool
+itl_emacs_read_option(itl_le_t *le, int action)
+{
+  char option[64];
+  char value[64];
+  char label[96];
+  bool is_read;
+
+  if (itl_g_option_callback == NULL) {
+    return false;
+  }
+  itl_g_minibuffer_hint =
+      action == ITL_EMACS_SAVE_OPTION
+          ? "pressed M-x save-option\nwaiting for an option, tab to complete "
+            "it, or nothing to save every option, then enter"
+          : "pressed M-x\nwaiting for an option, tab to complete it, then "
+            "enter";
+  itl_g_minibuffer_completes_options = true;
+  is_read = itl_minibuffer_read(le,
+                                action == ITL_EMACS_SET_OPTION   ? "Set option: "
+                                : action == ITL_EMACS_GET_OPTION ? "Get option: "
+                                    : "Save option: ",
+                                ITL_PREFIX_MINIBUFFER, option, sizeof(option));
+  itl_g_minibuffer_completes_options = false;
+  if (!is_read || (option[0] == '\0' && action != ITL_EMACS_SAVE_OPTION)) {
+    return false;
+  }
+
+  value[0] = '\0';
+  if (action == ITL_EMACS_SET_OPTION) {
+    itl_g_minibuffer_hint =
+        "pressed M-x set-option\nwaiting for the value, then enter";
+    strcpy(label, "Set ");
+    strcat(label, option);
+    strcat(label, " to: ");
+    if (!itl_minibuffer_read(le, label, ITL_PREFIX_MINIBUFFER, value,
+                             sizeof(value)))
+    {
+      return false;
+    }
+  }
+  strcpy(itl_g_emacs_last_option, option);
+  strcpy(itl_g_emacs_last_value, value);
+
+  return true;
+}
+
 ITL_DEF tl_status_code
 itl_emacs_execute_command(itl_le_t *le)
 {
@@ -16051,6 +16272,13 @@ itl_emacs_execute_command(itl_le_t *le)
       return TL_SUCCESS;
     }
     itl_g_emacs_last_substitution = substitution;
+  }
+  if (action == ITL_EMACS_SET_OPTION || action == ITL_EMACS_GET_OPTION ||
+      action == ITL_EMACS_SAVE_OPTION)
+  {
+    if (!itl_emacs_read_option(le, action)) {
+      return TL_SUCCESS;
+    }
   }
   itl_g_emacs_last_command = (int) i;
 
@@ -16399,6 +16627,7 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
     }
 
     ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
+    itl_g_editor_message[0] = '\0';
 
 #if defined TL_SEE_BYTES
     if (input_byte == 3) return -69; /* ctrl c */
