@@ -831,6 +831,17 @@ ITL_READ_BYTE_RAW(void)
 #include <stdlib.h>
 #include <string.h>
 
+/* The ex substitution matches POSIX basic regular expressions when a regex
+   header is available: TL_REGEX_HEADER when the host defines it, and the
+   system header on POSIX. Otherwise it matches literal text. */
+#if defined TL_REGEX_HEADER
+#include TL_REGEX_HEADER
+#define ITL_HAS_REGEX
+#elif defined ITL_POSIX
+#include <regex.h>
+#define ITL_HAS_REGEX
+#endif
+
 #define ITL_THREAD_LOCAL        __thread
 #define ITL_NO_RETURN            __attribute__((noreturn))
 #define ITL_MAYBE_UNUSED         __attribute__((unused))
@@ -15230,6 +15241,285 @@ itl_vi_ex_is_quit(const char *command)
          strcmp(command, "x") == 0 || strcmp(command, "quit") == 0;
 }
 
+/* Reads one field of an ex substitution up to an unescaped delimiter into
+   field, where a backslash before the delimiter keeps it literal. Returns the
+   position past the field, or NULL when field_size is too small. */
+ITL_DEF const char *
+itl_vi_ex_substitute_field(const char *at,
+                           char        delimiter,
+                           char       *field,
+                           size_t      field_size,
+                           size_t     *field_len)
+{
+  size_t len = 0;
+
+  while (*at != '\0' && *at != delimiter) {
+    if (at[0] == '\\' && at[1] == delimiter) {
+      at += 1;
+    }
+    if (len + 1 >= field_size) {
+      return NULL;
+    }
+    field[len++] = *at++;
+  }
+  field[len] = '\0';
+  *field_len = len;
+
+  return at;
+}
+
+/* Finds the first match of an ex substitution pattern in the first length
+   bytes of text, which end with a NUL byte. With regex support the pattern is
+   compiled, and without it the match is literal. Returns false when nothing
+   matches. */
+ITL_DEF bool
+itl_vi_ex_find(const void *pattern,
+               const char *pattern_text,
+               size_t      pattern_len,
+               const char *text,
+               size_t      length,
+               bool        is_line_start,
+               size_t     *match_start,
+               size_t     *match_end,
+               size_t      groups[10][2])
+{
+#if defined ITL_HAS_REGEX
+  regmatch_t matches[10];
+  size_t     i;
+
+  (void) pattern_text;
+  (void) pattern_len;
+  (void) length;
+  if (regexec((const regex_t *) pattern, text, 10, matches,
+              is_line_start ? 0 : REG_NOTBOL) != 0)
+  {
+    return false;
+  }
+  for (i = 0; i < 10; ++i) {
+    groups[i][0] = matches[i].rm_so < 0 ? 0 : (size_t) matches[i].rm_so;
+    groups[i][1] = matches[i].rm_so < 0 ? 0 : (size_t) matches[i].rm_eo;
+  }
+  *match_start = groups[0][0];
+  *match_end   = groups[0][1];
+
+  return true;
+#else
+  size_t i;
+
+  (void) pattern;
+  (void) is_line_start;
+  for (i = 0; i + pattern_len <= length; ++i) {
+    if (memcmp(text + i, pattern_text, pattern_len) == 0) {
+      memset(groups, 0, sizeof(size_t) * 20);
+      groups[0][0] = i;
+      groups[0][1] = i + pattern_len;
+      *match_start = i;
+      *match_end   = i + pattern_len;
+      return true;
+    }
+  }
+
+  return false;
+#endif
+}
+
+/* Appends the replacement of one match to out. With regex support '&' stands
+   for the whole match, \1 through \9 for its groups, and a backslash keeps the
+   next byte literal. */
+ITL_DEF void
+itl_vi_ex_append_replacement(itl_char_buf_t *out,
+                             const char     *replacement,
+                             size_t          replacement_len,
+                             const char     *text,
+                             size_t          groups[10][2])
+{
+  size_t i;
+
+#if defined ITL_HAS_REGEX
+  for (i = 0; i < replacement_len; ++i) {
+    char c = replacement[i];
+
+    if (c == '&') {
+      itl_char_buf_append_bytes(out, text + groups[0][0],
+                                groups[0][1] - groups[0][0]);
+    } else if (c == '\\' && i + 1 < replacement_len) {
+      char next = replacement[++i];
+
+      if (next >= '1' && next <= '9') {
+        size_t group = (size_t) (next - '0');
+
+        itl_char_buf_append_bytes(out, text + groups[group][0],
+                                  groups[group][1] - groups[group][0]);
+      } else {
+        itl_char_buf_append_byte(out, (uint8_t) next);
+      }
+    } else {
+      itl_char_buf_append_byte(out, (uint8_t) c);
+    }
+  }
+#else
+  (void) text;
+  (void) groups;
+  for (i = 0; i < replacement_len; ++i) {
+    itl_char_buf_append_byte(out, (uint8_t) replacement[i]);
+  }
+#endif
+}
+
+/* Applies an ex substitution, [%]s/old/new/[g], to line. Without '%' it acts
+   on the line of the buffer that holds the cursor, and with it on every line.
+   The delimiter is any punctuation byte after 's'. old is a POSIX basic
+   regular expression when regex support is built in, and literal text
+   otherwise. 'g' replaces every match in a line instead of the first one.
+   Returns -1 when command is not a substitution, 0 when nothing is replaced or
+   the result would not fit, and 1 when line changed. */
+ITL_DEF int
+itl_vi_ex_substitute(const itl_le_t *le,
+                     itl_string_t   *line,
+                     size_t          cursor,
+                     const char     *command)
+{
+  char            old_text[64];
+  char            new_text[64];
+  size_t          old_len, new_len;
+  bool            is_whole  = false;
+  bool            is_global = false;
+  char            delimiter;
+  const char     *at = command;
+  char           *text;
+  char           *row;
+  itl_char_buf_t *out;
+  size_t          begin, end, i, cursor_byte = 0, match_count = 0;
+  size_t          row_start, row_end;
+  size_t          groups[10][2];
+  bool            is_ok;
+#if defined ITL_HAS_REGEX
+  regex_t  compiled;
+  regex_t *pattern = &compiled;
+#else
+  void *pattern = NULL;
+#endif
+
+  if (*at == '%') {
+    is_whole = true;
+    at += 1;
+  }
+  if (*at != 's') {
+    return -1;
+  }
+  at += 1;
+  delimiter = *at;
+  if (delimiter == '\0' || isalnum((uint8_t) delimiter) ||
+      isspace((uint8_t) delimiter) || delimiter == '\\')
+  {
+    return 0;
+  }
+  at = itl_vi_ex_substitute_field(at + 1, delimiter, old_text,
+                                  sizeof(old_text), &old_len);
+  if (at == NULL || *at != delimiter || old_len == 0) {
+    return 0;
+  }
+  at = itl_vi_ex_substitute_field(at + 1, delimiter, new_text,
+                                  sizeof(new_text), &new_len);
+  if (at == NULL) {
+    return 0;
+  }
+  if (*at == delimiter) {
+    at += 1;
+  }
+  if (*at == 'g') {
+    is_global = true;
+    at += 1;
+  }
+  if (*at != '\0') {
+    return 0;
+  }
+#if defined ITL_HAS_REGEX
+  if (regcomp(&compiled, old_text, 0) != 0) {
+    return 0;
+  }
+#endif
+
+  text = (char *) itl_malloc(line->size + 1);
+  row  = (char *) itl_malloc(line->size + 1);
+  out  = itl_char_buf_alloc();
+  itl_string_to_cstr(line, text, line->size + 1);
+  for (i = 0; i < cursor && i < line->length; ++i) {
+    cursor_byte += line->chars[i].size;
+  }
+
+  begin = 0;
+  end   = line->size;
+  if (!is_whole) {
+    for (begin = cursor_byte; begin > 0 && text[begin - 1] != '\n'; --begin) {
+    }
+    for (end = cursor_byte; end < line->size && text[end] != '\n'; ++end) {
+    }
+  }
+
+  itl_char_buf_append_bytes(out, text, begin);
+  for (row_start = begin;; row_start = row_end + 1) {
+    size_t row_len, position = 0;
+
+    for (row_end = row_start; row_end < end && text[row_end] != '\n';
+         ++row_end) {
+    }
+    row_len = row_end - row_start;
+    memcpy(row, text + row_start, row_len);
+    row[row_len] = '\0';
+
+    while (position <= row_len) {
+      size_t match_start, match_end;
+
+      if (!itl_vi_ex_find(pattern, old_text, old_len, row + position,
+                          row_len - position, position == 0, &match_start,
+                          &match_end, groups))
+      {
+        break;
+      }
+      itl_char_buf_append_bytes(out, row + position, match_start);
+      itl_vi_ex_append_replacement(out, new_text, new_len, row + position,
+                                   groups);
+      match_count += 1;
+      if (match_end == match_start) {
+        /* An empty match keeps the next byte, so the scan advances. */
+        if (position + match_end < row_len) {
+          itl_char_buf_append_byte(out, (uint8_t) row[position + match_end]);
+        }
+        position += match_end + 1;
+      } else {
+        position += match_end;
+      }
+      if (!is_global) {
+        break;
+      }
+    }
+    if (position < row_len) {
+      itl_char_buf_append_bytes(out, row + position, row_len - position);
+    }
+    if (row_end >= end) {
+      break;
+    }
+    itl_char_buf_append_byte(out, '\n');
+  }
+  itl_char_buf_append_bytes(out, text + end, line->size - end);
+
+  is_ok = match_count > 0 && out->size < le->out_size &&
+          out->size <= ITL_STRING_MAX_LEN;
+  if (is_ok) {
+    itl_string_from_bytes(line, out->data, out->size);
+  }
+
+#if defined ITL_HAS_REGEX
+  regfree(&compiled);
+#endif
+  ITL_CHAR_BUF_FREE(out);
+  ITL_FREE(row);
+  ITL_FREE(text);
+
+  return is_ok ? 1 : 0;
+}
+
 ITL_DEF tl_status_code
 itl_vi_ex_command(itl_le_t *le)
 {
@@ -15248,8 +15538,9 @@ itl_vi_ex_command(itl_le_t *le)
   char   command[64];
   size_t command_length = 0;
 
-  tl_status_code result  = TL_SUCCESS;
-  bool           is_done = false;
+  tl_status_code result           = TL_SUCCESS;
+  bool           is_done          = false;
+  bool           did_substitute   = false;
   uint8_t        byte;
 
   command[0] = '\0';
@@ -15296,6 +15587,9 @@ itl_vi_ex_command(itl_le_t *le)
     case TL_KEY_ENTER:
       if (itl_vi_ex_is_quit(command)) {
         result = TL_PRESSED_QUIT;
+      } else {
+        did_substitute =
+            itl_vi_ex_substitute(le, original, saved_cursor, command) > 0;
       }
       is_done = true;
       break;
@@ -15332,6 +15626,13 @@ itl_vi_ex_command(itl_le_t *le)
   le->prompt_width  = saved_prompt_width;
   le->prompt_rows   = saved_prompt_rows;
   le->line          = saved_line;
+  /* A substitution is one undo step, so the line before it is saved first. */
+  if (did_substitute) {
+    le->cursor_position =
+        saved_cursor <= le->line->length ? saved_cursor : le->line->length;
+    itl_history_reset_after_edit(le);
+    itl_undo_push_closed(le);
+  }
   itl_string_copy(le->line, original);
   le->cursor_position =
       saved_cursor <= le->line->length ? saved_cursor : le->line->length;

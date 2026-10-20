@@ -7557,6 +7557,65 @@ cleanup:
 }
 
 static bool
+test_substitute_is(const char *before, size_t cursor, const char *command,
+                   int expected_result, const char *expected, const char *step)
+{
+  char          out_buffer[BUFFER_SIZE];
+  itl_le_t      le   = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  int           result;
+  bool          ok;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), NULL);
+  ITL_STRING_FROM_CSTR(line, before);
+  result = itl_vi_ex_substitute(&le, line, cursor, command);
+  ok     = result == expected_result && test_line_is(line, expected, step);
+  if (result != expected_result) {
+    printf("%s returned %d, expected %d\n", step, result, expected_result);
+  }
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
+static bool
+test_vi_ex_substitute(void)
+{
+  bool ok = true;
+
+  ok &= test_substitute_is("echo foo foo", 0, "s/foo/bar/", 1, "echo bar foo",
+                           "first match");
+  ok &= test_substitute_is("echo foo foo", 0, "s/foo/bar/g", 1,
+                           "echo bar bar", "every match");
+  ok &= test_substitute_is("a foo\nb foo", 0, "s/foo/x/", 1, "a x\nb foo",
+                           "cursor line only");
+  ok &= test_substitute_is("a foo\nb foo", 8, "s/foo/x/", 1, "a foo\nb x",
+                           "second line");
+  ok &= test_substitute_is("a foo\nb foo", 0, "%s/foo/x/", 1, "a x\nb x",
+                           "whole buffer");
+  ok &= test_substitute_is("cd /usr/lib", 0, "s#/usr#/opt#", 1, "cd /opt/lib",
+                           "other delimiter");
+  ok &= test_substitute_is("a/b", 0, "s/\\//-/", 1, "a-b",
+                           "escaped delimiter");
+  ok &= test_substitute_is("echo foo", 0, "s/zz/x/", 0, "echo foo",
+                           "no match");
+  ok &= test_substitute_is("echo foo", 0, "s/foo/x/q", 0, "echo foo",
+                           "bad flag");
+  ok &= test_substitute_is("echo foo", 0, "q", -1, "echo foo",
+                           "not a substitution");
+  ok &= test_substitute_is("echo fooo bar", 0, "s/fo*/x/", 1, "echo x bar",
+                           "pattern");
+  ok &= test_substitute_is("ab ab", 0, "s/\\(a\\)b/\\1\\1/g", 1, "aa aa",
+                           "groups");
+  ok &= test_substitute_is("cat x", 0, "s/x/[&]/", 1, "cat [x]",
+                           "whole match");
+  ok &= test_substitute_is("abc", 0, "s/^/> /", 1, "> abc", "line start");
+  ok &= test_substitute_is("abc", 0, "s/[/x/", 0, "abc", "bad pattern");
+
+  return ok;
+}
+
+static bool
 test_hint_body_wraps_at_words(void)
 {
   static const char WRAPPED[] =
@@ -9329,6 +9388,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_hint_row_is_cut_to_the_width),
                                    DEFINE_TEST_CASE(test_paste_line_breaks),
+                                   DEFINE_TEST_CASE(test_vi_ex_substitute),
                                    DEFINE_TEST_CASE(
                                        test_hint_body_wraps_at_words),
                                    DEFINE_TEST_CASE(
