@@ -161,6 +161,10 @@ typedef enum
   TL_KEY_LAST_ARGUMENT,
   /* Ctrl-X Ctrl-E hands the line to the edit callback. */
   TL_KEY_EDIT_EXTERNAL,
+  /* Alt-X opens the M-x command minibuffer in emacs mode. */
+  TL_KEY_EXECUTE_COMMAND,
+  /* Ctrl-X Z runs the last M-x command again in emacs mode. */
+  TL_KEY_REPEAT,
 
   /* Reported when a bracketed paste sequence begins. Handled internally. */
   TL_KEY_PASTE_BEGIN
@@ -5014,6 +5018,7 @@ itl_esc_parse_vt(uint8_t byte)
 
       case 'y': return TL_KEY_YANK_POP;
       case 't': return TL_KEY_TRANSPOSE | TL_MOD_ALT;
+      case 'x': return TL_KEY_EXECUTE_COMMAND;
 
       case '.':
       case '_': return TL_KEY_LAST_ARGUMENT;
@@ -5100,8 +5105,9 @@ itl_esc_parse_ctrl_x(void)
   ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
 
   switch (byte) {
-  case 5:  return TL_KEY_EDIT_EXTERNAL; /* ctrl e */
-  case 21: return TL_KEY_UNDO;          /* ctrl u */
+  case 5:   return TL_KEY_EDIT_EXTERNAL; /* ctrl e */
+  case 21:  return TL_KEY_UNDO;          /* ctrl u */
+  case 'z': return TL_KEY_REPEAT;
   }
 
   /* The chord is not bound, so the byte starts the next key and an arrow after
@@ -5325,8 +5331,60 @@ typedef enum
   ITL_PREFIX_VI_REGISTER,
   ITL_PREFIX_VI_FIND,
   ITL_PREFIX_VI_REPLACE,
-  ITL_PREFIX_VI_EX
+  ITL_PREFIX_VI_EX,
+  /* The M-x minibuffer, whose hint lists the commands that match the text. */
+  ITL_PREFIX_EMACS_X,
+  /* A minibuffer that asks for text, whose hint is itl_g_minibuffer_hint. */
+  ITL_PREFIX_MINIBUFFER
 } itl_prefix_kind;
+
+/* The text typed into the open minibuffer, and the hint of a minibuffer that
+   asks for text. */
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_minibuffer_text = "";
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_minibuffer_hint = "";
+
+/* The M-x commands that are not a key of the editor. */
+typedef enum
+{
+  ITL_EMACS_KILL_KOSH = -1,
+  ITL_EMACS_REPEAT    = -2,
+  ITL_EMACS_REPLACE_STRING = -3,
+  ITL_EMACS_REPLACE_REGEXP = -4
+} itl_emacs_action;
+
+/* An M-x command and the key it runs, or an itl_emacs_action. The table is
+   sorted, so the hint and completion list the commands in order. */
+typedef struct
+{
+  const char *name;
+  int         key;
+} itl_emacs_command;
+
+static const itl_emacs_command itl_emacs_commands[] = {
+    {"backward-delete-char", TL_KEY_BACKSPACE},
+    {"backward-kill-word", TL_KEY_BACKSPACE | TL_MOD_CTRL},
+    {"backward-word", TL_KEY_LEFT | TL_MOD_CTRL},
+    {"beginning-of-history", TL_KEY_HISTORY_BEGINNING},
+    {"beginning-of-line", TL_KEY_HOME},
+    {"clear-screen", TL_KEY_CLEAR},
+    {"delete-char", TL_KEY_DELETE},
+    {"end-of-history", TL_KEY_HISTORY_END},
+    {"end-of-line", TL_KEY_END},
+    {"forward-word", TL_KEY_RIGHT | TL_MOD_CTRL},
+    {"kill-kosh", ITL_EMACS_KILL_KOSH},
+    {"kill-line", TL_KEY_KILL_LINE},
+    {"kill-word", TL_KEY_DELETE | TL_MOD_CTRL},
+    {"repeat", ITL_EMACS_REPEAT},
+    {"replace-regexp", ITL_EMACS_REPLACE_REGEXP},
+    {"replace-string", ITL_EMACS_REPLACE_STRING},
+    {"transpose-chars", TL_KEY_TRANSPOSE},
+    {"transpose-words", TL_KEY_TRANSPOSE | TL_MOD_ALT},
+    {"undo", TL_KEY_UNDO},
+    {"undo-redo", TL_KEY_REDO},
+    {"unix-line-discard", TL_KEY_KILL_LINE_BEFORE},
+    {"yank", TL_KEY_YANK},
+    {"yank-last-arg", TL_KEY_LAST_ARGUMENT},
+};
 
 ITL_DEF ITL_THREAD_LOCAL itl_prefix_kind itl_g_prefix_kind = ITL_PREFIX_NONE;
 /* The byte that opened a find chord, one of f, F, t, and T. */
@@ -6379,6 +6437,45 @@ itl_prefix_append(char *out, size_t out_size, size_t *length, const char *text)
   out[*length] = '\0';
 }
 
+/* Writes the M-x hint, which lists every command that starts with the text
+   typed so far on rows of at most 72 columns. */
+ITL_DEF void
+itl_emacs_command_hint(char *out, size_t out_size, size_t *out_length)
+{
+  size_t text_length = strlen(itl_g_minibuffer_text);
+  size_t match_count = 0;
+  size_t row_columns = 0;
+  size_t i;
+
+  for (i = 0; i < ITL_COUNTOF(itl_emacs_commands); ++i) {
+    if (strncmp(itl_emacs_commands[i].name, itl_g_minibuffer_text,
+                text_length) == 0)
+    {
+      match_count += 1;
+    }
+  }
+  itl_prefix_append(out, out_size, out_length,
+                    match_count == 0
+                        ? "pressed M-x\nno command starts with this text"
+                        : "pressed M-x\nwaiting for a command, then enter "
+                          "or tab to complete it");
+  for (i = 0; i < ITL_COUNTOF(itl_emacs_commands); ++i) {
+    const char *name        = itl_emacs_commands[i].name;
+    size_t      name_length = strlen(name);
+
+    if (strncmp(name, itl_g_minibuffer_text, text_length) != 0) continue;
+    if (row_columns == 0 || row_columns + 2 + name_length > 72) {
+      itl_prefix_append(out, out_size, out_length, row_columns == 0 ? "\n" : ",\n");
+      row_columns = 0;
+    } else {
+      itl_prefix_append(out, out_size, out_length, ", ");
+      row_columns += 2;
+    }
+    itl_prefix_append(out, out_size, out_length, name);
+    row_columns += name_length;
+  }
+}
+
 /* Write the hint of the open prefix into out, or return false when no key
    waits. A vi count, register, or operator held between keys in normal mode
    counts as a prefix too. The keys typed so far are the header, and the keys
@@ -6400,14 +6497,25 @@ itl_prefix_hint(char *out, size_t out_size)
   if (itl_g_prefix_kind == ITL_PREFIX_CTRL_X) {
     itl_prefix_append(out, out_size, &out_length,
                       "pressed ctrl-x\nwaiting for ctrl-e (edit in $VISUAL), "
-                      "ctrl-u (undo)");
+                      "ctrl-u (undo), z (repeat the last M-x command)");
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_VI_EX) {
     itl_prefix_append(out, out_size, &out_length,
-                      "pressed :\nwaiting for q, q!, quit, wq, wq!, or x "
-                      "(quit), s/old/new/ or %s/old/new/ with an optional g "
-                      "(substitute), then enter");
+                      "pressed :\nwaiting for a command, then enter\n"
+                      "q, q!, quit, wq, wq!, or x (quit)\n"
+                      "u or undo, red or redo\n"
+                      "s/old/new/ or %s/old/new/ with an optional g "
+                      "(substitute)\n"
+                      "& or && (repeat the substitution)");
+    return true;
+  }
+  if (itl_g_prefix_kind == ITL_PREFIX_EMACS_X) {
+    itl_emacs_command_hint(out, out_size, &out_length);
+    return true;
+  }
+  if (itl_g_prefix_kind == ITL_PREFIX_MINIBUFFER) {
+    itl_prefix_append(out, out_size, &out_length, itl_g_minibuffer_hint);
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_NONE && !is_vi_held) {
@@ -6714,7 +6822,7 @@ itl_hint_compose(const char *line,
                  size_t      cols,
                  size_t      row_budget)
 {
-  char        prefix_text[160];
+  char        prefix_text[1024];
   const char *sgr      = NULL;
   const char *returned = NULL;
   const char *line_break;
@@ -8872,6 +8980,10 @@ itl_menu_directory_sgr(void)
 
 ITL_DEF tl_status_code
 itl_le_key_handle(itl_le_t *le, int esc);
+ITL_DEF tl_status_code
+itl_emacs_execute_command(itl_le_t *le);
+ITL_DEF tl_status_code
+itl_emacs_repeat(itl_le_t *le);
 
 /* Every row of one menu repaint. The help row and the count row are counted
    here beside the candidates, and a repaint never draws a row the layout did
@@ -13125,6 +13237,20 @@ itl_le_key_handle(itl_le_t *le, int esc)
       itl_g_tty_should_refresh_text = false;
     }
   } break;
+
+  case TL_KEY_EXECUTE_COMMAND:
+    if (itl_g_edit_mode == TL_EDIT_MODE_EMACS) {
+      return itl_emacs_execute_command(le);
+    }
+    itl_g_tty_should_refresh_text = false;
+    break;
+
+  case TL_KEY_REPEAT:
+    if (itl_g_edit_mode == TL_EDIT_MODE_EMACS) {
+      return itl_emacs_repeat(le);
+    }
+    itl_g_tty_should_refresh_text = false;
+    break;
   }
 
   return TL_SUCCESS;
@@ -15269,81 +15395,95 @@ itl_vi_ex_substitute_field(const char *at,
   return at;
 }
 
-/* Finds the first match of an ex substitution pattern in the first length
-   bytes of text, which end with a NUL byte. With regex support the pattern is
-   compiled, and without it the match is literal. Returns false when nothing
-   matches. */
-ITL_DEF bool
-itl_vi_ex_find(const void *pattern,
-               const char *pattern_text,
-               size_t      pattern_len,
-               const char *text,
-               size_t      length,
-               bool        is_line_start,
-               size_t     *match_start,
-               size_t     *match_end,
-               size_t      groups[10][2])
+/* One substitution: the text to find and its replacement. is_regex matches a
+   POSIX basic regular expression when regex support is built in. The vi
+   replacement reads & as the match, and with is_emacs_syntax the replacement
+   reads \& as the match instead, as replace-regexp does. In both, \1 through
+   \9 stand for the groups. */
+typedef struct
 {
-#if defined ITL_HAS_REGEX
-  regmatch_t matches[10];
-  size_t     i;
+  char   old_text[64];
+  size_t old_len;
+  char   new_text[64];
+  size_t new_len;
+  bool   is_whole;
+  bool   is_global;
+  bool   is_regex;
+  bool   is_emacs_syntax;
+} itl_substitution;
 
-  (void) pattern_text;
-  (void) pattern_len;
-  (void) length;
-  if (regexec((const regex_t *) pattern, text, 10, matches,
-              is_line_start ? 0 : REG_NOTBOL) != 0)
-  {
-    return false;
-  }
-  for (i = 0; i < 10; ++i) {
-    groups[i][0] = matches[i].rm_so < 0 ? 0 : (size_t) matches[i].rm_so;
-    groups[i][1] = matches[i].rm_so < 0 ? 0 : (size_t) matches[i].rm_eo;
-  }
-  *match_start = groups[0][0];
-  *match_end   = groups[0][1];
+/* The last substitution of the colon command line, for & and &&. */
+ITL_DEF ITL_THREAD_LOCAL itl_substitution itl_g_vi_last_substitution;
+ITL_DEF ITL_THREAD_LOCAL bool             itl_g_vi_has_last_substitution =
+    false;
 
-  return true;
-#else
+/* Finds the first match of substitution in the first length bytes of text,
+   which end with a NUL byte. pattern is the compiled regular expression of a
+   regex substitution. Returns false when nothing matches. */
+ITL_DEF bool
+itl_substitution_find(const itl_substitution *substitution,
+                      const void             *pattern,
+                      const char             *text,
+                      size_t                  length,
+                      bool                    is_line_start,
+                      size_t                  groups[10][2])
+{
   size_t i;
 
+#if defined ITL_HAS_REGEX
+  if (substitution->is_regex) {
+    regmatch_t matches[10];
+
+    if (regexec((const regex_t *) pattern, text, 10, matches,
+                is_line_start ? 0 : REG_NOTBOL) != 0)
+    {
+      return false;
+    }
+    for (i = 0; i < 10; ++i) {
+      groups[i][0] = matches[i].rm_so < 0 ? 0 : (size_t) matches[i].rm_so;
+      groups[i][1] = matches[i].rm_so < 0 ? 0 : (size_t) matches[i].rm_eo;
+    }
+
+    return true;
+  }
+#endif
   (void) pattern;
   (void) is_line_start;
-  for (i = 0; i + pattern_len <= length; ++i) {
-    if (memcmp(text + i, pattern_text, pattern_len) == 0) {
+  for (i = 0; i + substitution->old_len <= length; ++i) {
+    if (memcmp(text + i, substitution->old_text, substitution->old_len) == 0) {
       memset(groups, 0, sizeof(size_t) * 20);
       groups[0][0] = i;
-      groups[0][1] = i + pattern_len;
-      *match_start = i;
-      *match_end   = i + pattern_len;
+      groups[0][1] = i + substitution->old_len;
       return true;
     }
   }
 
   return false;
-#endif
 }
 
-/* Appends the replacement of one match to out. With regex support '&' stands
-   for the whole match, \1 through \9 for its groups, and a backslash keeps the
-   next byte literal. */
+/* Appends the replacement of one match to out. The replacement of a literal
+   substitution is literal, and a backslash before any other byte keeps that
+   byte. */
 ITL_DEF void
-itl_vi_ex_append_replacement(itl_char_buf_t *out,
-                             const char     *replacement,
-                             size_t          replacement_len,
-                             const char     *text,
-                             size_t          groups[10][2])
+itl_substitution_append(itl_char_buf_t         *out,
+                        const itl_substitution *substitution,
+                        const char             *text,
+                        size_t                  groups[10][2])
 {
-  size_t i;
+  const char *replacement = substitution->new_text;
+  size_t      i;
 
-#if defined ITL_HAS_REGEX
-  for (i = 0; i < replacement_len; ++i) {
+  if (!substitution->is_regex) {
+    itl_char_buf_append_bytes(out, replacement, substitution->new_len);
+    return;
+  }
+  for (i = 0; i < substitution->new_len; ++i) {
     char c = replacement[i];
 
-    if (c == '&') {
+    if (c == '&' && !substitution->is_emacs_syntax) {
       itl_char_buf_append_bytes(out, text + groups[0][0],
                                 groups[0][1] - groups[0][0]);
-    } else if (c == '\\' && i + 1 < replacement_len) {
+    } else if (c == '\\' && i + 1 < substitution->new_len) {
       char next = replacement[++i];
 
       if (next >= '1' && next <= '9') {
@@ -15351,6 +15491,9 @@ itl_vi_ex_append_replacement(itl_char_buf_t *out,
 
         itl_char_buf_append_bytes(out, text + groups[group][0],
                                   groups[group][1] - groups[group][0]);
+      } else if (next == '&' && substitution->is_emacs_syntax) {
+        itl_char_buf_append_bytes(out, text + groups[0][0],
+                                  groups[0][1] - groups[0][0]);
       } else {
         itl_char_buf_append_byte(out, (uint8_t) next);
       }
@@ -15358,35 +15501,18 @@ itl_vi_ex_append_replacement(itl_char_buf_t *out,
       itl_char_buf_append_byte(out, (uint8_t) c);
     }
   }
-#else
-  (void) text;
-  (void) groups;
-  for (i = 0; i < replacement_len; ++i) {
-    itl_char_buf_append_byte(out, (uint8_t) replacement[i]);
-  }
-#endif
 }
 
-/* Applies an ex substitution, [%]s/old/new/[g], to line. Without '%' it acts
-   on the line of the buffer that holds the cursor, and with it on every line.
-   The delimiter is any punctuation byte after 's'. old is a POSIX basic
-   regular expression when regex support is built in, and literal text
-   otherwise. 'g' replaces every match in a line instead of the first one.
-   Returns -1 when command is not a substitution, 0 when nothing is replaced or
-   the result would not fit, and 1 when line changed. */
-ITL_DEF int
-itl_vi_ex_substitute(const itl_le_t *le,
-                     itl_string_t   *line,
-                     size_t          cursor,
-                     const char     *command)
+/* Applies substitution to line. Without is_whole it acts on the row of the
+   buffer that holds cursor, and with it on every row. Without is_global only
+   the first match of each row is replaced. Returns false when nothing is
+   replaced, the pattern does not compile, or the result would not fit. */
+ITL_DEF bool
+itl_substitution_apply(const itl_le_t         *le,
+                       itl_string_t           *line,
+                       size_t                  cursor,
+                       const itl_substitution *substitution)
 {
-  char            old_text[64];
-  char            new_text[64];
-  size_t          old_len, new_len;
-  bool            is_whole  = false;
-  bool            is_global = false;
-  char            delimiter;
-  const char     *at = command;
   char           *text;
   char           *row;
   itl_char_buf_t *out;
@@ -15395,50 +15521,14 @@ itl_vi_ex_substitute(const itl_le_t *le,
   size_t          groups[10][2];
   bool            is_ok;
 #if defined ITL_HAS_REGEX
-  regex_t  compiled;
-  regex_t *pattern = &compiled;
-#else
-  void *pattern = NULL;
-#endif
+  regex_t compiled;
 
-  if (*at == '%') {
-    is_whole = true;
-    at += 1;
-  }
-  if (*at != 's') {
-    return -1;
-  }
-  at += 1;
-  delimiter = *at;
-  if (delimiter == '\0' || isalnum((uint8_t) delimiter) ||
-      isspace((uint8_t) delimiter) || delimiter == '\\')
+  if (substitution->is_regex && regcomp(&compiled, substitution->old_text, 0))
   {
-    return 0;
+    return false;
   }
-  at = itl_vi_ex_substitute_field(at + 1, delimiter, old_text,
-                                  sizeof(old_text), &old_len);
-  if (at == NULL || *at != delimiter || old_len == 0) {
-    return 0;
-  }
-  at = itl_vi_ex_substitute_field(at + 1, delimiter, new_text,
-                                  sizeof(new_text), &new_len);
-  if (at == NULL) {
-    return 0;
-  }
-  if (*at == delimiter) {
-    at += 1;
-  }
-  if (*at == 'g') {
-    is_global = true;
-    at += 1;
-  }
-  if (*at != '\0') {
-    return 0;
-  }
-#if defined ITL_HAS_REGEX
-  if (regcomp(&compiled, old_text, 0) != 0) {
-    return 0;
-  }
+#else
+  int compiled = 0;
 #endif
 
   text = (char *) itl_malloc(line->size + 1);
@@ -15451,7 +15541,7 @@ itl_vi_ex_substitute(const itl_le_t *le,
 
   begin = 0;
   end   = line->size;
-  if (!is_whole) {
+  if (!substitution->is_whole) {
     for (begin = cursor_byte; begin > 0 && text[begin - 1] != '\n'; --begin) {
     }
     for (end = cursor_byte; end < line->size && text[end] != '\n'; ++end) {
@@ -15472,15 +15562,15 @@ itl_vi_ex_substitute(const itl_le_t *le,
     while (position <= row_len) {
       size_t match_start, match_end;
 
-      if (!itl_vi_ex_find(pattern, old_text, old_len, row + position,
-                          row_len - position, position == 0, &match_start,
-                          &match_end, groups))
+      if (!itl_substitution_find(substitution, &compiled, row + position,
+                                 row_len - position, position == 0, groups))
       {
         break;
       }
+      match_start = groups[0][0];
+      match_end   = groups[0][1];
       itl_char_buf_append_bytes(out, row + position, match_start);
-      itl_vi_ex_append_replacement(out, new_text, new_len, row + position,
-                                   groups);
+      itl_substitution_append(out, substitution, row + position, groups);
       match_count += 1;
       if (match_end == match_start) {
         /* An empty match keeps the next byte, so the scan advances. */
@@ -15491,7 +15581,7 @@ itl_vi_ex_substitute(const itl_le_t *le,
       } else {
         position += match_end;
       }
-      if (!is_global) {
+      if (!substitution->is_global) {
         break;
       }
     }
@@ -15512,17 +15602,178 @@ itl_vi_ex_substitute(const itl_le_t *le,
   }
 
 #if defined ITL_HAS_REGEX
-  regfree(&compiled);
+  if (substitution->is_regex) {
+    regfree(&compiled);
+  }
 #endif
   ITL_CHAR_BUF_FREE(out);
   ITL_FREE(row);
   ITL_FREE(text);
 
-  return is_ok ? 1 : 0;
+  return is_ok;
 }
 
-ITL_DEF tl_status_code
-itl_vi_ex_command(itl_le_t *le)
+/* Applies substitution to the buffer of le as one undo step. */
+ITL_DEF bool
+itl_le_substitute(itl_le_t *le, const itl_substitution *substitution)
+{
+  itl_string_t *changed = itl_string_alloc();
+  bool          is_changed;
+
+  itl_string_copy(changed, le->line);
+  is_changed =
+      itl_substitution_apply(le, changed, le->cursor_position, substitution);
+  if (is_changed) {
+    itl_history_reset_after_edit(le);
+    itl_undo_push_closed(le);
+    itl_string_copy(le->line, changed);
+    if (le->cursor_position > le->line->length) {
+      le->cursor_position = le->line->length;
+    }
+    itl_g_tty_should_refresh_text = true;
+  }
+  ITL_STRING_FREE(changed);
+
+  return is_changed;
+}
+
+/* Parses a colon substitution into substitution: [%]s/old/new/[g], where the
+   delimiter is any punctuation byte after 's', and [%]& or [%]&&, which repeat
+   the last substitution without or with its g flag. A bare s repeats it as &
+   does. Returns -1 when command is not a substitution, 0 when it is malformed
+   or has nothing to repeat, and 1 when substitution holds it. */
+ITL_DEF int
+itl_vi_ex_parse_substitute(const char *command, itl_substitution *substitution)
+{
+  bool        is_whole = false;
+  char        delimiter;
+  const char *at = command;
+
+  if (*at == '%') {
+    is_whole = true;
+    at += 1;
+  }
+  if (*at == '&' || strcmp(at, "s") == 0) {
+    bool is_flag_kept = at[0] == '&' && at[1] == '&';
+
+    if (strcmp(at, "&") != 0 && strcmp(at, "&&") != 0 && strcmp(at, "s") != 0)
+    {
+      return 0;
+    }
+    if (!itl_g_vi_has_last_substitution) {
+      return 0;
+    }
+    *substitution          = itl_g_vi_last_substitution;
+    substitution->is_whole = is_whole;
+    if (!is_flag_kept) {
+      substitution->is_global = false;
+    }
+    return 1;
+  }
+  if (*at != 's') {
+    return -1;
+  }
+  at += 1;
+  delimiter = *at;
+  if (delimiter == '\0' || isalnum((uint8_t) delimiter) ||
+      isspace((uint8_t) delimiter) || delimiter == '\\')
+  {
+    return 0;
+  }
+  memset(substitution, 0, sizeof(*substitution));
+  at = itl_vi_ex_substitute_field(at + 1, delimiter, substitution->old_text,
+                                  sizeof(substitution->old_text),
+                                  &substitution->old_len);
+  if (at == NULL || *at != delimiter || substitution->old_len == 0) {
+    return 0;
+  }
+  at = itl_vi_ex_substitute_field(at + 1, delimiter, substitution->new_text,
+                                  sizeof(substitution->new_text),
+                                  &substitution->new_len);
+  if (at == NULL) {
+    return 0;
+  }
+  if (*at == delimiter) {
+    at += 1;
+  }
+  if (*at == 'g') {
+    substitution->is_global = true;
+    at += 1;
+  }
+  if (*at != '\0') {
+    return 0;
+  }
+#if defined ITL_HAS_REGEX
+  substitution->is_regex = true;
+#endif
+  substitution->is_whole         = is_whole;
+  itl_g_vi_last_substitution     = *substitution;
+  itl_g_vi_has_last_substitution = true;
+
+  return 1;
+}
+
+/* Applies the colon substitution command to line. Returns -1 when command is
+   not a substitution, 0 when nothing is replaced, and 1 when line changed. */
+ITL_DEF int
+itl_vi_ex_substitute(const itl_le_t *le,
+                     itl_string_t   *line,
+                     size_t          cursor,
+                     const char     *command)
+{
+  itl_substitution substitution;
+  int              parsed = itl_vi_ex_parse_substitute(command, &substitution);
+
+  if (parsed <= 0) {
+    return parsed;
+  }
+
+  return itl_substitution_apply(le, line, cursor, &substitution) ? 1 : 0;
+}
+
+/* Completes text to the longest prefix that every M-x command starting with
+   it shares. Returns the length of text. */
+ITL_DEF size_t
+itl_emacs_complete(char *text, size_t text_size)
+{
+  size_t      text_length   = strlen(text);
+  size_t      common_length = 0;
+  const char *first         = NULL;
+  size_t      i, j;
+
+  for (i = 0; i < ITL_COUNTOF(itl_emacs_commands); ++i) {
+    const char *name = itl_emacs_commands[i].name;
+
+    if (strncmp(name, text, text_length) != 0) continue;
+    if (first == NULL) {
+      first         = name;
+      common_length = strlen(name);
+      continue;
+    }
+    for (j = text_length; j < common_length && name[j] == first[j]; ++j) {
+    }
+    common_length = j;
+  }
+  if (first != NULL && common_length < text_size) {
+    memcpy(text, first, common_length);
+    text[common_length] = '\0';
+    text_length         = common_length;
+  }
+
+  return text_length;
+}
+
+/* Reads a line of text into text on a row under the buffer, after label, as
+   the colon command line and the M-x minibuffer do. The buffer and the caret
+   stay as they were. With kind ITL_PREFIX_EMACS_X, TAB completes a command.
+   Returns true when Enter accepts the text, and false when Escape, Ctrl-C,
+   Ctrl-D, or Backspace on empty text closes the minibuffer. */
+ITL_DEF bool
+itl_minibuffer_read(itl_le_t       *le,
+                    const char     *label,
+                    itl_prefix_kind kind,
+                    char           *text,
+                    size_t          text_size)
 {
   itl_string_t   *original = itl_string_alloc();
   itl_string_t   *display  = itl_string_alloc();
@@ -15536,27 +15787,26 @@ itl_vi_ex_command(itl_le_t *le)
   itl_string_t *saved_line         = le->line;
   size_t        saved_cursor       = le->cursor_position;
 
-  char   command[64];
-  size_t command_length = 0;
+  size_t  text_length  = 0;
+  size_t  label_length = strlen(label);
+  bool    is_accepted  = false;
+  bool    is_done      = false;
+  uint8_t byte;
 
-  tl_status_code result           = TL_SUCCESS;
-  bool           is_done          = false;
-  bool           did_substitute   = false;
-  uint8_t        byte;
-
-  command[0] = '\0';
+  text[0] = '\0';
   itl_string_copy(original, le->line);
-  itl_g_prefix_kind = ITL_PREFIX_VI_EX;
+  itl_g_prefix_kind     = kind;
+  itl_g_minibuffer_text = text;
 
   while (!is_done) {
-    int key, kind;
+    int key, key_kind;
 
     ITL_CHAR_BUF_CLEAR(status);
-    /* The display is original plus '\n', ':', and the command, so its length
-       must stay under ITL_STRING_MAX_LEN or itl_string_from_bytes traps. Clip
-       the preview of the original line to the remaining budget. */
+    /* The display is original plus '\n', the label, and the text, so its
+       length must stay under ITL_STRING_MAX_LEN or itl_string_from_bytes
+       traps. Clip the preview of the original line to the remaining budget. */
     {
-      size_t budget = ITL_STRING_MAX_LEN - 2 - command_length;
+      size_t budget = ITL_STRING_MAX_LEN - 1 - label_length - text_length;
       itl_string_copy(preview, original);
       if (preview->length > budget) {
         preview->length = budget;
@@ -15565,8 +15815,8 @@ itl_vi_ex_command(itl_le_t *le)
       itl_char_buf_append_string(status, preview);
     }
     itl_char_buf_append_byte(status, '\n');
-    itl_char_buf_append_byte(status, ':');
-    itl_char_buf_append_cstr(status, command);
+    itl_char_buf_append_cstr(status, label);
+    itl_char_buf_append_cstr(status, text);
 
     itl_string_from_bytes(display, status->data, status->size);
 
@@ -15581,24 +15831,25 @@ itl_vi_ex_command(itl_le_t *le)
       break;
     }
 
-    key  = itl_esc_parse(byte);
-    kind = key & TL_MASK_KEY;
+    key      = itl_esc_parse(byte);
+    key_kind = key & TL_MASK_KEY;
 
-    switch (kind) {
+    switch (key_kind) {
     case TL_KEY_ENTER:
-      if (itl_vi_ex_is_quit(command)) {
-        result = TL_PRESSED_QUIT;
-      } else {
-        did_substitute =
-            itl_vi_ex_substitute(le, original, saved_cursor, command) > 0;
+      is_accepted = true;
+      is_done     = true;
+      break;
+
+    case TL_KEY_TAB:
+      if (kind == ITL_PREFIX_EMACS_X) {
+        text_length = itl_emacs_complete(text, text_size);
       }
-      is_done = true;
       break;
 
     case TL_KEY_BACKSPACE:
-      if (command_length > 0) {
-        command_length -= 1;
-        command[command_length] = '\0';
+      if (text_length > 0) {
+        text_length -= 1;
+        text[text_length] = '\0';
       } else {
         is_done = true;
       }
@@ -15606,9 +15857,9 @@ itl_vi_ex_command(itl_le_t *le)
 
     case TL_KEY_CHAR:
       /* An Alt-modified key arrives with its escape byte, which is not text. */
-      if (key == TL_KEY_CHAR && command_length < sizeof(command) - 1) {
-        command[command_length++] = (char) byte;
-        command[command_length]   = '\0';
+      if (key == TL_KEY_CHAR && text_length < text_size - 1) {
+        text[text_length++] = (char) byte;
+        text[text_length]   = '\0';
       }
       break;
 
@@ -15621,23 +15872,14 @@ itl_vi_ex_command(itl_le_t *le)
     }
   }
 
-  itl_g_prefix_kind = ITL_PREFIX_NONE;
-  le->prompt        = saved_prompt;
-  le->prompt_size   = saved_prompt_size;
-  le->prompt_width  = saved_prompt_width;
-  le->prompt_rows   = saved_prompt_rows;
-  le->line          = saved_line;
-  /* A substitution is one undo step, so the line before it is saved first. */
-  if (did_substitute) {
-    le->cursor_position =
-        saved_cursor <= le->line->length ? saved_cursor : le->line->length;
-    itl_history_reset_after_edit(le);
-    itl_undo_push_closed(le);
-  }
-  itl_string_copy(le->line, original);
-  le->cursor_position =
-      saved_cursor <= le->line->length ? saved_cursor : le->line->length;
-  itl_vi_clamp_command_cursor(le);
+  itl_g_prefix_kind     = ITL_PREFIX_NONE;
+  itl_g_minibuffer_text = "";
+  le->prompt            = saved_prompt;
+  le->prompt_size       = saved_prompt_size;
+  le->prompt_width      = saved_prompt_width;
+  le->prompt_rows       = saved_prompt_rows;
+  le->line              = saved_line;
+  le->cursor_position   = saved_cursor;
   itl_search_spans_clear();
   itl_g_tty_should_refresh_text = true;
 
@@ -15646,7 +15888,167 @@ itl_vi_ex_command(itl_le_t *le)
   ITL_STRING_FREE(preview);
   ITL_CHAR_BUF_FREE(status);
 
+  return is_accepted;
+}
+
+ITL_DEF tl_status_code
+itl_vi_ex_command(itl_le_t *le)
+{
+  char             command[64];
+  itl_substitution substitution;
+  tl_status_code   result = TL_SUCCESS;
+
+  if (itl_minibuffer_read(le, ":", ITL_PREFIX_VI_EX, command,
+                          sizeof(command)))
+  {
+    if (itl_vi_ex_is_quit(command)) {
+      result = TL_PRESSED_QUIT;
+    } else if (strcmp(command, "u") == 0 || strcmp(command, "undo") == 0) {
+      result = itl_le_key_handle(le, TL_KEY_UNDO);
+    } else if (strcmp(command, "red") == 0 || strcmp(command, "redo") == 0) {
+      result = itl_le_key_handle(le, TL_KEY_REDO);
+    } else if (itl_vi_ex_parse_substitute(command, &substitution) > 0) {
+      itl_le_substitute(le, &substitution);
+    }
+  }
+  itl_vi_clamp_command_cursor(le);
+  itl_g_tty_should_refresh_text = true;
+
   return result;
+}
+
+/* The last command M-x ran and the substitution it took, for repeat and
+   Ctrl-X Z. */
+ITL_DEF ITL_THREAD_LOCAL int              itl_g_emacs_last_command = -1;
+ITL_DEF ITL_THREAD_LOCAL itl_substitution itl_g_emacs_last_substitution;
+
+ITL_DEF tl_status_code
+itl_emacs_run_command(itl_le_t *le, size_t index)
+{
+  int action = itl_emacs_commands[index].key;
+
+  if (action == ITL_EMACS_KILL_KOSH) {
+    return TL_PRESSED_QUIT;
+  }
+  if (action == ITL_EMACS_REPLACE_STRING ||
+      action == ITL_EMACS_REPLACE_REGEXP)
+  {
+    itl_le_substitute(le, &itl_g_emacs_last_substitution);
+    return TL_SUCCESS;
+  }
+
+  return itl_le_key_handle(le, action);
+}
+
+/* Runs the last M-x command again, with the same answers. */
+ITL_DEF tl_status_code
+itl_emacs_repeat(itl_le_t *le)
+{
+  if (itl_g_emacs_last_command < 0) {
+    itl_g_tty_should_refresh_text = false;
+    return TL_SUCCESS;
+  }
+
+  return itl_emacs_run_command(le, (size_t) itl_g_emacs_last_command);
+}
+
+/* Asks for the text and the replacement of replace-string or replace-regexp.
+   Both act on the whole buffer and replace every match. Returns false when
+   a minibuffer is closed or the text to replace is empty. */
+ITL_DEF bool
+itl_emacs_read_replacement(itl_le_t         *le,
+                           bool              is_regex,
+                           itl_substitution *substitution)
+{
+  char        label[96];
+  const char *kind_text = is_regex ? "regexp" : "string";
+
+  memset(substitution, 0, sizeof(*substitution));
+  itl_g_minibuffer_hint =
+      is_regex ? "pressed M-x replace-regexp\nwaiting for a basic regular "
+                 "expression, then enter"
+               : "pressed M-x replace-string\nwaiting for the text to "
+                 "replace, then enter";
+  strcpy(label, "Replace ");
+  strcat(label, kind_text);
+  strcat(label, ": ");
+  if (!itl_minibuffer_read(le, label, ITL_PREFIX_MINIBUFFER,
+                           substitution->old_text,
+                           sizeof(substitution->old_text)) ||
+      substitution->old_text[0] == '\0')
+  {
+    return false;
+  }
+
+  itl_g_minibuffer_hint =
+      is_regex ? "pressed M-x replace-regexp\nwaiting for the replacement, "
+                 "where \\& is the match and \\1 to \\9 its groups, then "
+                 "enter"
+               : "pressed M-x replace-string\nwaiting for the replacement, "
+                 "then enter";
+  strcpy(label, "Replace ");
+  strcat(label, kind_text);
+  strcat(label, " ");
+  strcat(label, substitution->old_text);
+  strcat(label, " with: ");
+  if (!itl_minibuffer_read(le, label, ITL_PREFIX_MINIBUFFER,
+                           substitution->new_text,
+                           sizeof(substitution->new_text)))
+  {
+    return false;
+  }
+
+  substitution->old_len   = strlen(substitution->old_text);
+  substitution->new_len   = strlen(substitution->new_text);
+  substitution->is_whole  = true;
+  substitution->is_global = true;
+#if defined ITL_HAS_REGEX
+  substitution->is_regex = is_regex;
+#endif
+  substitution->is_emacs_syntax = true;
+
+  return true;
+}
+
+ITL_DEF tl_status_code
+itl_emacs_execute_command(itl_le_t *le)
+{
+  char             name[64];
+  itl_substitution substitution;
+  size_t           i;
+  int              action;
+
+  if (!itl_minibuffer_read(le, "M-x ", ITL_PREFIX_EMACS_X, name,
+                           sizeof(name)))
+  {
+    return TL_SUCCESS;
+  }
+  for (i = 0; i < ITL_COUNTOF(itl_emacs_commands); ++i) {
+    if (strcmp(itl_emacs_commands[i].name, name) == 0) {
+      break;
+    }
+  }
+  if (i == ITL_COUNTOF(itl_emacs_commands)) {
+    return TL_SUCCESS;
+  }
+
+  action = itl_emacs_commands[i].key;
+  if (action == ITL_EMACS_REPEAT) {
+    return itl_emacs_repeat(le);
+  }
+  if (action == ITL_EMACS_REPLACE_STRING ||
+      action == ITL_EMACS_REPLACE_REGEXP)
+  {
+    if (!itl_emacs_read_replacement(le, action == ITL_EMACS_REPLACE_REGEXP,
+                                    &substitution))
+    {
+      return TL_SUCCESS;
+    }
+    itl_g_emacs_last_substitution = substitution;
+  }
+  itl_g_emacs_last_command = (int) i;
+
+  return itl_emacs_run_command(le, i);
 }
 
 /* The one-key forms of an operator and a motion, such as x for dl. */

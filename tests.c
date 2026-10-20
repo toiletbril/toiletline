@@ -7611,6 +7611,73 @@ test_vi_ex_substitute(void)
                            "whole match");
   ok &= test_substitute_is("abc", 0, "s/^/> /", 1, "> abc", "line start");
   ok &= test_substitute_is("abc", 0, "s/[/x/", 0, "abc", "bad pattern");
+  ok &= test_substitute_is("a a", 0, "s/a/b/g", 1, "b b", "remembered");
+  ok &= test_substitute_is("a a", 0, "&", 1, "b a", "repeat without g");
+  ok &= test_substitute_is("a a", 0, "&&", 1, "b b", "repeat with g");
+  ok &= test_substitute_is("a\na", 0, "%&", 1, "b\nb", "repeat on every row");
+  ok &= test_substitute_is("a a", 0, "&x", 0, "a a", "bad repeat");
+
+  return ok;
+}
+
+static bool
+test_emacs_replacement_is(const char *before, const char *old_text,
+                          const char *new_text, bool is_regex,
+                          const char *expected, const char *step)
+{
+  char             out_buffer[BUFFER_SIZE];
+  itl_le_t         le   = ITL_ZERO_INIT;
+  itl_string_t    *line = itl_string_alloc();
+  itl_substitution substitution;
+  bool             ok;
+
+  memset(&substitution, 0, sizeof(substitution));
+  strcpy(substitution.old_text, old_text);
+  strcpy(substitution.new_text, new_text);
+  substitution.old_len         = strlen(old_text);
+  substitution.new_len         = strlen(new_text);
+  substitution.is_whole        = true;
+  substitution.is_global       = true;
+  substitution.is_regex        = is_regex;
+  substitution.is_emacs_syntax = true;
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), NULL);
+  ITL_STRING_FROM_CSTR(line, before);
+  itl_substitution_apply(&le, line, 0, &substitution);
+  ok = test_line_is(line, expected, step);
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
+static bool
+test_emacs_commands(void)
+{
+  char text[64];
+  bool ok = true;
+
+  ok &= test_emacs_replacement_is("a.b a.b", ".", "-", false, "a-b a-b",
+                                  "replace-string is literal");
+  ok &= test_emacs_replacement_is("x\ny", "x", "&", false, "&\ny",
+                                  "replace-string keeps &");
+  ok &= test_emacs_replacement_is("foo bar", "\\(o*\\) ", "[\\&|\\1]&",
+                                  true, "f[oo |oo]&bar",
+                                  "replace-regexp reads \\& and groups");
+
+  strcpy(text, "rep");
+  itl_emacs_complete(text, sizeof(text));
+  ok &= strcmp(text, "rep") == 0;
+  strcpy(text, "replace-s");
+  itl_emacs_complete(text, sizeof(text));
+  ok &= strcmp(text, "replace-string") == 0;
+  strcpy(text, "kill-k");
+  itl_emacs_complete(text, sizeof(text));
+  ok &= strcmp(text, "kill-kosh") == 0;
+  strcpy(text, "beg");
+  itl_emacs_complete(text, sizeof(text));
+  ok &= strcmp(text, "beginning-of-") == 0;
+  if (!ok) {
+    printf("M-x completion gave '%s'\n", text);
+  }
 
   return ok;
 }
@@ -7965,10 +8032,11 @@ test_prefix_hint_names_the_waiting_keys(void)
 
   itl_g_prefix_kind = ITL_PREFIX_CTRL_X;
   ok &= test_hint_is("  pressed ctrl-x\n  waiting for ctrl-e (edit in "
-                     "$VISUAL), ctrl-u (undo)",
+                     "$VISUAL), ctrl-u (undo), z (repeat the last M-x "
+                     "command)",
                      200, "ctrl-x");
   ok &= test_hint_is("  pressed ctrl-x\n  waiting for ctrl-e (edit\n"
-                     "  in $VISUAL), ctrl-u\n  (undo)",
+                     "  in $VISUAL), ctrl-u\n  (undo), z (repeat the...",
                      27, "ctrl-x wrap");
   tl_set_hint_callback(NULL);
   ok &= test_hint_is("", 200, "ctrl-x with the row off");
@@ -8023,10 +8091,23 @@ test_prefix_hint_names_the_waiting_keys(void)
   ok &= test_hint_is("  pressed r\n  waiting for a replacement character", 200,
                      "replace");
   itl_g_prefix_kind = ITL_PREFIX_VI_EX;
-  ok &= test_hint_is("  pressed :\n  waiting for q, q!, quit, wq, wq!, or x "
-                     "(quit), s/old/new/ or %s/old/new/ with an optional g "
-                     "(substitute), then enter",
+  ok &= test_hint_is("  pressed :\n  waiting for a command, then enter\n"
+                     "  q, q!, quit, wq, wq!, or x (quit)\n"
+                     "  u or undo, red or redo\n"
+                     "  s/old/new/ or %s/old/new/ with an optional g "
+                     "(substitute)\n"
+                     "  & or && (repeat the substitution)",
                      200, "ex");
+  itl_g_prefix_kind     = ITL_PREFIX_EMACS_X;
+  itl_g_minibuffer_text = "rep";
+  ok &= test_hint_is("  pressed M-x\n  waiting for a command, then enter or "
+                     "tab to complete it\n  repeat, replace-regexp, "
+                     "replace-string",
+                     200, "M-x");
+  itl_g_minibuffer_text = "zz";
+  ok &= test_hint_is("  pressed M-x\n  no command starts with this text", 200,
+                     "M-x no match");
+  itl_g_minibuffer_text = "";
 
   itl_g_edit_mode = TL_EDIT_MODE_VI_VISUAL;
   itl_g_prefix_kind = ITL_PREFIX_VI_FIND;
@@ -9390,6 +9471,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_hint_row_is_cut_to_the_width),
                                    DEFINE_TEST_CASE(test_paste_line_breaks),
                                    DEFINE_TEST_CASE(test_vi_ex_substitute),
+                                   DEFINE_TEST_CASE(test_emacs_commands),
                                    DEFINE_TEST_CASE(
                                        test_hint_body_wraps_at_words),
                                    DEFINE_TEST_CASE(
