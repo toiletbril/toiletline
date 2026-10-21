@@ -186,6 +186,10 @@ typedef enum
   TL_KEY_CAPITALIZE_WORD,
   /* Alt-\ deletes the spaces and tabs around the cursor. */
   TL_KEY_DELETE_SPACES,
+  /* Ctrl-S finds text in the buffer as it is typed, and M-x isearch-backward
+     and Ctrl-R in the full-screen layout find it backward. */
+  TL_KEY_FIND,
+  TL_KEY_FIND_BACKWARD,
 
   /* Reported when a bracketed paste sequence begins. Handled internally. */
   TL_KEY_PASTE_BEGIN
@@ -1909,6 +1913,8 @@ ITL_DEF const itl_utf8_t itl_newline_char = {{0x0A}, 1};
 
 #define ITL_LE_IS_NEWLINE(ch)   ((ch).size == 1 && (ch).bytes[0] == 0x0A)
 #define ITL_LE_IS_BACKSLASH(ch) ((ch).size == 1 && (ch).bytes[0] == 0x5C)
+#define ITL_LE_IS_BLANK(ch)                                                    \
+  ((ch).size == 1 && ((ch).bytes[0] == ' ' || (ch).bytes[0] == '\t'))
 
 ITL_DEF itl_utf8_t
 itl_utf8_parse(uint8_t first_byte)
@@ -2821,7 +2827,8 @@ typedef enum
   ITL_VI_OP_NONE = 0,
   ITL_VI_OP_DELETE,
   ITL_VI_OP_CHANGE,
-  ITL_VI_OP_YANK
+  ITL_VI_OP_YANK,
+  ITL_VI_OP_WRAP
 } itl_vi_operator_kind;
 
 typedef enum
@@ -4055,10 +4062,11 @@ itl_char_buf_append_spaces(itl_char_buf_t *cb, size_t count)
 /* The grey of every secondary text the editor writes for itself, the ghost
    suggestion, a candidate description, and the menu rows. */
 #define ITL_DIM_SGR "\x1b[90m"
-/* The faint marker of a tab and the intensity that follows it, which keeps
-   the color of the span around the tab. */
-#define ITL_FAINT_SGR            "\x1b[2m"
-#define ITL_NORMAL_INTENSITY_SGR "\x1b[22m"
+/* The shaded background of a tab and of the blanks that end a line in the
+   full-screen layout, and the default background that follows it, which keep
+   the color and the intensity of the span around them. */
+#define ITL_SHADED_BLANK_SGR       "\x1b[48;5;237m"
+#define ITL_DEFAULT_BACKGROUND_SGR "\x1b[49m"
 /* The text typed into a minibuffer, in light green. */
 #define ITL_MINIBUFFER_SGR "\x1b[92m"
 
@@ -4094,21 +4102,16 @@ itl_char_buf_append_notation(itl_char_buf_t *cb, uint32_t value)
 }
 
 /* Append one character of the edited line as itl_char_line_width counts it.
-   A tab is drawn faint as a marker followed by spaces, and span_sgr, the
-   opening SGR of the span around it or NULL, is written again after it. */
+   A tab is drawn as spaces on a shaded background, so text copied from the
+   terminal holds no marker. */
 ITL_DEF void
-itl_char_buf_append_line_char(itl_char_buf_t *cb,
-                              itl_utf8_t      ch,
-                              const char     *span_sgr)
+itl_char_buf_append_line_char(itl_char_buf_t *cb, itl_utf8_t ch)
 {
   if (ch.size == 1 && ch.bytes[0] == 0x09) {
-    itl_char_buf_append_cstr(cb, itl_color_sequence(ITL_FAINT_SGR));
-    itl_char_buf_append_byte(cb, '>');
-    itl_char_buf_append_spaces(cb, ITL_TAB_WIDTH - 1);
-    itl_char_buf_append_cstr(cb, itl_color_sequence(ITL_NORMAL_INTENSITY_SGR));
-    if (span_sgr != NULL) {
-      itl_char_buf_append_cstr(cb, span_sgr);
-    }
+    itl_char_buf_append_cstr(cb, itl_color_sequence(ITL_SHADED_BLANK_SGR));
+    itl_char_buf_append_spaces(cb, ITL_TAB_WIDTH);
+    itl_char_buf_append_cstr(cb,
+                             itl_color_sequence(ITL_DEFAULT_BACKGROUND_SGR));
     return;
   }
   if (!(ch.size == 1 && ch.bytes[0] == 0x0A) &&
@@ -5467,6 +5470,7 @@ itl_esc_parse(uint8_t byte)
   case 12: return TL_KEY_CLEAR; /* ctrl l */
 
   case 18: return TL_KEY_HISTORY_SEARCH; /* ctrl r */
+  case 19: return TL_KEY_FIND;           /* ctrl s */
 
   case 14: return TL_KEY_DOWN; /* ctrl n */
   case 16: return TL_KEY_UP;   /* ctrl p */
@@ -5741,7 +5745,8 @@ typedef enum
   ITL_EMACS_GET_OPTION     = -6,
   ITL_EMACS_SAVE_OPTION    = -7,
   ITL_EMACS_FORMAT         = -8,
-  ITL_EMACS_FORMAT_BUFFER  = -9
+  ITL_EMACS_FORMAT_BUFFER  = -9,
+  ITL_EMACS_FILL_PARAGRAPH = -10
 } itl_emacs_action;
 
 /* An M-x command and the key it runs, or an itl_emacs_action. The table is
@@ -5765,10 +5770,13 @@ static const itl_emacs_command itl_emacs_commands[] = {
     {"downcase-word", TL_KEY_DOWNCASE_WORD},
     {"end-of-history", TL_KEY_HISTORY_END},
     {"end-of-line", TL_KEY_END},
+    {"fill-paragraph", ITL_EMACS_FILL_PARAGRAPH},
     {"format", ITL_EMACS_FORMAT},
     {"format-buffer", ITL_EMACS_FORMAT_BUFFER},
     {"forward-word", TL_KEY_RIGHT | TL_MOD_CTRL},
     {"get-option", ITL_EMACS_GET_OPTION},
+    {"isearch-backward", TL_KEY_FIND_BACKWARD},
+    {"isearch-forward", TL_KEY_FIND},
     {"kill-kosh", ITL_EMACS_KILL_KOSH},
     {"kill-line", TL_KEY_KILL_LINE},
     {"kill-word", TL_KEY_DELETE | TL_MOD_CTRL},
@@ -7110,11 +7118,11 @@ itl_prefix_hint(char *out, size_t out_size)
     itl_prefix_append(out, out_size, &out_length,
                       "q, q!, or quit to quit, wq, wq!, wqa, wqa!, or x "
                       "to save and quit\n"
-                      "u or undo to undo, red or redo to redo\n"
-                      "e or edit to edit in $VISUAL\n"
                       "s/old/new/ or %s/old/new/ with an optional g "
                       "to substitute\n"
-                      "& or && to repeat the substitution\n"
+                      "u or undo to undo, red or redo to redo\n"
+                      "e or edit to edit in $VISUAL\n"
+                      "&, &&, or s to repeat the substitution\n"
                       "set option=value, set option, set nooption, or set "
                       "option? to set or show an option\n"
                       "save or save option to store the options\n"
@@ -7157,7 +7165,10 @@ itl_prefix_hint(char *out, size_t out_size)
       keys[keys_length++] = digits[--digit_count];
     }
   }
-  if (is_vi_held && itl_g_vi_pending_operator != ITL_VI_OP_NONE) {
+  if (is_vi_held && itl_g_vi_pending_operator == ITL_VI_OP_WRAP) {
+    keys[keys_length++] = 'g';
+    keys[keys_length++] = 'q';
+  } else if (is_vi_held && itl_g_vi_pending_operator != ITL_VI_OP_NONE) {
     keys[keys_length++] = (itl_g_vi_pending_operator == ITL_VI_OP_DELETE) ? 'd'
                           : (itl_g_vi_pending_operator == ITL_VI_OP_CHANGE)
                               ? 'c'
@@ -7187,7 +7198,8 @@ itl_prefix_hint(char *out, size_t out_size)
     break;
   case ITL_PREFIX_VI_G:
     keys[keys_length++] = 'g';
-    waiting_for         = "g to go to the first row";
+    waiting_for         = "g to go to the first row, or q and a motion to wrap "
+                          "the lines it covers";
     break;
   default:
     if (itl_g_vi_pending_operator == ITL_VI_OP_DELETE) {
@@ -7202,6 +7214,9 @@ itl_prefix_hint(char *out, size_t out_size)
       waiting_for = "a motion such as w, b, e, $, 0, ^, f, t, F, T, h, l, j, "
                     "k, W, B, E, y again to yank the line, or ; and , to "
                     "repeat a find";
+    } else if (itl_g_vi_pending_operator == ITL_VI_OP_WRAP) {
+      waiting_for = "a motion such as j, k, {, or }, or q again to wrap the "
+                    "line";
     } else if (itl_g_vi_pending_count > 0) {
       waiting_for = "a command or a motion";
     } else {
@@ -8043,7 +8058,7 @@ itl_le_tty_refresh(itl_le_t *le)
   bool spans_are_append_compatible = itl_le_prev_spans_append_compatible(
       itl_spans, span_count, le->line->length, &append_tail_sgr);
   if (is_metrics_ready && itl_g_tty_should_refresh_text && !is_resize &&
-      !itl_g_tty_first_render && have_cur_render &&
+      !itl_g_tty_first_render && have_cur_render && !itl_g_full_screen &&
       m.total_rows == itl_g_le_prev_total_rows &&
       m.cursor_row + 1 == itl_g_le_prev_cursor_row &&
       le->cursor_position == le->line->length && itl_g_le_prev_cursor_at_end &&
@@ -8064,8 +8079,7 @@ itl_le_tty_refresh(itl_le_t *le)
       for (tail_index = itl_g_le_prev_length; tail_index < le->line->length;
            ++tail_index)
       {
-        itl_char_buf_append_line_char(fb, le->line->chars[tail_index],
-                                      append_tail_sgr);
+        itl_char_buf_append_line_char(fb, le->line->chars[tail_index]);
       }
       if (append_tail_sgr != NULL) {
         itl_char_buf_append_cstr(fb, ITL_HIGHLIGHT_RESET);
@@ -8197,6 +8211,10 @@ itl_le_tty_refresh(itl_le_t *le)
     if (itl_g_tty_flash_active) {
       itl_char_buf_append_cstr(b, itl_flash_sgr_on());
     }
+    /* The full-screen layout shades the blanks that end each line, from
+       trailing_start to the end of the line. */
+    size_t trailing_start = (size_t) -1;
+
     for (i = 0; i < le->line->length; ++i) {
       itl_utf8_t      ch  = le->line->chars[i];
       itl_char_buf_t *out = row >= view_top && row < view_end
@@ -8205,6 +8223,16 @@ itl_le_tty_refresh(itl_le_t *le)
 
       if (out != b) {
         ITL_CHAR_BUF_CLEAR(out);
+      }
+      if (itl_g_full_screen &&
+          (i == 0 || ITL_LE_IS_NEWLINE(le->line->chars[i - 1])))
+      {
+        trailing_start = itl_le_line_end_of(le, i);
+        while (trailing_start > i &&
+               ITL_LE_IS_BLANK(le->line->chars[trailing_start - 1]))
+        {
+          trailing_start -= 1;
+        }
       }
 
       if (!is_metrics_ready && i == le->cursor_position) {
@@ -8257,7 +8285,15 @@ itl_le_tty_refresh(itl_le_t *le)
           out = row >= view_top && row < view_end ? b : &itl_g_view_discard;
         }
 
-        itl_char_buf_append_line_char(out, ch, in_span ? open_sgr : NULL);
+        if (i >= trailing_start && ch.size == 1 && ch.bytes[0] == ' ') {
+          itl_char_buf_append_cstr(
+              out, itl_color_sequence(ITL_SHADED_BLANK_SGR));
+          itl_char_buf_append_byte(out, ' ');
+          itl_char_buf_append_cstr(
+              out, itl_color_sequence(ITL_DEFAULT_BACKGROUND_SGR));
+        } else {
+          itl_char_buf_append_line_char(out, ch);
+        }
         col += char_width;
 
         if (itl_wrap_is_break_after(col, cols)) {
@@ -9893,6 +9929,21 @@ ITL_DEF void
 itl_vi_open_line(itl_le_t *le, bool is_above);
 ITL_DEF void
 itl_vi_clamp_command_cursor(itl_le_t *le);
+ITL_DEF void
+itl_le_find(itl_le_t   *le,
+            bool        is_backward,
+            const char *label,
+            const char *hint);
+ITL_DEF void
+itl_le_find_again(itl_le_t *le, bool is_reversed);
+
+/* The hint rows of a find in emacs mode and in vi mode. */
+#define ITL_FIND_EMACS_HINT                                                    \
+  "pressed ctrl-s\nctrl-s for the next match, ctrl-r for the one before, "     \
+  "enter to stay there, escape to go back"
+#define ITL_FIND_VI_HINT                                                       \
+  "pressed /\nenter to go to the match, then n for the next one and N for "    \
+  "the one before, escape to go back"
 
 /* Every row of one menu repaint. The help row and the count row are counted
    here beside the candidates, and a repaint never draws a row the layout did
@@ -14185,16 +14236,10 @@ itl_le_delete_spaces(itl_le_t *le)
   size_t start = le->cursor_position;
   size_t end   = le->cursor_position;
 
-  while (start > 0 && le->line->chars[start - 1].size == 1 &&
-         (le->line->chars[start - 1].bytes[0] == ' ' ||
-          le->line->chars[start - 1].bytes[0] == '\t'))
-  {
+  while (start > 0 && ITL_LE_IS_BLANK(le->line->chars[start - 1])) {
     start -= 1;
   }
-  while (end < le->line->length && le->line->chars[end].size == 1 &&
-         (le->line->chars[end].bytes[0] == ' ' ||
-          le->line->chars[end].bytes[0] == '\t'))
-  {
+  while (end < le->line->length && ITL_LE_IS_BLANK(le->line->chars[end])) {
     end += 1;
   }
   if (start == end) {
@@ -14286,9 +14331,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
     bool   is_blank_before = true;
 
     for (i = line_start; i < le->cursor_position; ++i) {
-      itl_utf8_t ch = le->line->chars[i];
-
-      if (ch.size != 1 || (ch.bytes[0] != ' ' && ch.bytes[0] != '\t')) {
+      if (!ITL_LE_IS_BLANK(le->line->chars[i])) {
         is_blank_before = false;
         break;
       }
@@ -14630,6 +14673,20 @@ itl_le_key_handle(itl_le_t *le, int esc)
       itl_g_tty_should_refresh_text = false;
     }
   } break;
+
+  case TL_KEY_FIND:
+    itl_le_find(le, false, "Find: ", ITL_FIND_EMACS_HINT);
+    break;
+
+  case TL_KEY_HISTORY_SEARCH:
+    if (!itl_g_full_screen) {
+      itl_g_tty_should_refresh_text = false;
+      break;
+    }
+    /* fallthrough */
+  case TL_KEY_FIND_BACKWARD:
+    itl_le_find(le, true, "Find backward: ", ITL_FIND_EMACS_HINT);
+    break;
 
   case TL_KEY_EXECUTE_COMMAND:
     if (itl_g_edit_mode == TL_EDIT_MODE_EMACS) {
@@ -15709,6 +15766,34 @@ itl_vi_clamp_command_cursor(itl_le_t *le)
   }
 }
 
+/* Moves to the previous empty line, or the next one with is_forward, or to
+   the start or the end of the buffer when there is none. */
+ITL_DEF void
+itl_vi_move_paragraph(itl_le_t *le, bool is_forward)
+{
+  size_t position = le->cursor_position;
+
+  if (is_forward) {
+    position = itl_le_line_end_of(le, position);
+    while (position < le->line->length) {
+      position += 1;
+      if (itl_le_line_end_of(le, position) == position) {
+        break;
+      }
+      position = itl_le_line_end_of(le, position);
+    }
+  } else {
+    position = itl_le_line_start_of(le, position);
+    while (position > 0) {
+      position = itl_le_line_start_of(le, position - 1);
+      if (itl_le_line_end_of(le, position) == position) {
+        break;
+      }
+    }
+  }
+  le->cursor_position = position;
+}
+
 ITL_DEF size_t
 itl_vi_resolve_motion(itl_le_t  *le,
                       int        motion_key,
@@ -15742,6 +15827,18 @@ itl_vi_resolve_motion(itl_le_t  *le,
     break;
 
   case '0': target = itl_le_line_start_of(le, le->cursor_position); break;
+
+  case '{':
+  case '}': {
+    size_t saved_position = le->cursor_position;
+    size_t step;
+
+    for (step = 0; step < count; ++step) {
+      itl_vi_move_paragraph(le, motion_key == '}');
+    }
+    target              = le->cursor_position;
+    le->cursor_position = saved_position;
+  } break;
 
   case '$': {
     size_t line_start = itl_le_line_start_of(le, le->cursor_position);
@@ -15836,6 +15933,173 @@ itl_vi_resolve_motion(itl_le_t  *le,
   return target;
 }
 
+/* The column at which gq and M-x fill-paragraph wrap the lines. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_wrap_width = 80;
+
+/* Whether the line that starts at line_start holds only blanks. */
+ITL_DEF bool
+itl_le_line_is_blank(const itl_le_t *le, size_t line_start)
+{
+  size_t i;
+
+  for (i = line_start;
+       i < le->line->length && !ITL_LE_IS_NEWLINE(le->line->chars[i]); ++i)
+  {
+    if (!ITL_LE_IS_BLANK(le->line->chars[i])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/* Wraps the lines from the one that holds first to the one that holds last
+   at itl_g_wrap_width columns, as one undo step. Blank lines separate the
+   paragraphs and are left empty, and the words of a paragraph fill its lines
+   after the leading blanks of its first line. A word wider than the width
+   keeps a line of its own. The caret moves to the start of the last wrapped
+   line. */
+ITL_DEF void
+itl_le_wrap_lines(itl_le_t *le, size_t first, size_t last)
+{
+  itl_char_buf_t *out     = itl_char_buf_alloc();
+  itl_string_t   *changed = itl_string_alloc();
+  size_t          start   = itl_le_line_start_of(le, first);
+  size_t          stop    = itl_le_line_end_of(le, last);
+  size_t          indent_start = 0, indent_end = 0, indent_width = 0;
+  size_t          column = 0, written_count = 0, last_row_start = start;
+  bool            has_row = false, is_in_paragraph = false;
+  size_t          i, j, k;
+
+  for (i = 0; i < start; ++i) {
+    itl_char_buf_append_bytes(out, (const char *) le->line->chars[i].bytes,
+                              le->line->chars[i].size);
+  }
+
+  i = start;
+  for (;;) {
+    size_t line_end   = itl_le_line_end_of(le, i);
+    size_t text_start = i;
+
+    while (text_start < line_end &&
+           ITL_LE_IS_BLANK(le->line->chars[text_start]))
+    {
+      text_start += 1;
+    }
+
+    if (text_start == line_end) {
+      if (has_row) {
+        itl_char_buf_append_byte(out, '\n');
+        written_count += 1;
+      }
+      last_row_start  = start + written_count;
+      has_row         = true;
+      is_in_paragraph = false;
+    } else if (!is_in_paragraph) {
+      is_in_paragraph = true;
+      indent_start    = i;
+      indent_end      = text_start;
+      indent_width    = 0;
+      for (k = indent_start; k < indent_end; ++k) {
+        indent_width += itl_char_line_width(le->line->chars[k]);
+      }
+      column = (size_t) -1;
+    }
+
+    for (j = text_start; j < line_end;) {
+      size_t word_start, word_width = 0;
+
+      while (j < line_end && ITL_LE_IS_BLANK(le->line->chars[j])) {
+        j += 1;
+      }
+      if (j == line_end) {
+        break;
+      }
+      word_start = j;
+      while (j < line_end && !ITL_LE_IS_BLANK(le->line->chars[j])) {
+        word_width += itl_char_line_width(le->line->chars[j]);
+        j += 1;
+      }
+
+      if (column == (size_t) -1 || column + 1 + word_width > itl_g_wrap_width)
+      {
+        if (has_row) {
+          itl_char_buf_append_byte(out, '\n');
+          written_count += 1;
+        }
+        last_row_start = start + written_count;
+        has_row        = true;
+        for (k = indent_start; k < indent_end; ++k) {
+          itl_char_buf_append_bytes(out,
+                                    (const char *) le->line->chars[k].bytes,
+                                    le->line->chars[k].size);
+        }
+        written_count += indent_end - indent_start;
+        column = indent_width;
+      } else {
+        itl_char_buf_append_byte(out, ' ');
+        written_count += 1;
+        column += 1;
+      }
+      for (k = word_start; k < j; ++k) {
+        itl_char_buf_append_bytes(out, (const char *) le->line->chars[k].bytes,
+                                  le->line->chars[k].size);
+      }
+      written_count += j - word_start;
+      column += word_width;
+    }
+
+    if (line_end >= stop) {
+      break;
+    }
+    i = line_end + 1;
+  }
+
+  for (i = stop; i < le->line->length; ++i) {
+    itl_char_buf_append_bytes(out, (const char *) le->line->chars[i].bytes,
+                              le->line->chars[i].size);
+  }
+
+  if (out->size < le->out_size && out->size <= ITL_STRING_MAX_LEN &&
+      !itl_string_equal_bytes(le->line, out->data, out->size) &&
+      itl_string_from_bytes(changed, out->data, out->size))
+  {
+    itl_history_reset_after_edit(le);
+    itl_undo_push_closed(le);
+    itl_string_copy(le->line, changed);
+    le->cursor_position           = last_row_start;
+    itl_g_tty_should_refresh_text = true;
+  }
+  itl_vi_clamp_command_cursor(le);
+  ITL_STRING_FREE(changed);
+  ITL_CHAR_BUF_FREE(out);
+}
+
+/* Wraps the paragraph that holds the caret, the lines around it up to a blank
+   line or an end of the buffer. */
+ITL_DEF void
+itl_le_fill_paragraph(itl_le_t *le)
+{
+  size_t first = itl_le_line_start_of(le, le->cursor_position);
+  size_t last  = itl_le_line_end_of(le, le->cursor_position);
+
+  if (itl_le_line_is_blank(le, first)) {
+    return;
+  }
+  while (first > 0) {
+    size_t previous_start = itl_le_line_start_of(le, first - 1);
+
+    if (itl_le_line_is_blank(le, previous_start)) {
+      break;
+    }
+    first = previous_start;
+  }
+  while (last < le->line->length && !itl_le_line_is_blank(le, last + 1)) {
+    last = itl_le_line_end_of(le, last + 1);
+  }
+  itl_le_wrap_lines(le, first, last);
+}
+
 ITL_DEF void
 itl_vi_apply_operator(itl_le_t            *le,
                       itl_vi_operator_kind op,
@@ -15849,6 +16113,11 @@ itl_vi_apply_operator(itl_le_t            *le,
 
   if (is_inclusive && end < le->line->length) {
     end += 1;
+  }
+
+  if (op == ITL_VI_OP_WRAP) {
+    itl_le_wrap_lines(le, start, end > start ? end - 1 : start);
+    return;
   }
 
   if (start == end) {
@@ -15983,6 +16252,11 @@ itl_vi_operator_line(itl_le_t            *le,
   }
 
   itl_vi_record_operator(op, doubled_key, none, count);
+
+  if (op == ITL_VI_OP_WRAP) {
+    itl_le_wrap_lines(le, start, end);
+    return;
+  }
 
   itl_vi_register_store(le->line, start, end, true);
 
@@ -16209,8 +16483,8 @@ itl_vi_repeat_last_change(itl_le_t *le)
     itl_vi_operator_kind op =
         (itl_vi_operator_kind) itl_g_vi_last_change.operator_kind;
     int  motion_key = itl_g_vi_last_change.motion_key;
-    bool is_doubled =
-        (motion_key == 'd' || motion_key == 'c' || motion_key == 'y');
+    bool is_doubled = (motion_key == 'd' || motion_key == 'c' ||
+                       motion_key == 'y' || motion_key == 'q');
     bool did_apply = false;
     bool have_insert_text =
         itl_g_vi_last_change.did_enter_insert &&
@@ -16403,6 +16677,23 @@ itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
       le->cursor_position = itl_g_vi_ex_range_start;
 
       return itl_vi_ex_command(le);
+    }
+
+    if (byte == 'g') {
+      uint8_t second_byte;
+
+      if (!ITL_READ_BYTE(&second_byte)) {
+        break;
+      }
+      if (second_byte == 'q') {
+        itl_search_spans_clear();
+        itl_le_wrap_lines(le, selection_start, selection_end);
+        itl_g_edit_mode               = TL_EDIT_MODE_VI_COMMAND;
+        itl_g_tty_should_refresh_text = true;
+        itl_vi_clamp_command_cursor(le);
+        return TL_SUCCESS;
+      }
+      continue;
     }
 
     if (byte == 'd' || byte == 'x' || byte == 'c' || byte == 'y') {
@@ -17325,6 +17616,143 @@ itl_emacs_complete(char *text, size_t text_size)
   return text_length;
 }
 
+/* The find that runs while its minibuffer is open: the position it searches
+   from, the match it shows, its direction, and its hint. The last accepted text
+   stays for the next find and for vi n and N. */
+ITL_DEF ITL_THREAD_LOCAL bool        itl_g_is_finding       = false;
+ITL_DEF ITL_THREAD_LOCAL bool        itl_g_find_is_backward = false;
+ITL_DEF ITL_THREAD_LOCAL bool        itl_g_find_has_match   = false;
+ITL_DEF ITL_THREAD_LOCAL size_t      itl_g_find_origin      = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t      itl_g_find_match_start = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t      itl_g_find_match_end   = 0;
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_find_hint        = "";
+ITL_DEF ITL_THREAD_LOCAL char        itl_g_find_text[64]    = {0};
+
+#define ITL_FIND_SGR "\x1b[7m"
+#define ITL_FIND_NO_MATCH_HINT                                                 \
+  "find\nno match, backspace to change the text, escape to go back"
+
+/* Whether query starts at index at of line, ignoring the case of ASCII
+   letters with is_case_folded. Sets out_end past the match. */
+ITL_DEF bool
+itl_find_matches_at(const itl_string_t *line,
+                    size_t              at,
+                    const char         *query,
+                    bool                is_case_folded,
+                    size_t             *out_end)
+{
+  size_t query_size = strlen(query);
+  size_t offset     = 0;
+
+  while (offset < query_size) {
+    itl_utf8_t ch;
+    size_t     k;
+
+    if (at >= line->length) {
+      return false;
+    }
+    ch = line->chars[at];
+    if (offset + ch.size > query_size) {
+      return false;
+    }
+    for (k = 0; k < ch.size; ++k) {
+      int line_byte  = ch.bytes[k];
+      int query_byte = (unsigned char) query[offset + k];
+
+      if (is_case_folded && ch.size == 1) {
+        line_byte  = tolower(line_byte);
+        query_byte = tolower(query_byte);
+      }
+      if (line_byte != query_byte) {
+        return false;
+      }
+    }
+    offset += ch.size;
+    at += 1;
+  }
+  *out_end = at;
+
+  return true;
+}
+
+/* Finds query in line from index from, forward or backward, and past either
+   end around to the other. A query without a capital letter ignores case.
+   Sets the match and returns whether there is one. */
+ITL_DEF bool
+itl_find_search(const itl_string_t *line,
+                const char         *query,
+                size_t              from,
+                bool                is_backward)
+{
+  bool   is_case_folded = true;
+  size_t i, at, end;
+
+  itl_g_find_has_match = false;
+  if (query[0] == '\0' || line->length == 0) {
+    return false;
+  }
+  for (i = 0; query[i] != '\0'; ++i) {
+    if (isupper((unsigned char) query[i])) {
+      is_case_folded = false;
+    }
+  }
+  if (from >= line->length) {
+    from = is_backward ? line->length - 1 : 0;
+  }
+  for (i = 0; i < line->length; ++i) {
+    at = is_backward ? (from + line->length - i) % line->length
+                     : (from + i) % line->length;
+    if (itl_find_matches_at(line, at, query, is_case_folded, &end)) {
+      itl_g_find_match_start = at;
+      itl_g_find_match_end   = end;
+      itl_g_find_has_match   = true;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/* Finds text again after a change to it, from the match it showed or from
+   where the find began, and switches the hint to say when nothing matches. */
+ITL_DEF void
+itl_find_refresh(const itl_string_t *line, const char *text)
+{
+  (void) itl_find_search(line, text,
+                         itl_g_find_has_match ? itl_g_find_match_start
+                                              : itl_g_find_origin,
+                         itl_g_find_is_backward);
+  itl_g_minibuffer_hint = text[0] != '\0' && !itl_g_find_has_match
+                              ? ITL_FIND_NO_MATCH_HINT
+                              : itl_g_find_hint;
+}
+
+/* Steps to the next match, or the one before with is_backward. Empty text
+   takes the text of the last find first. */
+ITL_DEF void
+itl_find_step(const itl_string_t *line,
+              char               *text,
+              size_t             *text_length,
+              size_t              text_size,
+              bool                is_backward)
+{
+  size_t from = itl_g_find_origin;
+
+  if (*text_length == 0 && strlen(itl_g_find_text) < text_size) {
+    strcpy(text, itl_g_find_text);
+    *text_length = strlen(text);
+  }
+  if (itl_g_find_has_match && line->length > 0) {
+    from = is_backward ? (itl_g_find_match_start + line->length - 1) %
+                             line->length
+                       : (itl_g_find_match_start + 1) % line->length;
+  }
+  itl_g_find_has_match   = false;
+  itl_g_find_is_backward = is_backward;
+  itl_g_find_origin      = from;
+  itl_find_refresh(line, text);
+}
+
 /* Reads a line of text into text on a row under the buffer, after label, as
    the colon command line and the M-x minibuffer do. The buffer and the caret
    stay as they were. With kind ITL_PREFIX_EMACS_X, TAB completes a command.
@@ -17373,6 +17801,16 @@ itl_minibuffer_read(itl_le_t       *le,
     if (is_in_rows) {
       itl_char_buf_t *b = &itl_g_char_buffer;
 
+      if (itl_g_is_finding) {
+        itl_g_search_span_count = 0;
+        if (itl_g_find_has_match) {
+          itl_search_push_span(itl_g_find_match_start, itl_g_find_match_end,
+                               ITL_FIND_SGR);
+        }
+        le->cursor_position = itl_g_find_has_match ? itl_g_find_match_start
+                                                   : saved_cursor;
+        itl_g_search_spans_active = itl_g_find_has_match;
+      }
       itl_frame_batch_begin();
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
@@ -17423,6 +17861,12 @@ itl_minibuffer_read(itl_le_t       *le,
       itl_g_search_span_count    = 0;
       itl_search_push_span(display->length - text_length, display->length,
                            ITL_MINIBUFFER_SGR);
+      if (itl_g_is_finding && itl_g_find_has_match &&
+          itl_g_find_match_end <= preview->length)
+      {
+        itl_search_push_span(itl_g_find_match_start, itl_g_find_match_end,
+                             ITL_FIND_SGR);
+      }
       itl_g_search_spans_active     = true;
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
@@ -17463,6 +17907,9 @@ itl_minibuffer_read(itl_le_t       *le,
       if (text_length > 0) {
         text_length -= 1;
         text[text_length] = '\0';
+        if (itl_g_is_finding) {
+          itl_find_refresh(original, text);
+        }
       } else {
         is_done = true;
       }
@@ -17473,6 +17920,17 @@ itl_minibuffer_read(itl_le_t       *le,
       if (key == TL_KEY_CHAR && text_length < text_size - 1) {
         text[text_length++] = (char) byte;
         text[text_length]   = '\0';
+        if (itl_g_is_finding) {
+          itl_find_refresh(original, text);
+        }
+      }
+      break;
+
+    case TL_KEY_FIND:
+    case TL_KEY_HISTORY_SEARCH:
+      if (itl_g_is_finding) {
+        itl_find_step(original, text, &text_length, text_size,
+                      key_kind == TL_KEY_HISTORY_SEARCH);
       }
       break;
 
@@ -17504,6 +17962,60 @@ itl_minibuffer_read(itl_le_t       *le,
   ITL_CHAR_BUF_FREE(status);
 
   return is_accepted;
+}
+
+/* Finds text in the buffer as it is typed into a minibuffer after label,
+   from the caret forward, or backward with is_backward. Every change to the
+   text moves the shown match, and Enter leaves the caret on it. */
+ITL_DEF void
+itl_le_find(itl_le_t   *le,
+            bool        is_backward,
+            const char *label,
+            const char *hint)
+{
+  char text[64];
+  bool is_accepted;
+
+  itl_g_is_finding       = true;
+  itl_g_find_is_backward = is_backward;
+  itl_g_find_has_match   = false;
+  itl_g_find_origin      = le->cursor_position;
+  if (is_backward && le->line->length > 0) {
+    itl_g_find_origin = (le->cursor_position + le->line->length - 1) %
+                        le->line->length;
+  }
+  itl_g_find_hint = hint;
+  itl_g_minibuffer_hint  = hint;
+  is_accepted =
+      itl_minibuffer_read(le, label, ITL_PREFIX_MINIBUFFER, text, sizeof(text));
+  itl_g_is_finding = false;
+  if (is_accepted && itl_g_find_has_match) {
+    le->cursor_position = itl_g_find_match_start;
+    strcpy(itl_g_find_text, text);
+  }
+  itl_vi_clamp_command_cursor(le);
+  itl_g_tty_should_refresh_text = true;
+}
+
+/* Moves the caret to the next match of the last find in its direction, or in
+   the other one with is_reversed, as vi n and N do. */
+ITL_DEF void
+itl_le_find_again(itl_le_t *le, bool is_reversed)
+{
+  bool   is_backward = itl_g_find_is_backward != is_reversed;
+  size_t length      = le->line->length;
+
+  if (length == 0 ||
+      !itl_find_search(le->line, itl_g_find_text,
+                       is_backward ? (le->cursor_position + length - 1) % length
+                                   : (le->cursor_position + 1) % length,
+                       is_backward))
+  {
+    itl_g_tty_should_refresh_text = false;
+    return;
+  }
+  le->cursor_position = itl_g_find_match_start;
+  itl_vi_clamp_command_cursor(le);
 }
 
 /* Runs an option command through the host and keeps its result line under
@@ -17667,6 +18179,10 @@ itl_emacs_run_command(itl_le_t *le, size_t index)
     itl_le_format(le, action == ITL_EMACS_FORMAT_BUFFER,
                   action == ITL_EMACS_FORMAT ? "M-x format"
                                              : "M-x format-buffer");
+    return TL_SUCCESS;
+  }
+  if (action == ITL_EMACS_FILL_PARAGRAPH) {
+    itl_le_fill_paragraph(le);
     return TL_SUCCESS;
   }
   if (action == ITL_EMACS_SET_OPTION) {
@@ -17941,34 +18457,6 @@ itl_vi_join_lines(itl_le_t *le)
   itl_g_tty_should_refresh_text = true;
 }
 
-/* Moves to the previous empty line, or the next one with is_forward, or to
-   the start or the end of the buffer when there is none. */
-ITL_DEF void
-itl_vi_move_paragraph(itl_le_t *le, bool is_forward)
-{
-  size_t position = le->cursor_position;
-
-  if (is_forward) {
-    position = itl_le_line_end_of(le, position);
-    while (position < le->line->length) {
-      position += 1;
-      if (itl_le_line_end_of(le, position) == position) {
-        break;
-      }
-      position = itl_le_line_end_of(le, position);
-    }
-  } else {
-    position = itl_le_line_start_of(le, position);
-    while (position > 0) {
-      position = itl_le_line_start_of(le, position - 1);
-      if (itl_le_line_end_of(le, position) == position) {
-        break;
-      }
-    }
-  }
-  le->cursor_position = position;
-}
-
 ITL_DEF tl_status_code
 itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
 {
@@ -18017,6 +18505,7 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
       size_t step = (itl_g_vi_pending_count == 0) ? 1 : itl_g_vi_pending_count;
       int    doubled     = (op == ITL_VI_OP_DELETE)   ? 'd'
                            : (op == ITL_VI_OP_CHANGE) ? 'c'
+                           : (op == ITL_VI_OP_WRAP)   ? 'q'
                                                       : 'y';
       size_t target_line = cursor_line;
 
@@ -18111,7 +18600,8 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
     itl_vi_operator_kind op         = itl_g_vi_pending_operator;
     bool                 is_doubled = (op == ITL_VI_OP_DELETE && byte == 'd') ||
                       (op == ITL_VI_OP_CHANGE && byte == 'c') ||
-                      (op == ITL_VI_OP_YANK && byte == 'y');
+                      (op == ITL_VI_OP_YANK && byte == 'y') ||
+                      (op == ITL_VI_OP_WRAP && byte == 'q');
 
     if (is_doubled) {
       itl_vi_operator_line(le, op, (int) byte, count);
@@ -18214,9 +18704,29 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
 
   case ':': itl_vi_reset_pending(); return itl_vi_ex_command(le);
 
+  case '?':
+    if (itl_g_full_screen) {
+      itl_vi_reset_pending();
+      itl_le_find(le, true, "?", ITL_FIND_VI_HINT);
+    }
+    return TL_SUCCESS;
+
+  case 'n':
+  case 'N':
+    itl_vi_reset_pending();
+    itl_le_find_again(le, byte == 'N');
+    return TL_SUCCESS;
+
   case '/': {
-    tl_status_code select_code    = TL_SUCCESS;
-    int            after_search   = itl_history_select(le, &select_code);
+    tl_status_code select_code = TL_SUCCESS;
+    int            after_search;
+
+    if (itl_g_full_screen) {
+      itl_vi_reset_pending();
+      itl_le_find(le, false, "/", ITL_FIND_VI_HINT);
+      return TL_SUCCESS;
+    }
+    after_search                  = itl_history_select(le, &select_code);
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
     itl_vi_reset_pending();
@@ -18250,6 +18760,9 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
     }
     if (second_byte == 'g') {
       itl_vi_go_to_line(le, line);
+    } else if (second_byte == 'q') {
+      itl_g_vi_pending_operator = ITL_VI_OP_WRAP;
+      return TL_SUCCESS;
     } else if (second_byte == 27) {
       (void) itl_esc_parse(second_byte);
     }
@@ -18435,7 +18948,8 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
       itl_g_tty_should_refresh_text = true;
     } else if ((itl_g_edit_mode == TL_EDIT_MODE_EMACS ||
                 itl_g_edit_mode == TL_EDIT_MODE_VI_INSERT) &&
-               ((input_type & TL_MASK_KEY) == TL_KEY_HISTORY_SEARCH ||
+               (((input_type & TL_MASK_KEY) == TL_KEY_HISTORY_SEARCH &&
+                 !itl_g_full_screen) ||
                 input_byte == 6))
     {
       /* Ctrl-R and Ctrl-F both enable incremental search. Ctrl-F is caught by

@@ -7897,6 +7897,56 @@ test_vi_counted_j(void)
   return ok;
 }
 
+static bool
+test_wrap_lines_fills_paragraphs(void)
+{
+  char          out_buffer[BUFFER_SIZE];
+  itl_le_t      le   = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  bool          ok   = true;
+  size_t        saved_width = itl_g_wrap_width;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), NULL);
+  ITL_STRING_FROM_CSTR(line, "  one two three\nfour\n\nfive  six seven");
+  itl_g_wrap_width = 12;
+  itl_le_wrap_lines(&le, 0, line->length);
+  ok &= test_line_is(line, "  one two\n  three four\n\nfive six\nseven",
+                     "wrap");
+  ok &= le.cursor_position == line->length - 5;
+  le.cursor_position = 0;
+  itl_le_fill_paragraph(&le);
+  ok &= test_line_is(line, "  one two\n  three four\n\nfive six\nseven",
+                     "fill keeps a wrapped paragraph");
+  itl_g_wrap_width = saved_width;
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
+static bool
+test_find_wraps_and_folds_case(void)
+{
+  itl_string_t *line = itl_string_alloc();
+  bool          ok   = true;
+
+  ITL_STRING_FROM_CSTR(line, "Beta alpha beta");
+  ok &= itl_find_search(line, "beta", 1, false) &&
+        itl_g_find_match_start == 11 && itl_g_find_match_end == 15;
+  ok &= itl_find_search(line, "beta", 12, false) &&
+        itl_g_find_match_start == 0;
+  ok &= itl_find_search(line, "Beta", 1, false) &&
+        itl_g_find_match_start == 0;
+  ok &= itl_find_search(line, "alpha", 3, true) &&
+        itl_g_find_match_start == 5;
+  ok &= !itl_find_search(line, "gamma", 0, false) && !itl_g_find_has_match;
+  if (!ok) {
+    printf("find stopped at %zu\n", itl_g_find_match_start);
+  }
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 static int
 test_format_callback(const char *text, const char **out_text)
 {
@@ -7961,9 +8011,9 @@ test_tab_takes_four_columns(void)
   bool            ok  = true;
 
   itl_g_colors_enabled = 0;
-  itl_char_buf_append_line_char(b, tab, NULL);
+  itl_char_buf_append_line_char(b, tab);
   ok &= itl_char_line_width(tab) == 4;
-  ok &= b->size == 4 && memcmp(b->data, ">   ", 4) == 0;
+  ok &= b->size == 4 && memcmp(b->data, "    ", 4) == 0;
   ok &= itl_wrap_is_early_break(77, 4, 80);
   ok &= !itl_wrap_is_early_break(76, 4, 80);
   ok &= itl_wrap_is_early_break(79, 2, 80);
@@ -8431,11 +8481,11 @@ test_prefix_hint_lists_the_waiting_keys(void)
   ok &= test_hint_is("  pressed :\n  enter to run the command\n"
                      "  q, q!, or quit to quit, wq, wq!, wqa, wqa!, or x "
                      "to save and quit\n"
-                     "  u or undo to undo, red or redo to redo\n"
-                     "  e or edit to edit in $VISUAL\n"
                      "  s/old/new/ or %s/old/new/ with an optional g "
                      "to substitute\n"
-                     "  & or && to repeat the substitution\n"
+                     "  u or undo to undo, red or redo to redo\n"
+                     "  e or edit to edit in $VISUAL\n"
+                     "  &, &&, or s to repeat the substitution\n"
                      "  set option=value, set option, set nooption, or set "
                      "option? to set or show an option\n"
                      "  save or save option to store the options\n"
@@ -9818,6 +9868,10 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_option_commands),
                                    DEFINE_TEST_CASE(test_vi_go_to_line),
                                    DEFINE_TEST_CASE(test_vi_counted_j),
+                                   DEFINE_TEST_CASE(
+                                       test_wrap_lines_fills_paragraphs),
+                                   DEFINE_TEST_CASE(
+                                       test_find_wraps_and_folds_case),
                                    DEFINE_TEST_CASE(test_format_commands),
                                    DEFINE_TEST_CASE(test_vi_ex_write_commands),
                                    DEFINE_TEST_CASE(test_tab_takes_four_columns),
