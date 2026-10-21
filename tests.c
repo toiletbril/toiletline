@@ -7919,29 +7919,26 @@ test_format_commands(void)
 }
 
 static bool
-test_line_number_gutter(void)
+test_vi_ex_write_commands(void)
+{
+  return itl_vi_ex_is_write("w") && itl_vi_ex_is_write("write") &&
+         !itl_vi_ex_is_write("wq") && itl_vi_ex_is_write_quit("wqa!") &&
+         itl_vi_ex_is_write_quit("x") && !itl_vi_ex_is_write_quit("q") &&
+         itl_vi_ex_is_quit("q!") && !itl_vi_ex_is_quit("wq");
+}
+
+static bool
+test_tab_takes_four_columns(void)
 {
   itl_char_buf_t *b   = itl_char_buf_alloc();
-  size_t          row = 0;
+  itl_utf8_t      tab = itl_utf8_parse('\t');
   bool            ok  = true;
 
   itl_g_colors_enabled = 0;
-  tl_set_line_numbers(4);
-  ok &= itl_le_tty_break_line(b, false, false, NULL, 5, &row, 12) == 5;
-  ok &= b->size == strlen(ITL_LF) + 5 &&
-        memcmp(b->data + strlen(ITL_LF), "  12 ", 5) == 0;
-  ITL_CHAR_BUF_CLEAR(b);
-  ok &= itl_le_tty_break_line(b, false, false, NULL, 3, &row, 7) == 3;
-  ok &= memcmp(b->data + strlen(ITL_LF), "   ", 3) == 0;
-  tl_set_line_numbers(0);
-  ITL_CHAR_BUF_CLEAR(b);
-  ok &= itl_le_tty_break_line(b, false, false, NULL, 5, &row, 2) == 5;
-  ok &= memcmp(b->data + strlen(ITL_LF), "     ", 5) == 0;
-  ok &= row == 3;
+  itl_char_buf_append_line_char(b, tab);
+  ok &= itl_char_line_width(tab) == 4;
+  ok &= b->size == 4 && memcmp(b->data, ">   ", 4) == 0;
   itl_g_colors_enabled = 1;
-  ok &= itl_vi_ex_is_write_quit("wqa!") && itl_vi_ex_is_write_quit("x") &&
-        !itl_vi_ex_is_write_quit("q") && itl_vi_ex_is_quit("q!") &&
-        !itl_vi_ex_is_quit("wq");
   ITL_CHAR_BUF_FREE(b);
 
   return ok;
@@ -8271,6 +8268,45 @@ test_hint_is(const char *expected, size_t cols, const char *step)
   return test_hint_rows_are(expected, cols, 24, step);
 }
 
+static const char *test_saved_text = NULL;
+
+static int
+test_save_callback(const char *text, const char **out_message)
+{
+  test_saved_text = text[0] == '\0' ? NULL : "saved";
+  *out_message    = text[0] == '\0' ? "nothing\nto write" : "wrote it";
+
+  return text[0] != '\0';
+}
+
+static bool
+test_save_keeps_editing(void)
+{
+  char          out_buffer[64];
+  itl_le_t      le;
+  itl_string_t *line = itl_string_alloc();
+  bool          ok   = true;
+
+  tl_set_save_callback(test_save_callback);
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), NULL);
+  ITL_STRING_FROM_CSTR(line, "text");
+  itl_g_edit_mode = TL_EDIT_MODE_EMACS;
+  ok &= itl_le_key_handle(&le, TL_KEY_SAVE) == TL_SUCCESS;
+  ok &= test_saved_text != NULL &&
+        strcmp(itl_g_save_message, "wrote it") == 0 &&
+        itl_g_editor_message[0] == '\0';
+  ITL_STRING_FROM_CSTR(line, "");
+  ok &= !itl_le_save(&le) &&
+        strcmp(itl_g_editor_message, "nothing\nto write") == 0;
+  tl_set_save_callback(NULL);
+  itl_g_editor_message[0] = '\0';
+  itl_g_save_message[0]   = '\0';
+  test_saved_text         = NULL;
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 static void
 test_prefix_reset(void)
 {
@@ -8300,13 +8336,12 @@ test_prefix_hint_lists_the_waiting_keys(void)
                      "to undo, z to repeat the last M-x command, ctrl-c to "
                      "leave the shell",
                      200, "ctrl-x");
-  tl_set_save_keys(1);
+  tl_set_save_callback(test_save_callback);
   ok &= test_hint_is("  pressed ctrl-x\n  ctrl-e to edit in $VISUAL, ctrl-u "
                      "to undo, z to repeat the last M-x command, s or ctrl-s "
-                     "to save and leave, ctrl-c to leave without saving, i "
-                     "to show the hint",
-                     200, "ctrl-x with save keys");
-  tl_set_save_keys(0);
+                     "to save, ctrl-c to leave, i to show the hint",
+                     200, "ctrl-x with a save callback");
+  tl_set_save_callback(NULL);
   ok &= test_hint_is("  pressed ctrl-x\n  ctrl-e to edit in\n"
                      "  $VISUAL, ctrl-u to undo,\n  z to repeat the last...",
                      27, "ctrl-x wrap");
@@ -9753,7 +9788,9 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_option_commands),
                                    DEFINE_TEST_CASE(test_vi_go_to_line),
                                    DEFINE_TEST_CASE(test_format_commands),
-                                   DEFINE_TEST_CASE(test_line_number_gutter),
+                                   DEFINE_TEST_CASE(test_vi_ex_write_commands),
+                                   DEFINE_TEST_CASE(test_tab_takes_four_columns),
+                                   DEFINE_TEST_CASE(test_save_keeps_editing),
                                    DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
                                    DEFINE_TEST_CASE(
                                        test_hint_body_wraps_at_words),

@@ -173,7 +173,7 @@ typedef enum
   TL_KEY_REPEAT,
   /* Ctrl-X Ctrl-C leaves the shell in emacs mode, as M-x kill-kosh does. */
   TL_KEY_QUIT,
-  /* Ctrl-X s and Ctrl-X Ctrl-S save and leave while tl_set_save_keys is on. */
+  /* Ctrl-X s and Ctrl-X Ctrl-S save through the save callback. */
   TL_KEY_SAVE,
   /* Ctrl-X i, and Ctrl-I in vi insert mode of the full-screen layout, show
      the hint under the caret. */
@@ -458,23 +458,23 @@ TL_DEF void
 tl_set_format_callback(tl_format_fn callback);
 
 /**
- * Number the lines of the buffer. Each line after the first starts with its
- * number, right-aligned and dimmed in width columns, followed by a space, in
- * place of the continuation indent, and the host draws the number of the
- * first line in the prompt. A width of 0 turns the numbers off.
+ * The save callback of a host that edits a file. The host writes text and
+ * returns 1, or returns 0 when the write fails, and either way can leave a
+ * line for the hint rows in out_message. The message stays valid until the
+ * next call.
  */
-TL_DEF void
-tl_set_line_numbers(size_t width);
+typedef int (*tl_save_fn)(const char *text, const char **out_message);
 
 /**
- * Turn Ctrl-X s and Ctrl-X Ctrl-S on, which return TL_PRESSED_WRITE_QUIT in
- * emacs mode with the buffer handed over, for a host that edits a file. While
- * they are on, Enter inserts a line break, or moves down a line in vi normal
- * mode, and never returns TL_PRESSED_ENTER. They do nothing while off, the
- * default.
+ * Register the save callback, or NULL, the default. While one is registered,
+ * Ctrl-X s and Ctrl-X Ctrl-S in emacs mode and :w and :write in vi mode save
+ * the buffer through it and keep editing, and :wq, :wq!, :x, :wqa, and :wqa!
+ * save and return TL_PRESSED_WRITE_QUIT only when the save succeeds. Enter
+ * inserts a line break, or moves down a line in vi normal mode, and never
+ * returns TL_PRESSED_ENTER.
  */
 TL_DEF void
-tl_set_save_keys(int enabled);
+tl_set_save_callback(tl_save_fn callback);
 
 /**
  * Keep text as the saved contents of the file the host edits, or forget them
@@ -2107,14 +2107,18 @@ itl_char_has_visible_notation(itl_utf8_t ch)
 
 #define ITL_CARET_NOTATION_WIDTH 2
 #define ITL_HEX_NOTATION_WIDTH   4
+#define ITL_TAB_WIDTH            4
 
-/* The columns a character of the edited line takes as drawn. A tab is drawn
-   raw as one column and a newline is handled by the renderer, so only the
+/* The columns a character of the edited line takes as drawn. A tab takes
+   ITL_TAB_WIDTH columns and a newline is handled by the renderer, so only the
    other controls take their notation width. */
 ITL_DEF size_t
 itl_char_line_width(itl_utf8_t ch)
 {
-  if (ch.size == 1 && (ch.bytes[0] == 0x09 || ch.bytes[0] == 0x0A)) {
+  if (ch.size == 1 && ch.bytes[0] == 0x09) {
+    return ITL_TAB_WIDTH;
+  }
+  if (ch.size == 1 && ch.bytes[0] == 0x0A) {
     return itl_char_width(ch);
   }
 
@@ -4042,6 +4046,31 @@ itl_char_buf_append_spaces(itl_char_buf_t *cb, size_t count)
   cb->size += count;
 }
 
+/* The reset that closes every colored span, matching the ghost text's own
+   reset. Each span carries its own opening SGR from the host. */
+#define ITL_HIGHLIGHT_RESET "\x1b[0m"
+
+/* The grey of every secondary text the editor writes for itself, the ghost
+   suggestion, a candidate description, and the menu rows. */
+#define ITL_DIM_SGR "\x1b[90m"
+/* The faint marker of a tab and the intensity that follows it, which keeps
+   the color of the span around the tab. */
+#define ITL_FAINT_SGR            "\x1b[2m"
+#define ITL_NORMAL_INTENSITY_SGR "\x1b[22m"
+/* The text typed into a minibuffer, in light green. */
+#define ITL_MINIBUFFER_SGR "\x1b[92m"
+
+/* Whether the colored parts of the editor output are written. The host clears
+   it for a session that refuses color. */
+ITL_DEF ITL_THREAD_LOCAL int itl_g_colors_enabled = 1;
+
+/* The escape sequence to write, or the empty string once color is refused. */
+ITL_DEF const char *
+itl_color_sequence(const char *sequence)
+{
+  return itl_g_colors_enabled ? sequence : "";
+}
+
 /* Append the visible notation of a control byte or codepoint: caret notation
    below 0x80 and a hex escape at or above it, which also stands for a byte
    that starts no valid UTF-8 sequence. */
@@ -4062,14 +4091,21 @@ itl_char_buf_append_notation(itl_char_buf_t *cb, uint32_t value)
   itl_char_buf_append_byte(cb, (uint8_t) hex_digits[value & 0x0F]);
 }
 
-/* Append one character of the edited line as itl_char_line_width counts it. */
+/* Append one character of the edited line as itl_char_line_width counts it.
+   A tab is drawn faint as a marker followed by spaces. */
 ITL_DEF void
 itl_char_buf_append_line_char(itl_char_buf_t *cb, itl_utf8_t ch)
 {
-  bool is_raw_layout =
-      ch.size == 1 && (ch.bytes[0] == 0x09 || ch.bytes[0] == 0x0A);
-
-  if (!is_raw_layout && itl_char_has_visible_notation(ch)) {
+  if (ch.size == 1 && ch.bytes[0] == 0x09) {
+    itl_char_buf_append_cstr(cb, itl_color_sequence(ITL_FAINT_SGR));
+    itl_char_buf_append_byte(cb, '>');
+    itl_char_buf_append_spaces(cb, ITL_TAB_WIDTH - 1);
+    itl_char_buf_append_cstr(cb, itl_color_sequence(ITL_NORMAL_INTENSITY_SGR));
+    return;
+  }
+  if (!(ch.size == 1 && ch.bytes[0] == 0x0A) &&
+      itl_char_has_visible_notation(ch))
+  {
     itl_char_buf_append_notation(cb, itl_utf8_codepoint(ch));
     return;
   }
@@ -5639,11 +5675,8 @@ ITL_DEF ITL_THREAD_LOCAL tl_option_fn itl_g_option_callback = NULL;
 /* The host format callback, or NULL. */
 ITL_DEF ITL_THREAD_LOCAL tl_format_fn itl_g_format_callback = NULL;
 
-/* The width of the line numbers drawn before each buffer line, or 0. */
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_line_number_width = 0;
-
-/* Whether Ctrl-X s and Ctrl-X Ctrl-S save, set by tl_set_save_keys. */
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_save_keys_enabled = false;
+/* The host save callback, or NULL. */
+ITL_DEF ITL_THREAD_LOCAL tl_save_fn itl_g_save_callback = NULL;
 
 /* The saved contents of the edited file, set by tl_set_saved_text, or NULL. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_saved_text = NULL;
@@ -5674,6 +5707,10 @@ itl_full_screen_title_rows(void)
 /* The result of the last option command, shown in place of the hint rows
    until the next key. */
 ITL_DEF ITL_THREAD_LOCAL char itl_g_editor_message[512] = {0};
+
+/* A one-line report of the last save, drawn on the empty status row of the
+   full-screen layout until the next key. */
+ITL_DEF ITL_THREAD_LOCAL char itl_g_save_message[256] = {0};
 
 /* The count of keys the editor has read, and the key that waits for a second
    press with the count it arrived at. */
@@ -5806,27 +5843,6 @@ ITL_DEF ITL_THREAD_LOCAL int  itl_g_idle_outcome      = 0;
    while no gather waits. A menu wait ends at this moment instead of blocking on
    a key, and a key moves it. */
 ITL_DEF ITL_THREAD_LOCAL uint64_t itl_g_menu_due_ms = 0;
-
-/* The reset that closes every colored span, matching the ghost text's own
-   reset. Each span carries its own opening SGR from the host. */
-#define ITL_HIGHLIGHT_RESET "\x1b[0m"
-
-/* The grey of every secondary text the editor writes for itself, the ghost
-   suggestion, a candidate description, and the menu rows. */
-#define ITL_DIM_SGR "\x1b[90m"
-/* The text typed into a minibuffer, in light green. */
-#define ITL_MINIBUFFER_SGR "\x1b[92m"
-
-/* Whether the colored parts of the editor output are written. The host clears
-   it for a session that refuses color. */
-ITL_DEF ITL_THREAD_LOCAL int itl_g_colors_enabled = 1;
-
-/* The escape sequence to write, or the empty string once color is refused. */
-ITL_DEF const char *
-itl_color_sequence(const char *sequence)
-{
-  return itl_g_colors_enabled ? sequence : "";
-}
 
 ITL_DEF bool
 itl_should_run_highlight(void)
@@ -6764,55 +6780,6 @@ itl_le_tty_break_row(itl_char_buf_t *b,
   return indent;
 }
 
-/* Starts the row after a line break, drawing line_number in the indent when
-   it is not 0 and line numbers are on and fit. */
-ITL_DEF size_t
-itl_le_tty_break_line(itl_char_buf_t *b,
-                      bool            is_span_open,
-                      bool            should_suppress_pad,
-                      const char     *open_sgr,
-                      size_t          indent,
-                      size_t         *row,
-                      size_t          line_number)
-{
-  char   digits[24];
-  size_t digit_count = 0;
-
-  if (line_number == 0 || itl_g_line_number_width == 0 ||
-      indent < itl_g_line_number_width + 1)
-  {
-    return itl_le_tty_break_row(b, is_span_open, should_suppress_pad, open_sgr,
-                                indent, row);
-  }
-  do {
-    digits[digit_count++] = (char) ('0' + line_number % 10);
-    line_number /= 10;
-  } while (line_number > 0 && digit_count < sizeof(digits));
-  /* A number wider than the gutter keeps its last digits, so the row keeps
-     the width the indent accounts for. */
-  if (digit_count > indent - 1) {
-    digit_count = indent - 1;
-  }
-
-  if (is_span_open) {
-    itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
-  }
-  itl_char_buf_append_cstr(b, ITL_LF);
-  itl_char_buf_append_spaces(b, indent - 1 - digit_count);
-  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_DIM_SGR));
-  while (digit_count > 0) {
-    itl_char_buf_append_byte(b, (uint8_t) digits[--digit_count]);
-  }
-  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
-  itl_char_buf_append_byte(b, ' ');
-  if (is_span_open) {
-    itl_char_buf_append_cstr(b, open_sgr);
-  }
-  *row += 1;
-
-  return indent;
-}
-
 /* The rows a block taller than the terminal shows at once. Two rows stay free
    for the hint rows under it. */
 ITL_DEF size_t
@@ -6854,7 +6821,7 @@ itl_le_may_exceed_view(const itl_le_t *le, size_t cols, size_t view_rows)
          view_rows;
 }
 
-/* Breaks the row like itl_le_tty_break_line, while only the rows from view_top
+/* Breaks the row like itl_le_tty_break_row, while only the rows from view_top
    up to view_end reach b.
    The first row of the window starts without a line feed at the top of the
    block, and a span still open there is opened again. */
@@ -6865,7 +6832,6 @@ itl_le_tty_view_break(itl_char_buf_t *b,
                       const char     *open_sgr,
                       size_t          indent,
                       size_t         *row,
-                      size_t          line_number,
                       size_t          view_top,
                       size_t          view_end)
 {
@@ -6875,13 +6841,13 @@ itl_le_tty_view_break(itl_char_buf_t *b,
   size_t          col;
 
   if (next > view_top && next < view_end) {
-    return itl_le_tty_break_line(b, is_span_open, should_suppress_pad,
-                                 open_sgr, indent, row, line_number);
+    return itl_le_tty_break_row(b, is_span_open, should_suppress_pad,
+                                open_sgr, indent, row);
   }
 
   ITL_CHAR_BUF_CLEAR(discard);
-  col = itl_le_tty_break_line(discard, is_span_open, should_suppress_pad,
-                              open_sgr, indent, row, line_number);
+  col = itl_le_tty_break_row(discard, is_span_open, should_suppress_pad,
+                             open_sgr, indent, row);
   if (next == view_top && discard->size >= lf_size) {
     itl_char_buf_append_bytes(b, discard->data + lf_size,
                               discard->size - lf_size);
@@ -7098,11 +7064,11 @@ itl_prefix_hint(char *out, size_t out_size)
   out[0] = '\0';
   if (itl_g_prefix_kind == ITL_PREFIX_CTRL_X) {
     itl_prefix_append(out, out_size, &out_length,
-                      itl_g_save_keys_enabled
+                      itl_g_save_callback != NULL
                           ? "pressed ctrl-x\nctrl-e to edit in $VISUAL, "
                             "ctrl-u to undo, z to repeat the last M-x "
-                            "command, s or ctrl-s to save and leave, ctrl-c "
-                            "to leave without saving, i to show the hint"
+                            "command, s or ctrl-s to save, ctrl-c to leave, "
+                            "i to show the hint"
                           : "pressed ctrl-x\nctrl-e to edit in $VISUAL, "
                             "ctrl-u to undo, z to repeat the last M-x "
                             "command, ctrl-c to leave the shell");
@@ -7125,7 +7091,11 @@ itl_prefix_hint(char *out, size_t out_size)
   }
   if (itl_g_prefix_kind == ITL_PREFIX_VI_EX) {
     itl_prefix_append(out, out_size, &out_length,
-                      "pressed :\nenter to run the command\n"
+                      "pressed :\nenter to run the command\n");
+    if (itl_g_save_callback != NULL) {
+      itl_prefix_append(out, out_size, &out_length, "w or write to save, ");
+    }
+    itl_prefix_append(out, out_size, &out_length,
                       "q, q!, or quit to quit, wq, wq!, wqa, wqa!, or x "
                       "to save and quit\n"
                       "u or undo to undo, red or redo to redo\n"
@@ -7571,7 +7541,9 @@ itl_full_screen_rows(char        *out,
            "y to yank, esc to leave the selection";
     break;
   }
-  itl_prefix_append(out, out_size, &out_length, "\n\n");
+  itl_prefix_append(out, out_size, &out_length, "\n");
+  itl_prefix_append(out, out_size, &out_length, itl_g_save_message);
+  itl_prefix_append(out, out_size, &out_length, "\n");
   itl_prefix_append(out, out_size, &out_length, keys);
 
   return out;
@@ -8199,7 +8171,6 @@ itl_le_tty_refresh(itl_le_t *le)
        by the continuation indent. The span cursor closes a span
        that ends at this codepoint, then opens the one that starts here. */
     size_t      next_span    = 0;
-    size_t      line_number  = 1;
     bool        in_span      = false;
     size_t      open_end     = 0;
     const char *open_sgr     = NULL;
@@ -8258,15 +8229,8 @@ itl_le_tty_refresh(itl_le_t *le)
         if (row == le->prompt_rows) {
           first_row_end_col = col;
         }
-        line_number += 1;
-        /* The minibuffer row under the buffer is not a buffer line, so it
-           takes the plain indent instead of a number. */
-        col = itl_le_tty_view_break(
-            b, in_span, suppress_pad, open_sgr, indent, &row,
-            itl_g_minibuffer_row_start > 0 && i + 1 >= itl_g_minibuffer_row_start
-                ? 0
-                : line_number,
-            view_top, view_end);
+        col = itl_le_tty_view_break(b, in_span, suppress_pad, open_sgr, indent,
+                                    &row, view_top, view_end);
 
         continue;
       }
@@ -8276,7 +8240,7 @@ itl_le_tty_refresh(itl_le_t *le)
 
         if (itl_wrap_is_early_break(col, char_width, cols)) {
           col = itl_le_tty_view_break(b, in_span, suppress_pad, open_sgr,
-                                      indent, &row, 0, view_top, view_end);
+                                      indent, &row, view_top, view_end);
           out = row >= view_top && row < view_end ? b : &itl_g_view_discard;
         }
 
@@ -8285,7 +8249,7 @@ itl_le_tty_refresh(itl_le_t *le)
 
         if (itl_wrap_is_break_after(col, cols)) {
           col = itl_le_tty_view_break(b, in_span, suppress_pad, open_sgr,
-                                      indent, &row, 0, view_top, view_end);
+                                      indent, &row, view_top, view_end);
         }
       }
     }
@@ -8504,15 +8468,9 @@ tl_set_format_callback(tl_format_fn callback)
 }
 
 TL_DEF void
-tl_set_line_numbers(size_t width)
+tl_set_save_callback(tl_save_fn callback)
 {
-  itl_g_line_number_width = width;
-}
-
-TL_DEF void
-tl_set_save_keys(int enabled)
-{
-  itl_g_save_keys_enabled = enabled != 0;
+  itl_g_save_callback = callback;
 }
 
 TL_DEF void
@@ -14124,6 +14082,30 @@ itl_le_confirm_discard(const itl_le_t *le, int kind, const char *key_label)
   return itl_le_confirm_press(kind, message);
 }
 
+/* Hands the buffer to the save callback and shows the message it leaves.
+   Returns whether the save succeeded. */
+ITL_DEF bool
+itl_le_save(const itl_le_t *le)
+{
+  char       *text    = (char *) itl_malloc(le->line->size + 1);
+  const char *message = NULL;
+  bool        is_saved;
+
+  itl_string_to_cstr(le->line, text, le->line->size + 1);
+  is_saved = itl_g_save_callback(text, &message) != 0;
+  ITL_FREE(text);
+  if (message != NULL && strchr(message, '\n') == NULL) {
+    strncpy(itl_g_save_message, message, sizeof(itl_g_save_message) - 1);
+    itl_g_save_message[sizeof(itl_g_save_message) - 1] = '\0';
+  } else if (message != NULL) {
+    strncpy(itl_g_editor_message, message, sizeof(itl_g_editor_message) - 1);
+    itl_g_editor_message[sizeof(itl_g_editor_message) - 1] = '\0';
+  }
+  itl_g_tty_should_refresh_text = true;
+
+  return is_saved;
+}
+
 typedef enum
 {
   ITL_CASE_UPPER,
@@ -14287,6 +14269,25 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_TAB: {
     tl_status_code completion_code = TL_SUCCESS;
 
+    size_t line_start = itl_le_line_start_of(le, le->cursor_position);
+    size_t i;
+    bool   is_blank_before = true;
+
+    for (i = line_start; i < le->cursor_position; ++i) {
+      itl_utf8_t ch = le->line->chars[i];
+
+      if (ch.size != 1 || (ch.bytes[0] != ' ' && ch.bytes[0] != '\t')) {
+        is_blank_before = false;
+        break;
+      }
+    }
+
+    /* A file edited in the full-screen layout takes the tab as text while
+       only blanks come before the caret on its line. */
+    if (itl_g_full_screen && is_blank_before) {
+      itl_le_insert_cstr(le, "\t");
+      break;
+    }
     /* A registered completion callback handles TAB in place, inserting the
        common prefix, opening the menu, or listing the candidates. With no
        callback, TAB keeps its old contract of returning to the host. */
@@ -14425,11 +14426,12 @@ itl_le_key_handle(itl_le_t *le, int esc)
     itl_g_tty_should_refresh_text = false;
   } break;
   case TL_KEY_ENTER: {
-    bool insert_newline = (esc & TL_MOD_ALT) != 0 || itl_g_save_keys_enabled;
+    bool insert_newline =
+        (esc & TL_MOD_ALT) != 0 || itl_g_save_callback != NULL;
 
     /* A file host saves with its own keys, so Enter starts a new line, and
        in vi normal mode it moves down a line. */
-    if (itl_g_save_keys_enabled &&
+    if (itl_g_save_callback != NULL &&
         itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND)
     {
       tl_status_code code;
@@ -14661,10 +14663,9 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_MOUSE: itl_le_mouse(le); break;
 
   case TL_KEY_SAVE:
-    if (itl_g_edit_mode == TL_EDIT_MODE_EMACS && itl_g_save_keys_enabled) {
-      /* The host saves the buffer, so it is handed over as Enter hands it. */
-      ITL_TRY(itl_le_copy_out(le), return TL_ERROR_SIZE);
-      return TL_PRESSED_WRITE_QUIT;
+    if (itl_g_edit_mode == TL_EDIT_MODE_EMACS && itl_g_save_callback != NULL) {
+      itl_le_save(le);
+      break;
     }
     itl_g_tty_should_refresh_text = false;
     break;
@@ -16808,6 +16809,12 @@ itl_vi_ex_is_quit(const char *command)
 }
 
 ITL_DEF bool
+itl_vi_ex_is_write(const char *command)
+{
+  return strcmp(command, "w") == 0 || strcmp(command, "write") == 0;
+}
+
+ITL_DEF bool
 itl_vi_ex_is_write_quit(const char *command)
 {
   return strcmp(command, "wq") == 0 || strcmp(command, "wq!") == 0 ||
@@ -17570,6 +17577,14 @@ itl_vi_ex_command(itl_le_t *le)
       itl_g_tty_should_refresh_text = true;
     } else if (itl_vi_ex_is_quit(command)) {
       result = TL_PRESSED_QUIT;
+    } else if (itl_vi_ex_is_write(command) && itl_g_save_callback != NULL) {
+      itl_le_save(le);
+    } else if (itl_vi_ex_is_write_quit(command) &&
+               itl_g_save_callback != NULL)
+    {
+      if (itl_le_save(le)) {
+        result = itl_le_copy_out(le) ? TL_PRESSED_WRITE_QUIT : TL_ERROR_SIZE;
+      }
     } else if (itl_vi_ex_is_write_quit(command)) {
       /* The host saves the buffer, so it is handed over as Enter hands it. */
       result = itl_le_copy_out(le) ? TL_PRESSED_WRITE_QUIT : TL_ERROR_SIZE;
@@ -18316,6 +18331,7 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
 #endif /* ITL_POSIX */
     ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
     itl_g_editor_message[0] = '\0';
+    itl_g_save_message[0]   = '\0';
     itl_g_key_serial += 1;
 
 #if defined TL_SEE_BYTES
