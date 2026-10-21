@@ -2791,6 +2791,13 @@ ITL_DEF ITL_THREAD_LOCAL char              itl_g_vi_pending_register = 0;
 ITL_DEF ITL_THREAD_LOCAL itl_vi_find_state itl_g_vi_find = ITL_ZERO_INIT;
 ITL_DEF ITL_THREAD_LOCAL size_t            itl_g_vi_visual_anchor = 0;
 
+/* The lines a colon command opened from visual mode acts on, as codepoint
+   indices from the start of the first line to the end of the last, while
+   itl_g_vi_ex_has_range holds. */
+ITL_DEF ITL_THREAD_LOCAL bool   itl_g_vi_ex_has_range   = false;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_vi_ex_range_start = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_vi_ex_range_end   = 0;
+
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_vi_block_anchor           = 0;
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_vi_block_insert_active    = false;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_vi_block_insert_top_line  = 0;
@@ -9533,6 +9540,8 @@ ITL_DEF tl_status_code
 itl_emacs_execute_command(itl_le_t *le);
 ITL_DEF tl_status_code
 itl_emacs_repeat(itl_le_t *le);
+ITL_DEF tl_status_code
+itl_vi_ex_command(itl_le_t *le);
 
 /* Every row of one menu repaint. The help row and the count row are counted
    here beside the candidates, and a repaint never draws a row the layout did
@@ -15610,6 +15619,22 @@ itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
     default: break;
     }
 
+    if (byte == 'j' || byte == 'k') {
+      itl_vi_step_visual_row(le, byte == 'k');
+      continue;
+    }
+
+    /* A colon command acts on the selected lines, as :'<,'> does in vi. */
+    if (byte == ':') {
+      itl_g_vi_ex_range_start = itl_le_line_start_of(le, selection_start);
+      itl_g_vi_ex_range_end   = itl_le_line_end_of(le, selection_end);
+      itl_g_vi_ex_has_range   = true;
+      itl_modal_leave(le, TL_EDIT_MODE_VI_COMMAND, true);
+      le->cursor_position = itl_g_vi_ex_range_start;
+
+      return itl_vi_ex_command(le);
+    }
+
     if (byte == 'd' || byte == 'x' || byte == 'c' || byte == 'y') {
       itl_vi_operator_kind op =
           (byte == 'y') ? ITL_VI_OP_YANK
@@ -16077,6 +16102,20 @@ typedef struct
   bool   is_emacs_syntax;
 } itl_substitution;
 
+/* The byte offset of the codepoint at index in line. */
+ITL_DEF size_t
+itl_string_byte_offset(const itl_string_t *line, size_t index)
+{
+  size_t offset = 0;
+  size_t i;
+
+  for (i = 0; i < index && i < line->length; ++i) {
+    offset += line->chars[i].size;
+  }
+
+  return offset;
+}
+
 /* The last substitution of the colon command line, for & and &&. */
 ITL_DEF ITL_THREAD_LOCAL itl_substitution itl_g_vi_last_substitution;
 ITL_DEF ITL_THREAD_LOCAL bool             itl_g_vi_has_last_substitution =
@@ -16206,7 +16245,10 @@ itl_substitution_apply(const itl_le_t         *le,
 
   begin = 0;
   end   = line->size;
-  if (!substitution->is_whole) {
+  if (itl_g_vi_ex_has_range) {
+    begin = itl_string_byte_offset(line, itl_g_vi_ex_range_start);
+    end   = itl_string_byte_offset(line, itl_g_vi_ex_range_end);
+  } else if (!substitution->is_whole) {
     for (begin = cursor_byte; begin > 0 && text[begin - 1] != '\n'; --begin) {
     }
     for (end = cursor_byte; end < line->size && text[end] != '\n'; ++end) {
@@ -16324,7 +16366,10 @@ itl_le_format(itl_le_t *le, bool is_whole, const char *header)
     cursor_byte += le->line->chars[i].size;
   }
   end = le->line->size;
-  if (!is_whole) {
+  if (itl_g_vi_ex_has_range) {
+    begin = itl_string_byte_offset(le->line, itl_g_vi_ex_range_start);
+    end   = itl_string_byte_offset(le->line, itl_g_vi_ex_range_end);
+  } else if (!is_whole) {
     for (begin = cursor_byte; begin > 0 && text[begin - 1] != '\n'; --begin) {
     }
     for (end = cursor_byte; end < le->line->size && text[end] != '\n'; ++end) {
@@ -16721,8 +16766,8 @@ itl_vi_ex_command(itl_le_t *le)
   itl_substitution substitution;
   tl_status_code   result = TL_SUCCESS;
 
-  if (itl_minibuffer_read(le, ":", ITL_PREFIX_VI_EX, command,
-                          sizeof(command)))
+  if (itl_minibuffer_read(le, itl_g_vi_ex_has_range ? ":'<,'>" : ":",
+                          ITL_PREFIX_VI_EX, command, sizeof(command)))
   {
     if (itl_vi_ex_is_quit(command)) {
       result = TL_PRESSED_QUIT;
@@ -16768,6 +16813,7 @@ itl_vi_ex_command(itl_le_t *le)
                      header);
     }
   }
+  itl_g_vi_ex_has_range = false;
   itl_vi_clamp_command_cursor(le);
   itl_g_tty_should_refresh_text = true;
 
@@ -17300,14 +17346,20 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
     break;
   }
 
-  case 'k':
-    itl_g_history_get_prev(le);
+  /* j and k move between the rows of the buffer as Down and Up do, and
+     reach the history past its last or first row. */
+  case 'k': {
+    tl_status_code code = itl_le_key_handle(le, TL_KEY_UP);
+
     itl_vi_clamp_command_cursor(le);
-    break;
-  case 'j':
-    itl_g_history_get_next(le);
+    return code;
+  }
+  case 'j': {
+    tl_status_code code = itl_le_key_handle(le, TL_KEY_DOWN);
+
     itl_vi_clamp_command_cursor(le);
-    break;
+    return code;
+  }
 
   case 'f':
   case 'F':
