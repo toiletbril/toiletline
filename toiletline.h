@@ -14294,16 +14294,19 @@ itl_le_key_handle(itl_le_t *le, int esc)
       }
     }
 
+    /* A file edited in the full-screen layout takes the tab as text while
+       only blanks come before the caret on its line. */
+    if (itl_g_full_screen && is_blank_before) {
+      itl_le_insert_cstr(le, "\t");
+      break;
+    }
     /* A registered completion callback handles TAB in place, inserting the
        common prefix, opening the menu, or listing the candidates. With no
-       callback, TAB keeps its old contract of returning to the host. A file
-       edited in the full-screen layout takes the tab as text while only
-       blanks come before the caret on its line or when no callback takes it. */
-    if (!(itl_g_full_screen && is_blank_before) &&
-        itl_completion_handle_tab(le, &completion_code))
-    {
+       callback, TAB keeps its old contract of returning to the host. */
+    if (itl_completion_handle_tab(le, &completion_code)) {
       return completion_code;
     }
+    /* A file edited in the full-screen layout takes the tab as text. */
     if (itl_g_full_screen) {
       itl_le_insert_cstr(le, "\t");
       break;
