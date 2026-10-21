@@ -8025,6 +8025,23 @@ test_tab_takes_four_columns(void)
 }
 
 static bool
+test_shaded_cell_writes_no_character(void)
+{
+  itl_char_buf_t *b  = itl_char_buf_alloc();
+  bool            ok = true;
+
+  itl_g_colors_enabled = 0;
+  itl_char_buf_append_shaded_cell(b);
+  ok &= b->size == 0;
+  itl_g_colors_enabled = 1;
+  itl_char_buf_append_shaded_cell(b);
+  ok &= b->size > 0 && memchr(b->data, ' ', b->size) == NULL;
+  ITL_CHAR_BUF_FREE(b);
+
+  return ok;
+}
+
+static bool
 test_hint_body_wraps_at_words(void)
 {
   static const char WRAPPED[] =
@@ -9875,6 +9892,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_format_commands),
                                    DEFINE_TEST_CASE(test_vi_ex_write_commands),
                                    DEFINE_TEST_CASE(test_tab_takes_four_columns),
+                                   DEFINE_TEST_CASE(
+                                       test_shaded_cell_writes_no_character),
                                    DEFINE_TEST_CASE(test_save_keeps_editing),
                                    DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
                                    DEFINE_TEST_CASE(
