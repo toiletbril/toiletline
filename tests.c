@@ -2964,8 +2964,8 @@ cleanup:
   return ok;
 }
 
-/* Kitty reports Ctrl-I as CSI 105 ; 5 u. It reads as TAB unless the editor
-   keeps it apart, and then it shows the hint. */
+/* Kitty reports Ctrl-I as CSI 105 ; 5 u. The parser turns it into TAB unless
+   the editor keeps it apart, and then it shows the hint. */
 static bool
 test_ctrl_i_stays_apart_from_tab(void)
 {

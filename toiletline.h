@@ -485,8 +485,9 @@ tl_set_save_keys(int enabled);
 /**
  * Keep text as the saved contents of the file the host edits, or forget them
  * when text is NULL. While they are kept and the buffer differs from them,
- * Ctrl-C, Ctrl-D on an empty buffer, Ctrl-X Ctrl-C, and M-x kill-kosh take a
- * second press to leave, and :q and :quit refuse to leave while :q! leaves.
+ * Ctrl-C, Ctrl-D on an empty buffer, Ctrl-X Ctrl-C, M-x kill-kosh, and the
+ * Ctrl-Z that hands the line back take a second press to leave, and :q and
+ * :quit refuse to leave while :q! leaves.
  * text must outlive its use.
  */
 TL_DEF void
@@ -511,9 +512,11 @@ tl_set_status(const char *status);
 
 /**
  * Lay the editor out over the whole terminal for a host that edits a file:
- * the input fills every row but the last four, which hold the hints, and the
- * completion menu is drawn over the input next to the caret. The host draws
- * from the top-left corner of a cleared screen. Off by default.
+ * the input fills every row but the title and the last four, which hold the
+ * status, the hints, and the command line, and the completion menu is drawn
+ * over the input next to the caret. Mouse reports are on while the layout is.
+ * The host keeps the layout on the alternate screen, which the editor leaves
+ * while an external editor runs. Off by default.
  */
 TL_DEF void
 tl_set_full_screen(int enabled);
@@ -1036,6 +1039,14 @@ itl_do_nothing()
 
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_active        = false;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_entered_raw_mode = false;
+
+/* The layout of tl_set_full_screen. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_full_screen = false;
+
+/* SGR mouse reports of presses, releases, and the wheel, turned on with the
+   full-screen layout. */
+#define ITL_MOUSE_ON  "\x1b[?1000h\x1b[?1006h"
+#define ITL_MOUSE_OFF "\x1b[?1006l\x1b[?1000l"
 /* Set while the host lets the interrupt key raise a signal, so raw mode entered
    again meanwhile, such as after a program run in the middle, keeps it. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_signal_keys_enabled = false;
@@ -1288,6 +1299,9 @@ tl_restore_terminal_for_exit(void)
   }
 
   written = write(STDOUT_FILENO, withdraw, sizeof(withdraw) - 1);
+  if (itl_g_full_screen) {
+    written = write(STDOUT_FILENO, ITL_MOUSE_OFF, sizeof(ITL_MOUSE_OFF) - 1);
+  }
   if (itl_g_vi_cursor_shape != ITL_VI_CURSOR_DEFAULT_SHAPE) {
     written = write(STDOUT_FILENO, default_cursor, sizeof(default_cursor) - 1);
   }
@@ -1752,9 +1766,18 @@ itl_raise_suspend(void)
   /* Leave raw mode, stop, and resume here when continued. raise() returns only
      after SIGCONT, so raw mode is restored in normal context without a handler
      calling unsafe terminal functions. */
+  if (itl_g_full_screen) {
+    ITL_TRY(ITL_WRITE(ITL_STDOUT, ITL_MOUSE_OFF, sizeof(ITL_MOUSE_OFF) - 1) !=
+                -1,
+            {});
+  }
   tl_exit_raw_mode();
   raise(SIGTSTP);
   tl_enter_raw_mode();
+  if (itl_g_full_screen) {
+    ITL_TRY(ITL_WRITE(ITL_STDOUT, ITL_MOUSE_ON, sizeof(ITL_MOUSE_ON) - 1) != -1,
+            {});
+  }
   itl_g_tty_changed_size = 1;
 }
 
@@ -4513,8 +4536,8 @@ itl_history_record_meter_end(itl_history_record_meter_t *meter)
 
 /* Scans the open file from the start, rebuilding the offset ring, the recorded
    file size, and the trailing-newline flag. A record longer than the line
-   buffer is skipped and does not count as an event. Returns false on a read error or a
-   non-text byte. Touches neither the path nor the draft. */
+   buffer is skipped and does not count as an event. Returns false on a read
+   error or a non-text byte. Touches neither the path nor the draft. */
 ITL_DEF bool
 itl_history_scan_fd(ITL_FILE file)
 {
@@ -5143,8 +5166,8 @@ itl_esc_parse_modified_key(unsigned code, unsigned modifier)
   bool     is_shift = (bits & 1) != 0 || code == 'Z';
   bool     is_alt   = (bits & 2) != 0;
 
-  /* Kitty reports the unshifted key, so Alt with Shift is read back to the
-     symbol the chord types. */
+  /* Kitty reports the unshifted key, so Alt with Shift maps to the symbol the
+     chord types. */
   if (is_alt && !is_ctrl && (bits & ~(1u | 2u | 64u | 128u)) == 0 &&
       code < 128)
   {
@@ -5643,13 +5666,7 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hover_serial = 0;
    row under the input, or NULL while none is open. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_minibuffer_label = NULL;
 
-/* Whether the first hint row is drawn without the hint style, as the command
-   line of the full-screen layout is. */
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_hint_first_row_is_plain = false;
-
-/* The layout of tl_set_full_screen, and whether the last menu it drew sits
-   above the caret. */
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_full_screen   = false;
+/* Whether the last full-screen menu sits above the caret. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_menu_is_above = false;
 
 /* The rows the title takes on top of the full-screen layout. */
@@ -6755,8 +6772,8 @@ itl_le_tty_break_row(itl_char_buf_t *b,
   return indent;
 }
 
-/* Starts the row after a line break, drawing the number of the line that
-   begins there in the indent when line numbers are on and fit. */
+/* Starts the row after a line break, drawing line_number in the indent when
+   it is not 0 and line numbers are on and fit. */
 ITL_DEF size_t
 itl_le_tty_break_line(itl_char_buf_t *b,
                       bool            is_span_open,
@@ -6769,7 +6786,9 @@ itl_le_tty_break_line(itl_char_buf_t *b,
   char   digits[24];
   size_t digit_count = 0;
 
-  if (itl_g_line_number_width == 0 || indent < itl_g_line_number_width + 1) {
+  if (line_number == 0 || itl_g_line_number_width == 0 ||
+      indent < itl_g_line_number_width + 1)
+  {
     return itl_le_tty_break_row(b, is_span_open, should_suppress_pad, open_sgr,
                                 indent, row);
   }
@@ -6777,13 +6796,17 @@ itl_le_tty_break_line(itl_char_buf_t *b,
     digits[digit_count++] = (char) ('0' + line_number % 10);
     line_number /= 10;
   } while (line_number > 0 && digit_count < sizeof(digits));
+  /* A number wider than the gutter keeps its last digits, so the row keeps
+     the width the indent accounts for. */
+  if (digit_count > indent - 1) {
+    digit_count = indent - 1;
+  }
 
   if (is_span_open) {
     itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
   }
   itl_char_buf_append_cstr(b, ITL_LF);
-  itl_char_buf_append_spaces(
-      b, indent - 1 - ITL_MIN(digit_count, itl_g_line_number_width));
+  itl_char_buf_append_spaces(b, indent - 1 - digit_count);
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_DIM_SGR));
   while (digit_count > 0) {
     itl_char_buf_append_byte(b, (uint8_t) digits[--digit_count]);
@@ -6839,8 +6862,8 @@ itl_le_may_exceed_view(const itl_le_t *le, size_t cols, size_t view_rows)
          view_rows;
 }
 
-/* Breaks the row like itl_le_tty_break_line, or like itl_le_tty_break_row when
-   line_number is 0, while only the rows from view_top up to view_end reach b.
+/* Breaks the row like itl_le_tty_break_line, while only the rows from view_top
+   up to view_end reach b.
    The first row of the window starts without a line feed at the top of the
    block, and a span still open there is opened again. */
 ITL_DEF size_t
@@ -6860,19 +6883,13 @@ itl_le_tty_view_break(itl_char_buf_t *b,
   size_t          col;
 
   if (next > view_top && next < view_end) {
-    return line_number > 0
-               ? itl_le_tty_break_line(b, is_span_open, should_suppress_pad,
-                                       open_sgr, indent, row, line_number)
-               : itl_le_tty_break_row(b, is_span_open, should_suppress_pad,
-                                      open_sgr, indent, row);
+    return itl_le_tty_break_line(b, is_span_open, should_suppress_pad,
+                                 open_sgr, indent, row, line_number);
   }
 
   ITL_CHAR_BUF_CLEAR(discard);
-  col = line_number > 0
-            ? itl_le_tty_break_line(discard, is_span_open, should_suppress_pad,
-                                    open_sgr, indent, row, line_number)
-            : itl_le_tty_break_row(discard, is_span_open, should_suppress_pad,
-                                   open_sgr, indent, row);
+  col = itl_le_tty_break_line(discard, is_span_open, should_suppress_pad,
+                              open_sgr, indent, row, line_number);
   if (next == view_top && discard->size >= lf_size) {
     itl_char_buf_append_bytes(b, discard->data + lf_size,
                               discard->size - lf_size);
@@ -7257,10 +7274,11 @@ itl_hint_fit(const char *text, size_t length, size_t limit)
 ITL_DEF void
 itl_hint_append_row(const char *text, size_t length, bool is_cut)
 {
-  const char *open      = itl_g_hint_next_rows == 0 &&
-                                  itl_g_hint_first_row_is_plain
-                              ? ""
-                              : itl_color_sequence(itl_g_hint_sgr);
+  /* The command line of the full-screen layout is the first row and takes no
+     hint style. */
+  const char *open = itl_g_hint_next_rows == 0 && itl_g_minibuffer_label != NULL
+                         ? ""
+                         : itl_color_sequence(itl_g_hint_sgr);
   const char *reset     = itl_color_sequence(ITL_HIGHLIGHT_RESET);
   size_t      open_len  = strlen(open);
   size_t      reset_len = strlen(reset);
@@ -7485,11 +7503,9 @@ itl_full_screen_rows(char        *out,
   size_t      column      = 1;
   size_t      i;
 
-  itl_g_hint_first_row_is_plain = false;
-  out[0]                        = '\0';
+  out[0] = '\0';
 
   if (itl_g_minibuffer_label != NULL) {
-    itl_g_hint_first_row_is_plain = true;
     itl_prefix_append(out, out_size, &out_length, itl_g_minibuffer_label);
     itl_prefix_append(out, out_size, &out_length, itl_g_minibuffer_text);
     if (itl_prefix_hint(keys_text, sizeof(keys_text)) &&
@@ -7883,9 +7899,13 @@ itl_le_tty_refresh(itl_le_t *le)
       } else if (view_top > m.total_rows - view_rows) {
         view_top = m.total_rows - view_rows;
       }
-      /* The prompt is drawn only with the top of the block. */
+      /* The prompt is drawn only with the top of the block, so a window that
+         would cut into it starts at the top or under the whole prompt,
+         whichever keeps the caret in view. */
       if (view_top <= le->prompt_rows) {
-        view_top = 0;
+        view_top = m.cursor_row < view_rows
+                       ? 0
+                       : ITL_MIN(le->prompt_rows + 1, m.cursor_row);
       }
       view_end                      = view_top + view_rows;
       itl_g_tty_should_refresh_text = true;
@@ -8507,11 +8527,6 @@ tl_set_saved_text(const char *text)
 {
   itl_g_saved_text = text;
 }
-
-/* SGR mouse reports of presses, releases, and the wheel, turned on with the
-   full-screen layout. */
-#define ITL_MOUSE_ON  "\x1b[?1000h\x1b[?1006h"
-#define ITL_MOUSE_OFF "\x1b[?1006l\x1b[?1000l"
 
 /* Write a mouse mode sequence at once. */
 ITL_DEF void
@@ -14001,12 +14016,18 @@ itl_le_edit_external(itl_le_t *le)
   }
 
   itl_hint_hold(le);
+  /* The full-screen layout runs on the alternate screen, which an editor that
+     takes the alternate screen itself would leave on its way out, so the
+     editor runs from the main screen and the layout returns afterwards. */
   if (itl_g_full_screen) {
     itl_tty_write_mouse_mode(false);
+    ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[?1049l", 8) != -1, {});
   }
   is_edited = itl_g_edit_callback(le->out_buf, &edited) > 0 && edited != NULL;
   if (itl_g_full_screen) {
+    ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[?1049h", 8) != -1, {});
     itl_tty_write_mouse_mode(true);
+    itl_le_invalidate_prev_frame();
   }
   itl_hint_release();
   if (!is_edited) {
@@ -14029,13 +14050,18 @@ itl_le_edit_external(itl_le_t *le)
 
 /* An edited buffer of several lines, none of them joined by a backslash, is
    easy to lose, so leaving it for history or submitting it takes a second
-   press. A recalled entry left as it was takes one. */
+   press. A recalled entry left as it was takes one. A file host's buffer
+   takes a second press whenever it differs from the saved text. */
 ITL_DEF bool
 itl_le_should_confirm(const itl_le_t *le)
 {
   bool   has_line_break = false;
   size_t i;
 
+  if (itl_g_saved_text != NULL) {
+    return !itl_string_equal_bytes(le->line, itl_g_saved_text,
+                                   strlen(itl_g_saved_text));
+  }
   if (le->history_selected_index != ITL_HISTORY_NONE) {
     return false;
   }
@@ -14260,6 +14286,11 @@ itl_le_key_handle(itl_le_t *le, int esc)
     if (itl_completion_handle_tab(le, &completion_code)) {
       return completion_code;
     }
+    /* A file edited in the full-screen layout takes the tab as text. */
+    if (itl_g_full_screen) {
+      itl_le_insert_cstr(le, "\t");
+      break;
+    }
     ITL_TRY(itl_le_copy_out(le), return TL_ERROR_SIZE);
     return TL_PRESSED_TAB;
   } break;
@@ -14291,7 +14322,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
     /* A non-empty line on its last visual row recalls only entries that begin
        with the typed text when prefix search is on. The draft line is saved
        inside get_prev on the first step up. */
-    if (is_up &&
+    if (is_up && itl_g_saved_text == NULL &&
         !itl_le_confirm(le, TL_KEY_UP,
                         "edited buffer\npress up again to leave it for "
                         "history"))
@@ -14512,6 +14543,9 @@ itl_le_key_handle(itl_le_t *le, int esc)
 #if defined ITL_SUSPEND
     itl_raise_suspend();
 #else
+    if (!itl_le_confirm_discard(le, TL_KEY_SUSPEND, "ctrl-z")) {
+      break;
+    }
     (void) itl_le_copy_out(le);
     return TL_PRESSED_SUSPEND;
 #endif /* ITL_SUSPEND */
@@ -17285,7 +17319,6 @@ itl_minibuffer_read(itl_le_t       *le,
   bool    is_accepted  = false;
   bool    is_done      = false;
   bool    is_in_rows   = itl_g_full_screen;
-  bool    is_read;
   uint8_t byte;
 
   text[0] = '\0';
@@ -17319,50 +17352,49 @@ itl_minibuffer_read(itl_le_t       *le,
       ITL_CHAR_BUF_DUMP(b);
       ITL_CHAR_BUF_CLEAR(b);
 
-      is_read = ITL_READ_BYTE(&byte);
+      bool is_read = ITL_READ_BYTE(&byte);
+
       itl_char_buf_append_cstr(b, "\x1b" "8");
       ITL_CHAR_BUF_DUMP(b);
       ITL_CHAR_BUF_CLEAR(b);
       if (!is_read) {
         break;
       }
-      goto have_byte;
-    }
-
-    ITL_CHAR_BUF_CLEAR(status);
-    /* The display is original plus '\n', the label, and the text, so its
-       length must stay under ITL_STRING_MAX_LEN or itl_string_from_bytes
-       traps. Clip the preview of the original line to the remaining budget. */
-    {
-      size_t budget = ITL_STRING_MAX_LEN - 1 - label_length - text_length;
-      itl_string_copy(preview, original);
-      if (preview->length > budget) {
-        preview->length = budget;
-        itl_string_recalc_size(preview);
+    } else {
+      ITL_CHAR_BUF_CLEAR(status);
+      /* The display is original plus '\n', the label, and the text, so its
+         length must stay under ITL_STRING_MAX_LEN or itl_string_from_bytes
+         traps. Clip the preview of the original line to the remaining budget. */
+      {
+        size_t budget = ITL_STRING_MAX_LEN - 1 - label_length - text_length;
+        itl_string_copy(preview, original);
+        if (preview->length > budget) {
+          preview->length = budget;
+          itl_string_recalc_size(preview);
+        }
+        itl_char_buf_append_string(status, preview);
       }
-      itl_char_buf_append_string(status, preview);
+      itl_char_buf_append_byte(status, '\n');
+      itl_char_buf_append_cstr(status, label);
+      itl_char_buf_append_cstr(status, text);
+
+      itl_string_from_bytes(display, status->data, status->size);
+
+      le->line                   = display;
+      le->cursor_position        = display->length;
+      itl_g_minibuffer_row_start = display->length - text_length - label_length;
+      itl_g_search_span_count    = 0;
+      itl_search_push_span(display->length - text_length, display->length,
+                           ITL_MINIBUFFER_SGR);
+      itl_g_search_spans_active     = true;
+      itl_g_tty_should_refresh_text = true;
+      itl_le_tty_refresh(le);
+
+      if (!ITL_READ_BYTE(&byte)) {
+        break;
+      }
     }
-    itl_char_buf_append_byte(status, '\n');
-    itl_char_buf_append_cstr(status, label);
-    itl_char_buf_append_cstr(status, text);
 
-    itl_string_from_bytes(display, status->data, status->size);
-
-    le->line                   = display;
-    le->cursor_position        = display->length;
-    itl_g_minibuffer_row_start = display->length - text_length - label_length;
-    itl_g_search_span_count    = 0;
-    itl_search_push_span(display->length - text_length, display->length,
-                         ITL_MINIBUFFER_SGR);
-    itl_g_search_spans_active     = true;
-    itl_g_tty_should_refresh_text = true;
-    itl_le_tty_refresh(le);
-
-    if (!ITL_READ_BYTE(&byte)) {
-      break;
-    }
-
-  have_byte:
     key      = itl_esc_parse(byte);
     key_kind = key & TL_MASK_KEY;
 
@@ -17522,8 +17554,7 @@ itl_vi_ex_command(itl_le_t *le)
       result = TL_PRESSED_QUIT;
     } else if (itl_vi_ex_is_write_quit(command)) {
       /* The host saves the buffer, so it is handed over as Enter hands it. */
-      ITL_TRY(itl_le_copy_out(le), return TL_ERROR_SIZE);
-      result = TL_PRESSED_WRITE_QUIT;
+      result = itl_le_copy_out(le) ? TL_PRESSED_WRITE_QUIT : TL_ERROR_SIZE;
     } else if (strcmp(command, "e") == 0 || strcmp(command, "edit") == 0) {
       /* Vi mode ignores Ctrl-X, so this is its way to the external editor. */
       result = itl_le_key_handle(le, TL_KEY_EDIT_EXTERNAL);
@@ -17830,13 +17861,12 @@ itl_vi_go_to_line(itl_le_t *le, size_t line)
 ITL_DEF void
 itl_vi_open_line(itl_le_t *le, bool is_above)
 {
+  le->cursor_position = is_above
+                            ? itl_le_line_start_of(le, le->cursor_position)
+                            : itl_le_line_end_of(le, le->cursor_position);
+  itl_le_insert_cstr(le, "\n");
   if (is_above) {
-    le->cursor_position = itl_le_line_start_of(le, le->cursor_position);
-    itl_le_insert_cstr(le, "\n");
     itl_le_move_left(le, 1);
-  } else {
-    le->cursor_position = itl_le_line_end_of(le, le->cursor_position);
-    itl_le_insert_cstr(le, "\n");
   }
 }
 
