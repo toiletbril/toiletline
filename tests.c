@@ -7871,6 +7871,32 @@ test_vi_go_to_line(void)
   return ok;
 }
 
+static bool
+test_vi_counted_j(void)
+{
+  char          out_buffer[BUFFER_SIZE];
+  itl_le_t      le   = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  bool          ok   = true;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), NULL);
+  ITL_STRING_FROM_CSTR(line, "a\nb\nc\nd");
+  le.cursor_position     = 0;
+  itl_g_edit_mode        = TL_EDIT_MODE_VI_COMMAND;
+  itl_g_vi_pending_count = 2;
+  itl_vi_command_dispatch(&le, 'j', TL_KEY_CHAR);
+  ok &= itl_le_line_index_of(&le, le.cursor_position) == 2;
+  ok &= itl_g_vi_pending_count == 0;
+  if (!ok) {
+    printf("2j left the cursor at %zu with the count %zu\n",
+           le.cursor_position, itl_g_vi_pending_count);
+  }
+  itl_g_edit_mode = TL_EDIT_MODE_EMACS;
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 static int
 test_format_callback(const char *text, const char **out_text)
 {
@@ -7935,9 +7961,13 @@ test_tab_takes_four_columns(void)
   bool            ok  = true;
 
   itl_g_colors_enabled = 0;
-  itl_char_buf_append_line_char(b, tab);
+  itl_char_buf_append_line_char(b, tab, NULL);
   ok &= itl_char_line_width(tab) == 4;
   ok &= b->size == 4 && memcmp(b->data, ">   ", 4) == 0;
+  ok &= itl_wrap_is_early_break(77, 4, 80);
+  ok &= !itl_wrap_is_early_break(76, 4, 80);
+  ok &= itl_wrap_is_early_break(79, 2, 80);
+  ok &= !itl_wrap_is_early_break(78, 2, 80);
   itl_g_colors_enabled = 1;
   ITL_CHAR_BUF_FREE(b);
 
@@ -9787,6 +9817,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_emacs_commands),
                                    DEFINE_TEST_CASE(test_option_commands),
                                    DEFINE_TEST_CASE(test_vi_go_to_line),
+                                   DEFINE_TEST_CASE(test_vi_counted_j),
                                    DEFINE_TEST_CASE(test_format_commands),
                                    DEFINE_TEST_CASE(test_vi_ex_write_commands),
                                    DEFINE_TEST_CASE(test_tab_takes_four_columns),

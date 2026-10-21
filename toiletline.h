@@ -232,10 +232,11 @@ tl_exit(void);
 TL_DEF tl_status_code
 tl_exit_raw_mode(void);
 /**
- * Put the terminal back the way raw mode found it and withdraw every request
- * raw mode made, from a fatal signal handler or an exit hook. It calls only
- * async-signal-safe functions and changes no editor state, so the process is
- * expected to end after it. POSIX only.
+ * Put the terminal back the way raw mode found it, withdraw every request raw
+ * mode made, and leave the alternate screen of the full-screen layout, from a
+ * fatal signal handler or an exit hook. It calls only async-signal-safe
+ * functions and changes no editor state, so the process is expected to end
+ * after it. POSIX only.
  */
 TL_DEF void
 tl_restore_terminal_for_exit(void);
@@ -1296,6 +1297,7 @@ tl_restore_terminal_for_exit(void)
   written = write(STDOUT_FILENO, withdraw, sizeof(withdraw) - 1);
   if (itl_g_full_screen) {
     written = write(STDOUT_FILENO, ITL_MOUSE_OFF, sizeof(ITL_MOUSE_OFF) - 1);
+    written = write(STDOUT_FILENO, "\x1b[?1049l", 8);
   }
   if (itl_g_vi_cursor_shape != ITL_VI_CURSOR_DEFAULT_SHAPE) {
     written = write(STDOUT_FILENO, default_cursor, sizeof(default_cursor) - 1);
@@ -4092,15 +4094,21 @@ itl_char_buf_append_notation(itl_char_buf_t *cb, uint32_t value)
 }
 
 /* Append one character of the edited line as itl_char_line_width counts it.
-   A tab is drawn faint as a marker followed by spaces. */
+   A tab is drawn faint as a marker followed by spaces, and span_sgr, the
+   opening SGR of the span around it or NULL, is written again after it. */
 ITL_DEF void
-itl_char_buf_append_line_char(itl_char_buf_t *cb, itl_utf8_t ch)
+itl_char_buf_append_line_char(itl_char_buf_t *cb,
+                              itl_utf8_t      ch,
+                              const char     *span_sgr)
 {
   if (ch.size == 1 && ch.bytes[0] == 0x09) {
     itl_char_buf_append_cstr(cb, itl_color_sequence(ITL_FAINT_SGR));
     itl_char_buf_append_byte(cb, '>');
     itl_char_buf_append_spaces(cb, ITL_TAB_WIDTH - 1);
     itl_char_buf_append_cstr(cb, itl_color_sequence(ITL_NORMAL_INTENSITY_SGR));
+    if (span_sgr != NULL) {
+      itl_char_buf_append_cstr(cb, span_sgr);
+    }
     return;
   }
   if (!(ch.size == 1 && ch.bytes[0] == 0x0A) &&
@@ -5148,12 +5156,6 @@ itl_csi_modifier(unsigned value)
   return 0;
 }
 
-/* A character key with modifiers, reported by the kitty keyboard protocol as
-   CSI code ; modifier u or by xterm's modifyOtherKeys as CSI 27 ; modifier ;
-   code ~. The read path already turned every such key with a legacy form into
-   its legacy bytes, so only Ctrl-Shift-Z reaches here bound, where the shifted
-   key may be reported as the lower or the upper case letter. A direct parse
-   also maps Ctrl-Z. The lock bits 64 and 128 are ignored. */
 /* The key that Alt and byte make together, from an ESC prefix or from a
    kitty report. */
 ITL_DEF int
@@ -5191,6 +5193,12 @@ itl_alt_key(uint8_t byte)
   }
 }
 
+/* A character key with modifiers, reported by the kitty keyboard protocol as
+   CSI code ; modifier u or by xterm's modifyOtherKeys as CSI 27 ; modifier ;
+   code ~. The read path already turned every such key with a legacy form into
+   its legacy bytes, so only Ctrl-Shift-Z reaches here bound, where the shifted
+   key may be reported as the lower or the upper case letter. A direct parse
+   also maps Ctrl-Z. The lock bits 64 and 128 are ignored. */
 ITL_DEF int
 itl_esc_parse_modified_key(unsigned code, unsigned modifier)
 {
@@ -5421,7 +5429,11 @@ itl_esc_parse_ctrl_x(void)
   case 3:   return TL_KEY_QUIT; /* ctrl c */
   case 's':
   case 19:  return TL_KEY_SAVE; /* ctrl s */
-  case 'i': return TL_KEY_HOVER;
+  case 'i':
+    if (itl_g_full_screen) {
+      return TL_KEY_HOVER;
+    }
+    break;
   }
 
   /* The chord is not bound, so the byte starts the next key and an arrow after
@@ -6423,11 +6435,11 @@ itl_le_continuation_indent(const itl_le_t *le, size_t cols)
 
 #define ITL_LE_INDENT(le, cols) itl_le_continuation_indent((le), (cols))
 
-/* A double-width glyph is never split across the right edge. */
+/* A double-width glyph or a tab is never split across the right edge. */
 ITL_DEF bool
 itl_wrap_is_early_break(size_t col, size_t char_width, size_t cols)
 {
-  return char_width == 2 && col + 1 >= cols;
+  return char_width > 1 && col + char_width > cols;
 }
 
 ITL_DEF bool
@@ -8052,7 +8064,8 @@ itl_le_tty_refresh(itl_le_t *le)
       for (tail_index = itl_g_le_prev_length; tail_index < le->line->length;
            ++tail_index)
       {
-        itl_char_buf_append_line_char(fb, le->line->chars[tail_index]);
+        itl_char_buf_append_line_char(fb, le->line->chars[tail_index],
+                                      append_tail_sgr);
       }
       if (append_tail_sgr != NULL) {
         itl_char_buf_append_cstr(fb, ITL_HIGHLIGHT_RESET);
@@ -8244,7 +8257,7 @@ itl_le_tty_refresh(itl_le_t *le)
           out = row >= view_top && row < view_end ? b : &itl_g_view_discard;
         }
 
-        itl_char_buf_append_line_char(out, ch);
+        itl_char_buf_append_line_char(out, ch, in_span ? open_sgr : NULL);
         col += char_width;
 
         if (itl_wrap_is_break_after(col, cols)) {
@@ -13999,6 +14012,15 @@ itl_le_edit_external(itl_le_t *le)
   ITL_FREE(replacement.chars);
 }
 
+/* Whether the buffer differs from the text of tl_set_saved_text. */
+ITL_DEF bool
+itl_le_is_unsaved(const itl_le_t *le)
+{
+  return itl_g_saved_text != NULL &&
+         !itl_string_equal_bytes(le->line, itl_g_saved_text,
+                                 strlen(itl_g_saved_text));
+}
+
 /* An edited buffer of several lines, none of them joined by a backslash, is
    easy to lose, so leaving it for history or submitting it takes a second
    press. A recalled entry left as it was takes one. A file host's buffer
@@ -14010,8 +14032,7 @@ itl_le_should_confirm(const itl_le_t *le)
   size_t i;
 
   if (itl_g_saved_text != NULL) {
-    return !itl_string_equal_bytes(le->line, itl_g_saved_text,
-                                   strlen(itl_g_saved_text));
+    return itl_le_is_unsaved(le);
   }
   if (le->history_selected_index != ITL_HISTORY_NONE) {
     return false;
@@ -14053,15 +14074,6 @@ ITL_DEF bool
 itl_le_confirm(const itl_le_t *le, int kind, const char *message)
 {
   return !itl_le_should_confirm(le) || itl_le_confirm_press(kind, message);
-}
-
-/* Whether the buffer differs from the text of tl_set_saved_text. */
-ITL_DEF bool
-itl_le_is_unsaved(const itl_le_t *le)
-{
-  return itl_g_saved_text != NULL &&
-         !itl_string_equal_bytes(le->line, itl_g_saved_text,
-                                 strlen(itl_g_saved_text));
 }
 
 /* Returns true when kind may leave the buffer, either because it holds the
@@ -14113,15 +14125,15 @@ typedef enum
   ITL_CASE_CAPITAL,
 } itl_case_change;
 
-/* Changes the case of the ASCII letters from the cursor to the end of the
-   next word, as one undo step, and leaves the cursor after the word. With
-   ITL_CASE_CAPITAL the first letter is raised and the others lowered. */
 ITL_DEF bool
 itl_is_case_word_char(itl_utf8_t ch)
 {
   return ch.size > 1 || isalnum(ch.bytes[0]);
 }
 
+/* Changes the case of the ASCII letters from the cursor to the end of the
+   next word, as one undo step, and leaves the cursor after the word. With
+   ITL_CASE_CAPITAL the first letter is raised and the others lowered. */
 ITL_DEF void
 itl_le_change_word_case(itl_le_t *le, itl_case_change change)
 {
@@ -14282,19 +14294,16 @@ itl_le_key_handle(itl_le_t *le, int esc)
       }
     }
 
-    /* A file edited in the full-screen layout takes the tab as text while
-       only blanks come before the caret on its line. */
-    if (itl_g_full_screen && is_blank_before) {
-      itl_le_insert_cstr(le, "\t");
-      break;
-    }
     /* A registered completion callback handles TAB in place, inserting the
        common prefix, opening the menu, or listing the candidates. With no
-       callback, TAB keeps its old contract of returning to the host. */
-    if (itl_completion_handle_tab(le, &completion_code)) {
+       callback, TAB keeps its old contract of returning to the host. A file
+       edited in the full-screen layout takes the tab as text while only
+       blanks come before the caret on its line or when no callback takes it. */
+    if (!(itl_g_full_screen && is_blank_before) &&
+        itl_completion_handle_tab(le, &completion_code))
+    {
       return completion_code;
     }
-    /* A file edited in the full-screen layout takes the tab as text. */
     if (itl_g_full_screen) {
       itl_le_insert_cstr(le, "\t");
       break;
@@ -17579,15 +17588,12 @@ itl_vi_ex_command(itl_le_t *le)
       result = TL_PRESSED_QUIT;
     } else if (itl_vi_ex_is_write(command) && itl_g_save_callback != NULL) {
       itl_le_save(le);
-    } else if (itl_vi_ex_is_write_quit(command) &&
-               itl_g_save_callback != NULL)
-    {
-      if (itl_le_save(le)) {
+    } else if (itl_vi_ex_is_write_quit(command)) {
+      /* Without a save callback, the host saves the buffer, so it is handed
+         over as Enter hands it. */
+      if (itl_g_save_callback == NULL || itl_le_save(le)) {
         result = itl_le_copy_out(le) ? TL_PRESSED_WRITE_QUIT : TL_ERROR_SIZE;
       }
-    } else if (itl_vi_ex_is_write_quit(command)) {
-      /* The host saves the buffer, so it is handed over as Enter hands it. */
-      result = itl_le_copy_out(le) ? TL_PRESSED_WRITE_QUIT : TL_ERROR_SIZE;
     } else if (strcmp(command, "e") == 0 || strcmp(command, "edit") == 0) {
       /* Vi mode ignores Ctrl-X, so this is its way to the external editor. */
       result = itl_le_key_handle(le, TL_KEY_EDIT_EXTERNAL);
@@ -17986,8 +17992,14 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
   case TL_KEY_EOF:
   case TL_KEY_INTERRUPT:
   case TL_KEY_SUSPEND:
-  case TL_KEY_MOUSE:
   case TL_KEY_CLEAR:     return itl_le_key_handle(le, key);
+
+  case TL_KEY_MOUSE: {
+    tl_status_code code = itl_le_key_handle(le, key);
+
+    itl_vi_clamp_command_cursor(le);
+    return code;
+  }
 
   case TL_KEY_UP:
   case TL_KEY_DOWN:
@@ -18241,18 +18253,18 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
     break;
   }
 
-  /* j and k move between the rows of the buffer as Down and Up do, and
-     reach the history past its last or first row. */
-  case 'k': {
-    tl_status_code code = itl_le_key_handle(le, TL_KEY_UP);
+  /* j and k move count rows of the buffer as Down and Up do, and reach the
+     history past its last or first row. */
+  case 'k':
+  case 'j':   {
+    tl_status_code code = TL_SUCCESS;
+    size_t         step;
 
+    for (step = 0; step < count && code == TL_SUCCESS; ++step) {
+      code = itl_le_key_handle(le, byte == 'k' ? TL_KEY_UP : TL_KEY_DOWN);
+    }
     itl_vi_clamp_command_cursor(le);
-    return code;
-  }
-  case 'j': {
-    tl_status_code code = itl_le_key_handle(le, TL_KEY_DOWN);
-
-    itl_vi_clamp_command_cursor(le);
+    itl_vi_reset_pending();
     return code;
   }
 
