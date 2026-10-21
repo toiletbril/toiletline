@@ -478,6 +478,15 @@ TL_DEF void
 tl_set_save_keys(int enabled);
 
 /**
+ * Lay the editor out over the whole terminal for a host that edits a file:
+ * the input fills every row but the last four, which hold the hints, and the
+ * completion menu is drawn over the input next to the caret. The host draws
+ * from the top-left corner of a cleared screen. Off by default.
+ */
+TL_DEF void
+tl_set_full_screen(int enabled);
+
+/**
  * Let the terminal turn the interrupt key back into SIGINT while the editor
  * stays in raw mode. A host callback that runs a slow command turns this on for
  * its duration so the key reaches the command instead of queueing as input.
@@ -5556,6 +5565,11 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_line_number_width = 0;
 /* Whether Ctrl-X s and Ctrl-X Ctrl-S save, set by tl_set_save_keys. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_save_keys_enabled = false;
 
+/* The layout of tl_set_full_screen, and whether the last menu it drew sits
+   above the caret. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_full_screen   = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_menu_is_above = false;
+
 /* The verb of the hint that asks for a second Enter. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_submit_verb = "run";
 
@@ -6692,6 +6706,10 @@ itl_le_tty_break_line(itl_char_buf_t *b,
 ITL_DEF size_t
 itl_le_view_rows(size_t tty_rows)
 {
+  if (itl_g_full_screen) {
+    return tty_rows > 5 ? tty_rows - 4 : 1;
+  }
+
   return tty_rows > 3 ? tty_rows - 2 : 1;
 }
 
@@ -6704,7 +6722,7 @@ itl_le_may_exceed_view(const itl_le_t *le, size_t cols, size_t view_rows)
   size_t newline_count = 0;
   size_t i;
 
-  if (itl_g_view_is_active) return true;
+  if (itl_g_view_is_active || itl_g_full_screen) return true;
   /* Every codepoint could be a newline, so this bound needs no scan. */
   if (le->prompt_rows + 2 + le->line->length + (2 * le->line->length) / cols <=
       view_rows)
@@ -7599,7 +7617,9 @@ itl_le_tty_refresh(itl_le_t *le)
 #endif
     m                = itl_le_compute_metrics(le, tty_cols);
     is_metrics_ready = true;
-    if (m.total_rows > view_rows) {
+    /* The full-screen layout keeps a window even when the input fits, and
+       empty rows fill it below the input. */
+    if (m.total_rows > view_rows || itl_g_full_screen) {
       is_view_active = true;
       view_top       = itl_g_view_top_row;
       if (m.cursor_row < view_top) {
@@ -7607,7 +7627,9 @@ itl_le_tty_refresh(itl_le_t *le)
       } else if (m.cursor_row >= view_top + view_rows) {
         view_top = m.cursor_row - view_rows + 1;
       }
-      if (view_top > m.total_rows - view_rows) {
+      if (m.total_rows <= view_rows) {
+        view_top = 0;
+      } else if (view_top > m.total_rows - view_rows) {
         view_top = m.total_rows - view_rows;
       }
       /* The prompt is drawn only with the top of the block. */
@@ -8022,6 +8044,19 @@ itl_le_tty_refresh(itl_le_t *le)
     }
     ITL_TTY_CLEAR_TO_END(b);
 
+    /* A window shorter than its rows is filled with empty ones, so the rows
+       under it stay where the layout puts them. */
+    if (is_view_active) {
+      size_t last_row     = row < view_end ? row : view_end - 1;
+      size_t drawn_rows   = last_row - view_top + 1;
+      size_t padding_rows = drawn_rows < view_rows ? view_rows - drawn_rows : 0;
+
+      for (i = 0; i < padding_rows; ++i) {
+        itl_char_buf_append_cstr(b, ITL_LF);
+        ITL_TTY_CLEAR_TO_END(b);
+      }
+    }
+
     /* A window counts only its own rows, and the caret row is taken from its
        top. The ghost and the right prompt are left out of a window. */
     size_t screen_rows = is_view_active ? view_rows : m.total_rows;
@@ -8209,6 +8244,12 @@ TL_DEF void
 tl_set_save_keys(int enabled)
 {
   itl_g_save_keys_enabled = enabled != 0;
+}
+
+TL_DEF void
+tl_set_full_screen(int enabled)
+{
+  itl_g_full_screen = enabled != 0;
 }
 
 TL_DEF void
@@ -9610,6 +9651,19 @@ itl_menu_measure(size_t tty_rows, size_t help_rows)
                                   ? tty_rows - itl_g_le_prev_total_rows
                                   : 0;
 
+  /* The full-screen menu is drawn over the input under the caret, or above
+     it when the rows under the caret are few and the rows above are more. */
+  if (itl_g_full_screen) {
+    size_t below = itl_g_le_prev_total_rows > itl_g_le_prev_cursor_row
+                       ? itl_g_le_prev_total_rows - itl_g_le_prev_cursor_row
+                       : 0;
+    size_t above = itl_g_le_prev_cursor_row > 0 ? itl_g_le_prev_cursor_row - 1
+                                                : 0;
+
+    itl_g_menu_is_above = below < 6 && above > below;
+    available           = itl_g_menu_is_above ? above : below;
+  }
+
   layout.has_help_row   = help_rows > 0 && available >= help_rows + 2;
   layout.help_row_count = layout.has_help_row ? help_rows : 0;
   layout.has_count_row  = available >= 2;
@@ -10090,6 +10144,38 @@ itl_menu_open_area(itl_char_buf_t *b)
   return move_down;
 }
 
+/* The full-screen counterparts of itl_menu_open_area and itl_menu_close_area.
+   The menu rows start on the row under the caret, or row_count rows above it,
+   and nothing under them is cleared. */
+ITL_DEF void
+itl_menu_open_overlay(itl_char_buf_t *b, size_t row_count)
+{
+  if (itl_g_menu_is_above) {
+    if (row_count > 0) {
+      ITL_TTY_MOVE_UP(b, row_count);
+    }
+  } else {
+    ITL_TTY_MOVE_DOWN(b, 1);
+  }
+  ITL_TTY_MOVE_TO_COLUMN(b, 1);
+}
+
+ITL_DEF void
+itl_menu_close_overlay(itl_char_buf_t *b, size_t row_count, size_t drawn_rows)
+{
+  if (itl_g_menu_is_above) {
+    ITL_TTY_MOVE_DOWN(b, row_count - drawn_rows + 1);
+  } else if (drawn_rows > 0) {
+    ITL_TTY_MOVE_UP(b, drawn_rows);
+  } else {
+    ITL_TTY_MOVE_UP(b, 1);
+  }
+  ITL_TTY_MOVE_TO_COLUMN(b, itl_g_le_prev_cursor_col + 1);
+  ITL_TTY_SHOW_CURSOR(b);
+  ITL_CHAR_BUF_DUMP(b);
+  ITL_CHAR_BUF_CLEAR(b);
+}
+
 /* Park the caret back on the input line after the menu rows were written. */
 ITL_DEF void
 itl_menu_close_area(itl_char_buf_t *b, size_t rows_below)
@@ -10342,7 +10428,8 @@ itl_menu_draw(const tl_completion *result,
   size_t            text_width;
   size_t            window_end = window_start + layout.candidate_rows;
   size_t            desc_width;
-  size_t            drawn_rows = 0;
+  size_t            drawn_rows   = 0;
+  size_t            overlay_rows = 0;
   size_t            move_down;
   size_t            i;
 
@@ -10361,9 +10448,33 @@ itl_menu_draw(const tl_completion *result,
     window_end = result->count;
   }
 
+  /* A full-screen menu covers the input, so the input is drawn again first,
+     which also takes away the rows of a longer menu drawn before. */
+  if (itl_g_full_screen) {
+    itl_g_tty_should_refresh_text = true;
+    itl_le_tty_refresh(&itl_g_le);
+    if (layout.has_help_row && help_title != NULL) {
+      overlay_rows = itl_menu_layout_help(NULL, help_title, help_keys,
+                                          text_width, anchor,
+                                          layout.help_row_count);
+    }
+    overlay_rows += result->count == 0 ? 1 : 0;
+    overlay_rows += window_end - window_start;
+    if (layout.has_count_row &&
+        (window_start > 0 || window_end < result->count))
+    {
+      overlay_rows += 1;
+    }
+  }
+
   ITL_CHAR_BUF_CLEAR(b);
   ITL_TTY_HIDE_CURSOR(b);
-  move_down = itl_menu_open_area(b);
+  if (itl_g_full_screen) {
+    itl_menu_open_overlay(b, overlay_rows);
+    move_down = 0;
+  } else {
+    move_down = itl_menu_open_area(b);
+  }
   itl_menu_move_to_anchor(b, anchor);
 
   if (layout.has_help_row && help_title != NULL) {
@@ -10400,6 +10511,10 @@ itl_menu_draw(const tl_completion *result,
     drawn_rows += 1;
   }
 
+  if (itl_g_full_screen) {
+    itl_menu_close_overlay(b, overlay_rows, drawn_rows);
+    return;
+  }
   itl_menu_close_area(b,
                       drawn_rows > 0 ? move_down + drawn_rows - 1 : move_down);
 }
@@ -10411,6 +10526,13 @@ itl_menu_erase(void)
   itl_char_buf_t *b = &itl_g_char_buffer;
   size_t          move_down;
 
+  /* A full-screen menu covered the input, which is drawn again in its place.
+   */
+  if (itl_g_full_screen) {
+    itl_g_tty_should_refresh_text = true;
+    itl_le_tty_refresh(&itl_g_le);
+    return;
+  }
   ITL_CHAR_BUF_CLEAR(b);
   ITL_TTY_HIDE_CURSOR(b);
   move_down = itl_menu_open_area(b);
@@ -12674,8 +12796,13 @@ itl_completion_menu(itl_le_t              *le,
                     const itl_menu_source *source)
 {
   tl_status_code status;
+  /* The full-screen menu covers the input rather than the hint rows, so the
+     hints stay. */
+  bool should_hold_hint = !itl_g_full_screen;
 
-  itl_hint_hold(le);
+  if (should_hold_hint) {
+    itl_hint_hold(le);
+  }
   itl_g_menu_due_ms = 0;
   itl_menu_cache_open();
   status                  = itl_completion_menu_run(le, initial, source);
@@ -12683,7 +12810,9 @@ itl_completion_menu(itl_le_t              *le,
   itl_menu_cache_close();
   itl_menu_index_free(&itl_g_menu_index);
   itl_g_menu_due_ms = 0;
-  itl_hint_release();
+  if (should_hold_hint) {
+    itl_hint_release();
+  }
 
   return status;
 }
