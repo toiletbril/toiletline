@@ -566,6 +566,13 @@ tl_set_history_prefix_search(int enabled);
 TL_DEF void
 tl_set_auto_pair(int enabled);
 
+/*
+ * Sets the column at which gq and M-x fill-paragraph wrap the lines. The
+ * default is 80.
+ */
+TL_DEF void
+tl_set_wrap_width(size_t column_count);
+
 /* The typed byte is plain text at the caret, such as inside a quoted string. */
 #define TL_PAIR_NONE 0
 /* The typed byte opens a pair, so the editor may insert its closer. */
@@ -15978,6 +15985,12 @@ itl_vi_resolve_motion(itl_le_t  *le,
 
 /* The column at which gq and M-x fill-paragraph wrap the lines. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_wrap_width = 80;
+
+TL_DEF void
+tl_set_wrap_width(size_t column_count)
+{
+  itl_g_wrap_width = column_count;
+}
 
 /* Whether the line that starts at line_start holds only blanks. */
 ITL_DEF bool
