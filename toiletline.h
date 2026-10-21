@@ -175,6 +175,12 @@ typedef enum
   TL_KEY_QUIT,
   /* Ctrl-X s and Ctrl-X Ctrl-S save and leave while tl_set_save_keys is on. */
   TL_KEY_SAVE,
+  /* Alt-U, Alt-L, and Alt-C change the case of the next word. */
+  TL_KEY_UPCASE_WORD,
+  TL_KEY_DOWNCASE_WORD,
+  TL_KEY_CAPITALIZE_WORD,
+  /* Alt-\ deletes the spaces and tabs around the cursor. */
+  TL_KEY_DELETE_SPACES,
 
   /* Reported when a bracketed paste sequence begins. Handled internally. */
   TL_KEY_PASTE_BEGIN
@@ -5042,13 +5048,66 @@ itl_csi_modifier(unsigned value)
    its legacy bytes, so only Ctrl-Shift-Z reaches here bound, where the shifted
    key may be reported as the lower or the upper case letter. A direct parse
    also maps Ctrl-Z. The lock bits 64 and 128 are ignored. */
+/* The key that Alt and byte make together, from an ESC prefix or from a
+   kitty report. */
+ITL_DEF int
+itl_alt_key(uint8_t byte)
+{
+  switch (byte) {
+  case 'b': return TL_KEY_LEFT | TL_MOD_CTRL;
+  case 'f': return TL_KEY_RIGHT | TL_MOD_CTRL;
+
+  case 'd': return TL_KEY_DELETE | TL_MOD_CTRL;
+  case 'h':
+  case 8:
+  case 127: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
+
+  case 'y': return TL_KEY_YANK_POP;
+  case 't': return TL_KEY_TRANSPOSE | TL_MOD_ALT;
+  case 'x': return TL_KEY_EXECUTE_COMMAND;
+
+  case 'u':  return TL_KEY_UPCASE_WORD;
+  case 'l':  return TL_KEY_DOWNCASE_WORD;
+  case 'c':  return TL_KEY_CAPITALIZE_WORD;
+  case '\\': return TL_KEY_DELETE_SPACES;
+
+  case '.':
+  case '_': return TL_KEY_LAST_ARGUMENT;
+
+  case '>': return TL_KEY_HISTORY_END;
+  case ',':
+  case '<': return TL_KEY_HISTORY_BEGINNING;
+
+  case 13:
+  case 10: return TL_KEY_ENTER | TL_MOD_ALT;
+
+  default: return TL_KEY_CHAR | TL_MOD_ALT;
+  }
+}
+
 ITL_DEF int
 itl_esc_parse_modified_key(unsigned code, unsigned modifier)
 {
   unsigned bits     = (modifier > 0) ? modifier - 1 : 0;
   bool     is_ctrl  = (bits & 4) != 0;
   bool     is_shift = (bits & 1) != 0 || code == 'Z';
+  bool     is_alt   = (bits & 2) != 0;
 
+  /* Kitty reports the unshifted key, so Alt with Shift is read back to the
+     symbol the chord types. */
+  if (is_alt && !is_ctrl && (bits & ~(1u | 2u | 64u | 128u)) == 0 &&
+      code < 128)
+  {
+    if (is_shift) {
+      switch (code) {
+      case '.': code = '>'; break;
+      case ',': code = '<'; break;
+      case '-': code = '_'; break;
+      default:  break;
+      }
+    }
+    return itl_alt_key((uint8_t) code);
+  }
   if ((bits & ~(1u | 4u | 64u | 128u)) != 0 || !is_ctrl) {
     return TL_KEY_UNKN;
   }
@@ -5156,31 +5215,7 @@ itl_esc_parse_vt(uint8_t byte)
     ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
 
     if (byte != '[' && byte != 'O') {
-      switch (byte) {
-      case 'b': return TL_KEY_LEFT | TL_MOD_CTRL;
-      case 'f': return TL_KEY_RIGHT | TL_MOD_CTRL;
-
-      case 'd': return TL_KEY_DELETE | TL_MOD_CTRL;
-      case 'h':
-      case 8:
-      case 127: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
-
-      case 'y': return TL_KEY_YANK_POP;
-      case 't': return TL_KEY_TRANSPOSE | TL_MOD_ALT;
-      case 'x': return TL_KEY_EXECUTE_COMMAND;
-
-      case '.':
-      case '_': return TL_KEY_LAST_ARGUMENT;
-
-      case '>': return TL_KEY_HISTORY_END;
-      case ',':
-      case '<': return TL_KEY_HISTORY_BEGINNING;
-
-      case 13:
-      case 10: return TL_KEY_ENTER | TL_MOD_ALT;
-
-      default: return TL_KEY_CHAR | TL_MOD_ALT;
-      }
+      return itl_alt_key(byte);
     }
 
     ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
@@ -5562,8 +5597,11 @@ static const itl_emacs_command itl_emacs_commands[] = {
     {"backward-word", TL_KEY_LEFT | TL_MOD_CTRL},
     {"beginning-of-history", TL_KEY_HISTORY_BEGINNING},
     {"beginning-of-line", TL_KEY_HOME},
+    {"capitalize-word", TL_KEY_CAPITALIZE_WORD},
     {"clear-screen", TL_KEY_CLEAR},
     {"delete-char", TL_KEY_DELETE},
+    {"delete-horizontal-space", TL_KEY_DELETE_SPACES},
+    {"downcase-word", TL_KEY_DOWNCASE_WORD},
     {"end-of-history", TL_KEY_HISTORY_END},
     {"end-of-line", TL_KEY_END},
     {"format", ITL_EMACS_FORMAT},
@@ -5583,6 +5621,7 @@ static const itl_emacs_command itl_emacs_commands[] = {
     {"undo", TL_KEY_UNDO},
     {"undo-redo", TL_KEY_REDO},
     {"unix-line-discard", TL_KEY_KILL_LINE_BEFORE},
+    {"upcase-word", TL_KEY_UPCASE_WORD},
     {"yank", TL_KEY_YANK},
     {"yank-last-arg", TL_KEY_LAST_ARGUMENT},
 };
@@ -9542,6 +9581,8 @@ ITL_DEF tl_status_code
 itl_emacs_repeat(itl_le_t *le);
 ITL_DEF tl_status_code
 itl_vi_ex_command(itl_le_t *le);
+ITL_DEF void
+itl_vi_open_line(itl_le_t *le, bool is_above);
 
 /* Every row of one menu repaint. The help row and the count row are counted
    here beside the candidates, and a repaint never draws a row the layout did
@@ -13554,6 +13595,92 @@ itl_le_confirm(const itl_le_t *le, int kind, const char *message)
   return false;
 }
 
+typedef enum
+{
+  ITL_CASE_UPPER,
+  ITL_CASE_LOWER,
+  ITL_CASE_CAPITAL,
+} itl_case_change;
+
+/* Changes the case of the ASCII letters from the cursor to the end of the
+   next word, as one undo step, and leaves the cursor after the word. With
+   ITL_CASE_CAPITAL the first letter is raised and the others lowered. */
+ITL_DEF bool
+itl_is_case_word_char(itl_utf8_t ch)
+{
+  return ch.size > 1 || isalnum(ch.bytes[0]);
+}
+
+ITL_DEF void
+itl_le_change_word_case(itl_le_t *le, itl_case_change change)
+{
+  size_t end             = le->cursor_position;
+  bool   is_first_letter = true;
+  size_t i;
+
+  /* As in emacs, the word starts at the first word character after the
+     cursor and ends where the word characters do. */
+  while (end < le->line->length &&
+         !itl_is_case_word_char(le->line->chars[end]))
+  {
+    end += 1;
+  }
+  while (end < le->line->length && itl_is_case_word_char(le->line->chars[end]))
+  {
+    end += 1;
+  }
+
+  if (end == le->cursor_position) {
+    return;
+  }
+  itl_history_reset_after_edit(le);
+  itl_undo_push_closed(le);
+  for (i = le->cursor_position; i < end; ++i) {
+    itl_utf8_t *ch = &le->line->chars[i];
+
+    if (ch->size != 1 || !isalpha(ch->bytes[0])) {
+      continue;
+    }
+    if (change == ITL_CASE_UPPER ||
+        (change == ITL_CASE_CAPITAL && is_first_letter))
+    {
+      ch->bytes[0] = (uint8_t) toupper(ch->bytes[0]);
+    } else {
+      ch->bytes[0] = (uint8_t) tolower(ch->bytes[0]);
+    }
+    is_first_letter = false;
+  }
+  le->cursor_position           = end;
+  itl_g_tty_should_refresh_text = true;
+}
+
+/* Deletes the spaces and tabs on both sides of the cursor as one undo
+   step. */
+ITL_DEF void
+itl_le_delete_spaces(itl_le_t *le)
+{
+  size_t start = le->cursor_position;
+  size_t end   = le->cursor_position;
+
+  while (start > 0 && le->line->chars[start - 1].size == 1 &&
+         (le->line->chars[start - 1].bytes[0] == ' ' ||
+          le->line->chars[start - 1].bytes[0] == '\t'))
+  {
+    start -= 1;
+  }
+  while (end < le->line->length && le->line->chars[end].size == 1 &&
+         (le->line->chars[end].bytes[0] == ' ' ||
+          le->line->chars[end].bytes[0] == '\t'))
+  {
+    end += 1;
+  }
+  if (start == end) {
+    return;
+  }
+  le->cursor_position = start;
+  itl_le_erase(le, end - start, false);
+}
+
 ITL_DEF tl_status_code
 itl_le_key_handle(itl_le_t *le, int esc)
 {
@@ -13904,6 +14031,15 @@ itl_le_key_handle(itl_le_t *le, int esc)
     }
     itl_g_tty_should_refresh_text = false;
     break;
+
+  case TL_KEY_UPCASE_WORD: itl_le_change_word_case(le, ITL_CASE_UPPER); break;
+  case TL_KEY_DOWNCASE_WORD:
+    itl_le_change_word_case(le, ITL_CASE_LOWER);
+    break;
+  case TL_KEY_CAPITALIZE_WORD:
+    itl_le_change_word_case(le, ITL_CASE_CAPITAL);
+    break;
+  case TL_KEY_DELETE_SPACES: itl_le_delete_spaces(le); break;
 
   case TL_KEY_SAVE:
     if (itl_g_edit_mode == TL_EDIT_MODE_EMACS && itl_g_save_keys_enabled) {
@@ -15418,6 +15554,8 @@ itl_vi_repeat_last_change(itl_le_t *le)
     case 'A':
       le->cursor_position = itl_le_line_end_of(le, le->cursor_position);
       break;
+    case 'o':
+    case 'O': itl_vi_open_line(le, itl_g_vi_last_change.motion_key == 'O'); break;
     case 'I': {
       itl_utf8_t none = ITL_ZERO_INIT;
       bool       is_inclusive, is_valid;
@@ -17076,6 +17214,82 @@ itl_vi_go_to_line(itl_le_t *le, size_t line)
   itl_vi_clamp_command_cursor(le);
 }
 
+/* Opens an empty line below the cursor's line, or above it with is_above,
+   and leaves the cursor on it. */
+ITL_DEF void
+itl_vi_open_line(itl_le_t *le, bool is_above)
+{
+  if (is_above) {
+    le->cursor_position = itl_le_line_start_of(le, le->cursor_position);
+    itl_le_insert_cstr(le, "\n");
+    itl_le_move_left(le, 1);
+  } else {
+    le->cursor_position = itl_le_line_end_of(le, le->cursor_position);
+    itl_le_insert_cstr(le, "\n");
+  }
+}
+
+/* Joins the next line to the cursor's line with one space in place of the
+   newline and the indentation after it, as one undo step. No space goes
+   before an empty line or a closing parenthesis. */
+ITL_DEF void
+itl_vi_join_lines(itl_le_t *le)
+{
+  size_t     line_end = itl_le_line_end_of(le, le->cursor_position);
+  size_t     next     = line_end + 1;
+  itl_utf8_t space    = itl_utf8_new((const uint8_t *) " ", 1);
+
+  if (line_end >= le->line->length) {
+    return;
+  }
+  while (next < le->line->length && le->line->chars[next].size == 1 &&
+         (le->line->chars[next].bytes[0] == ' ' ||
+          le->line->chars[next].bytes[0] == '\t'))
+  {
+    next += 1;
+  }
+  itl_history_reset_after_edit(le);
+  itl_undo_push_closed(le);
+  itl_string_erase(le->line, line_end, next - line_end, false);
+  le->cursor_position = line_end;
+  if (line_end < le->line->length &&
+      !ITL_LE_IS_NEWLINE(le->line->chars[line_end]) &&
+      !(le->line->chars[line_end].size == 1 &&
+        le->line->chars[line_end].bytes[0] == ')'))
+  {
+    itl_string_insert(le->line, line_end, space);
+  }
+  itl_g_tty_should_refresh_text = true;
+}
+
+/* Moves to the previous empty line, or the next one with is_forward, or to
+   the start or the end of the buffer when there is none. */
+ITL_DEF void
+itl_vi_move_paragraph(itl_le_t *le, bool is_forward)
+{
+  size_t position = le->cursor_position;
+
+  if (is_forward) {
+    position = itl_le_line_end_of(le, position);
+    while (position < le->line->length) {
+      position += 1;
+      if (itl_le_line_end_of(le, position) == position) {
+        break;
+      }
+      position = itl_le_line_end_of(le, position);
+    }
+  } else {
+    position = itl_le_line_start_of(le, position);
+    while (position > 0) {
+      position = itl_le_line_start_of(le, position - 1);
+      if (itl_le_line_end_of(le, position) == position) {
+        break;
+      }
+    }
+  }
+  le->cursor_position = position;
+}
+
 ITL_DEF tl_status_code
 itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
 {
@@ -17249,6 +17463,16 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
     le->cursor_position = itl_le_line_end_of(le, le->cursor_position);
     itl_vi_begin_insert(true, 'A');
     break;
+  case 'o':
+  case 'O':
+    itl_vi_open_line(le, byte == 'O');
+    itl_vi_begin_insert(true, byte);
+    break;
+
+  case 'J': itl_vi_join_lines(le); break;
+
+  case '{':
+  case '}': itl_vi_move_paragraph(le, byte == '}'); break;
 
   case 'S': itl_vi_operator_line(le, ITL_VI_OP_CHANGE, 'c', count); break;
 
