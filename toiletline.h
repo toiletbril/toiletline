@@ -478,6 +478,16 @@ TL_DEF void
 tl_set_save_keys(int enabled);
 
 /**
+ * Keep text as the saved contents of the file the host edits, or forget them
+ * when text is NULL. While they are kept and the buffer differs from them,
+ * Ctrl-C, Ctrl-D on an empty buffer, Ctrl-X Ctrl-C, and M-x kill-kosh take a
+ * second press to leave, and :q and :quit refuse to leave while :q! leaves.
+ * text must outlive its use.
+ */
+TL_DEF void
+tl_set_saved_text(const char *text);
+
+/**
  * Lay the editor out over the whole terminal for a host that edits a file:
  * the input fills every row but the last four, which hold the hints, and the
  * completion menu is drawn over the input next to the caret. The host draws
@@ -5565,6 +5575,9 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_line_number_width = 0;
 /* Whether Ctrl-X s and Ctrl-X Ctrl-S save, set by tl_set_save_keys. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_save_keys_enabled = false;
 
+/* The saved contents of the edited file, set by tl_set_saved_text, or NULL. */
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_saved_text = NULL;
+
 /* The layout of tl_set_full_screen, and whether the last menu it drew sits
    above the caret. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_full_screen   = false;
@@ -8247,6 +8260,12 @@ tl_set_save_keys(int enabled)
 }
 
 TL_DEF void
+tl_set_saved_text(const char *text)
+{
+  itl_g_saved_text = text;
+}
+
+TL_DEF void
 tl_set_full_screen(int enabled)
 {
   itl_g_full_screen = enabled != 0;
@@ -9662,6 +9681,7 @@ itl_menu_measure(size_t tty_rows, size_t help_rows)
 
     itl_g_menu_is_above = below < 6 && above > below;
     available           = itl_g_menu_is_above ? above : below;
+    available           = available > 0 ? available - 1 : 0;
   }
 
   layout.has_help_row   = help_rows > 0 && available >= help_rows + 2;
@@ -10392,6 +10412,9 @@ itl_menu_measure_for(const tl_completion *result,
 {
   size_t help_rows = 0;
 
+  if (itl_g_full_screen) {
+    help_keys = NULL;
+  }
   if (help_title != NULL) {
     itl_menu_geometry geometry = itl_menu_geometry_of(
         result, name_width, empty_text, help_title, help_keys);
@@ -10402,6 +10425,21 @@ itl_menu_measure_for(const tl_completion *result,
   }
 
   return itl_menu_measure(tty_rows, help_rows);
+}
+
+/* Paint width columns of spaces from the anchor column and return there, so a
+   full-screen menu row hides the input under it. width is cut at row_cols. */
+ITL_DEF void
+itl_menu_paint_box_row(itl_char_buf_t *b,
+                       size_t          anchor,
+                       size_t          width,
+                       size_t          row_cols)
+{
+  if (!itl_g_full_screen) {
+    return;
+  }
+  itl_char_buf_append_spaces(b, width < row_cols ? width : row_cols);
+  ITL_TTY_MOVE_TO_COLUMN(b, anchor + 1);
 }
 
 /* Repaint the menu rows under the input block. The rows are written from the
@@ -10430,6 +10468,8 @@ itl_menu_draw(const tl_completion *result,
   size_t            desc_width;
   size_t            drawn_rows   = 0;
   size_t            overlay_rows = 0;
+  size_t            box_cols;
+  size_t            widest_desc;
   size_t            move_down;
   size_t            i;
 
@@ -10437,6 +10477,12 @@ itl_menu_draw(const tl_completion *result,
     return;
   }
 
+  /* A full-screen menu shows only the title, and its rows are boxes of spaces
+     two columns wider than their text on each side, with a blank row under
+     them. */
+  if (itl_g_full_screen) {
+    help_keys = NULL;
+  }
   geometry   = itl_menu_geometry_of(result, name_width, empty_text, help_title,
                                     help_keys);
   anchor     = geometry.anchor;
@@ -10447,6 +10493,15 @@ itl_menu_draw(const tl_completion *result,
   if (window_end > result->count) {
     window_end = result->count;
   }
+
+  widest_desc = result->count == 0 ? 0 : itl_menu_description_width(result);
+  box_cols    = result->count == 0
+                    ? itl_visible_width(empty_text, strlen(empty_text))
+                    : name_width;
+  if (result->count > 0 && widest_desc > 0 && desc_width > 0) {
+    box_cols += 1 + (widest_desc < desc_width ? widest_desc : desc_width);
+  }
+  box_cols += itl_g_menu_prefix_width + 2;
 
   /* A full-screen menu covers the input, so the input is drawn again first,
      which also takes away the rows of a longer menu drawn before. */
@@ -10459,7 +10514,7 @@ itl_menu_draw(const tl_completion *result,
                                           layout.help_row_count);
     }
     overlay_rows += result->count == 0 ? 1 : 0;
-    overlay_rows += window_end - window_start;
+    overlay_rows += window_end - window_start + 1;
     if (layout.has_count_row &&
         (window_start > 0 || window_end < result->count))
     {
@@ -10478,6 +10533,11 @@ itl_menu_draw(const tl_completion *result,
   itl_menu_move_to_anchor(b, anchor);
 
   if (layout.has_help_row && help_title != NULL) {
+    size_t title_cols = itl_visible_width(help_title, strlen(help_title));
+
+    itl_menu_paint_box_row(b, anchor,
+                           itl_g_menu_prefix_width + title_cols + 2,
+                           geometry.row_cols);
     drawn_rows += itl_menu_layout_help(b, help_title, help_keys, text_width,
                                        anchor, layout.help_row_count);
   }
@@ -10487,6 +10547,7 @@ itl_menu_draw(const tl_completion *result,
       itl_char_buf_append_cstr(b, ITL_LF);
       itl_menu_move_to_anchor(b, anchor);
     }
+    itl_menu_paint_box_row(b, anchor, box_cols, geometry.row_cols);
     itl_menu_append_dimmed_row(b, empty_text, text_width);
     drawn_rows += 1;
   }
@@ -10496,6 +10557,7 @@ itl_menu_draw(const tl_completion *result,
       itl_char_buf_append_cstr(b, ITL_LF);
       itl_menu_move_to_anchor(b, anchor);
     }
+    itl_menu_paint_box_row(b, anchor, box_cols, geometry.row_cols);
     itl_menu_append_row(b, result, i, name_width, desc_width, i == selected,
                         should_highlight);
     drawn_rows += 1;
@@ -10507,11 +10569,16 @@ itl_menu_draw(const tl_completion *result,
       itl_char_buf_append_cstr(b, ITL_LF);
       itl_menu_move_to_anchor(b, anchor);
     }
+    itl_menu_paint_box_row(b, anchor, box_cols, geometry.row_cols);
     itl_menu_append_summary(b, window_start + 1, window_end, result->count);
     drawn_rows += 1;
   }
 
   if (itl_g_full_screen) {
+    itl_char_buf_append_cstr(b, ITL_LF);
+    itl_menu_move_to_anchor(b, anchor);
+    itl_menu_paint_box_row(b, anchor, box_cols, geometry.row_cols);
+    drawn_rows += 1;
     itl_menu_close_overlay(b, overlay_rows, drawn_rows);
     return;
   }
@@ -13702,15 +13769,11 @@ itl_le_should_confirm(const itl_le_t *le)
   return has_line_break;
 }
 
-/* Returns true when kind may act, either because the buffer needs no second
-   press or because the previous key was the same one. Otherwise kind waits
-   and message shows on the hint rows. */
+/* Returns true when the previous key was kind. Otherwise kind waits and
+   message shows on the hint rows. */
 ITL_DEF bool
-itl_le_confirm(const itl_le_t *le, int kind, const char *message)
+itl_le_confirm_press(int kind, const char *message)
 {
-  if (!itl_le_should_confirm(le)) {
-    return true;
-  }
   if (itl_g_confirm_key == kind && itl_g_confirm_serial + 1 == itl_g_key_serial)
   {
     itl_g_confirm_key = 0;
@@ -13722,6 +13785,41 @@ itl_le_confirm(const itl_le_t *le, int kind, const char *message)
   itl_g_tty_should_refresh_text = true;
 
   return false;
+}
+
+/* Returns true when kind may act, either because the buffer needs no second
+   press or because the previous key was the same one. */
+ITL_DEF bool
+itl_le_confirm(const itl_le_t *le, int kind, const char *message)
+{
+  return !itl_le_should_confirm(le) || itl_le_confirm_press(kind, message);
+}
+
+/* Whether the buffer differs from the text of tl_set_saved_text. */
+ITL_DEF bool
+itl_le_is_unsaved(const itl_le_t *le)
+{
+  return itl_g_saved_text != NULL &&
+         !itl_string_equal_bytes(le->line, itl_g_saved_text,
+                                 strlen(itl_g_saved_text));
+}
+
+/* Returns true when kind may leave the buffer, either because it holds the
+   saved text or because the previous key was the same one. key_label is how
+   the hint spells kind. */
+ITL_DEF bool
+itl_le_confirm_discard(const itl_le_t *le, int kind, const char *key_label)
+{
+  char message[96];
+
+  if (!itl_le_is_unsaved(le)) {
+    return true;
+  }
+  strcpy(message, "unsaved changes\npress ");
+  strncat(message, key_label, sizeof(message) - strlen(message) - 24);
+  strcat(message, " again to discard them");
+
+  return itl_le_confirm_press(kind, message);
 }
 
 typedef enum
@@ -14096,13 +14194,16 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_EOF: {
     if (le->line->length > 0) {
       ITL_LE_ERASE_FORWARD(le, 1);
-    } else {
+    } else if (itl_le_confirm_discard(le, TL_KEY_EOF, "ctrl-d")) {
       (void) itl_le_copy_out(le);
       return TL_PRESSED_EOF;
     }
   } break;
 
   case TL_KEY_INTERRUPT: {
+    if (!itl_le_confirm_discard(le, TL_KEY_INTERRUPT, "ctrl-c")) {
+      break;
+    }
     (void) itl_le_copy_out(le);
     return TL_PRESSED_INTERRUPT;
   } break;
@@ -14155,10 +14256,13 @@ itl_le_key_handle(itl_le_t *le, int esc)
     break;
 
   case TL_KEY_QUIT:
-    if (itl_g_edit_mode == TL_EDIT_MODE_EMACS) {
+    if (itl_g_edit_mode != TL_EDIT_MODE_EMACS) {
+      itl_g_tty_should_refresh_text = false;
+      break;
+    }
+    if (itl_le_confirm_discard(le, TL_KEY_QUIT, "ctrl-x ctrl-c")) {
       return TL_PRESSED_QUIT;
     }
-    itl_g_tty_should_refresh_text = false;
     break;
 
   case TL_KEY_UPCASE_WORD: itl_le_change_word_case(le, ITL_CASE_UPPER); break;
@@ -17036,7 +17140,12 @@ itl_vi_ex_command(itl_le_t *le)
   if (itl_minibuffer_read(le, itl_g_vi_ex_has_range ? ":'<,'>" : ":",
                           ITL_PREFIX_VI_EX, command, sizeof(command)))
   {
-    if (itl_vi_ex_is_quit(command)) {
+    if (itl_vi_ex_is_quit(command) && strcmp(command, "q!") != 0 &&
+        itl_le_is_unsaved(le))
+    {
+      strcpy(itl_g_editor_message, "unsaved changes\nuse :q! to discard them");
+      itl_g_tty_should_refresh_text = true;
+    } else if (itl_vi_ex_is_quit(command)) {
       result = TL_PRESSED_QUIT;
     } else if (itl_vi_ex_is_write_quit(command)) {
       /* The host saves the buffer, so it is handed over as Enter hands it. */
@@ -17100,7 +17209,7 @@ itl_emacs_run_command(itl_le_t *le, size_t index)
   int action = itl_emacs_commands[index].key;
 
   if (action == ITL_EMACS_KILL_KOSH) {
-    return TL_PRESSED_QUIT;
+    return itl_le_key_handle(le, TL_KEY_QUIT);
   }
   if (action == ITL_EMACS_REPLACE_STRING ||
       action == ITL_EMACS_REPLACE_REGEXP)
