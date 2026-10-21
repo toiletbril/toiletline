@@ -173,6 +173,8 @@ typedef enum
   TL_KEY_REPEAT,
   /* Ctrl-X Ctrl-C leaves the shell in emacs mode, as M-x kill-kosh does. */
   TL_KEY_QUIT,
+  /* Ctrl-X s and Ctrl-X Ctrl-S save and leave while tl_set_save_keys is on. */
+  TL_KEY_SAVE,
 
   /* Reported when a bracketed paste sequence begins. Handled internally. */
   TL_KEY_PASTE_BEGIN
@@ -460,6 +462,14 @@ tl_set_line_numbers(size_t width);
  */
 TL_DEF void
 tl_set_submit_verb(const char *verb);
+
+/**
+ * Turn Ctrl-X s and Ctrl-X Ctrl-S on, which return TL_PRESSED_WRITE_QUIT in
+ * emacs mode with the buffer handed over, for a host that edits a file. They
+ * do nothing while off, the default.
+ */
+TL_DEF void
+tl_set_save_keys(int enabled);
 
 /**
  * Let the terminal turn the interrupt key back into SIGINT while the editor
@@ -5241,6 +5251,8 @@ itl_esc_parse_ctrl_x(void)
   case 21:  return TL_KEY_UNDO;          /* ctrl u */
   case 'z': return TL_KEY_REPEAT;
   case 3:   return TL_KEY_QUIT; /* ctrl c */
+  case 's':
+  case 19:  return TL_KEY_SAVE; /* ctrl s */
   }
 
   /* The chord is not bound, so the byte starts the next key and an arrow after
@@ -5498,6 +5510,9 @@ ITL_DEF ITL_THREAD_LOCAL tl_format_fn itl_g_format_callback = NULL;
 
 /* The width of the line numbers drawn before each buffer line, or 0. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_line_number_width = 0;
+
+/* Whether Ctrl-X s and Ctrl-X Ctrl-S save, set by tl_set_save_keys. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_save_keys_enabled = false;
 
 /* The verb of the hint that asks for a second Enter. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_submit_verb = "run";
@@ -6911,9 +6926,14 @@ itl_prefix_hint(char *out, size_t out_size)
   out[0] = '\0';
   if (itl_g_prefix_kind == ITL_PREFIX_CTRL_X) {
     itl_prefix_append(out, out_size, &out_length,
-                      "pressed ctrl-x\nwaiting for ctrl-e (edit in $VISUAL), "
-                      "ctrl-u (undo), z (repeat the last M-x command), "
-                      "ctrl-c (leave the shell)");
+                      itl_g_save_keys_enabled
+                          ? "pressed ctrl-x\nwaiting for ctrl-e (edit in "
+                            "$VISUAL), ctrl-u (undo), z (repeat the last M-x "
+                            "command), s or ctrl-s (save and leave), ctrl-c "
+                            "(leave without saving)"
+                          : "pressed ctrl-x\nwaiting for ctrl-e (edit in "
+                            "$VISUAL), ctrl-u (undo), z (repeat the last M-x "
+                            "command), ctrl-c (leave the shell)");
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_VI_EX &&
@@ -8137,6 +8157,12 @@ TL_DEF void
 tl_set_line_numbers(size_t width)
 {
   itl_g_line_number_width = width;
+}
+
+TL_DEF void
+tl_set_save_keys(int enabled)
+{
+  itl_g_save_keys_enabled = enabled != 0;
 }
 
 TL_DEF void
@@ -13866,6 +13892,15 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_QUIT:
     if (itl_g_edit_mode == TL_EDIT_MODE_EMACS) {
       return TL_PRESSED_QUIT;
+    }
+    itl_g_tty_should_refresh_text = false;
+    break;
+
+  case TL_KEY_SAVE:
+    if (itl_g_edit_mode == TL_EDIT_MODE_EMACS && itl_g_save_keys_enabled) {
+      /* The host saves the buffer, so it is handed over as Enter hands it. */
+      ITL_TRY(itl_le_copy_out(le), return TL_ERROR_SIZE);
+      return TL_PRESSED_WRITE_QUIT;
     }
     itl_g_tty_should_refresh_text = false;
     break;
