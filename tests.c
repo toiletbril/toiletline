@@ -7939,6 +7939,12 @@ test_find_wraps_and_folds_case(void)
   ok &= itl_find_search(line, "alpha", 3, true) &&
         itl_g_find_match_start == 5;
   ok &= !itl_find_search(line, "gamma", 0, false) && !itl_g_find_has_match;
+  itl_g_find_hint        = "find\nescape to go back";
+  itl_g_find_origin      = 1;
+  itl_g_find_is_backward = false;
+  itl_find_refresh(line, "beta");
+  ok &= strcmp(itl_g_minibuffer_hint,
+               "find\nmatch 2 of 2, escape to go back") == 0;
   if (!ok) {
     printf("find stopped at %zu\n", itl_g_find_match_start);
   }

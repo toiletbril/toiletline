@@ -9982,6 +9982,7 @@ itl_vi_clamp_command_cursor(itl_le_t *le);
 ITL_DEF void
 itl_le_find(itl_le_t   *le,
             bool        is_backward,
+            bool        should_skip_cursor,
             const char *label,
             const char *hint);
 ITL_DEF void
@@ -14725,7 +14726,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
   } break;
 
   case TL_KEY_FIND:
-    itl_le_find(le, false, "Find: ", ITL_FIND_EMACS_HINT);
+    itl_le_find(le, false, false, "Find: ", ITL_FIND_EMACS_HINT);
     break;
 
   case TL_KEY_HISTORY_SEARCH:
@@ -14735,7 +14736,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
     }
     /* fallthrough */
   case TL_KEY_FIND_BACKWARD:
-    itl_le_find(le, true, "Find backward: ", ITL_FIND_EMACS_HINT);
+    itl_le_find(le, true, false, "Find backward: ", ITL_FIND_EMACS_HINT);
     break;
 
   case TL_KEY_EXECUTE_COMMAND:
@@ -16753,8 +16754,15 @@ itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
         break;
       }
       if (second_byte == 'q') {
+        size_t top_line    = itl_le_line_index_of(le, selection_start);
+        size_t bottom_line = itl_le_line_index_of(le, selection_end);
+
+        /* The wrap goes through the doubled operator, so . wraps as many
+           lines again. */
         itl_search_spans_clear();
-        itl_le_wrap_lines(le, selection_start, selection_end);
+        le->cursor_position = itl_le_line_start_at_index(le, top_line);
+        itl_vi_operator_line(le, ITL_VI_OP_WRAP, 'q',
+                             bottom_line - top_line + 1);
         itl_g_edit_mode               = TL_EDIT_MODE_VI_COMMAND;
         itl_g_tty_should_refresh_text = true;
         itl_vi_clamp_command_cursor(le);
@@ -17746,6 +17754,22 @@ itl_find_matches_at(const itl_string_t *line,
   return true;
 }
 
+/* Whether a find for query ignores case, which holds when query has no
+   capital letter. */
+ITL_DEF bool
+itl_find_is_case_folded(const char *query)
+{
+  size_t i;
+
+  for (i = 0; query[i] != '\0'; ++i) {
+    if (isupper((unsigned char) query[i])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 /* Finds query in line from index from, forward or backward, and wraps around
    at either end. A query without a capital letter ignores case.
    Sets the match and returns whether there is one. */
@@ -17755,18 +17779,12 @@ itl_find_search(const itl_string_t *line,
                 size_t              from,
                 bool                is_backward)
 {
-  bool   is_case_folded = true;
+  bool   is_case_folded = itl_find_is_case_folded(query);
   size_t i, at, end;
 
   itl_g_find_has_match = false;
   if (query[0] == '\0' || line->length == 0) {
     return false;
-  }
-
-  for (i = 0; query[i] != '\0'; ++i) {
-    if (isupper((unsigned char) query[i])) {
-      is_case_folded = false;
-    }
   }
 
   if (from >= line->length) {
@@ -17787,18 +17805,60 @@ itl_find_search(const itl_string_t *line,
   return false;
 }
 
+/* The find hint with the position of the shown match among all matches. */
+ITL_DEF ITL_THREAD_LOCAL char itl_g_find_count_hint[256] = {0};
+
 /* Finds text again after a change to it, from the match it showed or from
-   where the find began, and switches the hint to say when nothing matches. */
+   where the find began. The hint says when nothing matches, and otherwise
+   which match of how many is shown, counting a match at every position the
+   way the find steps. */
 ITL_DEF void
 itl_find_refresh(const itl_string_t *line, const char *text)
 {
+  const char     *body;
+  itl_char_buf_t *hint;
+  bool            is_case_folded = itl_find_is_case_folded(text);
+  size_t          match_count = 0, match_index = 0, at, end, hint_size;
+
   (void) itl_find_search(line, text,
                          itl_g_find_has_match ? itl_g_find_match_start
                                               : itl_g_find_origin,
                          itl_g_find_is_backward);
-  itl_g_minibuffer_hint = text[0] != '\0' && !itl_g_find_has_match
-                              ? ITL_FIND_NO_MATCH_HINT
-                              : itl_g_find_hint;
+  if (!itl_g_find_has_match) {
+    itl_g_minibuffer_hint =
+        text[0] != '\0' ? ITL_FIND_NO_MATCH_HINT : itl_g_find_hint;
+    return;
+  }
+
+  for (at = 0; at < line->length; ++at) {
+    if (itl_find_matches_at(line, at, text, is_case_folded, &end)) {
+      match_count += 1;
+      if (at == itl_g_find_match_start) {
+        match_index = match_count;
+      }
+    }
+  }
+
+  body = strchr(itl_g_find_hint, '\n');
+  if (body == NULL) {
+    itl_g_minibuffer_hint = itl_g_find_hint;
+    return;
+  }
+
+  hint = itl_char_buf_alloc();
+  itl_char_buf_append_bytes(hint, itl_g_find_hint,
+                            (size_t) (body - itl_g_find_hint));
+  itl_char_buf_append_cstr(hint, "\nmatch ");
+  itl_char_buf_append_size_t(hint, match_index);
+  itl_char_buf_append_cstr(hint, " of ");
+  itl_char_buf_append_size_t(hint, match_count);
+  itl_char_buf_append_cstr(hint, ", ");
+  itl_char_buf_append_cstr(hint, body + 1);
+  hint_size = ITL_MIN(hint->size, sizeof(itl_g_find_count_hint) - 1);
+  memcpy(itl_g_find_count_hint, hint->data, hint_size);
+  itl_g_find_count_hint[hint_size] = '\0';
+  ITL_CHAR_BUF_FREE(hint);
+  itl_g_minibuffer_hint = itl_g_find_count_hint;
 }
 
 /* Steps to the next match, or the one before with is_backward. Empty text
@@ -18043,11 +18103,14 @@ itl_minibuffer_read(itl_le_t       *le,
 }
 
 /* Finds text in the buffer as it is typed into a minibuffer after label,
-   from the caret forward, or backward with is_backward. Every change to the
-   text moves the shown match, and Enter leaves the caret on it. */
+   from the caret forward, or backward with is_backward. A backward find, and a
+   forward one with should_skip_cursor, skip a match that starts at the caret.
+   Every change to the text moves the shown match, and Enter leaves the caret
+   on it. */
 ITL_DEF void
 itl_le_find(itl_le_t   *le,
             bool        is_backward,
+            bool        should_skip_cursor,
             const char *label,
             const char *hint)
 {
@@ -18062,6 +18125,8 @@ itl_le_find(itl_le_t   *le,
   if (is_backward && le->line->length > 0) {
     itl_g_find_origin = (le->cursor_position + le->line->length - 1) %
                         le->line->length;
+  } else if (should_skip_cursor) {
+    itl_g_find_origin = le->cursor_position + 1;
   }
   itl_g_find_hint       = hint;
   itl_g_minibuffer_hint = hint;
@@ -18784,7 +18849,7 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
   case '?':
     itl_vi_reset_pending();
     if (itl_g_full_screen) {
-      itl_le_find(le, true, "?", ITL_FIND_VI_HINT);
+      itl_le_find(le, true, true, "?", ITL_FIND_VI_HINT);
     }
     return TL_SUCCESS;
 
@@ -18800,7 +18865,7 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
 
     if (itl_g_full_screen) {
       itl_vi_reset_pending();
-      itl_le_find(le, false, "/", ITL_FIND_VI_HINT);
+      itl_le_find(le, false, true, "/", ITL_FIND_VI_HINT);
       return TL_SUCCESS;
     }
     after_search                  = itl_history_select(le, &select_code);
