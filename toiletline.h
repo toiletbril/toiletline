@@ -6576,6 +6576,103 @@ itl_wrap_walk_range(const itl_string_t *line,
   }
 }
 
+ITL_DEF size_t
+itl_le_line_end_of(const itl_le_t *le, size_t position);
+
+/* The row each logical line of the buffer starts on, as pairs of the line
+   start and its row, for the walk the metrics make from first_row and
+   first_col at cols with indent. The index is kept with a copy of the
+   characters it was built from and holds while they and the geometry are the
+   same, so a frame that only moves the caret walks no line above it. */
+ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_row_index_text  = ITL_ZERO_INIT;
+ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_row_index_lines = ITL_ZERO_INIT;
+ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_line_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_geometry[4];
+ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_end_row = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_end_col = 0;
+ITL_DEF ITL_THREAD_LOCAL bool           itl_g_row_index_is_valid = false;
+
+/* Returns the row index of the buffer, built again when the characters or
+   the geometry changed. Entry 2k is the start of line k and entry 2k + 1 its
+   row. */
+ITL_DEF const size_t *
+itl_le_row_index(const itl_le_t *le,
+                 size_t          cols,
+                 size_t          indent,
+                 size_t          first_row,
+                 size_t          first_col)
+{
+  size_t text_size = le->line->length * sizeof(itl_utf8_t);
+  size_t row = first_row, col = first_col, i = 0;
+
+  if (itl_g_row_index_is_valid && itl_g_row_index_geometry[0] == cols &&
+      itl_g_row_index_geometry[1] == indent &&
+      itl_g_row_index_geometry[2] == first_row &&
+      itl_g_row_index_geometry[3] == first_col &&
+      itl_g_row_index_text.size == text_size &&
+      (text_size == 0 ||
+       memcmp(itl_g_row_index_text.data, le->line->chars, text_size) == 0))
+  {
+    return (const size_t *) (const void *) itl_g_row_index_lines.data;
+  }
+
+  ITL_CHAR_BUF_CLEAR(&itl_g_row_index_text);
+  ITL_CHAR_BUF_CLEAR(&itl_g_row_index_lines);
+  itl_char_buf_append_bytes(&itl_g_row_index_text,
+                            (const char *) le->line->chars, text_size);
+  itl_g_row_index_line_count = 0;
+
+  for (;;) {
+    size_t line_end = itl_le_line_end_of(le, i);
+    size_t entry[2];
+
+    entry[0] = i;
+    entry[1] = row;
+    itl_char_buf_append_bytes(&itl_g_row_index_lines, (const char *) entry,
+                              sizeof(entry));
+    itl_g_row_index_line_count += 1;
+
+    itl_wrap_walk_range(le->line, i, line_end, cols, indent, &row, &col);
+    if (line_end >= le->line->length) {
+      break;
+    }
+
+    row += 1;
+    col = indent;
+    i   = line_end + 1;
+  }
+
+  itl_g_row_index_end_row     = row;
+  itl_g_row_index_end_col     = col;
+  itl_g_row_index_geometry[0] = cols;
+  itl_g_row_index_geometry[1] = indent;
+  itl_g_row_index_geometry[2] = first_row;
+  itl_g_row_index_geometry[3] = first_col;
+  itl_g_row_index_is_valid    = true;
+
+  return (const size_t *) (const void *) itl_g_row_index_lines.data;
+}
+
+/* The last line of the row index whose entry at offset, 0 for the start and
+   1 for the row, is at or below value. */
+ITL_DEF size_t
+itl_row_index_find(const size_t *lines, size_t offset, size_t value)
+{
+  size_t low = 0, high = itl_g_row_index_line_count;
+
+  while (high - low > 1) {
+    size_t middle = low + (high - low) / 2;
+
+    if (lines[2 * middle + offset] <= value) {
+      low = middle;
+    } else {
+      high = middle;
+    }
+  }
+
+  return low;
+}
+
 /* Walks the buffer once and computes the cursor's visual row and column plus
    the total number of visual rows. It accounts for the prompt width on the
    first row, per-character display width, soft wrapping at tty_cols, a wide
@@ -6594,6 +6691,24 @@ itl_le_compute_metrics(const itl_le_t *le, size_t tty_cols)
   size_t row    = le->prompt_rows;
   size_t col    = itl_le_prompt_indent(le, cols);
   size_t length = le->line->length;
+
+  /* The full-screen layout reads the rows of the lines above the caret from
+     the row index and walks only the caret's line. */
+  if (itl_g_full_screen) {
+    const size_t *lines = itl_le_row_index(le, cols, indent, row, col);
+
+    if (le->cursor_position <= length) {
+      size_t line = itl_row_index_find(lines, 0, le->cursor_position);
+
+      m.cursor_row = lines[2 * line + 1];
+      m.cursor_col = line == 0 ? col : indent;
+      itl_wrap_walk_range(le->line, lines[2 * line], le->cursor_position, cols,
+                          indent, &m.cursor_row, &m.cursor_col);
+    }
+
+    m.total_rows = itl_g_row_index_end_row + 1;
+    return m;
+  }
 
   /* The caret sits to the left of chars[cursor_position], so the walk stops
      there and records before consuming it. */
@@ -6691,9 +6806,6 @@ itl_le_reflow_rows_above_caret(const itl_le_t *le,
   return rows_above + col / ncols;
 }
 
-ITL_DEF size_t
-itl_le_line_end_of(const itl_le_t *le, size_t position);
-
 /* Passes the lines that end above target_row with the run walk of the
    metrics, from the row and column the caller starts at, and returns the start
    of the first line that reaches target_row or ends the buffer. row and col
@@ -6707,6 +6819,20 @@ itl_le_skip_lines_above(const itl_le_t *le,
                         size_t         *col)
 {
   size_t i = 0;
+
+  /* The full-screen layout finds the line in the row index. */
+  if (itl_g_full_screen) {
+    const size_t *lines = itl_le_row_index(le, cols, indent, *row, *col);
+    size_t        line  = itl_row_index_find(lines, 1, target_row);
+
+    if (line == 0) {
+      return 0;
+    }
+
+    *row = lines[2 * line + 1];
+    *col = indent;
+    return lines[2 * line];
+  }
 
   while (*row < target_row && i < le->line->length) {
     size_t line_end = itl_le_line_end_of(le, i);
@@ -15452,6 +15578,19 @@ tl_exit(void)
   itl_g_row_cache.size     = 0;
   itl_g_row_cache.capacity = 0;
   itl_g_row_cache_count    = 0;
+  if (itl_g_row_index_text.data != NULL) {
+    ITL_FREE(itl_g_row_index_text.data);
+  }
+  if (itl_g_row_index_lines.data != NULL) {
+    ITL_FREE(itl_g_row_index_lines.data);
+  }
+  itl_g_row_index_text.data      = NULL;
+  itl_g_row_index_text.size      = 0;
+  itl_g_row_index_text.capacity  = 0;
+  itl_g_row_index_lines.data     = NULL;
+  itl_g_row_index_lines.size     = 0;
+  itl_g_row_index_lines.capacity = 0;
+  itl_g_row_index_is_valid       = false;
   itl_frame_batch_free();
 
   ITL_TRACELN("Exited, alloc count: %zu\n", itl_g_alloc_count);

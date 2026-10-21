@@ -8030,6 +8030,88 @@ test_tab_takes_four_columns(void)
   return ok;
 }
 
+/* Compares the row index of the full-screen layout with the walk of the
+   other layouts at every caret position and every target row. */
+static bool
+test_row_index_agrees_with_walk(itl_le_t *le, size_t cols)
+{
+  size_t indent = ITL_LE_INDENT(le, cols);
+  size_t first_col = itl_le_prompt_indent(le, cols);
+  size_t position, target_row;
+  bool   ok = true;
+
+  for (position = 0; position <= le->line->length; ++position) {
+    itl_le_metrics_t walked, indexed;
+
+    le->cursor_position = position;
+    itl_g_full_screen   = false;
+    walked              = itl_le_compute_metrics(le, cols);
+    itl_g_full_screen   = true;
+    indexed             = itl_le_compute_metrics(le, cols);
+    ok &= walked.cursor_row == indexed.cursor_row &&
+          walked.cursor_col == indexed.cursor_col &&
+          walked.total_rows == indexed.total_rows;
+  }
+
+  for (target_row = 0; target_row < 40; ++target_row) {
+    size_t walked_row = le->prompt_rows, walked_col = first_col;
+    size_t indexed_row = le->prompt_rows, indexed_col = first_col;
+    size_t walked_index, indexed_index;
+
+    itl_g_full_screen = false;
+    walked_index      = itl_le_skip_lines_above(le, cols, indent, target_row,
+                                                &walked_row, &walked_col);
+    itl_g_full_screen = true;
+    indexed_index     = itl_le_skip_lines_above(le, cols, indent, target_row,
+                                                &indexed_row, &indexed_col);
+    ok &= walked_index == indexed_index && walked_row == indexed_row &&
+          walked_col == indexed_col;
+  }
+
+  itl_g_full_screen = false;
+  return ok;
+}
+
+static bool
+test_row_index(void)
+{
+  static const size_t COLS[] = {7, 13, 40};
+  itl_le_t            le     = ITL_ZERO_INIT;
+  itl_string_t       *line   = itl_string_alloc();
+  bool                ok     = true;
+  size_t              i;
+
+  le.line         = line;
+  le.prompt       = ">> ";
+  le.prompt_width = 3;
+  ITL_STRING_FROM_CSTR(line, "echo one two three four five six\n\n"
+                             "\tx\xe3\x81\x82\xe3\x81\x84 wide\n"
+                             "a\nlonger line that wraps more than once here");
+  for (i = 0; i < ITL_COUNTOF(COLS); ++i) {
+    ok &= test_row_index_agrees_with_walk(&le, COLS[i]);
+  }
+
+  /* A changed character with the same length and the same width builds the
+     index again. */
+  line->chars[1] = itl_utf8_parse('\n');
+  for (i = ITL_COUNTOF(COLS); i > 0; --i) {
+    ok &= test_row_index_agrees_with_walk(&le, COLS[i - 1]);
+  }
+
+  ITL_FREE(itl_g_row_index_text.data);
+  ITL_FREE(itl_g_row_index_lines.data);
+  itl_g_row_index_text.data      = NULL;
+  itl_g_row_index_text.size      = 0;
+  itl_g_row_index_text.capacity  = 0;
+  itl_g_row_index_lines.data     = NULL;
+  itl_g_row_index_lines.size     = 0;
+  itl_g_row_index_lines.capacity = 0;
+  itl_g_row_index_is_valid       = false;
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 static bool
 test_sgr_state_folds_to_the_last_reset(void)
 {
@@ -9920,6 +10002,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_shaded_cell_writes_no_character),
                                    DEFINE_TEST_CASE(
                                        test_sgr_state_folds_to_the_last_reset),
+                                   DEFINE_TEST_CASE(test_row_index),
                                    DEFINE_TEST_CASE(test_save_keeps_editing),
                                    DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
                                    DEFINE_TEST_CASE(
