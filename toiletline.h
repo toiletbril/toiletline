@@ -175,6 +175,11 @@ typedef enum
   TL_KEY_QUIT,
   /* Ctrl-X s and Ctrl-X Ctrl-S save and leave while tl_set_save_keys is on. */
   TL_KEY_SAVE,
+  /* Ctrl-X i, and Ctrl-I in vi insert mode of the full-screen layout, show
+     the hint under the caret. */
+  TL_KEY_HOVER,
+  /* A mouse report of the full-screen layout. */
+  TL_KEY_MOUSE,
   /* Alt-U, Alt-L, and Alt-C change the case of the next word. */
   TL_KEY_UPCASE_WORD,
   TL_KEY_DOWNCASE_WORD,
@@ -486,6 +491,23 @@ tl_set_save_keys(int enabled);
  */
 TL_DEF void
 tl_set_saved_text(const char *text);
+
+/**
+ * Show title on the top row of the full-screen layout, which leaves the input
+ * one row less, or show no title when title is NULL. title must outlive its
+ * use.
+ */
+TL_DEF void
+tl_set_title(const char *title);
+
+/**
+ * Keep status for the rows the full-screen layout shows under the input while
+ * no hint, message, or command line takes them. Its first line opens the rows,
+ * the caret position and the edit mode follow, then the rest of status, then
+ * the keys that save, leave, and show the hint. status must outlive its use.
+ */
+TL_DEF void
+tl_set_status(const char *status);
 
 /**
  * Lay the editor out over the whole terminal for a host that edits a file:
@@ -1384,6 +1406,11 @@ itl_legacy_ctrl_byte(uint32_t key)
   return -1;
 }
 
+/* Whether Ctrl-I stays apart from TAB, as in vi insert mode of the
+   full-screen layout, where it shows the hint under the caret. A terminal
+   that cannot tell the two apart sends TAB for both. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_should_keep_ctrl_i = false;
+
 /* The legacy bytes for a key the kitty keyboard protocol reports as CSI code ;
    modifier u, or xterm's modifyOtherKeys as CSI 27 ; modifier ; code ~. The
    modifier is one plus a bit set of shift 1, alt 2, ctrl 4, super 8, hyper 16,
@@ -1420,6 +1447,10 @@ itl_legacy_key_bytes(uint32_t code,
   is_shift = (bits & 1u) != 0;
   is_alt   = (bits & 2u) != 0;
   is_ctrl  = (bits & 4u) != 0;
+
+  if (itl_g_should_keep_ctrl_i && bits == 4u && key == 'i') {
+    return 0;
+  }
 
   /* Kitty reports the keypad apart from the main keys. Its text keys read as
      their characters and its moves as the main moves. */
@@ -5133,6 +5164,9 @@ itl_esc_parse_modified_key(unsigned code, unsigned modifier)
   if (code == 'z' || code == 'Z') {
     return is_shift ? TL_KEY_REDO : itl_ctrl_z_key();
   }
+  if (code == 'i' && !is_shift) {
+    return TL_KEY_HOVER;
+  }
 
   return TL_KEY_UNKN;
 }
@@ -5154,6 +5188,13 @@ itl_cursor_final_key(uint8_t byte)
 
 #define ITL_CSI_PARAMETER_MAX 4
 
+/* The last SGR mouse report: its button code, its 1-based row and column, and
+   whether it was a press. */
+ITL_DEF ITL_THREAD_LOCAL unsigned itl_g_mouse_button   = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t   itl_g_mouse_row      = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t   itl_g_mouse_column   = 0;
+ITL_DEF ITL_THREAD_LOCAL bool     itl_g_mouse_is_press = false;
+
 /* A CSI or SS3 sequence whose first byte after the introducer is a parameter
    byte. Every parameter and intermediate byte is consumed up to the final
    byte, so an unbound sequence never leaks its tail as typed text. A private
@@ -5166,6 +5207,7 @@ itl_esc_parse_csi_parameters(uint8_t byte)
   size_t   index                             = 0;
   bool     is_private                        = false;
   bool     is_subparameter                   = false;
+  bool     is_mouse                          = byte == '<';
   int      modifier;
   int      cursor_key;
 
@@ -5187,6 +5229,15 @@ itl_esc_parse_csi_parameters(uint8_t byte)
     ITL_TRY_READ_BYTE(&byte, return TL_KEY_UNKN);
   }
 
+  /* An SGR mouse report is ESC [ < button ; column ; row, then M for a press
+     and m for a release. */
+  if (is_mouse && (byte == 'M' || byte == 'm')) {
+    itl_g_mouse_button   = parameters[0];
+    itl_g_mouse_column   = parameters[1];
+    itl_g_mouse_row      = parameters[2];
+    itl_g_mouse_is_press = byte == 'M';
+    return TL_KEY_MOUSE;
+  }
   if (is_private) {
     return TL_KEY_UNKN;
   }
@@ -5314,6 +5365,7 @@ itl_esc_parse_ctrl_x(void)
   case 3:   return TL_KEY_QUIT; /* ctrl c */
   case 's':
   case 19:  return TL_KEY_SAVE; /* ctrl s */
+  case 'i': return TL_KEY_HOVER;
   }
 
   /* The chord is not bound, so the byte starts the next key and an arrow after
@@ -5578,10 +5630,34 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_save_keys_enabled = false;
 /* The saved contents of the edited file, set by tl_set_saved_text, or NULL. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_saved_text = NULL;
 
+/* The title and the status of the full-screen layout, set by tl_set_title and
+   tl_set_status, or NULL. */
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_title  = NULL;
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_status = NULL;
+
+/* The key count at which TL_KEY_HOVER asked for the hint, which shows until
+   the next key. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hover_serial = 0;
+
+/* The label of a command line that the full-screen layout shows on the first
+   row under the input, or NULL while none is open. */
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_minibuffer_label = NULL;
+
+/* Whether the first hint row is drawn without the hint style, as the command
+   line of the full-screen layout is. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_hint_first_row_is_plain = false;
+
 /* The layout of tl_set_full_screen, and whether the last menu it drew sits
    above the caret. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_full_screen   = false;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_menu_is_above = false;
+
+/* The rows the title takes on top of the full-screen layout. */
+ITL_DEF size_t
+itl_full_screen_title_rows(void)
+{
+  return itl_g_full_screen && itl_g_title != NULL ? 1 : 0;
+}
 
 /* The verb of the hint that asks for a second Enter. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_submit_verb = "run";
@@ -6274,6 +6350,14 @@ itl_le_invalidate_prev_frame(void)
 ITL_DEF void
 itl_le_tty_move_to_block_top(itl_char_buf_t *b)
 {
+  /* The full-screen layout starts the block under the title at the top of the
+     screen, so the block top is a fixed row. */
+  if (itl_g_full_screen) {
+    itl_char_buf_append_cstr(b, "\x1b[");
+    itl_char_buf_append_size_t(b, 1 + itl_full_screen_title_rows());
+    itl_char_buf_append_cstr(b, ";1H");
+    return;
+  }
   if (itl_g_le_prev_cursor_row > 1) {
     ITL_TTY_MOVE_UP(b, itl_g_le_prev_cursor_row - 1);
   }
@@ -6719,8 +6803,10 @@ itl_le_tty_break_line(itl_char_buf_t *b,
 ITL_DEF size_t
 itl_le_view_rows(size_t tty_rows)
 {
+  size_t title_rows = itl_full_screen_title_rows();
+
   if (itl_g_full_screen) {
-    return tty_rows > 5 ? tty_rows - 4 : 1;
+    return tty_rows > 5 + title_rows ? tty_rows - 4 - title_rows : 1;
   }
 
   return tty_rows > 3 ? tty_rows - 2 : 1;
@@ -7007,7 +7093,7 @@ itl_prefix_hint(char *out, size_t out_size)
                           ? "pressed ctrl-x\nwaiting for ctrl-e (edit in "
                             "$VISUAL), ctrl-u (undo), z (repeat the last M-x "
                             "command), s or ctrl-s (save and leave), ctrl-c "
-                            "(leave without saving)"
+                            "(leave without saving), i (show the hint)"
                           : "pressed ctrl-x\nwaiting for ctrl-e (edit in "
                             "$VISUAL), ctrl-u (undo), z (repeat the last M-x "
                             "command), ctrl-c (leave the shell)");
@@ -7146,6 +7232,8 @@ itl_prefix_hint(char *out, size_t out_size)
 ITL_DEF size_t
 itl_hint_row_budget(size_t tty_rows, size_t block_rows)
 {
+  block_rows += itl_full_screen_title_rows();
+
   return tty_rows > block_rows ? tty_rows - block_rows : 0;
 }
 
@@ -7169,7 +7257,10 @@ itl_hint_fit(const char *text, size_t length, size_t limit)
 ITL_DEF void
 itl_hint_append_row(const char *text, size_t length, bool is_cut)
 {
-  const char *open      = itl_color_sequence(itl_g_hint_sgr);
+  const char *open      = itl_g_hint_next_rows == 0 &&
+                                  itl_g_hint_first_row_is_plain
+                              ? ""
+                              : itl_color_sequence(itl_g_hint_sgr);
   const char *reset     = itl_color_sequence(ITL_HIGHLIGHT_RESET);
   size_t      open_len  = strlen(open);
   size_t      reset_len = strlen(reset);
@@ -7357,6 +7448,126 @@ itl_hint_drop_next(void)
   itl_g_hint_next[0]    = '\0';
 }
 
+/* Append n in decimal to out. */
+ITL_DEF void
+itl_prefix_append_size(char *out, size_t out_size, size_t *length, size_t n)
+{
+  char   digits[24];
+  size_t digit_count = sizeof(digits) - 1;
+
+  digits[digit_count] = '\0';
+  do {
+    digits[--digit_count] = (char) ('0' + n % 10);
+    n /= 10;
+  } while (n > 0 && digit_count > 0);
+  itl_prefix_append(out, out_size, length, digits + digit_count);
+}
+
+/* Write the rows the full-screen layout shows under the input into out and
+   return them. An open command line takes the first row, with the keys it
+   answers under it. A held prefix or a message comes next, then the hint
+   while TL_KEY_HOVER asks for it, and otherwise the status: the first line of
+   tl_set_status, the caret position with the edit mode, the rest of the
+   status, and the keys that save, leave, and show the hint. */
+ITL_DEF const char *
+itl_full_screen_rows(char        *out,
+                     size_t       out_size,
+                     const char  *line,
+                     size_t       cursor_byte,
+                     const char **sgr)
+{
+  char        keys_text[1024];
+  const char *status_rest = NULL;
+  const char *mode;
+  size_t      out_length  = 0;
+  size_t      line_number = 1;
+  size_t      line_count  = 1;
+  size_t      column      = 1;
+  size_t      i;
+
+  itl_g_hint_first_row_is_plain = false;
+  out[0]                        = '\0';
+
+  if (itl_g_minibuffer_label != NULL) {
+    itl_g_hint_first_row_is_plain = true;
+    itl_prefix_append(out, out_size, &out_length, itl_g_minibuffer_label);
+    itl_prefix_append(out, out_size, &out_length, itl_g_minibuffer_text);
+    if (itl_prefix_hint(keys_text, sizeof(keys_text)) &&
+        strchr(keys_text, '\n') != NULL)
+    {
+      itl_prefix_append(out, out_size, &out_length, strchr(keys_text, '\n'));
+    }
+    return out;
+  }
+  if (itl_prefix_hint(out, out_size)) {
+    return out;
+  }
+  if (itl_g_hover_serial != 0 && itl_g_hover_serial == itl_g_key_serial) {
+    const char *hint = itl_g_hint_callback != NULL
+                           ? itl_g_hint_callback(line, cursor_byte, sgr)
+                           : NULL;
+
+    return hint != NULL && hint[0] != '\0' ? hint
+                                           : "nothing to show under the caret";
+  }
+
+  for (i = 0; line[i] != '\0'; ++i) {
+    if (line[i] == '\n') {
+      line_count += 1;
+      if (i < cursor_byte) {
+        line_number += 1;
+        column = 1;
+      }
+    } else if (i < cursor_byte && ((uint8_t) line[i] & 0xC0) != 0x80) {
+      column += 1;
+    }
+  }
+
+  switch (itl_g_edit_mode) {
+  case TL_EDIT_MODE_EMACS:      mode = "emacs"; break;
+  case TL_EDIT_MODE_VI_INSERT:  mode = "vi insert"; break;
+  case TL_EDIT_MODE_VI_COMMAND: mode = "vi normal"; break;
+  default:                      mode = "vi visual"; break;
+  }
+
+  if (itl_g_status != NULL) {
+    status_rest = strchr(itl_g_status, '\n');
+    if (status_rest == NULL) {
+      itl_prefix_append(out, out_size, &out_length, itl_g_status);
+    } else {
+      size_t first_length = (size_t) (status_rest - itl_g_status);
+
+      if (out_length + first_length < out_size) {
+        memcpy(out + out_length, itl_g_status, first_length);
+        out_length += first_length;
+        out[out_length] = '\0';
+      }
+    }
+  }
+  itl_prefix_append(out, out_size, &out_length, "\nline ");
+  itl_prefix_append_size(out, out_size, &out_length, line_number);
+  itl_prefix_append(out, out_size, &out_length, " of ");
+  itl_prefix_append_size(out, out_size, &out_length, line_count);
+  itl_prefix_append(out, out_size, &out_length, ", column ");
+  itl_prefix_append_size(out, out_size, &out_length, column);
+  itl_prefix_append(out, out_size, &out_length, ", ");
+  itl_prefix_append(out, out_size, &out_length, mode);
+  if (itl_g_saved_text != NULL && strcmp(line, itl_g_saved_text) != 0) {
+    itl_prefix_append(out, out_size, &out_length, ", unsaved changes");
+  }
+  if (status_rest != NULL) {
+    itl_prefix_append(out, out_size, &out_length, status_rest);
+  }
+  itl_prefix_append(out, out_size, &out_length,
+                    itl_g_edit_mode == TL_EDIT_MODE_EMACS
+                        ? "\nenter or ctrl-x s saves, ctrl-x ctrl-c leaves, "
+                          "ctrl-x i shows the hint, alt-x runs a command"
+                        : "\nenter or :wq saves, :q leaves, ctrl-i in insert "
+                          "mode shows the hint, : runs a command");
+
+  return out;
+}
+
 /* Ask the host for the hint of this line and lay it out for the terminal. An
    open prefix takes the rows before the host is asked, and only while the
    rows are enabled, held by nothing, and not closed. The first line break ends
@@ -7378,8 +7589,11 @@ itl_hint_compose(const char *line,
   itl_g_hint_header_len = 0;
   itl_g_hint_source[0]  = '\0';
 
-  if (itl_g_hint_callback != NULL && itl_g_hint_hold_count == 0 &&
-      !itl_g_hint_is_closed)
+  if (itl_g_full_screen) {
+    returned = itl_full_screen_rows(prefix_text, sizeof(prefix_text), line,
+                                    cursor_byte, &sgr);
+  } else if (itl_g_hint_callback != NULL && itl_g_hint_hold_count == 0 &&
+             !itl_g_hint_is_closed)
   {
     if (itl_prefix_hint(prefix_text, sizeof(prefix_text))) {
       returned = prefix_text;
@@ -7555,6 +7769,30 @@ itl_le_tty_draw_right_prompt(itl_char_buf_t *b, size_t start_col)
   itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
 }
 
+/* Draw the title on the top row, cut to the width as a prompt is, and park at
+   the block top under it. */
+ITL_DEF void
+itl_le_tty_draw_title(itl_char_buf_t *b, size_t cols)
+{
+  size_t title_rows = 0;
+  size_t title_width =
+      itl_prompt_last_row_width(itl_g_title, &title_rows);
+  size_t rendered_width;
+  size_t cut = itl_prompt_render_cut(itl_g_title, title_width, cols,
+                                     &rendered_width);
+
+  itl_char_buf_append_cstr(b, "\x1b[1;1H");
+  if (cut == 0) {
+    itl_char_buf_append_cstr(b, itl_g_title);
+  } else if (rendered_width > 0) {
+    itl_char_buf_append_cstr(b, ITL_PROMPT_ELLIPSIS);
+    itl_char_buf_append_cstr(b, itl_g_title + cut);
+  }
+  itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+  ITL_TTY_CLEAR_TO_END(b);
+  itl_char_buf_append_cstr(b, "\x1b[2;1H");
+}
+
 /* NOTE: Hottest function in the library. */
 ITL_DEF bool
 itl_le_tty_refresh(itl_le_t *le)
@@ -7676,13 +7914,14 @@ itl_le_tty_refresh(itl_le_t *le)
       !itl_g_tty_should_refresh_text && itl_g_highlight_follows_cursor &&
       !itl_g_search_spans_active && itl_should_run_highlight();
   if (!itl_g_tty_should_refresh_text &&
-      (itl_g_hint_callback != NULL || should_follow_highlight))
+      (itl_g_hint_callback != NULL || itl_g_full_screen ||
+       should_follow_highlight))
   {
     bool   was_serialized = itl_g_serialized_line_ready;
     bool   is_serialized  = itl_le_serialize_line(le);
     size_t cursor_offset  = itl_le_cursor_byte_offset(le);
 
-    if (itl_g_hint_callback != NULL) {
+    if (itl_g_hint_callback != NULL || itl_g_full_screen) {
       if (is_serialized) {
         itl_hint_compose(
             itl_g_serialized_line, cursor_offset, cols,
@@ -7922,6 +8161,10 @@ itl_le_tty_refresh(itl_le_t *le)
       ITL_TTY_MOVE_TO_COLUMN(b, 1);
     }
     itl_hint_forget_shown();
+
+    if (itl_full_screen_title_rows() > 0) {
+      itl_le_tty_draw_title(b, tty_cols);
+    }
 
     if (le->prompt != NULL && view_top == 0) {
       /* A prompt at or past the terminal width renders as the ellipsis
@@ -8265,10 +8508,43 @@ tl_set_saved_text(const char *text)
   itl_g_saved_text = text;
 }
 
+/* SGR mouse reports of presses, releases, and the wheel, turned on with the
+   full-screen layout. */
+#define ITL_MOUSE_ON  "\x1b[?1000h\x1b[?1006h"
+#define ITL_MOUSE_OFF "\x1b[?1006l\x1b[?1000l"
+
+/* Write a mouse mode sequence at once. */
+ITL_DEF void
+itl_tty_write_mouse_mode(bool is_enabled)
+{
+  itl_char_buf_t *b = &itl_g_char_buffer;
+
+  itl_char_buf_append_cstr(b, is_enabled ? ITL_MOUSE_ON : ITL_MOUSE_OFF);
+  ITL_CHAR_BUF_DUMP(b);
+  ITL_CHAR_BUF_CLEAR(b);
+}
+
 TL_DEF void
 tl_set_full_screen(int enabled)
 {
-  itl_g_full_screen = enabled != 0;
+  bool is_enabled = enabled != 0;
+
+  if (is_enabled != itl_g_full_screen) {
+    itl_tty_write_mouse_mode(is_enabled);
+  }
+  itl_g_full_screen = is_enabled;
+}
+
+TL_DEF void
+tl_set_title(const char *title)
+{
+  itl_g_title = title;
+}
+
+TL_DEF void
+tl_set_status(const char *status)
+{
+  itl_g_status = status;
 }
 
 TL_DEF void
@@ -13714,6 +13990,7 @@ itl_le_edit_external(itl_le_t *le)
   const char  *edited = NULL;
   size_t       edited_size;
   itl_string_t replacement;
+  bool         is_edited;
 
   if (itl_g_edit_callback == NULL) {
     itl_g_tty_should_refresh_text = false;
@@ -13724,11 +14001,17 @@ itl_le_edit_external(itl_le_t *le)
   }
 
   itl_hint_hold(le);
-  if (itl_g_edit_callback(le->out_buf, &edited) <= 0 || edited == NULL) {
-    itl_hint_release();
-    return;
+  if (itl_g_full_screen) {
+    itl_tty_write_mouse_mode(false);
+  }
+  is_edited = itl_g_edit_callback(le->out_buf, &edited) > 0 && edited != NULL;
+  if (itl_g_full_screen) {
+    itl_tty_write_mouse_mode(true);
   }
   itl_hint_release();
+  if (!is_edited) {
+    return;
+  }
 
   edited_size = strlen(edited);
   if (edited_size >= le->out_size) {
@@ -13906,6 +14189,49 @@ itl_le_delete_spaces(itl_le_t *le)
   }
   le->cursor_position = start;
   itl_le_erase(le, end - start, false);
+}
+
+/* Move the caret to a press of the first button on the input of the
+   full-screen layout, or three rows up or down for the wheel. Any other report
+   leaves the caret. */
+ITL_DEF void
+itl_le_mouse(itl_le_t *le)
+{
+  size_t           cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
+  size_t           top  = 1 + itl_full_screen_title_rows();
+  itl_le_metrics_t m;
+  size_t           row;
+
+  itl_g_tty_should_refresh_text = false;
+  if (!itl_g_full_screen || !itl_g_mouse_is_press) {
+    return;
+  }
+
+  m = itl_le_compute_metrics(le, cols);
+  if ((itl_g_mouse_button & 64u) != 0) {
+    if ((itl_g_mouse_button & 1u) != 0) {
+      row = m.cursor_row + 3;
+    } else {
+      row = m.cursor_row > le->prompt_rows + 3 ? m.cursor_row - 3
+                                               : le->prompt_rows;
+    }
+  } else if ((itl_g_mouse_button & (3u | 32u)) == 0 &&
+             itl_g_mouse_row >= top &&
+             itl_g_mouse_row - top < itl_le_view_rows(itl_g_tty_prev_rows))
+  {
+    row = itl_g_view_top_row + (itl_g_mouse_row - top);
+    if (row < le->prompt_rows) {
+      row = le->prompt_rows;
+    }
+    m.cursor_col = itl_g_mouse_column > 0 ? itl_g_mouse_column - 1 : 0;
+  } else {
+    return;
+  }
+
+  if (row >= m.total_rows) {
+    row = m.total_rows - 1;
+  }
+  le->cursor_position = itl_le_index_at_visual(le, cols, row, m.cursor_col);
 }
 
 ITL_DEF tl_status_code
@@ -14273,6 +14599,16 @@ itl_le_key_handle(itl_le_t *le, int esc)
     itl_le_change_word_case(le, ITL_CASE_CAPITAL);
     break;
   case TL_KEY_DELETE_SPACES: itl_le_delete_spaces(le); break;
+
+  case TL_KEY_HOVER:
+    if (itl_g_full_screen) {
+      itl_g_hover_serial = itl_g_key_serial;
+    } else {
+      itl_g_tty_should_refresh_text = false;
+    }
+    break;
+
+  case TL_KEY_MOUSE: itl_le_mouse(le); break;
 
   case TL_KEY_SAVE:
     if (itl_g_edit_mode == TL_EDIT_MODE_EMACS && itl_g_save_keys_enabled) {
@@ -16948,15 +17284,50 @@ itl_minibuffer_read(itl_le_t       *le,
   size_t  label_length = strlen(label);
   bool    is_accepted  = false;
   bool    is_done      = false;
+  bool    is_in_rows   = itl_g_full_screen;
+  bool    is_read;
   uint8_t byte;
 
   text[0] = '\0';
   itl_string_copy(original, le->line);
   itl_g_prefix_kind     = kind;
   itl_g_minibuffer_text = text;
+  if (is_in_rows) {
+    itl_g_minibuffer_label = label;
+  }
 
   while (!is_done) {
     int key, key_kind;
+
+    /* The full-screen layout keeps the buffer and its window as they are and
+       shows the command line on the first row under them, where the caret
+       waits between keys and from where it returns before the next frame. */
+    if (is_in_rows) {
+      itl_char_buf_t *b = &itl_g_char_buffer;
+
+      itl_g_tty_should_refresh_text = true;
+      itl_le_tty_refresh(le);
+      itl_char_buf_append_cstr(b, "\x1b" "7\x1b[");
+      itl_char_buf_append_size_t(b, 1 + itl_full_screen_title_rows() +
+                                        itl_le_view_rows(itl_g_tty_prev_rows));
+      itl_char_buf_append_byte(b, ';');
+      itl_char_buf_append_size_t(
+          b, 1 + itl_g_hint_indent_width +
+                 itl_visible_width(label, label_length) +
+                 itl_visible_width(text, text_length));
+      itl_char_buf_append_byte(b, 'H');
+      ITL_CHAR_BUF_DUMP(b);
+      ITL_CHAR_BUF_CLEAR(b);
+
+      is_read = ITL_READ_BYTE(&byte);
+      itl_char_buf_append_cstr(b, "\x1b" "8");
+      ITL_CHAR_BUF_DUMP(b);
+      ITL_CHAR_BUF_CLEAR(b);
+      if (!is_read) {
+        break;
+      }
+      goto have_byte;
+    }
 
     ITL_CHAR_BUF_CLEAR(status);
     /* The display is original plus '\n', the label, and the text, so its
@@ -16991,6 +17362,7 @@ itl_minibuffer_read(itl_le_t       *le,
       break;
     }
 
+  have_byte:
     key      = itl_esc_parse(byte);
     key_kind = key & TL_MASK_KEY;
 
@@ -17046,6 +17418,7 @@ itl_minibuffer_read(itl_le_t       *le,
 
   itl_g_prefix_kind          = ITL_PREFIX_NONE;
   itl_g_minibuffer_text      = "";
+  itl_g_minibuffer_label     = NULL;
   itl_g_minibuffer_row_start = 0;
   le->prompt                 = saved_prompt;
   le->prompt_size       = saved_prompt_size;
@@ -17554,6 +17927,7 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
   case TL_KEY_EOF:
   case TL_KEY_INTERRUPT:
   case TL_KEY_SUSPEND:
+  case TL_KEY_MOUSE:
   case TL_KEY_CLEAR:     return itl_le_key_handle(le, key);
 
   case TL_KEY_UP:
@@ -17892,6 +18266,10 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
       return TL_ERROR;
     }
 
+#if defined ITL_POSIX
+    itl_g_should_keep_ctrl_i =
+        itl_g_full_screen && itl_g_edit_mode == TL_EDIT_MODE_VI_INSERT;
+#endif /* ITL_POSIX */
     ITL_TRY_READ_BYTE(&input_byte, return TL_ERROR);
     itl_g_editor_message[0] = '\0';
     itl_g_key_serial += 1;

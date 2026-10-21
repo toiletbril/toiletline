@@ -2884,7 +2884,8 @@ test_modified_key_sequences(void)
       {"\x1b[5~",         TL_KEY_UNKN},
       {"\x1b[11~",        TL_KEY_UNKN},
       {"\x1b[1;10A",      TL_KEY_UP},
-      {"\x1b[<0;1;1M",    TL_KEY_UNKN},
+      {"\x1b[<0;1;1M",    TL_KEY_MOUSE},
+      {"\x1b[?1;2c",      TL_KEY_UNKN},
   };
   /* clang-format on */
   size_t i;
@@ -2960,6 +2961,33 @@ cleanup:
   itl_g_key_queue_index = 0;
   itl_g_key_queue_length = 0;
   itl_g_pushback_byte = -1;
+  return ok;
+}
+
+/* Kitty reports Ctrl-I as CSI 105 ; 5 u. It reads as TAB unless the editor
+   keeps it apart, and then it shows the hint. */
+static bool
+test_ctrl_i_stays_apart_from_tab(void)
+{
+  test_key_reading_t reading;
+  bool               ok = true;
+
+  itl_g_should_keep_ctrl_i = false;
+  if (!test_read_terminal_bytes("\x1b[105;5u", 9, true, &reading) ||
+      reading.key != TL_KEY_TAB)
+  {
+    TEST_PRINTF("ctrl-i: key %d, want TAB\n", reading.key);
+    ok = false;
+  }
+  itl_g_should_keep_ctrl_i = true;
+  if (!test_read_terminal_bytes("\x1b[105;5u", 9, true, &reading) ||
+      reading.key != TL_KEY_HOVER)
+  {
+    TEST_PRINTF("kept ctrl-i: key %d, want HOVER\n", reading.key);
+    ok = false;
+  }
+  itl_g_should_keep_ctrl_i = false;
+
   return ok;
 }
 
@@ -8276,7 +8304,7 @@ test_prefix_hint_names_the_waiting_keys(void)
   ok &= test_hint_is("  pressed ctrl-x\n  waiting for ctrl-e (edit in "
                      "$VISUAL), ctrl-u (undo), z (repeat the last M-x "
                      "command), s or ctrl-s (save and leave), ctrl-c (leave "
-                     "without saving)",
+                     "without saving), i (show the hint)",
                      200, "ctrl-x with save keys");
   tl_set_save_keys(0);
   ok &= test_hint_is("  pressed ctrl-x\n  waiting for ctrl-e (edit\n"
@@ -9625,6 +9653,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_editing_key_sequences),
 #if defined ITL_POSIX
                                    DEFINE_TEST_CASE(test_modified_key_sequences),
+                                   DEFINE_TEST_CASE(test_ctrl_i_stays_apart_from_tab),
                                    DEFINE_TEST_CASE(
                                        test_extended_keys_read_as_legacy_bytes),
                                    DEFINE_TEST_CASE(
