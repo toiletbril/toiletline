@@ -8031,6 +8031,24 @@ test_tab_takes_four_columns(void)
 }
 
 static bool
+test_sgr_state_folds_to_the_last_reset(void)
+{
+  static const char ROW[] = "\x1b[1m\x1b[31mab\x1b[0mcd\x1b[32me\x1b[K"
+                            "\x1b[48;5;237m";
+  itl_char_buf_t *state = itl_char_buf_alloc();
+  bool            ok;
+
+  itl_sgr_state_fold(state, ROW, sizeof(ROW) - 1);
+  ok = state->size == strlen("\x1b[32m\x1b[48;5;237m") &&
+       memcmp(state->data, "\x1b[32m\x1b[48;5;237m", state->size) == 0;
+  itl_sgr_state_fold(state, "\x1b[m", 3);
+  ok &= state->size == 0;
+  ITL_CHAR_BUF_FREE(state);
+
+  return ok;
+}
+
+static bool
 test_shaded_cell_writes_no_character(void)
 {
   itl_char_buf_t *b  = itl_char_buf_alloc();
@@ -9900,6 +9918,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_tab_takes_four_columns),
                                    DEFINE_TEST_CASE(
                                        test_shaded_cell_writes_no_character),
+                                   DEFINE_TEST_CASE(
+                                       test_sgr_state_folds_to_the_last_reset),
                                    DEFINE_TEST_CASE(test_save_keeps_editing),
                                    DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
                                    DEFINE_TEST_CASE(
