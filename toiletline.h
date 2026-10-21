@@ -467,14 +467,6 @@ TL_DEF void
 tl_set_line_numbers(size_t width);
 
 /**
- * The verb that the hint rows use for submitting an edited buffer of several
- * lines, as in "press enter again to run it". NULL restores "run". The text
- * must stay valid while it is set.
- */
-TL_DEF void
-tl_set_submit_verb(const char *verb);
-
-/**
  * Turn Ctrl-X s and Ctrl-X Ctrl-S on, which return TL_PRESSED_WRITE_QUIT in
  * emacs mode with the buffer handed over, for a host that edits a file. They
  * do nothing while off, the default.
@@ -502,10 +494,11 @@ TL_DEF void
 tl_set_title(const char *title);
 
 /**
- * Keep status for the rows the full-screen layout shows under the input while
- * no hint, message, or command line takes them. Its first line opens the rows,
- * the caret position and the edit mode follow, then the rest of status, then
- * the keys that save, leave, and show the hint. status must outlive its use.
+ * Keep status, one line about the edited file, for the rows the full-screen
+ * layout shows under the input while no hint, message, or command line takes
+ * them. The caret position with the edit mode, an empty row, and the keys
+ * that open the key menu and the commands follow it. status must outlive its
+ * use.
  */
 TL_DEF void
 tl_set_status(const char *status);
@@ -4362,6 +4355,14 @@ itl_char_buf_flush(itl_char_buf_t *cb)
     return true;
   }
 
+  /* A terminal that supports it paints the frame in one update. */
+  if (itl_frame_batch_is_synchronized()) {
+    itl_char_buf_append_cstr(&itl_g_frame_batch, ITL_SYNC_UPDATE_BEGIN);
+    itl_char_buf_append_bytes(&itl_g_frame_batch, cb->data, cb->size);
+
+    return itl_frame_batch_write();
+  }
+
 #if !defined NDEBUG
   if (itl_g_debug_frame_sink != NULL) {
     itl_g_debug_frame_sink(cb->data, cb->size);
@@ -5676,8 +5677,6 @@ itl_full_screen_title_rows(void)
   return itl_g_full_screen && itl_g_title != NULL ? 1 : 0;
 }
 
-/* The verb of the hint that asks for a second Enter. */
-ITL_DEF ITL_THREAD_LOCAL const char *itl_g_submit_verb = "run";
 
 /* The result of the last option command, shown in place of the hint rows
    until the next key. */
@@ -7067,8 +7066,8 @@ itl_emacs_command_hint(char *out, size_t out_size, size_t *out_length)
   itl_prefix_append(out, out_size, out_length,
                     match_count == 0
                         ? "pressed M-x\nno command starts with this text"
-                        : "pressed M-x\nwaiting for a command, then enter "
-                          "or tab to complete it");
+                        : "pressed M-x\nenter to run the command, tab to "
+                          "complete it");
   for (i = 0; i < ITL_COUNTOF(itl_emacs_commands); ++i) {
     const char *name        = itl_emacs_commands[i].name;
     size_t      name_length = strlen(name);
@@ -7107,13 +7106,13 @@ itl_prefix_hint(char *out, size_t out_size)
   if (itl_g_prefix_kind == ITL_PREFIX_CTRL_X) {
     itl_prefix_append(out, out_size, &out_length,
                       itl_g_save_keys_enabled
-                          ? "pressed ctrl-x\nwaiting for ctrl-e (edit in "
-                            "$VISUAL), ctrl-u (undo), z (repeat the last M-x "
-                            "command), s or ctrl-s (save and leave), ctrl-c "
-                            "(leave without saving), i (show the hint)"
-                          : "pressed ctrl-x\nwaiting for ctrl-e (edit in "
-                            "$VISUAL), ctrl-u (undo), z (repeat the last M-x "
-                            "command), ctrl-c (leave the shell)");
+                          ? "pressed ctrl-x\nctrl-e to edit in $VISUAL, "
+                            "ctrl-u to undo, z to repeat the last M-x "
+                            "command, s or ctrl-s to save and leave, ctrl-c "
+                            "to leave without saving, i to show the hint"
+                          : "pressed ctrl-x\nctrl-e to edit in $VISUAL, "
+                            "ctrl-u to undo, z to repeat the last M-x "
+                            "command, ctrl-c to leave the shell");
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_VI_EX &&
@@ -7122,8 +7121,8 @@ itl_prefix_hint(char *out, size_t out_size)
     const char *word = itl_vi_ex_option_word(itl_g_minibuffer_text);
 
     itl_prefix_append(out, out_size, &out_length,
-                      "pressed :\nwaiting for an option, tab to complete it, "
-                      "then enter");
+                      "pressed :\ntab to complete the option, enter to "
+                      "apply it");
     if (!itl_option_list_rows(out, out_size, &out_length, word) &&
         strncmp(word, "no", 2) == 0)
     {
@@ -7133,18 +7132,18 @@ itl_prefix_hint(char *out, size_t out_size)
   }
   if (itl_g_prefix_kind == ITL_PREFIX_VI_EX) {
     itl_prefix_append(out, out_size, &out_length,
-                      "pressed :\nwaiting for a command, then enter\n"
-                      "q, q!, or quit (quit), wq, wq!, wqa, wqa!, or x "
-                      "(save and quit)\n"
-                      "u or undo, red or redo\n"
-                      "e or edit (edit in $VISUAL)\n"
+                      "pressed :\nenter to run the command\n"
+                      "q, q!, or quit to quit, wq, wq!, wqa, wqa!, or x "
+                      "to save and quit\n"
+                      "u or undo to undo, red or redo to redo\n"
+                      "e or edit to edit in $VISUAL\n"
                       "s/old/new/ or %s/old/new/ with an optional g "
-                      "(substitute)\n"
-                      "& or && (repeat the substitution)\n"
+                      "to substitute\n"
+                      "& or && to repeat the substitution\n"
                       "set option=value, set option, set nooption, or set "
-                      "option? (options)\n"
-                      "save or save option (store the options)\n"
-                      "format or %format (format the row or the buffer)");
+                      "option? to set or show an option\n"
+                      "save or save option to store the options\n"
+                      "format or %format to format the row or the buffer");
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_EMACS_X) {
@@ -7193,7 +7192,7 @@ itl_prefix_hint(char *out, size_t out_size)
   switch (itl_g_prefix_kind) {
   case ITL_PREFIX_VI_REGISTER:
     keys[keys_length++] = '"';
-    waiting_for         = "a register name: a-z";
+    waiting_for         = "a register from a to z";
     break;
   case ITL_PREFIX_VI_FIND:
     keys[keys_length++] = (char) itl_g_prefix_key;
@@ -7213,22 +7212,22 @@ itl_prefix_hint(char *out, size_t out_size)
     break;
   case ITL_PREFIX_VI_G:
     keys[keys_length++] = 'g';
-    waiting_for         = "g (the first row)";
+    waiting_for         = "g to go to the first row";
     break;
   default:
     if (itl_g_vi_pending_operator == ITL_VI_OP_DELETE) {
-      waiting_for = "a motion: w, b, e, $, 0, ^, d (line), f, t, F, T, h, l, "
-                    "j, k, W, B, E, ; or , (repeat a find)";
+      waiting_for = "a motion such as w, b, e, $, 0, ^, f, t, F, T, h, l, j, "
+                    "k, W, B, E, d for the line, or ; and , to repeat a find";
     } else if (itl_g_vi_pending_operator == ITL_VI_OP_CHANGE) {
-      waiting_for = "a motion: w, b, e, $, 0, ^, c (line), f, t, F, T, h, l, "
-                    "j, k, W, B, E, ; or , (repeat a find)";
+      waiting_for = "a motion such as w, b, e, $, 0, ^, f, t, F, T, h, l, j, "
+                    "k, W, B, E, c for the line, or ; and , to repeat a find";
     } else if (itl_g_vi_pending_operator == ITL_VI_OP_YANK) {
-      waiting_for = "a motion: w, b, e, $, 0, ^, y (line), f, t, F, T, h, l, "
-                    "j, k, W, B, E, ; or , (repeat a find)";
+      waiting_for = "a motion such as w, b, e, $, 0, ^, f, t, F, T, h, l, j, "
+                    "k, W, B, E, y for the line, or ; and , to repeat a find";
     } else if (itl_g_vi_pending_count > 0) {
       waiting_for = "a command or a motion";
     } else {
-      waiting_for = "a command: d, c, y, p, P, x, X, D, C, s, S";
+      waiting_for = "a command such as d, c, y, p, P, x, X, D, C, s, or S";
     }
     break;
   }
@@ -7484,9 +7483,9 @@ itl_prefix_append_size(char *out, size_t out_size, size_t *length, size_t n)
 /* Write the rows the full-screen layout shows under the input into out and
    return them. An open command line takes the first row, with the keys it
    answers under it. A held prefix or a message comes next, then the hint
-   while TL_KEY_HOVER asks for it, and otherwise the status: the first line of
-   tl_set_status, the caret position with the edit mode, the rest of the
-   status, and the keys that save, leave, and show the hint. */
+   while TL_KEY_HOVER asks for it. Otherwise the rows show tl_set_status, the
+   caret position with the edit mode, an empty row, and the keys that open
+   the key menu and the commands. */
 ITL_DEF const char *
 itl_full_screen_rows(char        *out,
                      size_t       out_size,
@@ -7495,8 +7494,8 @@ itl_full_screen_rows(char        *out,
                      const char **sgr)
 {
   char        keys_text[1024];
-  const char *status_rest = NULL;
   const char *mode;
+  const char *keys;
   size_t      out_length  = 0;
   size_t      line_number = 1;
   size_t      line_count  = 1;
@@ -7547,18 +7546,7 @@ itl_full_screen_rows(char        *out,
   }
 
   if (itl_g_status != NULL) {
-    status_rest = strchr(itl_g_status, '\n');
-    if (status_rest == NULL) {
-      itl_prefix_append(out, out_size, &out_length, itl_g_status);
-    } else {
-      size_t first_length = (size_t) (status_rest - itl_g_status);
-
-      if (out_length + first_length < out_size) {
-        memcpy(out + out_length, itl_g_status, first_length);
-        out_length += first_length;
-        out[out_length] = '\0';
-      }
-    }
+    itl_prefix_append(out, out_size, &out_length, itl_g_status);
   }
   itl_prefix_append(out, out_size, &out_length, "\nline ");
   itl_prefix_append_size(out, out_size, &out_length, line_number);
@@ -7566,20 +7554,29 @@ itl_full_screen_rows(char        *out,
   itl_prefix_append_size(out, out_size, &out_length, line_count);
   itl_prefix_append(out, out_size, &out_length, ", column ");
   itl_prefix_append_size(out, out_size, &out_length, column);
-  itl_prefix_append(out, out_size, &out_length, ", ");
+  itl_prefix_append(out, out_size, &out_length, ", as ");
   itl_prefix_append(out, out_size, &out_length, mode);
   if (itl_g_saved_text != NULL && strcmp(line, itl_g_saved_text) != 0) {
     itl_prefix_append(out, out_size, &out_length, ", unsaved changes");
   }
-  if (status_rest != NULL) {
-    itl_prefix_append(out, out_size, &out_length, status_rest);
+  switch (itl_g_edit_mode) {
+  case TL_EDIT_MODE_EMACS:
+    keys = "ctrl-x to see the menu, alt-x to run a command";
+    break;
+  case TL_EDIT_MODE_VI_INSERT:
+    keys = "esc to leave insert mode, ctrl-i to show the hint";
+    break;
+  case TL_EDIT_MODE_VI_COMMAND:
+    keys = ": to enter a command, i to insert, d to delete, c to change, "
+           "r to replace, y to yank, p to paste, v to select, u to undo";
+    break;
+  default:
+    keys = ": to run a command on the selection, d to delete, c to change, "
+           "y to yank, esc to leave the selection";
+    break;
   }
-  itl_prefix_append(out, out_size, &out_length,
-                    itl_g_edit_mode == TL_EDIT_MODE_EMACS
-                        ? "\nenter or ctrl-x s saves, ctrl-x ctrl-c leaves, "
-                          "ctrl-x i shows the hint, alt-x runs a command"
-                        : "\nenter or :wq saves, :q leaves, ctrl-i in insert "
-                          "mode shows the hint, : runs a command");
+  itl_prefix_append(out, out_size, &out_length, "\n\n");
+  itl_prefix_append(out, out_size, &out_length, keys);
 
   return out;
 }
@@ -8560,12 +8557,6 @@ TL_DEF void
 tl_set_status(const char *status)
 {
   itl_g_status = status;
-}
-
-TL_DEF void
-tl_set_submit_verb(const char *verb)
-{
-  itl_g_submit_verb = verb != NULL ? verb : "run";
 }
 
 TL_DEF void
@@ -9921,7 +9912,7 @@ itl_menu_directory_sgr(void)
 #define ITL_MENU_TITLE_SEPARATOR_WIDTH 2
 /* The row drawn in place of the candidates once the search has narrowed the
    list away. The menu stays open on it and a backspace brings the list back. */
-#define ITL_MENU_EMPTY_TEXT   "no matches, erase to widen the search"
+#define ITL_MENU_EMPTY_TEXT   "no matches, backspace to widen the search"
 #define ITL_MENU_LOADING_TEXT "loading..."
 
 ITL_DEF tl_status_code
@@ -10767,6 +10758,7 @@ itl_menu_draw(const tl_completion *result,
   if (layout.candidate_rows == 0) {
     return;
   }
+  itl_frame_batch_begin();
 
   /* A full-screen menu shows only the title, and its rows are boxes of spaces
      two columns wider than their text on each side, with a blank row under
@@ -10793,6 +10785,13 @@ itl_menu_draw(const tl_completion *result,
     box_cols += 1 + (widest_desc < desc_width ? widest_desc : desc_width);
   }
   box_cols += itl_g_menu_prefix_width + 2;
+  /* Every row is at least as wide as the title row. */
+  if (layout.has_help_row && help_title != NULL) {
+    box_cols = ITL_MAX(box_cols,
+                       itl_g_menu_prefix_width +
+                           itl_visible_width(help_title, strlen(help_title)) +
+                           2);
+  }
 
   /* A full-screen menu covers the input, so the input is drawn again first,
      which also takes away the rows of a longer menu drawn before. */
@@ -10824,11 +10823,7 @@ itl_menu_draw(const tl_completion *result,
   itl_menu_move_to_anchor(b, anchor);
 
   if (layout.has_help_row && help_title != NULL) {
-    size_t title_cols = itl_visible_width(help_title, strlen(help_title));
-
-    itl_menu_paint_box_row(b, anchor,
-                           itl_g_menu_prefix_width + title_cols + 2,
-                           geometry.row_cols);
+    itl_menu_paint_box_row(b, anchor, box_cols, geometry.row_cols);
     drawn_rows += itl_menu_layout_help(b, help_title, help_keys, text_width,
                                        anchor, layout.help_row_count);
   }
@@ -10871,10 +10866,11 @@ itl_menu_draw(const tl_completion *result,
     itl_menu_paint_box_row(b, anchor, box_cols, geometry.row_cols);
     drawn_rows += 1;
     itl_menu_close_overlay(b, overlay_rows, drawn_rows);
-    return;
+  } else {
+    itl_menu_close_area(b, drawn_rows > 0 ? move_down + drawn_rows - 1
+                                          : move_down);
   }
-  itl_menu_close_area(b,
-                      drawn_rows > 0 ? move_down + drawn_rows - 1 : move_down);
+  itl_frame_batch_end();
 }
 
 /* Wipe every row the menu drew and leave the caret on the input line. */
@@ -13430,7 +13426,7 @@ itl_history_menu(itl_le_t *le)
       true,
       true,
       "incremental history search",
-      "enter/tab to accept, esc/ctrl-g to cancel",
+      "enter or tab to accept, esc or ctrl-g to cancel",
       false,
       false,
       false};
@@ -14124,7 +14120,7 @@ itl_le_confirm_discard(const itl_le_t *le, int kind, const char *key_label)
   if (!itl_le_is_unsaved(le)) {
     return true;
   }
-  strcpy(message, "unsaved changes\npress ");
+  strcpy(message, "unsaved changes\n");
   strncat(message, key_label, sizeof(message) - strlen(message) - 24);
   strcat(message, " again to discard them");
 
@@ -14234,12 +14230,26 @@ itl_le_mouse(itl_le_t *le)
   }
 
   m = itl_le_compute_metrics(le, cols);
+  /* The wheel scrolls the window three rows, and the caret moves only as far
+     as it takes to stay inside the window. */
   if ((itl_g_mouse_button & 64u) != 0) {
+    size_t view_rows = itl_le_view_rows(itl_g_tty_prev_rows);
+    size_t last_top  = m.total_rows > view_rows ? m.total_rows - view_rows : 0;
+    size_t top       = itl_g_view_top_row;
+
     if ((itl_g_mouse_button & 1u) != 0) {
-      row = m.cursor_row + 3;
+      top = top + 3 < last_top ? top + 3 : last_top;
     } else {
-      row = m.cursor_row > le->prompt_rows + 3 ? m.cursor_row - 3
-                                               : le->prompt_rows;
+      top = top > 3 ? top - 3 : 0;
+    }
+    itl_g_view_top_row = top;
+    itl_g_tty_should_refresh_text = true;
+    if (m.cursor_row >= top && m.cursor_row < top + view_rows) {
+      return;
+    }
+    row = m.cursor_row < top ? top : top + view_rows - 1;
+    if (row < le->prompt_rows) {
+      row = le->prompt_rows;
     }
   } else if ((itl_g_mouse_button & (3u | 32u)) == 0 &&
              itl_g_mouse_row >= top &&
@@ -14324,8 +14334,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
        inside get_prev on the first step up. */
     if (is_up && itl_g_saved_text == NULL &&
         !itl_le_confirm(le, TL_KEY_UP,
-                        "edited buffer\npress up again to leave it for "
-                        "history"))
+                        "edited buffer\nup again to leave it for history"))
     {
       break;
     }
@@ -14419,7 +14428,15 @@ itl_le_key_handle(itl_le_t *le, int esc)
     itl_g_tty_should_refresh_text = false;
   } break;
   case TL_KEY_ENTER: {
-    bool insert_newline = (esc & TL_MOD_ALT) != 0;
+    bool insert_newline = (esc & TL_MOD_ALT) != 0 || itl_g_save_keys_enabled;
+
+    /* A file host saves with its own keys, so Enter starts a new line, and
+       in vi normal mode it moves down a line. */
+    if (itl_g_save_keys_enabled &&
+        itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND)
+    {
+      return itl_le_key_handle(le, TL_KEY_DOWN);
+    }
 
     /* A trailing backslash at the end of the line continues it, fish-style. A
        backslash with text after it submits the line instead, and so does an
@@ -14446,16 +14463,9 @@ itl_le_key_handle(itl_le_t *le, int esc)
       break;
     }
 
-    {
-      char message[96];
-
-      strcpy(message, "edited buffer\npress enter again to ");
-      strncat(message, itl_g_submit_verb,
-              sizeof(message) - strlen(message) - 5);
-      strcat(message, " it");
-      if (!itl_le_confirm(le, TL_KEY_ENTER, message)) {
-        break;
-      }
+    if (!itl_le_confirm(le, TL_KEY_ENTER,
+                        "edited buffer\nenter again to run it")) {
+      break;
     }
 
     /* Submit the line as typed. The shell joins backslash continuations
@@ -17338,6 +17348,7 @@ itl_minibuffer_read(itl_le_t       *le,
     if (is_in_rows) {
       itl_char_buf_t *b = &itl_g_char_buffer;
 
+      itl_frame_batch_begin();
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
       itl_char_buf_append_cstr(b, "\x1b" "7\x1b[");
@@ -17351,6 +17362,7 @@ itl_minibuffer_read(itl_le_t       *le,
       itl_char_buf_append_byte(b, 'H');
       ITL_CHAR_BUF_DUMP(b);
       ITL_CHAR_BUF_CLEAR(b);
+      itl_frame_batch_end();
 
       bool is_read = ITL_READ_BYTE(&byte);
 
@@ -17548,7 +17560,7 @@ itl_vi_ex_command(itl_le_t *le)
     if (itl_vi_ex_is_quit(command) && strcmp(command, "q!") != 0 &&
         itl_le_is_unsaved(le))
     {
-      strcpy(itl_g_editor_message, "unsaved changes\nuse :q! to discard them");
+      strcpy(itl_g_editor_message, "unsaved changes\n:q! to discard them");
       itl_g_tty_should_refresh_text = true;
     } else if (itl_vi_ex_is_quit(command)) {
       result = TL_PRESSED_QUIT;
@@ -17673,10 +17685,9 @@ itl_emacs_read_replacement(itl_le_t         *le,
 
   memset(substitution, 0, sizeof(*substitution));
   itl_g_minibuffer_hint =
-      is_regex ? "pressed M-x replace-regexp\nwaiting for a basic regular "
-                 "expression, then enter"
-               : "pressed M-x replace-string\nwaiting for the text to "
-                 "replace, then enter";
+      is_regex ? "pressed M-x replace-regexp\nenter to search for the basic "
+                 "regular expression"
+               : "pressed M-x replace-string\nenter to search for the text";
   strcpy(label, "Replace ");
   strcat(label, kind_text);
   strcat(label, ": ");
@@ -17689,11 +17700,9 @@ itl_emacs_read_replacement(itl_le_t         *le,
   }
 
   itl_g_minibuffer_hint =
-      is_regex ? "pressed M-x replace-regexp\nwaiting for the replacement, "
-                 "where \\& is the match and \\1 to \\9 its groups, then "
-                 "enter"
-               : "pressed M-x replace-string\nwaiting for the replacement, "
-                 "then enter";
+      is_regex ? "pressed M-x replace-regexp\nenter to replace every match, "
+                 "with \\& for the match and \\1 to \\9 for its groups"
+               : "pressed M-x replace-string\nenter to replace every match";
   strcpy(label, "Replace ");
   strcat(label, kind_text);
   strcat(label, " ");
@@ -17735,10 +17744,9 @@ itl_emacs_read_option(itl_le_t *le, int action)
   }
   itl_g_minibuffer_hint =
       action == ITL_EMACS_SAVE_OPTION
-          ? "pressed M-x save-option\nwaiting for an option, tab to complete "
-            "it, or nothing to save every option, then enter"
-          : "pressed M-x\nwaiting for an option, tab to complete it, then "
-            "enter";
+          ? "pressed M-x save-option\ntab to complete the option, enter to "
+            "save it, or enter on nothing to save every option"
+          : "pressed M-x\ntab to complete the option, enter to choose it";
   itl_g_minibuffer_completes_options = true;
   is_read = itl_minibuffer_read(le,
                                 action == ITL_EMACS_SET_OPTION   ? "Set option: "
@@ -17753,7 +17761,7 @@ itl_emacs_read_option(itl_le_t *le, int action)
   value[0] = '\0';
   if (action == ITL_EMACS_SET_OPTION) {
     itl_g_minibuffer_hint =
-        "pressed M-x set-option\nwaiting for the value, then enter";
+        "pressed M-x set-option\nenter to set the value";
     strcpy(label, "Set ");
     strcat(label, option);
     strcat(label, " to: ");

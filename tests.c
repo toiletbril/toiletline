@@ -8296,19 +8296,19 @@ test_prefix_hint_names_the_waiting_keys(void)
   ok &= test_hint_is("  usage", 200, "no prefix");
 
   itl_g_prefix_kind = ITL_PREFIX_CTRL_X;
-  ok &= test_hint_is("  pressed ctrl-x\n  waiting for ctrl-e (edit in "
-                     "$VISUAL), ctrl-u (undo), z (repeat the last M-x "
-                     "command), ctrl-c (leave the shell)",
+  ok &= test_hint_is("  pressed ctrl-x\n  ctrl-e to edit in $VISUAL, ctrl-u "
+                     "to undo, z to repeat the last M-x command, ctrl-c to "
+                     "leave the shell",
                      200, "ctrl-x");
   tl_set_save_keys(1);
-  ok &= test_hint_is("  pressed ctrl-x\n  waiting for ctrl-e (edit in "
-                     "$VISUAL), ctrl-u (undo), z (repeat the last M-x "
-                     "command), s or ctrl-s (save and leave), ctrl-c (leave "
-                     "without saving), i (show the hint)",
+  ok &= test_hint_is("  pressed ctrl-x\n  ctrl-e to edit in $VISUAL, ctrl-u "
+                     "to undo, z to repeat the last M-x command, s or ctrl-s "
+                     "to save and leave, ctrl-c to leave without saving, i "
+                     "to show the hint",
                      200, "ctrl-x with save keys");
   tl_set_save_keys(0);
-  ok &= test_hint_is("  pressed ctrl-x\n  waiting for ctrl-e (edit\n"
-                     "  in $VISUAL), ctrl-u\n  (undo), z (repeat the...",
+  ok &= test_hint_is("  pressed ctrl-x\n  ctrl-e to edit in\n"
+                     "  $VISUAL, ctrl-u to undo,\n  z to repeat the last...",
                      27, "ctrl-x wrap");
   tl_set_hint_callback(NULL);
   ok &= test_hint_is("", 200, "ctrl-x with the row off");
@@ -8321,9 +8321,9 @@ test_prefix_hint_names_the_waiting_keys(void)
   itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
   itl_g_vi_pending_count = 2;
   itl_g_vi_pending_register = 'a';
-  ok &= test_hint_is("  pressed \"a2d\n  waiting for a motion: w, b, e, $, 0, "
-                     "^, d (line), f, t, F, T, h, l, j, k, W, B, E, ; or , "
-                     "(repeat a find)",
+  ok &= test_hint_is("  pressed \"a2d\n  waiting for a motion such as w, b, "
+                     "e, $, 0, ^, f, t, F, T, h, l, j, k, W, B, E, d for the "
+                     "line, or ; and , to repeat a find",
                      200, "operator");
 
   itl_g_prefix_kind = ITL_PREFIX_VI_FIND;
@@ -8335,13 +8335,13 @@ test_prefix_hint_names_the_waiting_keys(void)
 
   itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
   itl_g_vi_pending_operator = ITL_VI_OP_CHANGE;
-  ok &= test_hint_is("  pressed c\n  waiting for a motion: w, b, e, $, 0, ^, "
-                     "c (line), f, t, F, T, h, l, j, k, W, B, E, ; or , "
-                     "(repeat a find)",
+  ok &= test_hint_is("  pressed c\n  waiting for a motion such as w, b, e, "
+                     "$, 0, ^, f, t, F, T, h, l, j, k, W, B, E, c for the "
+                     "line, or ; and , to repeat a find",
                      200, "change");
   itl_g_vi_pending_operator = ITL_VI_OP_YANK;
-  ok &= test_hint_is("  pressed y\n  waiting for a\n  motion: w, b, e, $,\n"
-                     "  0, ^, y (line),...",
+  ok &= test_hint_is("  pressed y\n  waiting for a\n  motion such as w,\n"
+                     "  b, e, $, 0, ^, f...",
                      22, "yank cut");
   itl_g_vi_pending_operator = ITL_VI_OP_NONE;
 
@@ -8351,36 +8351,35 @@ test_prefix_hint_names_the_waiting_keys(void)
   itl_g_vi_pending_count = 0;
 
   itl_g_vi_pending_register = 'b';
-  ok &= test_hint_is("  pressed \"b\n  waiting for a command: d, c, y, p, P, "
-                     "x, X, D, C, s, S",
+  ok &= test_hint_is("  pressed \"b\n  waiting for a command such as d, c, "
+                     "y, p, P, x, X, D, C, s, or S",
                      200, "register");
   itl_g_vi_pending_register = 0;
 
   itl_g_prefix_kind = ITL_PREFIX_VI_REGISTER;
-  ok &= test_hint_is("  pressed \"\n  waiting for a register name: a-z", 200,
+  ok &= test_hint_is("  pressed \"\n  waiting for a register from a to z", 200,
                      "register name");
   itl_g_prefix_kind = ITL_PREFIX_VI_REPLACE;
   ok &= test_hint_is("  pressed r\n  waiting for a replacement character", 200,
                      "replace");
   itl_g_prefix_kind = ITL_PREFIX_VI_EX;
-  ok &= test_hint_is("  pressed :\n  waiting for a command, then enter\n"
-                     "  q, q!, or quit (quit), wq, wq!, wqa, wqa!, or x "
-                     "(save and quit)\n"
-                     "  u or undo, red or redo\n"
-                     "  e or edit (edit in $VISUAL)\n"
+  ok &= test_hint_is("  pressed :\n  enter to run the command\n"
+                     "  q, q!, or quit to quit, wq, wq!, wqa, wqa!, or x "
+                     "to save and quit\n"
+                     "  u or undo to undo, red or redo to redo\n"
+                     "  e or edit to edit in $VISUAL\n"
                      "  s/old/new/ or %s/old/new/ with an optional g "
-                     "(substitute)\n"
-                     "  & or && (repeat the substitution)\n"
+                     "to substitute\n"
+                     "  & or && to repeat the substitution\n"
                      "  set option=value, set option, set nooption, or set "
-                     "option? (options)\n"
-                     "  save or save option (store the options)\n"
-                     "  format or %format (format the row or the buffer)",
+                     "option? to set or show an option\n"
+                     "  save or save option to store the options\n"
+                     "  format or %format to format the row or the buffer",
                      200, "ex");
   itl_g_prefix_kind     = ITL_PREFIX_EMACS_X;
   itl_g_minibuffer_text = "rep";
-  ok &= test_hint_is("  pressed M-x\n  waiting for a command, then enter or "
-                     "tab to complete it\n  repeat, replace-regexp, "
-                     "replace-string",
+  ok &= test_hint_is("  pressed M-x\n  enter to run the command, tab to "
+                     "complete it\n  repeat, replace-regexp, replace-string",
                      200, "M-x");
   itl_g_minibuffer_text = "zz";
   ok &= test_hint_is("  pressed M-x\n  no command starts with this text", 200,
@@ -8421,7 +8420,7 @@ test_chord_idle_callback(const char *buffer, size_t cursor)
   (void) cursor;
   test_chord_hint_was_drawn =
       test_frame_capture_has("  pressed ctrl-x") &&
-      test_frame_capture_has("  waiting for ctrl-e") &&
+      test_frame_capture_has("  ctrl-e to edit") &&
       !test_frame_capture_has("usage") &&
       itl_g_prefix_kind == ITL_PREFIX_CTRL_X;
   if (write(test_chord_writer, &CTRL_U, 1) != 1) {
