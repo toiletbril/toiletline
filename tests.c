@@ -8283,7 +8283,7 @@ test_prefix_reset(void)
 }
 
 static bool
-test_prefix_hint_names_the_waiting_keys(void)
+test_prefix_hint_lists_the_waiting_keys(void)
 {
   int  was_colors_enabled = itl_g_colors_enabled;
   bool ok = true;
@@ -8322,8 +8322,8 @@ test_prefix_hint_names_the_waiting_keys(void)
   itl_g_vi_pending_count = 2;
   itl_g_vi_pending_register = 'a';
   ok &= test_hint_is("  pressed \"a2d\n  waiting for a motion such as w, b, "
-                     "e, $, 0, ^, f, t, F, T, h, l, j, k, W, B, E, d for the "
-                     "line, or ; and , to repeat a find",
+                     "e, $, 0, ^, f, t, F, T, h, l, j, k, W, B, E, d again to "
+                     "delete the line, or ; and , to repeat a find",
                      200, "operator");
 
   itl_g_prefix_kind = ITL_PREFIX_VI_FIND;
@@ -8336,8 +8336,8 @@ test_prefix_hint_names_the_waiting_keys(void)
   itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
   itl_g_vi_pending_operator = ITL_VI_OP_CHANGE;
   ok &= test_hint_is("  pressed c\n  waiting for a motion such as w, b, e, "
-                     "$, 0, ^, f, t, F, T, h, l, j, k, W, B, E, c for the "
-                     "line, or ; and , to repeat a find",
+                     "$, 0, ^, f, t, F, T, h, l, j, k, W, B, E, c again to "
+                     "change the line, or ; and , to repeat a find",
                      200, "change");
   itl_g_vi_pending_operator = ITL_VI_OP_YANK;
   ok &= test_hint_is("  pressed y\n  waiting for a\n  motion such as w,\n"
@@ -9721,7 +9721,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_hint_rows_follow_the_frame),
                                    DEFINE_TEST_CASE(
-                                       test_prefix_hint_names_the_waiting_keys),
+                                       test_prefix_hint_lists_the_waiting_keys),
                                    DEFINE_TEST_CASE(
                                        test_ctrl_x_chord_shows_and_drops_its_hint),
                                    DEFINE_TEST_CASE(

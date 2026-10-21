@@ -468,8 +468,10 @@ tl_set_line_numbers(size_t width);
 
 /**
  * Turn Ctrl-X s and Ctrl-X Ctrl-S on, which return TL_PRESSED_WRITE_QUIT in
- * emacs mode with the buffer handed over, for a host that edits a file. They
- * do nothing while off, the default.
+ * emacs mode with the buffer handed over, for a host that edits a file. While
+ * they are on, Enter inserts a line break, or moves down a line in vi normal
+ * mode, and never returns TL_PRESSED_ENTER. They do nothing while off, the
+ * default.
  */
 TL_DEF void
 tl_set_save_keys(int enabled);
@@ -4346,21 +4348,15 @@ itl_char_buf_flush(itl_char_buf_t *cb)
     return true;
   }
 
-  if (itl_g_frame_batch_depth > 0) {
+  /* A terminal that supports it paints each frame, or each open batch, in one
+     update. */
+  if (itl_g_frame_batch_depth > 0 || itl_frame_batch_is_synchronized()) {
     if (itl_g_frame_batch.size == 0 && itl_frame_batch_is_synchronized()) {
       itl_char_buf_append_cstr(&itl_g_frame_batch, ITL_SYNC_UPDATE_BEGIN);
     }
     itl_char_buf_append_bytes(&itl_g_frame_batch, cb->data, cb->size);
 
-    return true;
-  }
-
-  /* A terminal that supports it paints the frame in one update. */
-  if (itl_frame_batch_is_synchronized()) {
-    itl_char_buf_append_cstr(&itl_g_frame_batch, ITL_SYNC_UPDATE_BEGIN);
-    itl_char_buf_append_bytes(&itl_g_frame_batch, cb->data, cb->size);
-
-    return itl_frame_batch_write();
+    return itl_g_frame_batch_depth > 0 || itl_frame_batch_write();
   }
 
 #if !defined NDEBUG
@@ -5555,8 +5551,6 @@ ITL_DEF ITL_THREAD_LOCAL size_t      itl_g_transient_right_prompt_width = 0;
 /* The prompt a submitted line is redrawn with, or NULL to keep the line. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_transient_prompt = NULL;
 
-
-
 /* The host hint callback, or NULL when the hint rows are off. */
 ITL_DEF ITL_THREAD_LOCAL tl_hint_fn itl_g_hint_callback = NULL;
 
@@ -5676,7 +5670,6 @@ itl_full_screen_title_rows(void)
 {
   return itl_g_full_screen && itl_g_title != NULL ? 1 : 0;
 }
-
 
 /* The result of the last option command, shown in place of the hint rows
    until the next key. */
@@ -7217,13 +7210,16 @@ itl_prefix_hint(char *out, size_t out_size)
   default:
     if (itl_g_vi_pending_operator == ITL_VI_OP_DELETE) {
       waiting_for = "a motion such as w, b, e, $, 0, ^, f, t, F, T, h, l, j, "
-                    "k, W, B, E, d for the line, or ; and , to repeat a find";
+                    "k, W, B, E, d again to delete the line, or ; and , to "
+                    "repeat a find";
     } else if (itl_g_vi_pending_operator == ITL_VI_OP_CHANGE) {
       waiting_for = "a motion such as w, b, e, $, 0, ^, f, t, F, T, h, l, j, "
-                    "k, W, B, E, c for the line, or ; and , to repeat a find";
+                    "k, W, B, E, c again to change the line, or ; and , to "
+                    "repeat a find";
     } else if (itl_g_vi_pending_operator == ITL_VI_OP_YANK) {
       waiting_for = "a motion such as w, b, e, $, 0, ^, f, t, F, T, h, l, j, "
-                    "k, W, B, E, y for the line, or ; and , to repeat a find";
+                    "k, W, B, E, y again to yank the line, or ; and , to "
+                    "repeat a find";
     } else if (itl_g_vi_pending_count > 0) {
       waiting_for = "a command or a motion";
     } else {
@@ -8754,7 +8750,6 @@ tl_set_completion_menu_enabled(int enabled)
   itl_g_completion_menu_enabled = enabled && itl_term_supports_decorations();
 }
 
-
 /* Hint rows start at the left edge while the last row of the prompt has no
    width, so they line up with input on the first column, and are indented
    otherwise. */
@@ -9925,6 +9920,8 @@ ITL_DEF tl_status_code
 itl_vi_ex_command(itl_le_t *le);
 ITL_DEF void
 itl_vi_open_line(itl_le_t *le, bool is_above);
+ITL_DEF void
+itl_vi_clamp_command_cursor(itl_le_t *le);
 
 /* Every row of one menu repaint. The help row and the count row are counted
    here beside the candidates, and a repaint never draws a row the layout did
@@ -14214,8 +14211,8 @@ itl_le_delete_spaces(itl_le_t *le)
 }
 
 /* Move the caret to a press of the first button on the input of the
-   full-screen layout, or three rows up or down for the wheel. Any other report
-   leaves the caret. */
+   full-screen layout, and scroll the window three rows for the wheel. Any
+   other report leaves the caret. */
 ITL_DEF void
 itl_le_mouse(itl_le_t *le)
 {
@@ -14235,19 +14232,19 @@ itl_le_mouse(itl_le_t *le)
   if ((itl_g_mouse_button & 64u) != 0) {
     size_t view_rows = itl_le_view_rows(itl_g_tty_prev_rows);
     size_t last_top  = m.total_rows > view_rows ? m.total_rows - view_rows : 0;
-    size_t top       = itl_g_view_top_row;
+    size_t view_top  = itl_g_view_top_row;
 
     if ((itl_g_mouse_button & 1u) != 0) {
-      top = top + 3 < last_top ? top + 3 : last_top;
+      view_top = view_top + 3 < last_top ? view_top + 3 : last_top;
     } else {
-      top = top > 3 ? top - 3 : 0;
+      view_top = view_top > 3 ? view_top - 3 : 0;
     }
-    itl_g_view_top_row = top;
+    itl_g_view_top_row            = view_top;
     itl_g_tty_should_refresh_text = true;
-    if (m.cursor_row >= top && m.cursor_row < top + view_rows) {
+    if (m.cursor_row >= view_top && m.cursor_row < view_top + view_rows) {
       return;
     }
-    row = m.cursor_row < top ? top : top + view_rows - 1;
+    row = m.cursor_row < view_top ? view_top : view_top + view_rows - 1;
     if (row < le->prompt_rows) {
       row = le->prompt_rows;
     }
@@ -14435,7 +14432,15 @@ itl_le_key_handle(itl_le_t *le, int esc)
     if (itl_g_save_keys_enabled &&
         itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND)
     {
-      return itl_le_key_handle(le, TL_KEY_DOWN);
+      tl_status_code code;
+
+      /* Enter steps down as j does, keeping the goal column of the keys
+         before it. */
+      itl_vi_reset_pending();
+      itl_g_last_control = prev_control;
+      code               = itl_le_key_handle(le, TL_KEY_DOWN);
+      itl_vi_clamp_command_cursor(le);
+      return code;
     }
 
     /* A trailing backslash at the end of the line continues it, fish-style. A
@@ -14464,7 +14469,8 @@ itl_le_key_handle(itl_le_t *le, int esc)
     }
 
     if (!itl_le_confirm(le, TL_KEY_ENTER,
-                        "edited buffer\nenter again to run it")) {
+                        "edited buffer\nenter again to run it"))
+    {
       break;
     }
 
