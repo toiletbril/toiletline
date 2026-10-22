@@ -190,6 +190,9 @@ typedef enum
      and Ctrl-R in the full-screen layout find it backward. */
   TL_KEY_FIND,
   TL_KEY_FIND_BACKWARD,
+  /* Page Up and Page Down move the caret a window height up or down. */
+  TL_KEY_PAGE_UP,
+  TL_KEY_PAGE_DOWN,
 
   /* Reported when a bracketed paste sequence begins. Handled internally. */
   TL_KEY_PASTE_BEGIN
@@ -2824,6 +2827,9 @@ ITL_DEF ITL_THREAD_LOCAL char
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_history_miss_prefix_length    = 0;
 ITL_DEF ITL_THREAD_LOCAL char   itl_g_serialized_line[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_serialized_line_ready = false;
+/* True while the row index describes the line as the last frame drew it,
+   which holds until an edit or a key that asks for a text refresh. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_row_index_is_current = false;
 
 typedef struct itl_le itl_le_t;
 
@@ -3082,6 +3088,9 @@ ITL_DEF void
 itl_undo_push(itl_le_t *le)
 {
   itl_undo_snapshot *slot = &itl_g_undo_stack[itl_g_undo_head];
+
+  /* every edit pushes a snapshot first. */
+  itl_g_row_index_is_current = false;
 
   if (itl_g_undo_top_text == NULL) {
     itl_g_undo_top_text = itl_string_alloc();
@@ -3522,6 +3531,7 @@ itl_le_move_left(itl_le_t *le, size_t steps)
 ITL_DEF void
 itl_history_reset_after_edit(itl_le_t *le)
 {
+  itl_g_row_index_is_current = false;
   if (le->history_selected_index == ITL_HISTORY_NONE) {
     return;
   }
@@ -5647,6 +5657,8 @@ itl_esc_parse_csi_parameters(uint8_t byte)
     case 4:
     case 8: return modifier | TL_KEY_END;
     case 3: return modifier | TL_KEY_DELETE;
+    case 5: return modifier | TL_KEY_PAGE_UP;
+    case 6: return modifier | TL_KEY_PAGE_DOWN;
     /* Bracketed paste opens with ESC [ 200 ~. Its closing ESC [ 201 ~ outside
        a paste, Insert, and the other keys are unbound. */
     case 200: return TL_KEY_PASTE_BEGIN;
@@ -6017,8 +6029,30 @@ ITL_DEF ITL_THREAD_LOCAL tl_format_fn itl_g_format_callback = NULL;
 /* The host save callback, or NULL. */
 ITL_DEF ITL_THREAD_LOCAL tl_save_fn itl_g_save_callback = NULL;
 
-/* The saved contents of the edited file, set by tl_set_saved_text, or NULL. */
-ITL_DEF ITL_THREAD_LOCAL const char *itl_g_saved_text = NULL;
+/* The saved contents of the edited file, set by tl_set_saved_text, or NULL,
+   and a count of the calls that set it. */
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_saved_text       = NULL;
+ITL_DEF ITL_THREAD_LOCAL size_t      itl_g_saved_text_serial = 0;
+
+/* True while a frame draws the line of the previous frame. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_frame_text_unchanged = false;
+
+/* The caret position and file state that the full-screen rows last showed,
+   kept while frames draw the same line. */
+typedef struct itl_full_screen_rows_cache
+{
+  bool   is_valid;
+  bool   is_saved_different;
+  size_t saved_serial;
+  size_t line_size;
+  size_t line_count;
+  size_t cursor_byte;
+  size_t line_number;
+  size_t line_start;
+} itl_full_screen_rows_cache;
+
+ITL_DEF ITL_THREAD_LOCAL itl_full_screen_rows_cache itl_g_rows_cache =
+    ITL_ZERO_INIT;
 
 /* The title and the status of the full-screen layout, set by tl_set_title and
    tl_set_status, or NULL. */
@@ -6107,6 +6141,8 @@ static const itl_emacs_command itl_emacs_commands[] = {
     {"replace-regexp", ITL_EMACS_REPLACE_REGEXP},
     {"replace-string", ITL_EMACS_REPLACE_STRING},
     {"save-option", ITL_EMACS_SAVE_OPTION},
+    {"scroll-down-command", TL_KEY_PAGE_UP},
+    {"scroll-up-command", TL_KEY_PAGE_DOWN},
     {"set-option", ITL_EMACS_SET_OPTION},
     {"transpose-chars", TL_KEY_TRANSPOSE},
     {"transpose-words", TL_KEY_TRANSPOSE | TL_MOD_ALT},
@@ -6890,11 +6926,9 @@ ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_line_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_geometry[4];
 ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_end_row = 0;
 ITL_DEF ITL_THREAD_LOCAL bool           itl_g_row_index_is_valid = false;
-/* True while the index describes the line as the last frame drew it, which
-   holds until a key changes the text and asks for a text refresh. */
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_row_index_is_current = false;
-/* True while a frame is drawn, which leaves the line unchanged. */
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_in_refresh = false;
+/* True while a frame is drawn or a vertical motion reads the line, which
+   leaves the line as the last frame drew it. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_line_still = false;
 
 /* The last line of the row index whose entry at offset, 0 for the start and
    1 for the row, is at or below value. */
@@ -6941,7 +6975,7 @@ itl_le_row_index(const itl_le_t *le,
     size_t common;
 
     if (itl_g_row_index_is_current &&
-        (itl_g_is_in_refresh || !itl_g_tty_should_refresh_text) &&
+        (itl_g_is_line_still || !itl_g_tty_should_refresh_text) &&
         itl_g_row_index_text.size == text_size)
     {
       return (const size_t *) (const void *) itl_g_row_index_lines.data;
@@ -8086,25 +8120,67 @@ itl_full_screen_rows(char        *out,
   }
 
   /* The line breaks are found with memchr, and only the caret's line is
-     walked by codepoint for the column. */
+     walked by codepoint for the column. A frame that draws the same line
+     keeps the line count and the file state and counts only the breaks
+     between the last caret and this one. */
   {
-    size_t      line_size  = strlen(line);
-    size_t      line_start = 0;
-    const char *found      = line;
+    itl_full_screen_rows_cache *cache      = &itl_g_rows_cache;
+    size_t                      line_size  = 0;
+    size_t                      line_start = 0;
+    const char                 *found      = line;
 
-    while ((found = (const char *) memchr(found, '\n',
-                                          line_size - (size_t) (found - line)))
-           != NULL)
+    if (itl_g_is_frame_text_unchanged && cache->is_valid &&
+        cache->saved_serial == itl_g_saved_text_serial)
     {
-      size_t position = (size_t) (found - line);
-
-      line_count += 1;
-      if (position < cursor_byte) {
-        line_number += 1;
-        line_start = position + 1;
+      line_size   = cache->line_size;
+      line_count  = cache->line_count;
+      line_number = cache->line_number;
+      line_start  = cache->line_start;
+      if (cursor_byte > line_size) {
+        cursor_byte = line_size;
       }
-      found += 1;
+      for (i = cache->cursor_byte; i < cursor_byte; ++i) {
+        if (line[i] == '\n') {
+          line_number += 1;
+          line_start = i + 1;
+        }
+      }
+      if (cursor_byte < cache->cursor_byte) {
+        for (i = cursor_byte; i < cache->cursor_byte; ++i) {
+          if (line[i] == '\n') {
+            line_number -= 1;
+          }
+        }
+        line_start = cursor_byte;
+        while (line_start > 0 && line[line_start - 1] != '\n') {
+          line_start -= 1;
+        }
+      }
+    } else {
+      line_size = strlen(line);
+      while ((found = (const char *) memchr(
+                  found, '\n', line_size - (size_t) (found - line)))
+             != NULL)
+      {
+        size_t position = (size_t) (found - line);
+
+        line_count += 1;
+        if (position < cursor_byte) {
+          line_number += 1;
+          line_start = position + 1;
+        }
+        found += 1;
+      }
+      cache->is_saved_different =
+          itl_g_saved_text != NULL && strcmp(line, itl_g_saved_text) != 0;
+      cache->saved_serial = itl_g_saved_text_serial;
+      cache->line_size    = line_size;
+      cache->line_count   = line_count;
+      cache->is_valid     = true;
     }
+    cache->cursor_byte = cursor_byte;
+    cache->line_number = line_number;
+    cache->line_start  = line_start;
 
     for (i = line_start; i < cursor_byte && i < line_size; ++i) {
       if (((uint8_t) line[i] & 0xC0) != 0x80) {
@@ -8131,7 +8207,7 @@ itl_full_screen_rows(char        *out,
   itl_prefix_append_size(out, out_size, &out_length, column);
   itl_prefix_append(out, out_size, &out_length, ", as ");
   itl_prefix_append(out, out_size, &out_length, mode);
-  if (itl_g_saved_text != NULL && strcmp(line, itl_g_saved_text) != 0) {
+  if (itl_g_rows_cache.is_saved_different) {
     itl_prefix_append(out, out_size, &out_length, ", unsaved changes");
   }
   switch (itl_g_edit_mode) {
@@ -8765,9 +8841,10 @@ itl_le_tty_refresh(itl_le_t *le)
 {
   bool is_drawn;
 
-  itl_g_is_in_refresh = true;
-  is_drawn            = itl_le_tty_refresh_frame(le);
-  itl_g_is_in_refresh = false;
+  itl_g_is_line_still           = true;
+  is_drawn                      = itl_le_tty_refresh_frame(le);
+  itl_g_is_line_still           = false;
+  itl_g_is_frame_text_unchanged = false;
 
   return is_drawn;
 }
@@ -8791,6 +8868,8 @@ itl_le_tty_refresh_frame(itl_le_t *le)
   /* A frame that starts without a text change shows the line of the last
      frame, whatever else it redraws. */
   bool did_text_change = itl_g_tty_should_refresh_text;
+
+  itl_g_is_frame_text_unchanged = !did_text_change;
 
   if (did_text_change) {
     itl_g_row_index_is_current = false;
@@ -9702,6 +9781,7 @@ TL_DEF void
 tl_set_saved_text(const char *text)
 {
   itl_g_saved_text = text;
+  itl_g_saved_text_serial += 1;
 }
 
 /* Write a mouse mode sequence at once. */
@@ -12175,6 +12255,11 @@ itl_idle_run(itl_le_t *le)
 
   itl_g_idle_due_ms  = 0;
   itl_g_idle_outcome = 0;
+  /* the hook runs between frames, where the line is the one the last frame
+     drew. */
+  if (!itl_g_tty_should_refresh_text) {
+    itl_le_reuse_prev_render(le);
+  }
   if (itl_g_idle_callback == NULL || !itl_le_serialize_line(le)) {
     itl_g_serialized_line_ready = was_serialized;
     return;
@@ -15506,17 +15591,52 @@ itl_le_key_handle(itl_le_t *le, int esc)
     return TL_PRESSED_TAB;
   } break;
 
+  case TL_KEY_PAGE_UP:
+  case TL_KEY_PAGE_DOWN: {
+    itl_le_metrics_t m;
+    bool             is_up = (esc & TL_MASK_KEY) == TL_KEY_PAGE_UP;
+    size_t           step  = itl_le_view_rows(itl_g_tty_prev_rows);
+    size_t           target_row;
+    int              prev_kind = prev_control & TL_MASK_KEY;
+
+    /* A page keeps one row of the previous window in view and the column the
+       last vertical move aimed at. */
+    itl_g_is_line_still = true;
+    m                   = itl_le_compute_metrics(le, itl_g_tty_prev_cols);
+    step                = step > 1 ? step - 1 : 1;
+    if (prev_kind != TL_KEY_UP && prev_kind != TL_KEY_DOWN &&
+        prev_kind != TL_KEY_PAGE_UP && prev_kind != TL_KEY_PAGE_DOWN)
+    {
+      le->goal_column = m.cursor_col;
+    }
+    if (is_up) {
+      target_row = m.cursor_row > le->prompt_rows + step ? m.cursor_row - step
+                                                         : le->prompt_rows;
+    } else {
+      target_row = ITL_MIN(m.cursor_row + step, m.total_rows - 1);
+    }
+    le->cursor_position = itl_le_index_at_visual(le, itl_g_tty_prev_cols,
+                                                 target_row, le->goal_column);
+    itl_g_is_line_still           = false;
+    itl_g_tty_should_refresh_text = false;
+  } break;
+
   case TL_KEY_UP:
   case TL_KEY_DOWN: {
-    itl_le_metrics_t m     = itl_le_compute_metrics(le, itl_g_tty_prev_cols);
+    itl_le_metrics_t m;
     bool             is_up = (esc & TL_MASK_KEY) == TL_KEY_UP;
-    bool             was_vertical = (prev_control & TL_MASK_KEY) == TL_KEY_UP ||
-                        (prev_control & TL_MASK_KEY) == TL_KEY_DOWN;
+    int              prev_kind    = prev_control & TL_MASK_KEY;
+    bool             was_vertical = prev_kind == TL_KEY_UP ||
+                        prev_kind == TL_KEY_DOWN ||
+                        prev_kind == TL_KEY_PAGE_UP ||
+                        prev_kind == TL_KEY_PAGE_DOWN;
 
     /* Move a visual row while inside a multiline or wrapped buffer. The input's
        first row sits at prompt_rows in the metrics, since a multi-row prompt
        offsets the rows, so history is recalled there rather than at row zero,
        which would be inside the prompt. */
+    itl_g_is_line_still = true;
+    m                   = itl_le_compute_metrics(le, itl_g_tty_prev_cols);
     if (is_up ? m.cursor_row > le->prompt_rows
               : m.cursor_row + 1 < m.total_rows)
     {
@@ -15526,9 +15646,11 @@ itl_le_key_handle(itl_le_t *le, int esc)
       le->cursor_position = itl_le_index_at_visual(
           le, itl_g_tty_prev_cols, is_up ? m.cursor_row - 1 : m.cursor_row + 1,
           le->goal_column);
+      itl_g_is_line_still           = false;
       itl_g_tty_should_refresh_text = false;
       break;
     }
+    itl_g_is_line_still = false;
 
     /* A non-empty line on its last visual row recalls only entries that begin
        with the typed text when prefix search is on. The draft line is saved
@@ -15882,6 +16004,9 @@ itl_le_key_handle(itl_le_t *le, int esc)
     itl_le_change_word_case(le, ITL_CASE_CAPITAL);
     break;
   case TL_KEY_DELETE_SPACES: itl_le_delete_spaces(le); break;
+
+  /* an unbound key changes nothing. */
+  case TL_KEY_UNKN: itl_g_tty_should_refresh_text = false; break;
 
   case TL_KEY_HOVER:
     if (itl_g_full_screen) {
@@ -19786,7 +19911,9 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
   case TL_KEY_LEFT:
   case TL_KEY_RIGHT:
   case TL_KEY_HOME:
-  case TL_KEY_END:   {
+  case TL_KEY_END:
+  case TL_KEY_PAGE_UP:
+  case TL_KEY_PAGE_DOWN: {
     tl_status_code code = itl_le_key_handle(le, key);
     itl_vi_clamp_command_cursor(le);
     return code;

@@ -2939,7 +2939,8 @@ test_modified_key_sequences(void)
       {"\x1b[201~",       TL_KEY_UNKN},
       {"\x1b[2~",         TL_KEY_UNKN},
       {"\x1b[2;5~",       TL_KEY_UNKN},
-      {"\x1b[5~",         TL_KEY_UNKN},
+      {"\x1b[5~",         TL_KEY_PAGE_UP},
+      {"\x1b[6~",         TL_KEY_PAGE_DOWN},
       {"\x1b[11~",        TL_KEY_UNKN},
       {"\x1b[1;10A",      TL_KEY_UP},
       {"\x1b[<0;1;1M",    TL_KEY_MOUSE},
@@ -8218,6 +8219,54 @@ test_undo_records_changes(void)
   return ok;
 }
 
+/* Page Up and Page Down move the caret a window height less one row, stop at
+   the first and the last line, and keep the column for the next vertical
+   move. */
+static bool
+test_page_keys_move_by_window(void)
+{
+  char          text[60 * 8 + 1];
+  char          out_buffer[BUFFER_SIZE];
+  itl_le_t      le   = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  bool          ok   = true;
+  size_t        i, length = 0;
+
+  for (i = 0; i < 60; ++i) {
+    length += (size_t) snprintf(text + length, sizeof(text) - length,
+                                "row %02zu\n", i);
+  }
+  text[length - 1] = '\0';
+
+  ITL_STRING_FROM_CSTR(line, text);
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_prev_cols = 80;
+  itl_g_last_control  = TL_KEY_CHAR;
+
+  /* row 50, column 3. */
+  le.cursor_position = 50 * 7 + 3;
+  itl_le_key_handle(&le, TL_KEY_PAGE_UP);
+  ok &= le.cursor_position == (50 - 21) * 7 + 3;
+  itl_le_key_handle(&le, TL_KEY_PAGE_UP);
+  ok &= le.cursor_position == (50 - 42) * 7 + 3;
+  itl_le_key_handle(&le, TL_KEY_PAGE_UP);
+  ok &= le.cursor_position == 3;
+  itl_le_key_handle(&le, TL_KEY_PAGE_DOWN);
+  ok &= le.cursor_position == 21 * 7 + 3;
+  le.cursor_position = 55 * 7 + 3;
+  itl_le_key_handle(&le, TL_KEY_PAGE_DOWN);
+  ok &= le.cursor_position == 59 * 7 + 3;
+  itl_le_key_handle(&le, TL_KEY_UP);
+  ok &= le.cursor_position == 58 * 7 + 3;
+  if (!ok) {
+    TEST_PRINTF("page keys left the caret at %zu\n", le.cursor_position);
+  }
+
+  ITL_STRING_FREE(line);
+  return ok;
+}
+
 static bool
 test_vi_ex_write_commands(void)
 {
@@ -10298,6 +10347,7 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_find_wraps_and_folds_case),
                                    DEFINE_TEST_CASE(test_format_commands),
                                    DEFINE_TEST_CASE(test_undo_records_changes),
+                                   DEFINE_TEST_CASE(test_page_keys_move_by_window),
                                    DEFINE_TEST_CASE(test_history_dump_keeps_the_store),
                                    DEFINE_TEST_CASE(
                                        test_rejected_edit_and_format_keep_the_line),
