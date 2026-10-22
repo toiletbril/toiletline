@@ -1714,7 +1714,8 @@ test_history_search_narrowing(void)
     match = itl_history_narrow_match(SEARCH_QUERY("aaa"), ITL_HISTORY_NONE,
                                      false, found);
     match = itl_history_narrow_match(SEARCH_QUERY("aaa t"), match, true, found);
-    match = itl_history_narrow_match(SEARCH_QUERY("aaa ta"), match, true, found);
+    match =
+        itl_history_narrow_match(SEARCH_QUERY("aaa ta"), match, true, found);
     match =
         itl_history_narrow_match(SEARCH_QUERY("aaa tar"), match, true, found);
 
@@ -3625,7 +3626,8 @@ test_menu_filter_groups(void)
     return false;
   }
 
-  if (!itl_menu_narrow_ranked(&base, "", 0, ITL_MENU_RANK_MODE_WHERE, 0, &result) ||
+  if (!itl_menu_narrow_ranked(&base, "", 0, ITL_MENU_RANK_MODE_WHERE, 0,
+                              &result) ||
       result.count != base.count)
   {
     TEST_PRINTF("an empty query kept %zu rows\n", result.count);
@@ -3647,7 +3649,8 @@ test_menu_filter_groups(void)
 
   base.descriptions = NULL;
 
-  if (!itl_menu_narrow_ranked(&base, "al", 2, ITL_MENU_RANK_MODE_WHERE, 0, &result) ||
+  if (!itl_menu_narrow_ranked(&base, "al", 2, ITL_MENU_RANK_MODE_WHERE, 0,
+                              &result) ||
       result.descriptions != NULL)
   {
     TEST_PRINTF("a base without descriptions produced some\n");
@@ -6509,7 +6512,8 @@ test_reference_reflow(const itl_le_t *le, size_t old_cols, size_t new_cols)
     }
 
     if (ITL_LE_IS_NEWLINE(le->line->chars[i])) {
-      rows_above += (col + ncols - 1) / ncols > 0 ? (col + ncols - 1) / ncols : 1;
+      rows_above +=
+          (col + ncols - 1) / ncols > 0 ? (col + ncols - 1) / ncols : 1;
       col = indent;
       continue;
     }
@@ -6548,7 +6552,8 @@ test_reflow_agrees_with_reference(void)
   itl_string_t *line = itl_string_alloc();
 
   for (prompt_index = 0;
-       prompt_index < sizeof(PROMPTS) / sizeof(PROMPTS[0]) && ok; ++prompt_index)
+       prompt_index < sizeof(PROMPTS) / sizeof(PROMPTS[0]) && ok;
+       ++prompt_index)
   {
     size_t wide_position;
 
@@ -6667,7 +6672,8 @@ test_ascii_runs_agree_with_reference(void)
   itl_string_t *line = itl_string_alloc();
 
   for (prompt_index = 0;
-       prompt_index < sizeof(PROMPTS) / sizeof(PROMPTS[0]) && ok; ++prompt_index)
+       prompt_index < sizeof(PROMPTS) / sizeof(PROMPTS[0]) && ok;
+       ++prompt_index)
   {
     size_t break_position;
 
@@ -7105,7 +7111,8 @@ test_menu_rows_start_under_the_token(void)
   ok = ok && !test_frame_capture_has("\x1b[6G");
 
   if (!ok) {
-    TEST_PRINTF("anchor=%zu bytes=%zu\n", anchor_column, test_frame_capture_size);
+    TEST_PRINTF("anchor=%zu bytes=%zu\n", anchor_column,
+                test_frame_capture_size);
   }
 
   itl_g_menu_anchor_column = 0;
@@ -7222,24 +7229,24 @@ test_menu_anchor_accounts_for_descriptions(void)
   itl_g_menu_anchor_column = 30;
   itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
 
-  /* Names and descriptions fit to the right of the token. */
+  /* Candidates and descriptions fit to the right of the token. */
   test_frame_capture_size = 0;
   itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
   ok = test_frame_capture_has("\x1b[29G");
 
-  /* The names alone would fit, the descriptions do not. */
+  /* The candidates alone would fit, the descriptions do not. */
   result.descriptions = long_descriptions;
   test_frame_capture_size = 0;
   itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
   ok = ok && !test_frame_capture_has("\x1b[29G");
 
-  /* Without descriptions the same names stay under the token. */
+  /* Without descriptions the same candidates stay under the token. */
   result.descriptions = NULL;
   test_frame_capture_size = 0;
   itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
   ok = ok && test_frame_capture_has("\x1b[29G");
 
-  /* The names fit, a help item would be cut beside them. */
+  /* The candidates fit, a help item would be cut beside them. */
   layout = itl_menu_measure_for(&result, itl_g_tty_prev_rows, 4, "",
                                 "selecting completions",
                                 "a help item far too wide for that row");
@@ -7394,7 +7401,8 @@ test_submit_erases_the_drawn_ghost(void)
 
   test_frame_capture_size = 0;
   itl_le_finish_input(&le, TL_PRESSED_ENTER);
-  was_ghost_erased = test_frame_capture_size > 0 && !test_frame_capture_has(GHOST);
+  was_ghost_erased =
+      test_frame_capture_size > 0 && !test_frame_capture_has(GHOST);
   is_ghost_cleared = itl_g_ghost_len == 0;
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
@@ -8377,8 +8385,8 @@ test_hint_row_draws_holds_and_erases(void)
   test_frame_capture_size = 0;
   itl_le_finish_input(&le, TL_PRESSED_ENTER);
   was_hint_erased = test_frame_capture_size > 0 &&
-                    !test_frame_capture_has(HINT) && itl_g_hint_shown_len == 0 &&
-                    itl_g_hint_is_closed;
+                    !test_frame_capture_has(HINT) &&
+                    itl_g_hint_shown_len == 0 && itl_g_hint_is_closed;
 
   test_hint_finish_frame(line);
 

@@ -1149,37 +1149,37 @@ ITL_DEF bool
 itl_exit_raw_mode_impl(void)
 {
 #if defined ITL_WIN32
-  bool   something_failed = false;
+  bool   did_something_fail = false;
   HANDLE stdin_handle = NULL, stdout_handle = NULL;
 
   stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
-  ITL_TRY(stdin_handle != INVALID_HANDLE_VALUE, something_failed = true);
+  ITL_TRY(stdin_handle != INVALID_HANDLE_VALUE, did_something_fail = true);
 
   stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
-  ITL_TRY(stdout_handle != INVALID_HANDLE_VALUE, something_failed = true);
+  ITL_TRY(stdout_handle != INVALID_HANDLE_VALUE, did_something_fail = true);
 
   if (stdin_handle != INVALID_HANDLE_VALUE && itl_g_original_tty_in_mode != 0) {
     ITL_TRY(SetConsoleMode(stdin_handle, itl_g_original_tty_in_mode),
-            something_failed = true);
+            did_something_fail = true);
   }
   if (stdout_handle != INVALID_HANDLE_VALUE && itl_g_original_tty_out_mode != 0)
   {
     ITL_TRY(SetConsoleMode(stdout_handle, itl_g_original_tty_out_mode),
-            something_failed = true);
+            did_something_fail = true);
   }
   if (itl_g_original_tty_cp != 0) {
-    ITL_TRY(SetConsoleCP(itl_g_original_tty_cp), something_failed = true);
+    ITL_TRY(SetConsoleCP(itl_g_original_tty_cp), did_something_fail = true);
   }
   if (itl_g_original_tty_output_cp != 0) {
     ITL_TRY(SetConsoleOutputCP(itl_g_original_tty_output_cp),
-            something_failed = true);
+            did_something_fail = true);
   }
   if (itl_g_original_mode != 0) {
     ITL_TRY(_setmode(STDIN_FILENO, itl_g_original_mode) != -1,
-            something_failed = true);
+            did_something_fail = true);
   }
 
-  return !something_failed;
+  return !did_something_fail;
 #elif defined ITL_POSIX
   struct termios zeroed_termios = ITL_ZERO_INIT;
 
@@ -1623,7 +1623,7 @@ itl_legacy_csi_key_bytes(const uint8_t *sequence, size_t size, uint8_t *out)
   return 0;
 }
 
-/* Reads what follows an ESC from the terminal into the key queue. A key that
+/* Takes what follows an ESC from the terminal into the key queue. A key that
    the kitty keyboard protocol or modifyOtherKeys reports in a form of its own
    is replaced by the bytes a legacy terminal sends for it, so every reader of
    keys, from the parser to the vi, menu, and search loops, sees one encoding.
@@ -1892,7 +1892,9 @@ itl_utf8_equal(itl_utf8_t ch1, itl_utf8_t ch2)
 ITL_DEF uint8_t
 itl_ascii_fold_byte(uint8_t byte)
 {
-  if (byte >= 'A' && byte <= 'Z') return (uint8_t) (byte - 'A' + 'a');
+  if (byte >= 'A' && byte <= 'Z') {
+    return (uint8_t) (byte - 'A' + 'a');
+  }
   return byte;
 }
 
@@ -2285,7 +2287,9 @@ itl_strn_width_walk(const char *cstr,
     {
       size_t character_width =
           is_after_joiner && ch.size > 1 ? 0 : itl_char_width(ch);
-      if (character_width > 0 && width >= stop_after) break;
+      if (character_width > 0 && width >= stop_after) {
+        break;
+      }
       width += character_width;
     }
     is_after_joiner = itl_char_is_zero_width_joiner(ch);
@@ -2409,8 +2413,8 @@ ITL_DEF void
 itl_string_extend(itl_string_t *str)
 {
   str->capacity = ITL_STRING_REALLOC_CAPACITY(str->capacity);
-  str->chars    = (itl_utf8_t *) itl_realloc(str->chars,
-                                             str->capacity * sizeof(itl_utf8_t));
+  str->chars    = (itl_utf8_t *) itl_realloc(
+      str->chars, str->capacity * sizeof(itl_utf8_t));
 }
 
 ITL_DEF bool
@@ -2489,8 +2493,8 @@ ITL_DEF void
 itl_string_shrink(itl_string_t *str)
 {
   str->capacity = ITL_STRING_INIT_SIZE;
-  str->chars    = (itl_utf8_t *) itl_realloc(str->chars,
-                                             str->capacity * sizeof(itl_utf8_t));
+  str->chars    = (itl_utf8_t *) itl_realloc(
+      str->chars, str->capacity * sizeof(itl_utf8_t));
 
   if (str->length > str->capacity) {
     str->length = str->capacity;
@@ -3113,9 +3117,9 @@ itl_history_decode_entry_fd(ITL_FILE file,
 {
   char   chunk[ITL_HISTORY_FILE_BUFFER_SIZE];
   size_t decoded_size            = 0;
-  bool   escape_pending          = false;
-  bool   carriage_return_pending = false;
-  bool   line_done               = false;
+  bool   is_escape_pending          = false;
+  bool   is_carriage_return_pending = false;
+  bool   is_line_done               = false;
   bool   was_truncated           = false;
 
   ITL_TRACELN("reading history entry at offset %zu\n", offset);
@@ -3126,7 +3130,7 @@ itl_history_decode_entry_fd(ITL_FILE file,
     return false;
   }
 
-  while (!line_done) {
+  while (!is_line_done) {
     int read_amount = (int) ITL_READ(file, chunk, ITL_HISTORY_FILE_BUFFER_SIZE);
     size_t i;
 
@@ -3134,13 +3138,13 @@ itl_history_decode_entry_fd(ITL_FILE file,
       break; /* End of file ends the last entry. */
     }
 
-    for (i = 0; i < (size_t) read_amount && !line_done; ++i) {
+    for (i = 0; i < (size_t) read_amount && !is_line_done; ++i) {
       uint8_t ch = (uint8_t) chunk[i];
 
-      if (carriage_return_pending) {
-        carriage_return_pending = false;
+      if (is_carriage_return_pending) {
+        is_carriage_return_pending = false;
         if (ch == '\n') {
-          line_done = true;
+          is_line_done = true;
           continue;
         }
 
@@ -3150,13 +3154,13 @@ itl_history_decode_entry_fd(ITL_FILE file,
           decoded[decoded_size++] = '\r';
         } else {
           was_truncated = true;
-          line_done     = true;
+          is_line_done     = true;
           continue;
         }
       }
 
-      if (escape_pending) {
-        escape_pending = false;
+      if (is_escape_pending) {
+        is_escape_pending = false;
         if (ch == 'n') {
           ch = 0x0A;
         } else if (ch != '\\') {
@@ -3169,13 +3173,13 @@ itl_history_decode_entry_fd(ITL_FILE file,
           }
         }
       } else if (ch == '\\') {
-        escape_pending = true;
+        is_escape_pending = true;
         continue;
       } else if (ch == '\n') {
-        line_done = true;
+        is_line_done = true;
         continue;
       } else if (ch == '\r') {
-        carriage_return_pending = true;
+        is_carriage_return_pending = true;
         continue;
       }
 
@@ -3183,12 +3187,12 @@ itl_history_decode_entry_fd(ITL_FILE file,
         decoded[decoded_size++] = (char) ch;
       } else {
         was_truncated = true;
-        line_done     = true;
+        is_line_done     = true;
       }
     }
   }
 
-  if (carriage_return_pending) {
+  if (is_carriage_return_pending) {
     if (decoded_size < capacity) {
       decoded[decoded_size++] = '\r';
     } else {
@@ -3206,7 +3210,7 @@ itl_history_decode_entry_fd(ITL_FILE file,
   return true;
 }
 
-/* Reads the entry that starts at byte offset from the history file into out.
+/* Loads the entry that starts at byte offset from the history file into out.
    Returns false when the file cannot be read or the entry is not valid
    UTF-8. */
 ITL_DEF bool
@@ -3224,14 +3228,14 @@ itl_history_read_entry_fd(ITL_FILE file, size_t offset, itl_string_t *out)
   return itl_string_from_bytes(out, decoded, decoded_size);
 }
 
-/* Opens the history file, reads one entry, and closes it. Callers that read
+/* Opens the history file, loads one entry, and closes it. Callers that read
    many entries in a loop should open once and use itl_history_read_entry_fd
    instead. Returns false when the file cannot be opened or read. */
 ITL_DEF bool
 itl_history_read_entry(size_t offset, itl_string_t *out)
 {
   ITL_FILE file;
-  bool     ok;
+  bool     is_ok;
 
   if (itl_g_history_path == NULL) {
     return false;
@@ -3244,10 +3248,10 @@ itl_history_read_entry(size_t offset, itl_string_t *out)
     return false;
   }
 
-  ok = itl_history_read_entry_fd(file, offset, out);
+  is_ok = itl_history_read_entry_fd(file, offset, out);
   ITL_FILE_CLOSE(file);
 
-  return ok;
+  return is_ok;
 }
 
 ITL_DEF void
@@ -3265,7 +3269,8 @@ itl_le_init(itl_le_t     *le,
   le->out_size               = out_size;
   le->prompt                 = prompt;
   le->prompt_size            = (prompt != NULL) ? strlen(prompt) : 0;
-  le->prompt_width           = itl_prompt_last_row_width(prompt, &le->prompt_rows);
+  le->prompt_width =
+      itl_prompt_last_row_width(prompt, &le->prompt_rows);
   le->goal_column            = 0;
   /* clang-format on */
 
@@ -3839,7 +3844,9 @@ itl_history_ensure_read_buffer(void)
     int read_amount =
         (int) ITL_READ(file, itl_g_history_read_buffer->data + total_read,
                        retained_size - total_read);
-    if (read_amount < 0 && errno == EINTR) continue;
+    if (read_amount < 0 && errno == EINTR) {
+      continue;
+    }
     if (read_amount <= 0) {
       ITL_FILE_CLOSE(file);
       itl_history_read_fd_invalidate();
@@ -3877,8 +3884,9 @@ itl_history_decode_entry_buffered(size_t  offset,
 
   if (offset < itl_g_history_read_buffer_offset) return false;
   offset -= itl_g_history_read_buffer_offset;
-  if (offset < itl_g_history_read_buffer_start || offset > buffer_size)
+  if (offset < itl_g_history_read_buffer_start || offset > buffer_size) {
     return false;
+  }
 
   return itl_history_decode_entry_bytes(buffer_data, buffer_size, offset,
                                         decoded, capacity, decoded_size_out);
@@ -3893,7 +3901,7 @@ itl_history_decode_entry_bytes(const char *buffer_data,
                                size_t     *decoded_size_out)
 {
   size_t decoded_size   = 0;
-  bool   escape_pending = false;
+  bool   is_escape_pending = false;
   size_t i;
 
   if (capacity == 0) return false;
@@ -3902,8 +3910,8 @@ itl_history_decode_entry_bytes(const char *buffer_data,
   for (i = offset; i < buffer_size; ++i) {
     uint8_t ch = (uint8_t) buffer_data[i];
 
-    if (escape_pending) {
-      escape_pending = false;
+    if (is_escape_pending) {
+      is_escape_pending = false;
       if (ch == 'n') {
         ch = 0x0A;
       } else if (ch != '\\') {
@@ -3911,7 +3919,7 @@ itl_history_decode_entry_bytes(const char *buffer_data,
         decoded[decoded_size++] = '\\';
       }
     } else if (ch == '\\') {
-      escape_pending = true;
+      is_escape_pending = true;
       continue;
     } else if (ch == '\n') {
       break;
@@ -4299,7 +4307,9 @@ itl_write_all(ITL_FILE file, const char *data, size_t size)
   while (total_written < size) {
     int written =
         (int) ITL_WRITE(file, data + total_written, size - total_written);
-    if (written < 0 && errno == EINTR) continue;
+    if (written < 0 && errno == EINTR) {
+      continue;
+    }
     if (written <= 0) break;
     total_written += (size_t) written;
   }
@@ -4621,7 +4631,7 @@ ITL_DEF bool
 itl_history_scan_fd(ITL_FILE file)
 {
   char    file_buffer[ITL_HISTORY_FILE_BUFFER_SIZE];
-  bool    escape_pending = false;
+  bool    is_escape_pending = false;
   size_t  entry_start    = 0;
   size_t  file_pos       = 0;
   size_t  retained_limit = itl_g_history_limit;
@@ -4640,7 +4650,9 @@ itl_history_scan_fd(ITL_FILE file)
         (int) ITL_READ(file, file_buffer, ITL_HISTORY_FILE_BUFFER_SIZE);
     size_t i;
 
-    if (read_amount < 0 && errno == EINTR) continue;
+    if (read_amount < 0 && errno == EINTR) {
+      continue;
+    }
     if (read_amount < 0) {
       itl_history_offsets_reset();
       itl_g_history_limit = retained_limit;
@@ -4658,14 +4670,14 @@ itl_history_scan_fd(ITL_FILE file)
 
       last_byte = ch;
 
-      if (escape_pending) {
-        escape_pending = false;
+      if (is_escape_pending) {
+        is_escape_pending = false;
         itl_history_record_meter_add(&meter, ch, true);
         continue;
       }
 
       if (ch == '\\') {
-        escape_pending = true;
+        is_escape_pending = true;
         continue;
       }
 
@@ -4720,7 +4732,7 @@ itl_history_scan_fd(ITL_FILE file)
 ITL_DEF bool
 itl_history_search_snapshot_scan(const char *contents, size_t size)
 {
-  bool                       escape_pending = false;
+  bool                       is_escape_pending = false;
   size_t                     entry_start    = 0;
   size_t                     position;
   itl_history_record_meter_t meter = {0, false};
@@ -4733,13 +4745,13 @@ itl_history_search_snapshot_scan(const char *contents, size_t size)
   for (position = 0; position < size; ++position) {
     uint8_t ch = (uint8_t) contents[position];
 
-    if (escape_pending) {
-      escape_pending = false;
+    if (is_escape_pending) {
+      is_escape_pending = false;
       itl_history_record_meter_add(&meter, ch, true);
       continue;
     }
     if (ch == '\\') {
-      escape_pending = true;
+      is_escape_pending = true;
       continue;
     }
     if (ch == '\n') {
@@ -4779,7 +4791,9 @@ itl_history_search_snapshot_begin(void)
   itl_g_history_search_snapshot.is_active = false;
   if (itl_g_history_search_snapshot_callback == NULL) return;
   if (!itl_g_history_search_snapshot_callback(&contents, &size)) return;
-  if (contents == NULL && size != 0) return;
+  if (contents == NULL && size != 0) {
+    return;
+  }
   if (!itl_history_search_snapshot_scan(contents, size)) return;
 
   itl_g_history_search_snapshot.is_active = true;
@@ -4923,7 +4937,7 @@ itl_history_append_to_file(const itl_string_t *str,
     return false;
   }
   /* An oversized line is dropped from history, so a pasted blob does not bloat
-     the file or slow the ghost scan that reads each entry. The line itself
+     the file or slow the ghost scan that visits each entry. The line itself
      still runs, only its recall is skipped. */
   if (str->size > ITL_HISTORY_ENTRY_MAX_BYTES) {
     ITL_TRACELN("skipping oversized history entry, %zu bytes\n", str->size);
@@ -4972,16 +4986,16 @@ itl_history_append_to_file(const itl_string_t *str,
   had_private_unterminated_tail = !itl_g_history_ends_with_newline;
   if (had_private_unterminated_tail) {
     size_t position;
-    bool   escape_pending = false;
+    bool   is_escape_pending = false;
 
     unterminated_offset = itl_g_history_read_buffer_offset;
     for (position = 0; position < itl_g_history_read_buffer->size; ++position) {
       uint8_t ch = (uint8_t) itl_g_history_read_buffer->data[position];
 
-      if (escape_pending) {
-        escape_pending = false;
+      if (is_escape_pending) {
+        is_escape_pending = false;
       } else if (ch == '\\') {
-        escape_pending = true;
+        is_escape_pending = true;
       } else if (ch == '\n') {
         unterminated_offset = itl_g_history_read_buffer_offset + position + 1;
       }
@@ -5128,7 +5142,9 @@ itl_history_dump_to_file(const char *path)
     int read_amount =
         (int) ITL_READ(in_file, file_buffer, ITL_HISTORY_FILE_BUFFER_SIZE);
     size_t total_written = 0;
-    if (read_amount < 0 && errno == EINTR) continue;
+    if (read_amount < 0 && errno == EINTR) {
+      continue;
+    }
     if (read_amount < 0) {
       ret = TL_ERROR;
       break;
@@ -5697,7 +5713,7 @@ ITL_DEF ITL_THREAD_LOCAL int  itl_g_hint_hold_count = 0;
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_hint_is_closed  = false;
 
 /* A key that waits for the next one before it acts. While one is open the hint
-   rows name it and the keys that complete it, in place of the host's hint. */
+   rows show it and the keys that complete it, in place of the host's hint. */
 typedef enum
 {
   ITL_PREFIX_NONE = 0,
@@ -5875,7 +5891,7 @@ itl_ascii_prefix_matches_casefold(const char *entry,
 #define ITL_GHOST_HISTORY_SCAN_MAX 1000
 
 /* The host highlight callback, or NULL when highlighting is disabled. Only the
-   interactive host registers one. The refresh reads it, so it is declared
+   interactive host registers one. The refresh uses it, so it is declared
    before the refresh. */
 ITL_DEF ITL_THREAD_LOCAL tl_highlight_fn itl_g_highlight_callback       = NULL;
 ITL_DEF ITL_THREAD_LOCAL bool            itl_g_highlight_follows_cursor = false;
@@ -5918,8 +5934,8 @@ itl_should_run_highlight(void)
 ITL_DEF ITL_THREAD_LOCAL int itl_g_supports_256_color   = -1;
 ITL_DEF ITL_THREAD_LOCAL int itl_g_supports_decorations = -1;
 
-/* Whether the terminal supports the 256-color set, read from COLORTERM naming
-   truecolor or 24bit, or from TERM naming 256color or direct. The check is the
+/* Whether the terminal supports the 256-color set, when COLORTERM is truecolor
+   or 24bit, or TERM holds 256color or direct. The check is the
    environment heuristic modern tools rely on, since reading the terminfo
    database would pull in a curses dependency. */
 ITL_DEF int
@@ -5939,8 +5955,8 @@ itl_term_supports_256_color(void)
 
 ITL_DEF ITL_THREAD_LOCAL int itl_g_supports_true_color = -1;
 
-/* Whether the terminal draws 24-bit color, read from COLORTERM naming truecolor
-   or 24bit. */
+/* Whether the terminal draws 24-bit color, when COLORTERM is truecolor or
+   24bit. */
 ITL_DEF int
 itl_term_supports_true_color(void)
 {
@@ -6692,7 +6708,7 @@ itl_le_compute_metrics(const itl_le_t *le, size_t tty_cols)
   size_t col    = itl_le_prompt_indent(le, cols);
   size_t length = le->line->length;
 
-  /* The full-screen layout reads the rows of the lines above the caret from
+  /* The full-screen layout takes the rows of the lines above the caret from
      the row index and walks only the caret's line. */
   if (itl_g_full_screen) {
     const size_t *lines = itl_le_row_index(le, cols, indent, row, col);
@@ -7039,7 +7055,9 @@ itl_le_may_exceed_view(const itl_le_t *le, size_t cols, size_t view_rows)
   size_t newline_count = 0;
   size_t i;
 
-  if (itl_g_view_is_active || itl_g_full_screen) return true;
+  if (itl_g_view_is_active || itl_g_full_screen) {
+    return true;
+  }
   /* Every codepoint could be a newline, so this bound needs no scan. */
   if (le->prompt_rows + 2 + le->line->length + (2 * le->line->length) / cols <=
       view_rows)
@@ -7271,7 +7289,8 @@ itl_emacs_command_hint(char *out, size_t out_size, size_t *out_length)
 
     if (strncmp(name, itl_g_minibuffer_text, text_length) != 0) continue;
     if (row_columns == 0 || row_columns + 2 + name_length > 72) {
-      itl_prefix_append(out, out_size, out_length, row_columns == 0 ? "\n" : ",\n");
+      itl_prefix_append(out, out_size, out_length,
+                        row_columns == 0 ? "\n" : ",\n");
       row_columns = 0;
     } else {
       itl_prefix_append(out, out_size, out_length, ", ");
@@ -7918,7 +7937,7 @@ itl_hint_is_unchanged(void)
 }
 
 /* Bring the rows under the last input row to the composed ones, laid out again
-   first when the block now leaves a different number of rows free. The caret
+   first when the block leaves a different number of rows free. The caret
    must sit on that last row. A line feed enters each row, which scrolls the
    screen when the block ends at the bottom, rows on screen past the new last
    row are erased, and steps up return to the caret's row, with the column left
@@ -7951,8 +7970,8 @@ itl_le_tty_draw_hint(itl_char_buf_t *b, size_t row_budget)
 
       if (row < itl_g_hint_shown_rows && shown_offset <= itl_g_hint_shown_len)
       {
-        shown_end   = (const char *) memchr(shown, '\n',
-                                            itl_g_hint_shown_len - shown_offset);
+        shown_end   = (const char *) memchr(
+            shown, '\n', itl_g_hint_shown_len - shown_offset);
         shown_count = shown_end != NULL
                           ? (size_t) (shown_end - shown)
                           : itl_g_hint_shown_len - shown_offset;
@@ -9795,7 +9814,7 @@ tl_set_signal_keys(int enabled)
   itl_set_extended_keys_active(!enabled && itl_g_extended_keys_enabled);
   return TL_SUCCESS;
 #else
-  /* The Windows console has no equivalent knob, and the host reads the key
+  /* The Windows console has no equivalent knob, and the host handles the key
      itself there. */
   (void) enabled;
   return TL_SUCCESS;
@@ -10579,14 +10598,20 @@ itl_completion_append_space(itl_le_t *le)
 {
   if (itl_g_space_after_completion == TL_SPACE_AFTER_COMPLETION_OFF ||
       le->cursor_position != le->line->length || le->line->length == 0)
+  {
     return;
+  }
 
   itl_utf8_t last = le->line->chars[le->line->length - 1];
-  if (last.size == 1 && isspace(last.bytes[0])) return;
+  if (last.size == 1 && isspace(last.bytes[0])) {
+    return;
+  }
   if (itl_g_space_after_completion ==
           TL_SPACE_AFTER_COMPLETION_EXCEPT_AFTER_SLASH &&
       last.size == 1 && itl_byte_is_path_separator((uint8_t) last.bytes[0]))
+  {
     return;
+  }
   itl_g_undo_insert_run_open = true;
   itl_le_insert(le, itl_utf8_parse(' '));
   itl_g_undo_insert_run_open = false;
@@ -11320,7 +11345,9 @@ itl_le_shell_word_start(const itl_le_t *le)
 
   while (i > 0) {
     const itl_utf8_t *ch = &le->line->chars[i - 1];
-    if (ch->size == 1 && strchr(" \t;|&<>()", ch->bytes[0]) != NULL) break;
+    if (ch->size == 1 && strchr(" \t;|&<>()", ch->bytes[0]) != NULL) {
+      break;
+    }
     i -= 1;
   }
 
@@ -11849,7 +11876,7 @@ itl_le_wait_for_input(itl_le_t *le, bool should_return_on_redraw)
 #else  /* ITL_POSIX */
   /* The console raises no resize signal, so the wait blocks on the input
      handle and polls the size on its timeout, redrawing live when it
-     changes, the same shape as the POSIX branch above. */
+     changes, as the POSIX branch above does. */
   for (;;) {
     if (itl_g_tty_changed_size) {
       if (should_return_on_redraw) {
@@ -11923,7 +11950,7 @@ typedef bool (*itl_menu_gather_fn)(itl_le_t *le, tl_completion *result);
    time. should_submit_on_enter belongs to a list that only extends the line,
    and Enter then closes the menu and submits what the line already holds.
    should_highlight belongs to a list whose entries are whole commands, and
-   the host colors them the way it colors the line. help_title names the
+   the host colors them the way it colors the line. help_title labels the
    source on the first row and help_keys lists the keys it answers beside it.
    should_anchor_to_token belongs to a list of replacements for a token, and
    the rows then start under the token instead of the leftmost column.
@@ -12344,7 +12371,7 @@ itl_history_menu_gather(itl_le_t *le, tl_completion *result)
 }
 
 /* True when name opens with the typed token in either case, so the ghost of
-   its rest reads as the name. A row matched elsewhere in its text, such as a
+   its rest completes the name. A row matched elsewhere in its text, such as a
    subsequence, would draw the typed bytes followed by a suffix that does not
    continue them. token_start is a codepoint index. */
 ITL_DEF bool
@@ -12376,9 +12403,9 @@ itl_menu_name_extends_token(const itl_le_t *le,
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_menu_is_next_word = false;
 
 /* Show the highlighted candidate as ghost text on the line the menu opened on.
-   The line above the rows reads as the line that accepting it produces. The
-   ghost only appends. A candidate that does not extend the typed token leaves
-   the line bare. */
+   The line above the rows is the line that accepting the candidate produces.
+   The ghost only appends. A candidate that does not extend the typed token
+   leaves the line bare. */
 ITL_DEF void
 itl_menu_ghost_preview(itl_le_t            *le,
                        const tl_completion *result,
@@ -12428,7 +12455,7 @@ itl_menu_empty_candidates(tl_completion *result)
   result->longest_common_prefix = NULL;
 }
 
-/* The entries one narrowing reads, and the rows it may keep. A source hands the
+/* The entries one narrowing scans, and the rows it may keep. A source hands the
    menu its whole list once. Every key that follows is answered from that list,
    and it costs a scan of these bounds and no work from the host. */
 #define ITL_MENU_FILTER_SCAN_MAX 65536
@@ -13179,7 +13206,7 @@ itl_menu_cache_store(const itl_le_t              *le,
   itl_g_menu_cache[slot] = fresh;
 }
 
-/* Make a cached entry the base the narrowing reads and answer the typed text
+/* Make a cached entry the base the narrowing uses and answer the typed text
    from it. Returns false when the entry has no row for the text and the source
    must be asked. */
 ITL_DEF bool
@@ -13321,7 +13348,7 @@ itl_menu_cache_answer(const itl_le_t        *le,
   return false;
 }
 
-/* Take the list the source just gave as the base the narrowing reads, together
+/* Take the list the source just gave as the base the narrowing uses, together
    with the query it answered, and keep a copy of it for the keys that return
    to it. A token the line cannot hand back leaves an empty base and the next
    key reaches the source. */
@@ -13766,8 +13793,11 @@ itl_completion_menu_loop(itl_le_t              *le,
         return TL_SUCCESS;
       }
 
-      if (kind == TL_KEY_TAB && !should_descend && !result.is_space_suppressed)
+      if (kind == TL_KEY_TAB && !should_descend &&
+          !result.is_space_suppressed)
+      {
         itl_completion_append_space(le);
+      }
 
       /* A menu that stays open lists the word after the accepted one, or its
          no-match row when that word has no candidates, until esc closes it. */
@@ -14289,7 +14319,8 @@ itl_kill_ring_at_distance(size_t distance)
 
 /* Copies the span [from, to) of the line into the kill ring. A kill that
    follows another kill grows the newest entry, at its end for a forward kill
-   and at its start for a backward one, so the entry reads as the line did. */
+   and at its start for a backward one, so the entry holds the text as the line
+   did. */
 ITL_DEF void
 itl_kill_ring_save(const itl_string_t *line,
                    size_t              from,
@@ -15230,7 +15261,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
     itl_g_tty_should_refresh_text = false;
   } break;
   case TL_KEY_ENTER: {
-    bool insert_newline =
+    bool should_insert_newline =
         (esc & TL_MOD_ALT) != 0 || itl_g_save_callback != NULL;
 
     /* A file host saves with its own keys, so Enter starts a new line, and
@@ -15252,7 +15283,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
     /* A trailing backslash at the end of the line continues it, fish-style. A
        backslash with text after it submits the line instead, and so does an
        even run, where the last backslash is itself escaped. */
-    if (!insert_newline && le->cursor_position == le->line->length) {
+    if (!should_insert_newline && le->cursor_position == le->line->length) {
       size_t backslash_count = 0;
 
       while (backslash_count < le->cursor_position &&
@@ -15261,7 +15292,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
       {
         backslash_count += 1;
       }
-      insert_newline = backslash_count % 2 == 1;
+      should_insert_newline = backslash_count % 2 == 1;
     }
     /* A bare newline always submits. Real pastes arrive inside the bracketed
        paste markers requested at raw enter, and a terminal without them
@@ -15269,7 +15300,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
        pending-input heuristic here would instead merge typed-ahead commands,
        tmux send-keys of "su user" then "cd dir", into one multiline buffer,
        running the second line in the outer shell after the first returns. */
-    if (insert_newline) {
+    if (should_insert_newline) {
       itl_le_insert(le, itl_newline_char);
       break;
     }
@@ -15526,7 +15557,7 @@ itl_le_paste_insert_byte(itl_le_t *le, uint8_t byte)
   itl_le_insert(le, itl_utf8_parse(byte));
 }
 
-/* Reads a bracketed paste body up to the ESC [ 201 ~ terminator, inserting its
+/* Takes a bracketed paste body up to the ESC [ 201 ~ terminator, inserting its
    content into the line. Multibyte characters are assembled from their own
    bytes instead of `itl_utf8_parse`, so a truncated sequence right before the
    terminator cannot swallow the terminator's ESC and hang. The terminator bytes
@@ -15537,14 +15568,14 @@ itl_le_read_paste(itl_le_t *le)
   static const char end_sequence[] = {0x1B, '[', '2', '0', '1', '~'};
   size_t            match          = 0;
   uint8_t           byte;
-  bool              have_byte = false;
+  bool              has_byte = false;
 
   itl_g_paste_was_cr = false;
   while (true) {
-    if (!have_byte && !ITL_READ_BYTE(&byte)) {
+    if (!has_byte && !ITL_READ_BYTE(&byte)) {
       return; /* A read error or EOF ends the paste. */
     }
-    have_byte = false;
+    has_byte = false;
 
     if (byte == (uint8_t) end_sequence[match]) {
       match += 1;
@@ -15578,7 +15609,7 @@ itl_le_read_paste(itl_le_t *le)
         continue;
       }
 
-      /* Read the continuation bytes here. A byte that is not a continuation is
+      /* Take the continuation bytes here. A byte that is not a continuation is
          left for the next iteration so the terminator is never lost. */
       itl_g_paste_was_cr = false;
       ch.bytes[0]        = byte;
@@ -15587,7 +15618,7 @@ itl_le_read_paste(itl_le_t *le)
           return;
         }
         if ((byte & 0xC0) != 0x80) {
-          have_byte = true;
+          has_byte = true;
           break;
         }
         ch.bytes[k] = byte;
@@ -15975,7 +16006,7 @@ itl_history_search(itl_le_t *le)
   size_t saved_prompt_width = le->prompt_width;
 
   int  result   = TL_KEY_UNKN;
-  bool accepted = false;
+  bool was_accepted = false;
   /* When search starts on the draft, the current line is the user's draft and
      must be saved so a later step past the newest entry can restore it. */
   bool    was_on_draft = (le->history_selected_index == ITL_HISTORY_NONE);
@@ -16201,8 +16232,8 @@ itl_history_search(itl_le_t *le)
           /* A shorter query can match entries its longer form rejected, so the
              scan restarts from the newest entry. */
           if (query.length > 0) {
-            match         = itl_history_find_match(query_bytes, query_size,
-                                                   ITL_HISTORY_NEWEST(), &match_str);
+            match = itl_history_find_match(query_bytes, query_size,
+                                           ITL_HISTORY_NEWEST(), &match_str);
             is_narrowable = true;
           } else {
             match         = ITL_HISTORY_NONE;
@@ -16220,7 +16251,7 @@ itl_history_search(itl_le_t *le)
         }
         break;
       } else {
-        accepted = true;
+        was_accepted = true;
         result =
             (kind == TL_KEY_ENTER || kind == TL_KEY_TAB) ? TL_KEY_UNKN : key;
         break;
@@ -16237,7 +16268,7 @@ itl_history_search(itl_le_t *le)
 
   /* The draft was never written while the search block was displayed, so a
      cancelled search needs no restoring copy. */
-  if (accepted && match != ITL_HISTORY_NONE) {
+  if (was_accepted && match != ITL_HISTORY_NONE) {
     /* Preserve the pre-search draft so stepping down past the newest entry
        restores it rather than a stale draft. */
     if (was_on_draft) {
@@ -16585,7 +16616,7 @@ itl_vi_resolve_motion(itl_le_t  *le,
   size_t        pos    = le->cursor_position;
   size_t        target = pos;
   size_t        k;
-  bool          found;
+  bool          is_found;
 
   ITL_PTR_ASSIGN(is_inclusive, false);
   ITL_PTR_ASSIGN(is_valid, true);
@@ -16669,8 +16700,8 @@ itl_vi_resolve_motion(itl_le_t  *le,
     bool is_till    = (motion_key == 't' || motion_key == 'T');
 
     target = itl_vi_find_char(line, pos, find_char, is_forward, is_till, count,
-                              &found);
-    if (!found) {
+                              &is_found);
+    if (!is_found) {
       ITL_PTR_ASSIGN(is_valid, false);
     } else if (is_forward) {
       ITL_PTR_ASSIGN(is_inclusive, true);
@@ -16697,8 +16728,8 @@ itl_vi_resolve_motion(itl_le_t  *le,
     }
 
     target = itl_vi_find_char(line, pos, itl_g_vi_find.target_char, is_forward,
-                              itl_g_vi_find.is_till, count, &found);
-    if (!found) {
+                              itl_g_vi_find.is_till, count, &is_found);
+    if (!is_found) {
       ITL_PTR_ASSIGN(is_valid, false);
     } else if (is_forward) {
       ITL_PTR_ASSIGN(is_inclusive, true);
@@ -17256,7 +17287,9 @@ itl_vi_repeat_last_change(itl_le_t *le)
       le->cursor_position = itl_le_line_end_of(le, le->cursor_position);
       break;
     case 'o':
-    case 'O': itl_vi_open_line(le, itl_g_vi_last_change.motion_key == 'O'); break;
+    case 'O':
+      itl_vi_open_line(le, itl_g_vi_last_change.motion_key == 'O');
+      break;
     case 'I': {
       itl_utf8_t none = ITL_ZERO_INIT;
       bool       is_inclusive, is_valid;
@@ -17281,7 +17314,7 @@ itl_vi_repeat_last_change(itl_le_t *le)
     bool is_doubled = (motion_key == 'd' || motion_key == 'c' ||
                        motion_key == 'y' || motion_key == 'q');
     bool did_apply = false;
-    bool have_insert_text =
+    bool has_insert_text =
         itl_g_vi_last_change.did_enter_insert &&
         itl_g_vi_last_change.inserted_text != NULL &&
         itl_string_to_cstr(itl_g_vi_last_change.inserted_text, text,
@@ -17306,7 +17339,7 @@ itl_vi_repeat_last_change(itl_le_t *le)
 
     itl_g_vi_is_recording_insert = false;
 
-    if (did_apply && have_insert_text) {
+    if (did_apply && has_insert_text) {
       itl_le_insert_cstr(le, text);
     }
     if (did_apply && itl_g_vi_last_change.did_enter_insert) {
@@ -17332,7 +17365,7 @@ itl_vi_repeat_last_change(itl_le_t *le)
   return TL_SUCCESS;
 }
 
-/* Reads the target of an f, F, t or T motion. Any other key, or a find the
+/* Takes the target of an f, F, t or T motion. Any other key, or a find the
    terminal never completes, yields the zero character. */
 ITL_DEF itl_utf8_t
 itl_vi_read_find_char(itl_le_t *le, uint8_t motion_byte)
@@ -17354,7 +17387,7 @@ itl_vi_read_find_char(itl_le_t *le, uint8_t motion_byte)
   return find_char;
 }
 
-/* Reads the next key of a selection loop. A false result ends the loop: the
+/* Takes the next key of a selection loop. A false result ends the loop: the
    input ended, a bare escape arrived, or the key is unknown. */
 ITL_DEF bool
 itl_modal_read_key(uint8_t *byte, int *key)
@@ -17930,7 +17963,7 @@ itl_vi_ex_is_write_quit(const char *command)
          strcmp(command, "x") == 0;
 }
 
-/* Reads one field of an ex substitution up to an unescaped delimiter into
+/* Parses one field of an ex substitution up to an unescaped delimiter into
    field, where a backslash before the delimiter keeps it literal. Returns the
    position past the field, or NULL when field_size is too small. */
 ITL_DEF const char *
@@ -17959,8 +17992,8 @@ itl_vi_ex_substitute_field(const char *at,
 
 /* One substitution: the text to find and its replacement. is_regex matches a
    POSIX basic regular expression when regex support is built in. The vi
-   replacement reads & as the match, and with is_emacs_syntax the replacement
-   reads \& as the match instead, as replace-regexp does. In both, \1 through
+   replacement takes & as the match, and with is_emacs_syntax the replacement
+   takes \& as the match instead, as replace-regexp does. In both, \1 through
    \9 stand for the groups. */
 typedef struct
 {
@@ -18614,7 +18647,7 @@ itl_find_step(const itl_string_t *line,
   itl_find_refresh(line, text);
 }
 
-/* Reads a line of text into text on a row under the buffer, after label, as
+/* Takes a line of text into text on a row under the buffer, after label, as
    the colon command line and the M-x minibuffer do. The buffer and the caret
    stay as they were. With kind ITL_PREFIX_EMACS_X, TAB completes a command.
    Returns true when Enter accepts the text, and false when Escape, Ctrl-C,
@@ -18700,7 +18733,8 @@ itl_minibuffer_read(itl_le_t       *le,
       ITL_CHAR_BUF_CLEAR(status);
       /* The display is original plus '\n', the label, and the text, so its
          length must stay under ITL_STRING_MAX_LEN or itl_string_from_bytes
-         traps. Clip the preview of the original line to the remaining budget. */
+         traps. The preview of the original line is clipped to the remaining
+         budget. */
       {
         size_t budget = ITL_STRING_MAX_LEN - 1 - label_length - text_length;
         itl_string_copy(preview, original);
@@ -19155,10 +19189,11 @@ itl_emacs_read_replacement(itl_le_t         *le,
 ITL_DEF bool
 itl_emacs_read_option(itl_le_t *le, int action)
 {
-  char option[64];
-  char value[64];
-  char label[96];
-  bool is_read;
+  char        option[64];
+  char        value[64];
+  char        label[96];
+  const char *option_label;
+  bool        is_read;
 
   if (itl_g_option_callback == NULL) {
     return false;
@@ -19169,11 +19204,15 @@ itl_emacs_read_option(itl_le_t *le, int action)
             "save it, or enter on nothing to save every option"
           : "pressed M-x\ntab to complete the option, enter to choose it";
   itl_g_minibuffer_completes_options = true;
-  is_read = itl_minibuffer_read(le,
-                                action == ITL_EMACS_SET_OPTION   ? "Set option: "
-                                : action == ITL_EMACS_GET_OPTION ? "Get option: "
-                                    : "Save option: ",
-                                ITL_PREFIX_MINIBUFFER, option, sizeof(option));
+  if (action == ITL_EMACS_SET_OPTION) {
+    option_label = "Set option: ";
+  } else if (action == ITL_EMACS_GET_OPTION) {
+    option_label = "Get option: ";
+  } else {
+    option_label = "Save option: ";
+  }
+  is_read = itl_minibuffer_read(le, option_label, ITL_PREFIX_MINIBUFFER, option,
+                                sizeof(option));
   itl_g_minibuffer_completes_options = false;
   if (!is_read || (option[0] == '\0' && action != ITL_EMACS_SAVE_OPTION)) {
     return false;
@@ -19768,8 +19807,8 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
     }
 
     /* Ctrl-X waits for its chord in the editor's own wait, so the hint rows can
-       name the chord and a resize or the idle hook is still served. The parser
-       then reads the chord, and an unbound key starts the next key. */
+       show the chord and a resize or the idle hook is still served. The parser
+       then takes the chord, and an unbound key starts the next key. */
     /* Ctrl-X chords belong to emacs mode, so vi mode ignores the key. */
     if (input_byte == 24 && itl_g_edit_mode != TL_EDIT_MODE_EMACS) {
       continue;
