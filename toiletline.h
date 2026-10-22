@@ -6649,6 +6649,24 @@ itl_le_commit_render(const char              *render,
   itl_le_save_prev_spans(spans, span_count);
 }
 
+/* Fills the serialized line from the render of the last text frame, for a
+   frame that starts without a text change and so shows the same line. */
+ITL_DEF void
+itl_le_reuse_prev_render(const itl_le_t *le)
+{
+  if (itl_g_serialized_line_ready ||
+      itl_g_le_prev_render_len != le->line->size ||
+      itl_g_le_prev_length != le->line->length ||
+      le->line->size >= sizeof(itl_g_serialized_line))
+  {
+    return;
+  }
+
+  memcpy(itl_g_serialized_line, itl_g_le_prev_render, le->line->size);
+  itl_g_serialized_line[le->line->size] = '\0';
+  itl_g_serialized_line_ready           = true;
+}
+
 ITL_DEF bool
 itl_le_serialize_line(itl_le_t *le)
 {
@@ -6859,6 +6877,9 @@ ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_line_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_geometry[4];
 ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_end_row = 0;
 ITL_DEF ITL_THREAD_LOCAL bool           itl_g_row_index_is_valid = false;
+/* True while the index describes the line as the last frame drew it, which
+   holds until a key changes the text and asks for a text refresh. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_row_index_is_current = false;
 
 /* The last line of the row index whose entry at offset, 0 for the start and
    1 for the row, is at or below value. */
@@ -6902,7 +6923,15 @@ itl_le_row_index(const itl_le_t *le,
       itl_g_row_index_geometry[2] == first_row &&
       itl_g_row_index_geometry[3] == first_col)
   {
-    size_t common = ITL_MIN(itl_g_row_index_text.size, text_size);
+    size_t common;
+
+    if (itl_g_row_index_is_current && !itl_g_tty_should_refresh_text &&
+        itl_g_row_index_text.size == text_size)
+    {
+      return (const size_t *) (const void *) itl_g_row_index_lines.data;
+    }
+
+    common = ITL_MIN(itl_g_row_index_text.size, text_size);
 
     /* Whole blocks first, then the bytes of the block that differs. */
     while (same_size + 4096 <= common &&
@@ -6917,6 +6946,7 @@ itl_le_row_index(const itl_le_t *le,
       same_size += 1;
     }
     if (same_size == common && itl_g_row_index_text.size == text_size) {
+      itl_g_row_index_is_current = true;
       return (const size_t *) (const void *) itl_g_row_index_lines.data;
     }
   } else {
@@ -6967,6 +6997,7 @@ itl_le_row_index(const itl_le_t *le,
   itl_g_row_index_geometry[2] = first_row;
   itl_g_row_index_geometry[3] = first_col;
   itl_g_row_index_is_valid    = true;
+  itl_g_row_index_is_current  = true;
 
   return (const size_t *) (const void *) itl_g_row_index_lines.data;
 }
@@ -8724,6 +8755,14 @@ itl_le_tty_refresh(itl_le_t *le)
   size_t row_saved_hint_len = 0, row_saved_hint_rows = 0;
   /* A first render draws on a screen the stored rows do not describe. */
   bool was_first_render = itl_g_tty_first_render;
+
+  /* A frame that starts without a text change shows the line of the last
+     frame, whatever else it redraws. */
+  bool did_text_change = itl_g_tty_should_refresh_text;
+
+  if (did_text_change) {
+    itl_g_row_index_is_current = false;
+  }
 #if defined ITL_POSIX
   sigset_t previous_signals;
 
@@ -8781,6 +8820,16 @@ itl_le_tty_refresh(itl_le_t *le)
      caret in view, and every frame of it is a full redraw of that window. */
   bool   was_view_active = itl_g_view_is_active;
   bool   is_view_active  = false;
+  /* A window frame where only the caret moved inside the same window keeps the
+     rows on screen and redraws only the rows under it that changed. A
+     selection, a search, a command line, or several carets color rows by the
+     caret, so they always redraw the window. */
+  bool is_window_caret_frame =
+      !itl_g_tty_should_refresh_text && !is_resize && !itl_g_tty_first_render &&
+      !itl_g_search_spans_active && !itl_g_multicursor_active &&
+      !itl_g_is_finding && itl_g_minibuffer_label == NULL &&
+      itl_g_edit_mode != TL_EDIT_MODE_VI_VISUAL;
+  bool should_draw_hint_only = false;
   size_t view_rows       = itl_le_view_rows(tty_rows);
   size_t view_top        = 0;
   size_t view_end        = (size_t) -1;
@@ -8813,12 +8862,17 @@ itl_le_tty_refresh(itl_le_t *le)
                        ? 0
                        : ITL_MIN(le->prompt_rows + 1, m.cursor_row);
       }
-      view_end                      = view_top + view_rows;
-      itl_g_tty_should_refresh_text = true;
+      view_end = view_top + view_rows;
+      if (!is_window_caret_frame || !was_view_active ||
+          view_top != itl_g_view_top_row)
+      {
+        is_window_caret_frame         = false;
+        itl_g_tty_should_refresh_text = true;
+      }
     }
     /* The stored geometry of a window does not match a block that fits again,
        so leaving the window redraws everything. */
-    if (was_view_active) {
+    if (was_view_active && !is_view_active) {
       itl_g_tty_should_refresh_text = true;
     }
   }
@@ -8846,9 +8900,12 @@ itl_le_tty_refresh(itl_le_t *le)
       (itl_g_hint_callback != NULL || itl_g_full_screen ||
        should_follow_highlight))
   {
-    bool   was_serialized = itl_g_serialized_line_ready;
-    bool   is_serialized  = itl_le_serialize_line(le);
-    size_t cursor_offset  = itl_le_cursor_byte_offset(le);
+    bool was_serialized = itl_g_serialized_line_ready;
+
+    itl_le_reuse_prev_render(le);
+
+    bool   is_serialized = itl_le_serialize_line(le);
+    size_t cursor_offset = itl_le_cursor_byte_offset(le);
 
     if (itl_g_hint_callback != NULL || itl_g_full_screen) {
       if (is_serialized) {
@@ -8871,7 +8928,11 @@ itl_le_tty_refresh(itl_le_t *le)
       }
     }
     if (is_hint_ready && !itl_hint_is_unchanged()) {
-      itl_g_tty_should_refresh_text = true;
+      if (is_view_active && is_window_caret_frame) {
+        should_draw_hint_only = true;
+      } else {
+        itl_g_tty_should_refresh_text = true;
+      }
     }
     /* A text refresh below takes the line serialized here, since nothing
        edits it in between. */
@@ -8919,12 +8980,15 @@ itl_le_tty_refresh(itl_le_t *le)
   tl_highlight_span itl_syntax_spans[ITL_HIGHLIGHT_MAX_SPANS];
   const char       *append_tail_sgr = NULL;
   if (itl_g_tty_should_refresh_text) {
+    if (!did_text_change) {
+      itl_le_reuse_prev_render(le);
+    }
     have_cur_render             = itl_le_serialize_line(le);
     itl_g_serialized_line_ready = false;
     if (itl_g_search_spans_active &&
         (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
          itl_g_multicursor_active || itl_g_minibuffer_row_start > 0 ||
-         itl_g_is_finding) &&
+         itl_g_minibuffer_label != NULL || itl_g_is_finding) &&
         have_cur_render && itl_should_run_highlight())
     {
       size_t syntax_count = itl_le_collect_highlight(
@@ -9343,6 +9407,18 @@ itl_le_tty_refresh(itl_le_t *le)
       is_metrics_ready = true;
     }
 
+    /* A caret past the last character has no cell of its own, so while the
+       command line holds the real cursor a reversed space marks it. */
+    if (itl_g_minibuffer_label != NULL && itl_g_colors_enabled &&
+        le->cursor_position == le->line->length && row >= view_top &&
+        row < view_end && col < cols)
+    {
+      itl_char_buf_append_cstr(b, ITL_VI_SGR_SELECT);
+      itl_char_buf_append_byte(b, ' ');
+      itl_char_buf_append_cstr(b, ITL_HIGHLIGHT_RESET);
+      in_span = false;
+    }
+
     /* A span that runs to the end of the line never hit its close in the loop,
        so its reset is emitted here. */
     if (in_span || is_view_active) {
@@ -9424,12 +9500,25 @@ itl_le_tty_refresh(itl_le_t *le)
       }
     }
   } else {
-    /* Only the caret moved, so step from the previously stored caret row. */
-    size_t prev_row = itl_g_le_prev_cursor_row - 1;
-    if (m.cursor_row < prev_row) {
-      ITL_TTY_MOVE_UP(b, prev_row - m.cursor_row);
-    } else if (m.cursor_row > prev_row) {
-      ITL_TTY_MOVE_DOWN(b, m.cursor_row - prev_row);
+    /* Only the caret moved, so step from the previously stored caret row. A
+       window stores rows from its top. */
+    size_t prev_row   = itl_g_le_prev_cursor_row - 1;
+    size_t cursor_row = m.cursor_row - (is_view_active ? view_top : 0);
+
+    if (should_draw_hint_only) {
+      /* The rows under a window start after its last row. */
+      if (view_rows - 1 > prev_row) {
+        ITL_TTY_MOVE_DOWN(b, view_rows - 1 - prev_row);
+      } else if (view_rows - 1 < prev_row) {
+        ITL_TTY_MOVE_UP(b, prev_row - (view_rows - 1));
+      }
+      itl_le_tty_draw_hint(b, itl_hint_row_budget(tty_rows, view_rows));
+      prev_row = view_rows - 1;
+    }
+    if (cursor_row < prev_row) {
+      ITL_TTY_MOVE_UP(b, prev_row - cursor_row);
+    } else if (cursor_row > prev_row) {
+      ITL_TTY_MOVE_DOWN(b, cursor_row - prev_row);
     }
   }
 
@@ -18922,6 +19011,13 @@ itl_minibuffer_read(itl_le_t       *le,
         le->cursor_position = itl_g_find_has_match ? itl_g_find_match_start
                                                    : saved_cursor;
         itl_g_search_spans_active = itl_g_find_has_match;
+      } else {
+        /* The caret leaves the buffer for the command line, so a reversed
+           cell keeps its place in view. */
+        itl_g_search_span_count = 0;
+        itl_search_push_span(le->cursor_position, le->cursor_position + 1,
+                             ITL_VI_SGR_SELECT);
+        itl_g_search_spans_active = itl_g_search_span_count > 0;
       }
       itl_frame_batch_begin();
       itl_g_tty_should_refresh_text = true;
