@@ -3946,6 +3946,10 @@ itl_history_read_entry_buffered(size_t offset, itl_string_t *out)
 ITL_DEF void
 itl_char_buf_append_bytes(itl_char_buf_t *cb, const char *data, size_t size)
 {
+  /* An empty buffer may have no storage yet, and memcpy takes no NULL. */
+  if (size == 0) {
+    return;
+  }
   itl_char_buf_reserve(cb, cb->size + size);
 
   memcpy(cb->data + cb->size, data, size);
