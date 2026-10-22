@@ -6602,9 +6602,31 @@ ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_geometry[4];
 ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_end_row = 0;
 ITL_DEF ITL_THREAD_LOCAL bool           itl_g_row_index_is_valid = false;
 
+/* The last line of the row index whose entry at offset, 0 for the start and
+   1 for the row, is at or below value. */
+ITL_DEF size_t
+itl_row_index_find(const size_t *lines, size_t offset, size_t value)
+{
+  size_t low = 0, high = itl_g_row_index_line_count;
+
+  while (high - low > 1) {
+    size_t middle = low + (high - low) / 2;
+
+    if (lines[2 * middle + offset] <= value) {
+      low = middle;
+    } else {
+      high = middle;
+    }
+  }
+
+  return low;
+}
+
 /* Returns the row index of the buffer, built again when the characters or
    the geometry changed. Entry 2k is the start of line k and entry 2k + 1 its
-   row. */
+   row. After an edit, the lines that start at or before the first changed
+   character keep their entries, since a row depends only on the characters
+   before its line, and the walk starts again at the last of them. */
 ITL_DEF const size_t *
 itl_le_row_index(const itl_le_t *le,
                  size_t          cols,
@@ -6612,25 +6634,54 @@ itl_le_row_index(const itl_le_t *le,
                  size_t          first_row,
                  size_t          first_col)
 {
-  size_t text_size = le->line->length * sizeof(itl_utf8_t);
-  size_t row = first_row, col = first_col, i = 0;
+  size_t      text_size = le->line->length * sizeof(itl_utf8_t);
+  size_t      row = first_row, col = first_col, i = 0;
+  size_t      same_size = 0;
+  const char *old_text  = itl_g_row_index_text.data;
 
   if (itl_g_row_index_is_valid && itl_g_row_index_geometry[0] == cols &&
       itl_g_row_index_geometry[1] == indent &&
       itl_g_row_index_geometry[2] == first_row &&
-      itl_g_row_index_geometry[3] == first_col &&
-      itl_g_row_index_text.size == text_size &&
-      (text_size == 0 ||
-       memcmp(itl_g_row_index_text.data, le->line->chars, text_size) == 0))
+      itl_g_row_index_geometry[3] == first_col)
   {
-    return (const size_t *) (const void *) itl_g_row_index_lines.data;
+    size_t common = ITL_MIN(itl_g_row_index_text.size, text_size);
+
+    /* Whole blocks first, then the bytes of the block that differs. */
+    while (same_size + 4096 <= common &&
+           memcmp(old_text + same_size,
+                  (const char *) le->line->chars + same_size, 4096) == 0)
+    {
+      same_size += 4096;
+    }
+    while (same_size < common &&
+           old_text[same_size] == ((const char *) le->line->chars)[same_size])
+    {
+      same_size += 1;
+    }
+    if (same_size == common && itl_g_row_index_text.size == text_size) {
+      return (const size_t *) (const void *) itl_g_row_index_lines.data;
+    }
+  } else {
+    itl_g_row_index_line_count = 0;
   }
 
-  ITL_CHAR_BUF_CLEAR(&itl_g_row_index_text);
-  ITL_CHAR_BUF_CLEAR(&itl_g_row_index_lines);
+  if (itl_g_row_index_line_count > 0) {
+    const size_t *lines = (const size_t *) (const void *)
+                              itl_g_row_index_lines.data;
+    size_t        kept  = itl_row_index_find(lines, 0,
+                                             same_size / sizeof(itl_utf8_t));
+
+    i   = lines[2 * kept];
+    row = lines[2 * kept + 1];
+    col = kept == 0 ? first_col : indent;
+    itl_g_row_index_line_count = kept;
+  }
+
+  itl_g_row_index_text.size  = i * sizeof(itl_utf8_t);
+  itl_g_row_index_lines.size = itl_g_row_index_line_count * 2 * sizeof(size_t);
   itl_char_buf_append_bytes(&itl_g_row_index_text,
-                            (const char *) le->line->chars, text_size);
-  itl_g_row_index_line_count = 0;
+                            (const char *) (le->line->chars + i),
+                            text_size - i * sizeof(itl_utf8_t));
 
   for (;;) {
     size_t line_end = itl_le_line_end_of(le, i);
@@ -6660,26 +6711,6 @@ itl_le_row_index(const itl_le_t *le,
   itl_g_row_index_is_valid    = true;
 
   return (const size_t *) (const void *) itl_g_row_index_lines.data;
-}
-
-/* The last line of the row index whose entry at offset, 0 for the start and
-   1 for the row, is at or below value. */
-ITL_DEF size_t
-itl_row_index_find(const size_t *lines, size_t offset, size_t value)
-{
-  size_t low = 0, high = itl_g_row_index_line_count;
-
-  while (high - low > 1) {
-    size_t middle = low + (high - low) / 2;
-
-    if (lines[2 * middle + offset] <= value) {
-      low = middle;
-    } else {
-      high = middle;
-    }
-  }
-
-  return low;
 }
 
 /* Walks the buffer once and computes the cursor's visual row and column plus
@@ -7916,6 +7947,10 @@ itl_string_byte_offset(const itl_string_t *line, size_t index)
   size_t offset = 0;
   size_t i;
 
+  /* Every codepoint of a line with as many bytes as codepoints is one byte. */
+  if (line->size == line->length) {
+    return ITL_MIN(index, line->length);
+  }
   for (i = 0; i < index && i < line->length; ++i) {
     offset += line->chars[i].size;
   }
@@ -8577,10 +8612,13 @@ itl_le_tty_refresh(itl_le_t *le)
         itl_g_tty_should_refresh_text = true;
       }
     }
-    itl_g_serialized_line_ready = was_serialized;
-
     if (is_hint_ready && !itl_hint_is_unchanged()) {
       itl_g_tty_should_refresh_text = true;
+    }
+    /* A text refresh below takes the line serialized here, since nothing
+       edits it in between. */
+    if (!itl_g_tty_should_refresh_text) {
+      itl_g_serialized_line_ready = was_serialized;
     }
   }
 
