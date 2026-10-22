@@ -2491,8 +2491,8 @@ test_completion_is_one_undo_step(void)
   "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7"
 
 /* Left, Right, Backspace, and Delete step over a whole emoji sequence, and
-   the line, a prompt, and a C string all count it as two columns, the width
-   a terminal draws it with. */
+   the line, a prompt, a C string, and a menu cell all count it as two
+   columns, the width a terminal draws it with. */
 static bool
 test_emoji_sequences_move_and_measure_whole(void)
 {
@@ -2514,16 +2514,19 @@ test_emoji_sequences_move_and_measure_whole(void)
 
   for (i = 0; i < countof(widths); ++i) {
     size_t columns = itl_cstr_display_width(widths[i].text);
+    size_t cell_columns =
+        itl_visible_width(widths[i].text, strlen(widths[i].text));
 
     ITL_STRING_FROM_CSTR(line, widths[i].text);
     itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
     le.cursor_position = line->length;
     metrics = itl_le_compute_metrics(&le, 80);
     if (columns != widths[i].columns ||
-        metrics.cursor_col != widths[i].columns)
+        metrics.cursor_col != widths[i].columns ||
+        cell_columns != widths[i].columns)
     {
-      TEST_PRINTF("sequence %zu measured %zu and %zu columns\n", i, columns,
-                  metrics.cursor_col);
+      TEST_PRINTF("sequence %zu measured %zu, %zu, and %zu columns\n", i,
+                  columns, metrics.cursor_col, cell_columns);
       ok = false;
     }
   }

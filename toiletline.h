@@ -4154,26 +4154,33 @@ itl_char_buf_append_line_char(itl_char_buf_t *cb, itl_utf8_t ch)
    starts the text. A byte that begins no valid sequence is one byte drawn as
    a hex escape, and a control draws in its notation, so every byte belongs to
    exactly one step and none reaches the terminal raw. The host counts its
-   spans over the same raw bytes. */
+   spans over the same raw bytes. is_after_joiner carries the joiner state
+   from one step to the next, as itl_line_char_width counts it. */
 ITL_DEF void
 itl_visible_step(const char *text,
                  size_t      byte_length,
+                 bool       *is_after_joiner,
                  size_t     *out_bytes,
                  size_t     *out_width)
 {
   itl_utf8_t ch;
+  bool       was_after_joiner = *is_after_joiner;
 
-  *out_bytes = 1;
-  *out_width = ITL_HEX_NOTATION_WIDTH;
+  *out_bytes       = 1;
+  *out_width       = ITL_HEX_NOTATION_WIDTH;
+  *is_after_joiner = false;
 
   if (!itl_utf8_decode_at(text, byte_length, &ch)) {
     return;
   }
 
-  *out_bytes = ch.size;
+  *out_bytes       = ch.size;
+  *is_after_joiner = itl_char_is_zero_width_joiner(ch);
   if (itl_char_has_visible_notation(ch)) {
     *out_width =
         ch.size == 1 ? ITL_CARET_NOTATION_WIDTH : ITL_HEX_NOTATION_WIDTH;
+  } else if (was_after_joiner && ch.size > 1) {
+    *out_width = 0;
   } else {
     *out_width = itl_char_width(ch);
   }
@@ -4204,14 +4211,16 @@ itl_char_buf_append_visible_step(itl_char_buf_t *cb,
 ITL_DEF size_t
 itl_visible_width(const char *text, size_t length)
 {
-  size_t offset = 0;
-  size_t width  = 0;
+  size_t offset          = 0;
+  size_t width           = 0;
+  bool   is_after_joiner = false;
 
   while (offset < length) {
     size_t step_bytes = 0;
     size_t step_width = 0;
 
-    itl_visible_step(text + offset, length - offset, &step_bytes, &step_width);
+    itl_visible_step(text + offset, length - offset, &is_after_joiner,
+                     &step_bytes, &step_width);
     offset += step_bytes;
     width += step_width;
   }
@@ -4230,14 +4239,16 @@ itl_char_buf_append_visible(itl_char_buf_t *cb,
                             size_t          width,
                             bool            should_allow_overrun)
 {
-  size_t offset = 0;
-  size_t drawn  = 0;
+  size_t offset          = 0;
+  size_t drawn           = 0;
+  bool   is_after_joiner = false;
 
   while (offset < length) {
     size_t step_bytes = 0;
     size_t step_width = 0;
 
-    itl_visible_step(text + offset, length - offset, &step_bytes, &step_width);
+    itl_visible_step(text + offset, length - offset, &is_after_joiner,
+                     &step_bytes, &step_width);
     if (step_width > 0 &&
         (should_allow_overrun ? drawn >= width : drawn + step_width > width))
     {
@@ -7860,7 +7871,8 @@ itl_hint_compose(const char *line,
 
   i = 0;
   while (i < text_bytes) {
-    uint8_t byte = (uint8_t) returned[i];
+    uint8_t byte            = (uint8_t) returned[i];
+    bool    is_after_joiner = false;
     size_t  step_bytes, step_width;
     bool    is_notation;
 
@@ -7870,7 +7882,8 @@ itl_hint_compose(const char *line,
       continue;
     }
 
-    itl_visible_step(returned + i, text_bytes - i, &step_bytes, &step_width);
+    itl_visible_step(returned + i, text_bytes - i, &is_after_joiner,
+                     &step_bytes, &step_width);
     is_notation = step_bytes == 1
                       ? byte < 0x20 || byte >= 0x7F
                       : byte == 0xC2 && (uint8_t) returned[i + 1] < 0xA0;
@@ -7896,19 +7909,25 @@ itl_hint_compose(const char *line,
   itl_hint_layout(cols, row_budget);
 }
 
+/* The byte offset of the codepoint at index in line. */
+ITL_DEF size_t
+itl_string_byte_offset(const itl_string_t *line, size_t index)
+{
+  size_t offset = 0;
+  size_t i;
+
+  for (i = 0; i < index && i < line->length; ++i) {
+    offset += line->chars[i].size;
+  }
+
+  return offset;
+}
+
 /* The caret's byte offset into the serialized line. */
 ITL_DEF size_t
 itl_le_cursor_byte_offset(const itl_le_t *le)
 {
-  size_t stop   = ITL_MIN(le->cursor_position, le->line->length);
-  size_t offset = 0;
-  size_t i;
-
-  for (i = 0; i < stop; ++i) {
-    offset += le->line->chars[i].size;
-  }
-
-  return offset;
+  return itl_string_byte_offset(le->line, le->cursor_position);
 }
 
 ITL_DEF bool
@@ -8114,10 +8133,10 @@ itl_row_cache_matches(const itl_char_buf_t *rows,
 }
 
 /* The bytes at the start of a new row that equal its previous version and
-   end at a point where drawing can resume: after an escape sequence or a
-   printable ASCII character, at a column before cols. column is set to the
-   screen column there. A wider or joined character ends the run, so the
-   column stays exact. */
+   end at a point where drawing can resume: after a CSI or two-byte escape
+   sequence or a printable ASCII character, at a column before cols. column is
+   set to the screen column there. A wider or joined character or an OSC
+   sequence ends the run, so the column stays exact. */
 ITL_DEF size_t
 itl_row_common_prefix(const char *row,
                       size_t      size,
@@ -8133,6 +8152,9 @@ itl_row_common_prefix(const char *row,
     if (row[i] == 0x1b) {
       size_t end = i + 1;
 
+      if (end < size && row[end] == ']') {
+        break;
+      }
       if (end < size && row[end] == '[') {
         end += 1;
         while (end < size && !(row[end] >= 0x40 && row[end] <= 0x7e)) {
@@ -10868,6 +10890,7 @@ itl_menu_append_colored_cell(itl_char_buf_t          *b,
   size_t drawn           = 0;
   size_t next_span       = 0;
   size_t open_span       = span_count;
+  bool   is_after_joiner = false;
 
   itl_char_buf_reserve(b, b->size + text_bytes + width);
 
@@ -10896,8 +10919,8 @@ itl_menu_append_colored_cell(itl_char_buf_t          *b,
       open_span = active;
     }
 
-    itl_visible_step(text + byte_offset, text_bytes - byte_offset, &step_bytes,
-                     &step_width);
+    itl_visible_step(text + byte_offset, text_bytes - byte_offset,
+                     &is_after_joiner, &step_bytes, &step_width);
 
     if (step_width > 0 && drawn + step_width > text_width) {
       break;
@@ -16735,7 +16758,7 @@ itl_le_wrap_lines(itl_le_t *le, size_t first, size_t last)
       indent_width    = 0;
 
       for (k = indent_start; k < indent_end; ++k) {
-        indent_width += itl_char_line_width(le->line->chars[k]);
+        indent_width += itl_line_char_width(le->line->chars, k);
       }
 
       column = (size_t) -1;
@@ -16754,7 +16777,7 @@ itl_le_wrap_lines(itl_le_t *le, size_t first, size_t last)
 
       word_start = j;
       while (j < line_end && !ITL_LE_IS_BLANK(le->line->chars[j])) {
-        word_width += itl_char_line_width(le->line->chars[j]);
+        word_width += itl_line_char_width(le->line->chars, j);
         j += 1;
       }
 
@@ -17921,20 +17944,6 @@ typedef struct
   bool   is_regex;
   bool   is_emacs_syntax;
 } itl_substitution;
-
-/* The byte offset of the codepoint at index in line. */
-ITL_DEF size_t
-itl_string_byte_offset(const itl_string_t *line, size_t index)
-{
-  size_t offset = 0;
-  size_t i;
-
-  for (i = 0; i < index && i < line->length; ++i) {
-    offset += line->chars[i].size;
-  }
-
-  return offset;
-}
 
 /* The last substitution of the colon command line, for & and &&. */
 ITL_DEF ITL_THREAD_LOCAL itl_substitution itl_g_vi_last_substitution;
