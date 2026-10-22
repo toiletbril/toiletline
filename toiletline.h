@@ -7926,7 +7926,7 @@ itl_hint_is_unchanged(void)
 ITL_DEF void
 itl_le_tty_draw_hint(itl_char_buf_t *b, size_t row_budget)
 {
-  size_t row_count, row, offset = 0;
+  size_t row_count, row, offset = 0, shown_offset = 0;
 
   if (row_budget != itl_g_hint_layout_rows) {
     itl_hint_layout(itl_g_hint_layout_cols, row_budget);
@@ -7938,7 +7938,6 @@ itl_le_tty_draw_hint(itl_char_buf_t *b, size_t row_budget)
   row_count = ITL_MAX(itl_g_hint_next_rows, itl_g_hint_shown_rows);
   for (row = 0; row < row_count; ++row) {
     itl_char_buf_append_cstr(b, ITL_LF);
-    ITL_TTY_MOVE_TO_COLUMN(b, 1);
 
     if (row < itl_g_hint_next_rows) {
       const char *start = itl_g_hint_next + offset;
@@ -7946,11 +7945,31 @@ itl_le_tty_draw_hint(itl_char_buf_t *b, size_t row_budget)
           (const char *) memchr(start, '\n', itl_g_hint_next_len - offset);
       size_t length =
           end != NULL ? (size_t) (end - start) : itl_g_hint_next_len - offset;
+      const char *shown       = itl_g_hint_shown + shown_offset;
+      const char *shown_end   = NULL;
+      size_t      shown_count = 0;
 
-      itl_char_buf_append_bytes(b, start, length);
-      ITL_TTY_CLEAR_TO_END(b);
+      if (row < itl_g_hint_shown_rows && shown_offset <= itl_g_hint_shown_len)
+      {
+        shown_end   = (const char *) memchr(shown, '\n',
+                                            itl_g_hint_shown_len - shown_offset);
+        shown_count = shown_end != NULL
+                          ? (size_t) (shown_end - shown)
+                          : itl_g_hint_shown_len - shown_offset;
+        shown_offset += shown_count + 1;
+      }
+
+      /* A row the screen already shows is passed over. */
+      if (row >= itl_g_hint_shown_rows || shown_count != length ||
+          memcmp(shown, start, length) != 0)
+      {
+        ITL_TTY_MOVE_TO_COLUMN(b, 1);
+        itl_char_buf_append_bytes(b, start, length);
+        ITL_TTY_CLEAR_TO_END(b);
+      }
       offset += length + 1;
     } else {
+      ITL_TTY_MOVE_TO_COLUMN(b, 1);
       ITL_TTY_CLEAR_WHOLE_LINE(b);
     }
   }
@@ -8093,25 +8112,75 @@ itl_row_cache_matches(const itl_char_buf_t *rows,
              0;
 }
 
-/* Replaces the full redraw of a full-screen frame in b with a redraw of the
-   rows that differ from the previous frame. The frame clears every row from
-   clear_start, draws them from rows_start, and draws the hint rows from
-   hint_start. The rows run from the title row, which ends at the move to the
-   second row, down to the last window row, one row per line feed. Each row
-   is compared with the colors it starts with. A changed row is cleared and
-   drawn alone, the previous hint rows are cleared, and the rest of the frame
-   follows from the last window row as before. When the window rows moved
-   by some rows, the terminal scrolls them first, so only the rows that came
-   into view are drawn. */
-ITL_DEF void
+/* The bytes at the start of a new row that equal its previous version and
+   end at a point where drawing can resume: after an escape sequence or a
+   printable ASCII character, at a column before cols. column is set to the
+   screen column there. A wider or joined character ends the run, so the
+   column stays exact. */
+ITL_DEF size_t
+itl_row_common_prefix(const char *row,
+                      size_t      size,
+                      const char *old_row,
+                      size_t      old_size,
+                      size_t      cols,
+                      size_t     *column)
+{
+  size_t i = 0, count = 0;
+
+  *column = 0;
+  while (i < size && i < old_size && row[i] == old_row[i]) {
+    if (row[i] == 0x1b) {
+      size_t end = i + 1;
+
+      if (end < size && row[end] == '[') {
+        end += 1;
+        while (end < size && !(row[end] >= 0x40 && row[end] <= 0x7e)) {
+          end += 1;
+        }
+      }
+      end += 1;
+      if (end > size || end > old_size || memcmp(row + i, old_row + i, end - i))
+      {
+        break;
+      }
+
+      i     = end;
+      count = i;
+      continue;
+    }
+
+    if ((uint8_t) row[i] < 0x20 || (uint8_t) row[i] >= 0x7f ||
+        *column + 1 >= cols)
+    {
+      break;
+    }
+
+    i += 1;
+    *column += 1;
+    count = i;
+  }
+
+  return count;
+}
+
+/* Replaces the full redraw of a full-screen frame in b, which clears every row
+   from clear_start and draws them from rows_start to its end, with a redraw
+   of the rows that differ from the previous frame. The rows run from the title
+   row, which ends at the move to the second row, down to the last window row,
+   one row per line feed. Each row is compared with the colors it starts with.
+   A changed row is drawn again from its first changed character, and the
+   frame ends on the last window row. When the window rows moved by some rows,
+   the terminal scrolls them first, so only the rows that came into view are
+   drawn. Returns whether b was replaced. */
+ITL_DEF bool
 itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
                                size_t          clear_start,
                                size_t          rows_start,
-                               size_t          hint_start,
-                               size_t          prev_hint_rows,
                                size_t          tty_rows,
                                size_t          tty_cols)
 {
+  size_t          hint_start = b->size;
+  bool            is_applied = false;
   static const char TITLE_START[] = "\x1b[1;1H";
   static const char TITLE_END[]   = "\x1b[2;1H";
 
@@ -8180,6 +8249,8 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
       itl_g_row_cache_flush_count == itl_g_flush_count)
   {
     itl_char_buf_t *out          = itl_char_buf_alloc();
+    itl_char_buf_t *kept_state   = itl_char_buf_alloc();
+    size_t          kept         = 0;
     size_t          last_row     = first_row + row_count - 1;
     size_t          window_first = first_row == 1 && row_count > 1 &&
                                            itl_full_screen_title_rows() > 0
@@ -8265,27 +8336,45 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
         continue;
       }
 
+      /* A row still holding its previous version keeps the cells up to its
+         first change, and the rest of the row is cleared and drawn. */
+      if (old_index < itl_g_row_cache_count) {
+        size_t old_start = old_index == 0
+                               ? 0
+                               : itl_g_row_cache_ends[old_index - 1];
+        size_t column;
+
+        kept = itl_row_common_prefix(
+            rows->data + start, size, itl_g_row_cache.data + old_start,
+            itl_g_row_cache_ends[old_index] - old_start, tty_cols, &column);
+        ITL_CHAR_BUF_CLEAR(kept_state);
+        itl_sgr_state_fold(kept_state, rows->data + start, kept);
+        itl_char_buf_append_cstr(out, "\x1b[");
+        itl_char_buf_append_size_t(out, first_row + i);
+        itl_char_buf_append_byte(out, ';');
+        itl_char_buf_append_size_t(out, column + 1);
+        itl_char_buf_append_cstr(out, "H\x1b[0m\x1b[K");
+        itl_char_buf_append_bytes(out, kept_state->data, kept_state->size);
+        itl_char_buf_append_bytes(out, rows->data + start + kept, size - kept);
+        continue;
+      }
+
       itl_char_buf_append_cstr(out, "\x1b[");
       itl_char_buf_append_size_t(out, first_row + i);
       itl_char_buf_append_cstr(out, ";1H\x1b[0m\x1b[2K");
       itl_char_buf_append_bytes(out, rows->data + start, size);
     }
     itl_char_buf_append_cstr(out, "\x1b[0m");
-    for (i = 1; i <= prev_hint_rows && last_row + i <= tty_rows; ++i) {
-      itl_char_buf_append_cstr(out, "\x1b[");
-      itl_char_buf_append_size_t(out, last_row + i);
-      itl_char_buf_append_cstr(out, ";1H\x1b[2K");
-    }
     itl_char_buf_append_bytes(out, state->data, state->size);
     itl_char_buf_append_cstr(out, "\x1b[");
     itl_char_buf_append_size_t(out, last_row);
     itl_char_buf_append_cstr(out, ";1H");
-    itl_char_buf_append_bytes(out, b->data + hint_start,
-                              b->size - hint_start);
 
     ITL_CHAR_BUF_CLEAR(b);
     itl_char_buf_append_bytes(b, out->data, out->size);
     ITL_CHAR_BUF_FREE(out);
+    ITL_CHAR_BUF_FREE(kept_state);
+    is_applied = true;
   }
 
   ITL_CHAR_BUF_CLEAR(&itl_g_row_cache);
@@ -8300,6 +8389,8 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
 
   ITL_CHAR_BUF_FREE(rows);
   ITL_CHAR_BUF_FREE(state);
+
+  return is_applied;
 }
 
 /* NOTE: Hottest function in the library. */
@@ -8313,8 +8404,8 @@ itl_le_tty_refresh(itl_le_t *le)
   bool             has_resize;
   /* Where the full clear of a text refresh starts, where its rows start, and
      where its hint rows start in b, for the redraw of the changed rows. */
-  size_t row_clear_start = (size_t) -1, row_start = 0, row_hint_start = 0;
-  size_t row_prev_hint_rows = 0;
+  size_t row_clear_start = (size_t) -1, row_start = 0;
+  size_t row_saved_hint_len = 0, row_saved_hint_rows = 0;
   /* A first render draws on a screen the stored rows do not describe. */
   bool was_first_render = itl_g_tty_first_render;
 #if defined ITL_POSIX
@@ -8666,8 +8757,9 @@ itl_le_tty_refresh(itl_le_t *le)
       ITL_TTY_MOVE_TO_COLUMN(b, 1);
       ITL_TTY_CLEAR_BELOW(b);
     } else {
-      row_clear_start    = b->size;
-      row_prev_hint_rows = itl_g_hint_shown_rows;
+      row_clear_start      = b->size;
+      row_saved_hint_len   = itl_g_hint_shown_len;
+      row_saved_hint_rows  = itl_g_hint_shown_rows;
       /* Park at the top-left of the previous render. */
       itl_le_tty_move_to_block_top(b);
 
@@ -8972,7 +9064,19 @@ itl_le_tty_refresh(itl_le_t *le)
         !is_view_active &&
         itl_le_tty_draw_ghost(b, le->cursor_position == le->line->length, col,
                               cols);
-    row_hint_start = b->size;
+    /* The rows are complete here. When only the changed ones are redrawn, the
+       hint rows on screen stay, and each is drawn again only when it
+       changed. */
+    if (!itl_g_full_screen || is_resize || was_first_render) {
+      itl_g_row_cache_count = 0;
+    }
+    if (itl_g_full_screen && !is_resize && row_clear_start != (size_t) -1 &&
+        itl_le_tty_redraw_changed_rows(b, row_clear_start, row_start, tty_rows,
+                                       tty_cols))
+    {
+      itl_g_hint_shown_len  = row_saved_hint_len;
+      itl_g_hint_shown_rows = row_saved_hint_rows;
+    }
     itl_le_tty_draw_hint(b, itl_hint_row_budget(tty_rows, screen_rows));
 
     if (row == le->prompt_rows) {
@@ -9036,13 +9140,8 @@ itl_le_tty_refresh(itl_le_t *le)
   itl_g_tty_first_render         = false;
   itl_g_tty_plain_append_pending = false;
 
-  if (!itl_g_full_screen || is_resize || was_first_render) {
+  if (!itl_g_full_screen) {
     itl_g_row_cache_count = 0;
-  }
-  if (itl_g_full_screen && !is_resize && row_clear_start != (size_t) -1) {
-    itl_le_tty_redraw_changed_rows(b, row_clear_start, row_start,
-                                   row_hint_start, row_prev_hint_rows,
-                                   tty_rows, tty_cols);
   }
 
   ITL_TTY_AUTOWRAP_ON(b);
