@@ -15539,6 +15539,15 @@ itl_le_mouse(itl_le_t *le)
   le->cursor_position = itl_le_index_at_visual(le, cols, row, m.cursor_col);
 }
 
+/* Whether a key of this kind moves the caret between rows, so the next such
+   move aims at the same column. */
+ITL_DEF bool
+itl_key_is_vertical(int kind)
+{
+  return kind == TL_KEY_UP || kind == TL_KEY_DOWN || kind == TL_KEY_PAGE_UP ||
+         kind == TL_KEY_PAGE_DOWN;
+}
+
 ITL_DEF tl_status_code
 itl_le_key_handle(itl_le_t *le, int esc)
 {
@@ -15597,16 +15606,13 @@ itl_le_key_handle(itl_le_t *le, int esc)
     bool             is_up = (esc & TL_MASK_KEY) == TL_KEY_PAGE_UP;
     size_t           step  = itl_le_view_rows(itl_g_tty_prev_rows);
     size_t           target_row;
-    int              prev_kind = prev_control & TL_MASK_KEY;
 
     /* A page keeps one row of the previous window in view and the column the
        last vertical move aimed at. */
     itl_g_is_line_still = true;
     m                   = itl_le_compute_metrics(le, itl_g_tty_prev_cols);
     step                = step > 1 ? step - 1 : 1;
-    if (prev_kind != TL_KEY_UP && prev_kind != TL_KEY_DOWN &&
-        prev_kind != TL_KEY_PAGE_UP && prev_kind != TL_KEY_PAGE_DOWN)
-    {
+    if (!itl_key_is_vertical(prev_control & TL_MASK_KEY)) {
       le->goal_column = m.cursor_col;
     }
     if (is_up) {
@@ -15625,11 +15631,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_DOWN: {
     itl_le_metrics_t m;
     bool             is_up = (esc & TL_MASK_KEY) == TL_KEY_UP;
-    int              prev_kind    = prev_control & TL_MASK_KEY;
-    bool             was_vertical = prev_kind == TL_KEY_UP ||
-                        prev_kind == TL_KEY_DOWN ||
-                        prev_kind == TL_KEY_PAGE_UP ||
-                        prev_kind == TL_KEY_PAGE_DOWN;
+    bool was_vertical = itl_key_is_vertical(prev_control & TL_MASK_KEY);
 
     /* Move a visual row while inside a multiline or wrapped buffer. The input's
        first row sits at prompt_rows in the metrics, since a multi-row prompt
