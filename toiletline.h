@@ -15655,8 +15655,8 @@ tl_exit(void)
   itl_vi_free();
   itl_kill_ring_free();
   ITL_FREE(itl_g_line_buffer.chars);
-  ITL_FREE(itl_g_char_buffer.data);
-  ITL_FREE(itl_g_view_discard.data);
+  itl_char_buf_release(&itl_g_char_buffer);
+  itl_char_buf_release(&itl_g_view_discard);
   itl_char_buf_release(&itl_g_row_cache);
   itl_g_row_cache_count = 0;
   itl_char_buf_release(&itl_g_row_index_text);
