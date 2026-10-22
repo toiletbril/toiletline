@@ -5099,6 +5099,18 @@ test_menu_cells(void)
     goto failed;
   }
 
+  /* A joined emoji takes two columns, so it fits whole in a cell of two. */
+  b->size = 0;
+  drawn   = itl_menu_append_cell(b, TEST_FAMILY, 2, true);
+
+  if (drawn != 2 || b->size != strlen(TEST_FAMILY) ||
+      memcmp(b->data, TEST_FAMILY, b->size) != 0)
+  {
+    TEST_PRINTF("a joined emoji cell drew %zu columns in %zu bytes\n", drawn,
+                b->size);
+    goto failed;
+  }
+
   b->size = 0;
   spans[0].start = 1;
   spans[0].end = 3;
@@ -8011,6 +8023,79 @@ test_format_commands(void)
   return ok;
 }
 
+static int
+test_edit_invalid_callback(const char *buffer, const char **out_edited)
+{
+  (void) buffer;
+  *out_edited = "bad\xff text";
+
+  return 1;
+}
+
+static int
+test_format_invalid_callback(const char *text, const char **out_text)
+{
+  (void) text;
+  *out_text = "\xff\xfe";
+
+  return 1;
+}
+
+/* An edit or a format that returns text the line cannot hold keeps the line
+   and leaves a message. */
+static bool
+test_rejected_edit_and_format_keep_the_line(void)
+{
+  char          out_buffer[BUFFER_SIZE];
+  itl_le_t      le   = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  bool          ok   = true;
+
+  ITL_STRING_FROM_CSTR(line, "draft");
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_g_vi_ex_has_range   = false;
+  itl_g_editor_message[0] = '\0';
+  tl_set_edit_callback(test_edit_invalid_callback);
+  itl_le_key_handle(&le, TL_KEY_EDIT_EXTERNAL);
+  ok &= test_line_is(line, "draft", "invalid edit");
+  ok &= test_option_message_is(
+      "the edited text is too long or not valid UTF-8", "edit message");
+  tl_set_edit_callback(NULL);
+
+  itl_g_editor_message[0] = '\0';
+  tl_set_format_callback(test_format_invalid_callback);
+  itl_le_format(&le, true, ":%format");
+  ok &= test_line_is(line, "draft", "invalid format");
+  ok &= test_option_message_is(
+      "the formatted text is too long or not valid UTF-8", "format message");
+  tl_set_format_callback(NULL);
+  itl_g_editor_message[0] = '\0';
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
+/* The byte offset of a codepoint, with the one-byte fast path and the walk
+   over multibyte characters, clamped to the end of the line. */
+static bool
+test_string_byte_offset_counts_bytes(void)
+{
+  itl_string_t *line = itl_string_alloc();
+  bool          ok;
+
+  ITL_STRING_FROM_CSTR(line, "abc");
+  ok = itl_string_byte_offset(line, 0) == 0 &&
+       itl_string_byte_offset(line, 2) == 2 &&
+       itl_string_byte_offset(line, 99) == 3;
+  ITL_STRING_FROM_CSTR(line, "a\xe3\x81\x82" "b");
+  ok &= itl_string_byte_offset(line, 1) == 1 &&
+        itl_string_byte_offset(line, 2) == 4 &&
+        itl_string_byte_offset(line, 99) == 5;
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 static bool
 test_vi_ex_write_commands(void)
 {
@@ -8119,6 +8204,89 @@ test_row_index(void)
   itl_g_row_index_lines.capacity = 0;
   itl_g_row_index_is_valid       = false;
   ITL_STRING_FREE(line);
+
+  return ok;
+}
+
+/* Edits at one width keep the entries of the lines before the first changed
+   character and build the rest again, including a change past a 4096-byte
+   common block. */
+static bool
+test_row_index_follows_edits(void)
+{
+  static char long_text[1601];
+  itl_le_t    le   = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  bool          ok   = true;
+  size_t        i;
+
+  le.line         = line;
+  le.prompt       = ">> ";
+  le.prompt_width = 3;
+  itl_g_row_index_is_valid = false;
+  ITL_STRING_FROM_CSTR(line, "one two three\nfour five six seven\nlast line");
+  ok &= test_row_index_agrees_with_walk(&le, 9);
+  line->chars[line->length - 2] = itl_utf8_parse('X');
+  ok &= test_row_index_agrees_with_walk(&le, 9);
+  ok &= test_row_index_agrees_with_walk(&le, 9);
+  ITL_STRING_FROM_CSTR(line, "one two three\nfour five six seven\nlast line "
+                             "with a long appended tail");
+  ok &= test_row_index_agrees_with_walk(&le, 9);
+  ITL_STRING_FROM_CSTR(line, "one two three\nfour");
+  ok &= test_row_index_agrees_with_walk(&le, 9);
+
+  for (i = 0; i + 1 < sizeof(long_text); ++i) {
+    long_text[i] = (i + 1) % 40 == 0 ? '\n' : (char) ('a' + i % 26);
+  }
+  long_text[sizeof(long_text) - 1] = '\0';
+  ITL_STRING_FROM_CSTR(line, long_text);
+  ok &= test_row_index_agrees_with_walk(&le, 13);
+  line->chars[1500] = itl_utf8_parse('\n');
+  ok &= test_row_index_agrees_with_walk(&le, 13);
+
+  itl_char_buf_release(&itl_g_row_index_text);
+  itl_char_buf_release(&itl_g_row_index_lines);
+  itl_g_row_index_line_count = 0;
+  itl_g_row_index_is_valid   = false;
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
+/* The common prefix of a row keeps whole CSI sequences and printable ASCII,
+   and stops before an OSC sequence, a wide character, and the last column. */
+static bool
+test_row_common_prefix_stops_at_unsafe_bytes(void)
+{
+  static const struct
+  {
+    const char *row;
+    const char *old_row;
+    size_t      cols;
+    size_t      kept;
+    size_t      column;
+  } CASES[] = {
+      {"abcd",                 "abxd",                 80, 2, 2},
+      {"\x1b[31mab",           "\x1b[31mac",           80, 6, 1},
+      {"ab\x1b]8;;u\x07x",      "ab\x1b]8;;u\x07y",      80, 2, 2},
+      {"a\xe6\x97\xa5z",        "a\xe6\x97\xa5y",        80, 1, 1},
+      {"abcdef",               "abcdex",               4,  3, 3},
+  };
+  bool   ok = true;
+  size_t i;
+
+  for (i = 0; i < ITL_COUNTOF(CASES); ++i) {
+    size_t column = 0;
+    size_t kept   = itl_row_common_prefix(
+        CASES[i].row, strlen(CASES[i].row), CASES[i].old_row,
+        strlen(CASES[i].old_row), CASES[i].cols, &column);
+
+    if (kept != CASES[i].kept || column != CASES[i].column) {
+      TEST_PRINTF("prefix case %zu kept %zu bytes at column %zu\n", i, kept,
+                  column);
+      ok = false;
+    }
+  }
 
   return ok;
 }
@@ -10007,6 +10175,9 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_find_wraps_and_folds_case),
                                    DEFINE_TEST_CASE(test_format_commands),
+                                   DEFINE_TEST_CASE(
+                                       test_rejected_edit_and_format_keep_the_line),
+                                   DEFINE_TEST_CASE(test_string_byte_offset_counts_bytes),
                                    DEFINE_TEST_CASE(test_vi_ex_write_commands),
                                    DEFINE_TEST_CASE(test_tab_takes_four_columns),
                                    DEFINE_TEST_CASE(
@@ -10014,6 +10185,9 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_sgr_state_folds_to_the_last_reset),
                                    DEFINE_TEST_CASE(test_row_index),
+                                   DEFINE_TEST_CASE(test_row_index_follows_edits),
+                                   DEFINE_TEST_CASE(
+                                       test_row_common_prefix_stops_at_unsafe_bytes),
                                    DEFINE_TEST_CASE(test_save_keeps_editing),
                                    DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
                                    DEFINE_TEST_CASE(
