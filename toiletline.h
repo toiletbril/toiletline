@@ -14835,15 +14835,16 @@ itl_le_edit_external(itl_le_t *le)
   }
 
   edited_size = strlen(edited);
-  if (edited_size >= le->out_size) {
-    return;
-  }
-
   itl_string_init(&replacement);
-  if (itl_string_from_bytes(&replacement, edited, edited_size)) {
+  if (edited_size < le->out_size &&
+      itl_string_from_bytes(&replacement, edited, edited_size))
+  {
     itl_le_begin_edit(le);
     itl_string_copy(le->line, &replacement);
     le->cursor_position = le->line->length;
+  } else {
+    strcpy(itl_g_editor_message,
+           "the edited text is too long or not valid UTF-8");
   }
   ITL_FREE(replacement.chars);
 }
@@ -18216,7 +18217,7 @@ itl_le_format(itl_le_t *le, bool is_whole, const char *header)
 {
   char           *text;
   char           *range;
-  const char     *formatted;
+  const char     *formatted = NULL;
   itl_char_buf_t *out;
   itl_string_t   *changed;
   size_t          begin = 0, end, cursor_byte, formatted_length;
@@ -18241,7 +18242,7 @@ itl_le_format(itl_le_t *le, bool is_whole, const char *header)
   range = (char *) itl_malloc(end - begin + 1);
   memcpy(range, text + begin, end - begin);
   range[end - begin] = '\0';
-  if (!itl_g_format_callback(range, &formatted)) {
+  if (!itl_g_format_callback(range, &formatted) || formatted == NULL) {
     size_t used = strlen(header);
 
     if (formatted != NULL && used + 2 < sizeof(itl_g_editor_message)) {
@@ -18266,10 +18267,10 @@ itl_le_format(itl_le_t *le, bool is_whole, const char *header)
   itl_char_buf_append_bytes(out, text + end, le->line->size - end);
 
   changed = itl_string_alloc();
-  if (out->size < le->out_size && out->size <= ITL_STRING_MAX_LEN &&
-      (out->size != le->line->size ||
-       memcmp(out->data, text, out->size) != 0) &&
-      itl_string_from_bytes(changed, out->data, out->size))
+  if (out->size == le->line->size && memcmp(out->data, text, out->size) == 0) {
+    /* The text is already formatted. */
+  } else if (out->size < le->out_size && out->size <= ITL_STRING_MAX_LEN &&
+             itl_string_from_bytes(changed, out->data, out->size))
   {
     itl_le_begin_edit(le);
     itl_string_copy(le->line, changed);
@@ -18277,6 +18278,9 @@ itl_le_format(itl_le_t *le, bool is_whole, const char *header)
       le->cursor_position = le->line->length;
     }
     itl_g_tty_should_refresh_text = true;
+  } else {
+    strcpy(itl_g_editor_message,
+           "the formatted text is too long or not valid UTF-8");
   }
   ITL_STRING_FREE(changed);
   ITL_CHAR_BUF_FREE(out);
