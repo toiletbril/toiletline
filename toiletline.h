@@ -2635,6 +2635,19 @@ itl_string_to_cstr(const itl_string_t *str, char *cstr, size_t cstr_size)
     return TL_ERROR_SIZE;
   }
 
+  /* With room for the line, its terminator, and three spare bytes, every
+     character is copied as four bytes and the next one starts at its size. */
+  if (str->size + 4 <= cstr_size) {
+    for (i = 0, k = 0; i < str->length; ++i) {
+      memcpy(cstr + k, str->chars[i].bytes, 4);
+      k += str->chars[i].size;
+    }
+
+    cstr[k] = '\0';
+
+    return TL_SUCCESS;
+  }
+
   for (i = 0, k = 0; i < str->length; ++i) {
     if (k + 1 >= cstr_size || cstr_size - k - 1 < str->chars[i].size) {
       break;
@@ -6880,6 +6893,8 @@ ITL_DEF ITL_THREAD_LOCAL bool           itl_g_row_index_is_valid = false;
 /* True while the index describes the line as the last frame drew it, which
    holds until a key changes the text and asks for a text refresh. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_row_index_is_current = false;
+/* True while a frame is drawn, which leaves the line unchanged. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_in_refresh = false;
 
 /* The last line of the row index whose entry at offset, 0 for the start and
    1 for the row, is at or below value. */
@@ -6925,7 +6940,8 @@ itl_le_row_index(const itl_le_t *le,
   {
     size_t common;
 
-    if (itl_g_row_index_is_current && !itl_g_tty_should_refresh_text &&
+    if (itl_g_row_index_is_current &&
+        (itl_g_is_in_refresh || !itl_g_tty_should_refresh_text) &&
         itl_g_row_index_text.size == text_size)
     {
       return (const size_t *) (const void *) itl_g_row_index_lines.data;
@@ -8740,9 +8756,25 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
   return is_applied;
 }
 
-/* NOTE: Hottest function in the library. */
+ITL_DEF bool
+itl_le_tty_refresh_frame(itl_le_t *le);
+
+/* Draws one frame. The line holds still while it is drawn. */
 ITL_DEF bool
 itl_le_tty_refresh(itl_le_t *le)
+{
+  bool is_drawn;
+
+  itl_g_is_in_refresh = true;
+  is_drawn            = itl_le_tty_refresh_frame(le);
+  itl_g_is_in_refresh = false;
+
+  return is_drawn;
+}
+
+/* NOTE: Hottest function in the library. */
+ITL_DEF bool
+itl_le_tty_refresh_frame(itl_le_t *le)
 {
   size_t           i, tty_rows, tty_cols, cols, indent;
   size_t           col, row, move_up;
