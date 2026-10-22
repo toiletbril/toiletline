@@ -887,6 +887,7 @@ tl_set_edit_mode(int mode);
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -2878,10 +2879,16 @@ typedef struct itl_vi_change_record
   itl_string_t      *inserted_text;
 } itl_vi_change_record;
 
+/* One state of the undo ring. The text of a state is not stored: the ring
+   keeps the newest stored state in full and, in each slot, the characters that
+   differ between that state and the next newer one. */
 typedef struct itl_undo_snapshot
 {
-  itl_string_t *line;
   size_t        cursor_position;
+  size_t        length;
+  size_t        change_start;
+  itl_string_t *older_chars;
+  itl_string_t *newer_chars;
 } itl_undo_snapshot;
 
 ITL_DEF ITL_THREAD_LOCAL int itl_g_edit_mode      = TL_EDIT_MODE_EMACS;
@@ -2920,35 +2927,170 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_undo_count           = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_undo_head            = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_redo_count           = 0;
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_undo_insert_run_open = false;
+/* The text of the state in the slot before itl_g_undo_head while
+   itl_g_undo_count is above zero. */
+ITL_DEF ITL_THREAD_LOCAL itl_string_t *itl_g_undo_top_text = NULL;
 
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_vi_is_recording_insert = false;
 
 ITL_DEF void
-itl_undo_store(itl_undo_snapshot *slot, const itl_le_t *le)
+itl_undo_assign_chars(itl_string_t **dst, const itl_utf8_t *chars, size_t count)
 {
-  if (slot->line == NULL) {
-    slot->line = itl_string_alloc();
+  size_t i;
+
+  if (*dst == NULL) {
+    *dst = itl_string_alloc();
   }
-  itl_string_copy(slot->line, le->line);
-  slot->cursor_position = le->cursor_position;
+
+  while ((*dst)->capacity < count) {
+    itl_string_extend(*dst);
+  }
+
+  if (count > 0) {
+    memcpy((*dst)->chars, chars, count * sizeof(itl_utf8_t));
+  }
+  (*dst)->length = count;
+  (*dst)->size   = 0;
+  for (i = 0; i < count; ++i) {
+    (*dst)->size += chars[i].size;
+  }
+}
+
+/* Records in slot the characters that differ between older and newer, which
+   share every character before change_start and after the two runs. Returns
+   false when the texts are equal. */
+ITL_DEF bool
+itl_undo_record_change(itl_undo_snapshot  *slot,
+                       const itl_string_t *older,
+                       const itl_string_t *newer)
+{
+  enum { BLOCK_LENGTH = 512 };
+  size_t shorter = older->length < newer->length ? older->length : newer->length;
+  size_t prefix  = 0;
+  size_t suffix  = 0;
+
+  /* whole blocks with equal bytes hold equal characters, so only the first
+     block that differs is compared character by character. */
+  while (prefix + BLOCK_LENGTH <= shorter &&
+         memcmp(older->chars + prefix, newer->chars + prefix,
+                BLOCK_LENGTH * sizeof(itl_utf8_t)) == 0)
+  {
+    prefix += BLOCK_LENGTH;
+  }
+
+  while (prefix < shorter &&
+         itl_utf8_equal(older->chars[prefix], newer->chars[prefix]))
+  {
+    prefix += 1;
+  }
+
+  if (prefix == older->length && prefix == newer->length) {
+    return false;
+  }
+
+  while (suffix + BLOCK_LENGTH <= shorter - prefix &&
+         memcmp(older->chars + older->length - suffix - BLOCK_LENGTH,
+                newer->chars + newer->length - suffix - BLOCK_LENGTH,
+                BLOCK_LENGTH * sizeof(itl_utf8_t)) == 0)
+  {
+    suffix += BLOCK_LENGTH;
+  }
+
+  while (suffix < shorter - prefix &&
+         itl_utf8_equal(older->chars[older->length - 1 - suffix],
+                        newer->chars[newer->length - 1 - suffix]))
+  {
+    suffix += 1;
+  }
+
+  slot->change_start = prefix;
+  itl_undo_assign_chars(&slot->older_chars, older->chars + prefix,
+                        older->length - prefix - suffix);
+  itl_undo_assign_chars(&slot->newer_chars, newer->chars + prefix,
+                        newer->length - prefix - suffix);
+
+  return true;
+}
+
+/* Replaces removed_count characters at start of str with the characters of
+   inserted. */
+ITL_DEF void
+itl_undo_splice(itl_string_t       *str,
+                size_t              start,
+                size_t              removed_count,
+                const itl_string_t *inserted)
+{
+  size_t removed_size = 0;
+  size_t new_length   = str->length - removed_count + inserted->length;
+  size_t i;
+
+  TL_ASSERT(start + removed_count <= str->length);
+
+  for (i = start; i < start + removed_count; ++i) {
+    removed_size += str->chars[i].size;
+  }
+
+  while (str->capacity < new_length) {
+    itl_string_extend(str);
+  }
+
+  memmove(str->chars + start + inserted->length,
+          str->chars + start + removed_count,
+          (str->length - start - removed_count) * sizeof(itl_utf8_t));
+  memcpy(str->chars + start, inserted->chars,
+         inserted->length * sizeof(itl_utf8_t));
+  str->length = new_length;
+  str->size   = str->size - removed_size + inserted->size;
+}
+
+/* Turns the text of the state in slot into the text of the next newer one. */
+ITL_DEF void
+itl_undo_apply_newer(itl_string_t *str, const itl_undo_snapshot *slot)
+{
+  itl_undo_splice(str, slot->change_start, slot->older_chars->length,
+                  slot->newer_chars);
+}
+
+/* Turns the text of the state after slot into the text of the state in it. */
+ITL_DEF void
+itl_undo_apply_older(itl_string_t *str, const itl_undo_snapshot *slot)
+{
+  itl_undo_splice(str, slot->change_start, slot->newer_chars->length,
+                  slot->older_chars);
+}
+
+ITL_DEF size_t
+itl_undo_slot_before(size_t index)
+{
+  return (index + ITL_UNDO_STACK_DEPTH - 1) % ITL_UNDO_STACK_DEPTH;
 }
 
 ITL_DEF void
 itl_undo_push(itl_le_t *le)
 {
+  itl_undo_snapshot *slot = &itl_g_undo_stack[itl_g_undo_head];
+
+  if (itl_g_undo_top_text == NULL) {
+    itl_g_undo_top_text = itl_string_alloc();
+  }
+
   if (itl_g_undo_count > 0) {
-    size_t top =
-        (itl_g_undo_head + ITL_UNDO_STACK_DEPTH - 1) % ITL_UNDO_STACK_DEPTH;
-    if (itl_g_undo_stack[top].line != NULL &&
-        itl_string_equal(itl_g_undo_stack[top].line, le->line))
-    {
+    itl_undo_snapshot *top =
+        &itl_g_undo_stack[itl_undo_slot_before(itl_g_undo_head)];
+
+    if (!itl_undo_record_change(top, itl_g_undo_top_text, le->line)) {
       itl_g_redo_count = 0;
       return;
     }
+
+    itl_undo_apply_newer(itl_g_undo_top_text, top);
+  } else {
+    itl_string_copy(itl_g_undo_top_text, le->line);
   }
 
-  itl_undo_store(&itl_g_undo_stack[itl_g_undo_head], le);
-  itl_g_undo_head = (itl_g_undo_head + 1) % ITL_UNDO_STACK_DEPTH;
+  slot->cursor_position = le->cursor_position;
+  slot->length          = le->line->length;
+  itl_g_undo_head       = (itl_g_undo_head + 1) % ITL_UNDO_STACK_DEPTH;
   if (itl_g_undo_count < ITL_UNDO_STACK_DEPTH) {
     itl_g_undo_count += 1;
   }
@@ -2966,7 +3108,8 @@ itl_undo_push_closed(itl_le_t *le)
 ITL_DEF bool
 itl_undo_pop(itl_le_t *le)
 {
-  size_t top;
+  size_t             top_index;
+  itl_undo_snapshot *top;
 
   if (itl_g_undo_count == 0) {
     return false;
@@ -2976,18 +3119,32 @@ itl_undo_pop(itl_le_t *le)
     itl_g_undo_count -= 1;
   }
 
-  itl_undo_store(&itl_g_undo_stack[itl_g_undo_head], le);
-  itl_g_redo_count += 1;
+  top_index = itl_undo_slot_before(itl_g_undo_head);
+  top       = &itl_g_undo_stack[top_index];
 
-  top = (itl_g_undo_head + ITL_UNDO_STACK_DEPTH - 1) % ITL_UNDO_STACK_DEPTH;
-  itl_string_copy(le->line, itl_g_undo_stack[top].line);
-  le->cursor_position = itl_g_undo_stack[top].cursor_position;
+  /* the live line becomes the state that redo returns to. */
+  itl_g_undo_stack[itl_g_undo_head].cursor_position = le->cursor_position;
+  itl_g_undo_stack[itl_g_undo_head].length          = le->line->length;
+  if (itl_undo_record_change(top, itl_g_undo_top_text, le->line)) {
+    itl_undo_apply_older(le->line, top);
+  } else {
+    itl_undo_assign_chars(&top->older_chars, NULL, 0);
+    itl_undo_assign_chars(&top->newer_chars, NULL, 0);
+    top->change_start = 0;
+  }
+
+  itl_g_redo_count += 1;
+  le->cursor_position = top->cursor_position;
   if (le->cursor_position > le->line->length) {
     le->cursor_position = le->line->length;
   }
 
-  itl_g_undo_head = top;
+  itl_g_undo_head = top_index;
   itl_g_undo_count -= 1;
+  if (itl_g_undo_count > 0) {
+    itl_undo_apply_older(itl_g_undo_top_text,
+                         &itl_g_undo_stack[itl_undo_slot_before(top_index)]);
+  }
 
   return true;
 }
@@ -2995,14 +3152,42 @@ itl_undo_pop(itl_le_t *le)
 ITL_DEF bool
 itl_redo(itl_le_t *le)
 {
-  size_t redo_index;
+  itl_undo_snapshot *live;
+  size_t             redo_index;
+  size_t             i;
 
   if (itl_g_redo_count == 0) {
     return false;
   }
 
+  /* redo applies a recorded change to the live line, which holds the state of
+     the head slot unless something changed it without a snapshot. */
+  live = &itl_g_undo_stack[itl_g_undo_head];
+  if (le->line->length != live->length ||
+      live->change_start + live->older_chars->length > le->line->length)
+  {
+    itl_g_redo_count = 0;
+    return false;
+  }
+  for (i = 0; i < live->older_chars->length; ++i) {
+    if (!itl_utf8_equal(le->line->chars[live->change_start + i],
+                        live->older_chars->chars[i]))
+    {
+      itl_g_redo_count = 0;
+      return false;
+    }
+  }
+
+  if (itl_g_undo_count > 0) {
+    itl_undo_apply_newer(itl_g_undo_top_text,
+                         &itl_g_undo_stack[itl_undo_slot_before(
+                             itl_g_undo_head)]);
+  } else {
+    itl_string_copy(itl_g_undo_top_text, le->line);
+  }
+
   redo_index = (itl_g_undo_head + 1) % ITL_UNDO_STACK_DEPTH;
-  itl_string_copy(le->line, itl_g_undo_stack[redo_index].line);
+  itl_undo_apply_newer(le->line, live);
   le->cursor_position = itl_g_undo_stack[redo_index].cursor_position;
   if (le->cursor_position > le->line->length) {
     le->cursor_position = le->line->length;
@@ -3044,10 +3229,19 @@ itl_vi_free(void)
   size_t i;
 
   for (i = 0; i < ITL_UNDO_STACK_DEPTH; ++i) {
-    if (itl_g_undo_stack[i].line != NULL) {
-      ITL_STRING_FREE(itl_g_undo_stack[i].line);
-      itl_g_undo_stack[i].line = NULL;
+    if (itl_g_undo_stack[i].older_chars != NULL) {
+      ITL_STRING_FREE(itl_g_undo_stack[i].older_chars);
+      itl_g_undo_stack[i].older_chars = NULL;
     }
+    if (itl_g_undo_stack[i].newer_chars != NULL) {
+      ITL_STRING_FREE(itl_g_undo_stack[i].newer_chars);
+      itl_g_undo_stack[i].newer_chars = NULL;
+    }
+  }
+
+  if (itl_g_undo_top_text != NULL) {
+    ITL_STRING_FREE(itl_g_undo_top_text);
+    itl_g_undo_top_text = NULL;
   }
 
   for (i = 0; i < ITL_VI_REGISTER_COUNT; ++i) {
@@ -4528,6 +4722,9 @@ itl_char_buf_append_csi(itl_char_buf_t *cb, size_t parameter, char final_byte)
 
 /* If this is true, do not overwrite file on `history_dump_to_file()` */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_history_file_is_bad = false;
+/* The errno of the I/O failure that made the history file bad, or 0 when its
+   contents are not valid history. */
+ITL_DEF ITL_THREAD_LOCAL int itl_g_history_file_errno = 0;
 
 /* Records the byte offset of one entry in the ring, evicting the oldest when
    the configured limit is full. */
@@ -4869,6 +5066,7 @@ itl_history_load_from_file(const char *path)
 
   itl_g_history_free();
   itl_g_history_file_is_bad = false;
+  itl_g_history_file_errno  = 0;
 
   /* Keep the path so entries can be read, appended, and searched on the file
      directly. */
@@ -4883,6 +5081,7 @@ itl_history_load_from_file(const char *path)
     /* A missing file is not bad, the first append creates it. */
     if (errno != ENOENT) {
       itl_g_history_file_is_bad = true;
+      itl_g_history_file_errno  = errno;
     }
     return TL_ERROR;
   }
@@ -5016,6 +5215,7 @@ itl_history_append_to_file(const itl_string_t *str,
     ITL_TRACELN("could not open history file for append (%s): %s\n",
                 itl_g_history_path, strerror(errno));
     itl_g_history_file_is_bad = true;
+    itl_g_history_file_errno  = errno != 0 ? errno : EIO;
     ITL_FREE(buffer.data);
     return false;
   }
@@ -5027,6 +5227,7 @@ itl_history_append_to_file(const itl_string_t *str,
     ITL_FILE_CLOSE(append_file);
     ITL_FREE(buffer.data);
     itl_g_history_file_is_bad = true;
+    itl_g_history_file_errno  = errno != 0 ? errno : EIO;
     return false;
   }
   if (real_end > 0) {
@@ -5039,6 +5240,7 @@ itl_history_append_to_file(const itl_string_t *str,
       ITL_FILE_CLOSE(append_file);
       ITL_FREE(buffer.data);
       itl_g_history_file_is_bad = true;
+    itl_g_history_file_errno  = errno != 0 ? errno : EIO;
       return false;
     }
     needs_durable_separator = last_byte != '\n';
@@ -5069,6 +5271,7 @@ itl_history_append_to_file(const itl_string_t *str,
     if (has_durable_buffer) ITL_FREE(durable_buffer.data);
     ITL_FREE(buffer.data);
     itl_g_history_file_is_bad = true;
+    itl_g_history_file_errno  = errno != 0 ? errno : EIO;
     return false;
   }
 
@@ -5078,6 +5281,7 @@ itl_history_append_to_file(const itl_string_t *str,
     if (has_durable_buffer) ITL_FREE(durable_buffer.data);
     ITL_FREE(buffer.data);
     itl_g_history_file_is_bad = true;
+    itl_g_history_file_errno  = errno != 0 ? errno : EIO;
     return false;
   }
 
@@ -5101,7 +5305,54 @@ itl_history_append_to_file(const itl_string_t *str,
   return true;
 }
 
-/* History persists on append, so dump only flushes. When the target path is the
+/* Returns true when both paths lead to one existing file. */
+ITL_DEF bool
+itl_paths_are_same_file(const char *first, const char *second)
+{
+#if defined ITL_WIN32
+  BY_HANDLE_FILE_INFORMATION first_info;
+  BY_HANDLE_FILE_INFORMATION second_info;
+  HANDLE                     first_handle;
+  HANDLE                     second_handle;
+  bool                       is_same = false;
+
+  first_handle = CreateFileA(first, 0, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                           FILE_SHARE_DELETE,
+                             NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
+                             NULL);
+  if (first_handle == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  second_handle = CreateFileA(second, 0, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                             FILE_SHARE_DELETE,
+                              NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
+                              NULL);
+  if (second_handle != INVALID_HANDLE_VALUE) {
+    if (GetFileInformationByHandle(first_handle, &first_info) &&
+        GetFileInformationByHandle(second_handle, &second_info))
+    {
+      is_same =
+          first_info.dwVolumeSerialNumber == second_info.dwVolumeSerialNumber &&
+          first_info.nFileIndexHigh == second_info.nFileIndexHigh &&
+          first_info.nFileIndexLow == second_info.nFileIndexLow;
+    }
+    CloseHandle(second_handle);
+  }
+  CloseHandle(first_handle);
+
+  return is_same;
+#else
+  struct stat first_status;
+  struct stat second_status;
+
+  return stat(first, &first_status) == 0 &&
+         stat(second, &second_status) == 0 &&
+         first_status.st_dev == second_status.st_dev &&
+         first_status.st_ino == second_status.st_ino;
+#endif
+}
+
+/* History persists on append, so dump only flushes. When the target is the
    active store there is nothing to do. A different path receives a byte copy of
    the store so the public contract still writes the history somewhere. Returns
    TL_SUCCESS or TL_ERROR, sets errno on failure. */
@@ -5124,8 +5375,11 @@ itl_history_dump_to_file(const char *path)
   if (itl_g_history_path == NULL) {
     return TL_SUCCESS;
   }
-  /* The active store already holds every entry. */
-  if (strcmp(itl_g_history_path, path) == 0) {
+  /* The active store already holds every entry, also under another spelling
+     of its path, which a write would truncate. */
+  if (strcmp(itl_g_history_path, path) == 0 ||
+      itl_paths_are_same_file(itl_g_history_path, path))
+  {
     return TL_SUCCESS;
   }
 
@@ -19987,6 +20241,7 @@ tl_history_load(const char *file_path)
     itl_g_history_file_size         = 0;
     itl_g_history_ends_with_newline = true;
     itl_g_history_file_is_bad       = history_errno != ENOENT;
+    itl_g_history_file_errno        = history_errno;
     errno                           = history_errno;
     return TL_ERROR;
   }

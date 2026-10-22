@@ -1157,6 +1157,60 @@ test_history_unterminated_line(void)
   return ok;
 }
 
+/* A dump to another spelling of the active store path leaves the file whole,
+   and a dump to a different file copies it. */
+static bool
+test_history_dump_keeps_the_store(void)
+{
+  const char *path = "tl_test_dump_store.txt";
+  const char *copy = "tl_test_dump_copy.txt";
+  char        contents[64];
+  size_t      read_count;
+  bool        ok = true;
+  FILE       *f;
+
+  itl_g_is_active = true;
+  remove(path);
+  remove(copy);
+  f = fopen(path, "wb");
+  if (f == NULL) {
+    TEST_PRINTF("could not create file\n");
+    itl_g_is_active = false;
+    return false;
+  }
+  fwrite("one\ntwo\n", 1, 8, f);
+  fclose(f);
+
+  if (tl_history_load(path) != TL_SUCCESS) {
+    TEST_PRINTF("load failed\n");
+    ok = false;
+  }
+  ok &= tl_history_dump("./tl_test_dump_store.txt") == TL_SUCCESS;
+  ok &= tl_history_dump(copy) == TL_SUCCESS;
+
+  f = fopen(path, "rb");
+  read_count = f != NULL ? fread(contents, 1, sizeof(contents), f) : 0;
+  if (f != NULL) fclose(f);
+  if (read_count != 8 || memcmp(contents, "one\ntwo\n", 8) != 0) {
+    TEST_PRINTF("the store holds %zu bytes after the dump\n", read_count);
+    ok = false;
+  }
+
+  f = fopen(copy, "rb");
+  read_count = f != NULL ? fread(contents, 1, sizeof(contents), f) : 0;
+  if (f != NULL) fclose(f);
+  if (read_count != 8 || memcmp(contents, "one\ntwo\n", 8) != 0) {
+    TEST_PRINTF("the copy holds %zu bytes\n", read_count);
+    ok = false;
+  }
+
+  itl_g_history_free();
+  itl_g_is_active = false;
+  remove(path);
+  remove(copy);
+  return ok;
+}
+
 /* Both readers decode a record the same way. A lone carriage return survives as
    data and a CRLF ending is dropped on either path. */
 static bool
@@ -8096,6 +8150,74 @@ test_string_byte_offset_counts_bytes(void)
   return ok;
 }
 
+/* Undo and redo walk back and forward through states that differ at the
+   start, the middle, and the end of the line, including states past the depth
+   of the ring, and redo refuses a line that changed without a snapshot. */
+static bool
+test_undo_records_changes(void)
+{
+  static const char *STATES[] = {
+      "",          "abc",     "abcdef",   "abXYZdef", "Zbc",
+      "Zbc tail",  "Zbc",     "head Zbc", "",         "a\xe3\x81\x82\x62",
+  };
+  char          out_buffer[BUFFER_SIZE];
+  itl_le_t      le   = ITL_ZERO_INIT;
+  itl_string_t *line = itl_string_alloc();
+  bool          ok   = true;
+  size_t        i;
+
+  itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+  itl_undo_reset();
+  for (i = 0; i + 1 < ITL_COUNTOF(STATES); ++i) {
+    ITL_STRING_FROM_CSTR(line, STATES[i]);
+    itl_undo_push(&le);
+    ITL_STRING_FROM_CSTR(line, STATES[i + 1]);
+  }
+
+  for (i = ITL_COUNTOF(STATES) - 1; i > 0; --i) {
+    ok &= itl_undo_pop(&le);
+    ok &= test_line_is(line, STATES[i - 1], "undo");
+  }
+  ok &= !itl_undo_pop(&le);
+
+  for (i = 1; i < ITL_COUNTOF(STATES); ++i) {
+    ok &= itl_redo(&le);
+    ok &= test_line_is(line, STATES[i], "redo");
+  }
+  ok &= !itl_redo(&le);
+
+  ok &= itl_undo_pop(&le);
+  ok &= itl_undo_pop(&le);
+  ok &= test_line_is(line, STATES[ITL_COUNTOF(STATES) - 3], "undo after redo");
+  ITL_STRING_FROM_CSTR(line, "changed without a snapshot");
+  ok &= !itl_redo(&le);
+  ok &= test_line_is(line, "changed without a snapshot", "refused redo");
+
+  itl_undo_reset();
+  for (i = 0; i < ITL_UNDO_STACK_DEPTH + 10; ++i) {
+    char text[32];
+
+    snprintf(text, sizeof(text), "state %zu", i);
+    ITL_STRING_FROM_CSTR(line, text);
+    itl_undo_push(&le);
+  }
+  ITL_STRING_FROM_CSTR(line, "last");
+  for (i = 0; i < ITL_UNDO_STACK_DEPTH; ++i) {
+    if (!itl_undo_pop(&le)) {
+      break;
+    }
+  }
+  ok &= test_line_is(line, "state 11", "oldest kept state");
+  while (itl_redo(&le)) {
+  }
+  ok &= test_line_is(line, "last", "redo to the newest state");
+
+  itl_undo_reset();
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 static bool
 test_vi_ex_write_commands(void)
 {
@@ -10175,6 +10297,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(
                                        test_find_wraps_and_folds_case),
                                    DEFINE_TEST_CASE(test_format_commands),
+                                   DEFINE_TEST_CASE(test_undo_records_changes),
+                                   DEFINE_TEST_CASE(test_history_dump_keeps_the_store),
                                    DEFINE_TEST_CASE(
                                        test_rejected_edit_and_format_keep_the_line),
                                    DEFINE_TEST_CASE(test_string_byte_offset_counts_bytes),
