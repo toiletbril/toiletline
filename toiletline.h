@@ -334,8 +334,7 @@ typedef struct tl_completion
      by prefix and keeps whole. */
   int is_tier_ranked;
   /* Nonzero when an accepted candidate takes no trailing space even with
-     tl_set_space_after_completion on, the way a bash spec with -o nospace
-     completes a word the user keeps typing. */
+     tl_set_space_after_completion on, for a word the user keeps typing. */
   int is_space_suppressed;
 } tl_completion;
 
@@ -1007,7 +1006,6 @@ ITL_READ_BYTE_RAW(void)
 
 #define ITL_THREAD_LOCAL        __thread
 #define ITL_NO_RETURN            __attribute__((noreturn))
-#define ITL_MAYBE_UNUSED         __attribute__((unused))
 #define ITL_UNREACHABLE_INTRIN() __builtin_unreachable()
 #define itl_debug_trap()         __builtin_trap()
 
@@ -1147,8 +1145,8 @@ itl_enter_raw_mode_impl(void)
 
   /* TCSADRAIN keeps the pty's queued input, so a command typed ahead while
      the previous one ran, or sent by tmux before the shell finished
-     starting, is read at the prompt the way bash replays it. TCSAFLUSH
-     would discard that type-ahead. */
+     starting, is read at the prompt. TCSAFLUSH would discard that
+     type-ahead. */
   ITL_TRY(tcsetattr(STDIN_FILENO, TCSADRAIN, &term) == 0, return false);
 #endif /* ITL_POSIX */
   return true;
@@ -2354,9 +2352,8 @@ itl_prompt_last_row_width(const char *cstr, size_t *out_rows)
 /* The byte offset prompt rendering starts from and the cells the rendered
    prompt occupies, for the given terminal width. A prompt narrower than the
    terminal renders whole from offset zero. A wider one renders as the
-   ellipsis marker and its own tail, the way fish shortens an oversized
-   prompt, so the cursor math never sees a prompt at or past the terminal
-   width and the first row keeps room for input. */
+   ellipsis marker and its own tail, so the cursor math never sees a prompt at
+   or past the terminal width and the first row keeps room for input. */
 ITL_DEF size_t
 itl_prompt_render_cut(const char *prompt,
                       size_t      prompt_width,
@@ -4990,8 +4987,7 @@ itl_history_append_to_file(const itl_string_t *str,
     return false;
   }
   /* A non-interactive run reading from a pipe or a file leaves the history
-     file untouched, so only a real terminal session records its commands the
-     way bash skips history off a tty. */
+     file untouched, so only a real terminal session records its commands. */
   if (should_require_terminal && !ITL_TTY_IS_TTY()) {
     return false;
   }
@@ -6154,8 +6150,8 @@ itl_flash_sgr_off(void)
              : ITL_FLASH_REVERSE_OFF;
 }
 
-/* The flash hold, matching fish's 100ms, long enough to perceive and short
-   enough not to feel like a stall on a deliberate TAB. */
+/* The flash hold is 100ms, long enough to perceive and short enough not to
+   feel like a stall on a deliberate TAB. */
 #define ITL_FLASH_HOLD_MS 100
 
 /* Sleep the flash hold without busy-waiting. A signal that cuts it short just
@@ -10097,7 +10093,7 @@ itl_le_tty_draw_transient(itl_le_t *le)
    already correct and the repaint is skipped, which avoids a full-block flicker
    on a multiline submit. With a transient prompt, a submitted or interrupted
    line is redrawn after it instead, so the scrollback keeps the short prompt
-   for a cancelled line too, as zsh transient prompts do. */
+   for a cancelled line too. */
 ITL_DEF tl_status_code
 itl_le_finish_input(itl_le_t *le, tl_status_code code)
 {
@@ -14939,8 +14935,8 @@ itl_le_word_start_from(const itl_string_t *line, size_t i)
 }
 
 /* Swaps the word before the cursor with the word after it and leaves the
-   cursor after both, the way readline does. At the end of the line the last
-   two words are swapped and trailing blanks stay where they are. */
+   cursor after both. At the end of the line the last two words are swapped
+   and trailing blanks stay where they are. */
 ITL_DEF void
 itl_le_transpose_words(itl_le_t *le)
 {
@@ -15680,9 +15676,9 @@ itl_le_key_handle(itl_le_t *le, int esc)
       return code;
     }
 
-    /* A trailing backslash at the end of the line continues it, fish-style. A
-       backslash with text after it submits the line instead, and so does an
-       even run, where the last backslash is itself escaped. */
+    /* A trailing backslash at the end of the line continues it. A backslash
+       with text after it submits the line instead, and so does an even run,
+       where the last backslash is itself escaped. */
     if (!should_insert_newline && le->cursor_position == le->line->length) {
       size_t backslash_count = 0;
 
@@ -15696,10 +15692,10 @@ itl_le_key_handle(itl_le_t *le, int esc)
     }
     /* A bare newline always submits. Real pastes arrive inside the bracketed
        paste markers requested at raw enter, and a terminal without them
-       degrades to one submit per pasted line, the same reading bash gives. A
-       pending-input heuristic here would instead merge typed-ahead commands,
-       tmux send-keys of "su user" then "cd dir", into one multiline buffer,
-       running the second line in the outer shell after the first returns. */
+       degrades to one submit per pasted line. A pending-input heuristic here
+       would instead merge typed-ahead commands, tmux send-keys of "su user"
+       then "cd dir", into one multiline buffer, running the second line in
+       the outer shell after the first returns. */
     if (should_insert_newline) {
       itl_le_insert(le, itl_newline_char);
       break;
@@ -16770,8 +16766,9 @@ itl_vi_register_set_span(itl_string_t       *reg,
   }
 }
 
-/* Stores a yanked or deleted span in the pending register and, when one was
-   named, in the unnamed register too. A linewise span ends with a newline. */
+/* Stores a yanked or deleted span in the pending register and, when a
+   register was selected, in the unnamed register too. A linewise span ends
+   with a newline. */
 ITL_DEF void
 itl_vi_register_store(const itl_string_t *src,
                       size_t              from,
