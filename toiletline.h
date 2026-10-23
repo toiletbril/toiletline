@@ -3596,6 +3596,8 @@ itl_history_decode_entry_buffered(size_t  offset,
                                   char   *decoded,
                                   size_t  capacity,
                                   size_t *decoded_size_out);
+ITL_DEF bool
+itl_history_read_entry_buffered(size_t offset, itl_string_t *out);
 
 /* Replaces the editor line with the currently selected entry from the private
    history snapshot. */
@@ -3603,15 +3605,9 @@ ITL_DEF void
 itl_history_show_selected(itl_le_t *le)
 {
   size_t offset = itl_history_index_to_offset(le->history_selected_index);
-  char   decoded[ITL_STRING_MAX_LEN + 1];
-  size_t decoded_size = 0;
 
   itl_le_clear_line(le);
-  if (itl_history_ensure_read_buffer() &&
-      itl_history_decode_entry_buffered(offset, decoded, sizeof(decoded),
-                                        &decoded_size) &&
-      itl_string_from_bytes(le->line, decoded, decoded_size))
-  {
+  if (itl_history_read_entry_buffered(offset, le->line)) {
     le->cursor_position = le->line->length;
   } else {
     /* The entry could not be read, so fall back to the draft instead of leaving
@@ -5094,7 +5090,7 @@ itl_history_append_to_file(const itl_string_t *str,
       ITL_FILE_CLOSE(append_file);
       ITL_FREE(buffer.data);
       itl_g_history_file_is_bad = true;
-    itl_g_history_file_errno  = errno != 0 ? errno : EIO;
+      itl_g_history_file_errno  = errno != 0 ? errno : EIO;
       return false;
     }
     needs_durable_separator = last_byte != '\n';
@@ -5221,7 +5217,7 @@ itl_history_dump_to_file(const char *path)
   TL_ASSERT(itl_g_is_active && "Dump history before calling tl_exit()!");
 
   if (itl_g_history_file_is_bad) {
-    errno = EINVAL;
+    errno = itl_g_history_file_errno != 0 ? itl_g_history_file_errno : EINVAL;
     return TL_ERROR;
   }
 
