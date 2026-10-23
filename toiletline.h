@@ -86,9 +86,9 @@ extern "C"
 #define ITL_DEF static
 #endif /* !ITL_DEF */
 
-/* The longest line in bytes may be set with TL_STRING_MAX_LEN, which defaults
- * to 4095 on POSIX and 8191 on Windows. Every line buffer and several stack
- * buffers take this size. */
+/* The default longest line in bytes may be set with TL_STRING_MAX_LEN, which
+ * defaults to 4095 on POSIX and 8191 on Windows. History records and several
+ * stack buffers take this size, and tl_set_line_max raises the line limit. */
 
 /* Max size of in-memory history, must be a power of 2. */
 #if !defined TL_HISTORY_MAX_SIZE
@@ -515,14 +515,24 @@ tl_set_status(const char *status);
 
 /**
  * Lay the editor out over the whole terminal for a host that edits a file:
- * the input fills every row but the title and the last four, which hold the
- * status, the hints, and the command line, and the completion menu is drawn
+ * the input fills every row but the title and the last rows, which hold the
+ * status, a save message while one is set, the hints, and the command line,
+ * and the completion menu is drawn
  * over the input next to the caret. Mouse reports are on while the layout is.
  * The host keeps the layout on the alternate screen, which the editor leaves
  * while an external editor runs. Off by default.
  */
 TL_DEF void
 tl_set_full_screen(int enabled);
+
+/**
+ * Set the longest line in bytes the editor holds. A value below
+ * TL_STRING_MAX_LEN restores that default. The buffer passed to tl_get_input
+ * may then hold one more byte than this, and tl_set_predefined_input keeps
+ * text up to this length.
+ */
+TL_DEF void
+tl_set_line_max(size_t byte_count);
 
 /**
  * Let the terminal turn the interrupt key back into SIGINT while the editor
@@ -1810,6 +1820,10 @@ itl_raise_suspend(void)
 #endif /* ITL_SUSPEND */
 
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_alloc_count = 0;
+/* The longest line in bytes the editor holds. The host may raise it above
+   ITL_STRING_MAX_LEN for a long document, and its output buffer then needs one
+   more byte than this. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_line_max = ITL_STRING_MAX_LEN;
 
 ITL_DEF void *
 itl_malloc(size_t size)
@@ -2484,7 +2498,7 @@ itl_string_recalc_size(itl_string_t *str)
   size_t i;
   str->size = 0;
 
-  TL_ASSERT(str->length <= ITL_STRING_MAX_LEN);
+  TL_ASSERT(str->length <= itl_g_line_max);
 
   for (i = 0; i < str->length; ++i) {
     TL_ASSERT(str->chars[i].size > 0);
@@ -2689,8 +2703,8 @@ itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
   /* Clamp the byte count to the platform cap at a character boundary, so a
      host setter that feeds an oversized string never trips the length assert
      in itl_string_recalc_size. */
-  if (size > ITL_STRING_MAX_LEN) {
-    size = ITL_STRING_MAX_LEN;
+  if (size > itl_g_line_max) {
+    size = itl_g_line_max;
     while (size > 0 && (data[size] & 0xC0) == 0x80) {
       --size;
     }
@@ -2826,8 +2840,40 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_completion_miss_prefix_length = 0;
 ITL_DEF ITL_THREAD_LOCAL char
     itl_g_ghost_history_miss_prefix[ITL_STRING_MAX_LEN]                   = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_history_miss_prefix_length    = 0;
-ITL_DEF ITL_THREAD_LOCAL char   itl_g_serialized_line[ITL_STRING_MAX_LEN] = {0};
-ITL_DEF ITL_THREAD_LOCAL bool   itl_g_serialized_line_ready = false;
+/* The line as text, grown on demand to hold the whole line. */
+ITL_DEF ITL_THREAD_LOCAL char  *itl_g_serialized_line          = NULL;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_serialized_line_capacity = 0;
+ITL_DEF ITL_THREAD_LOCAL bool   itl_g_serialized_line_ready    = false;
+
+/* Grow a line buffer so it holds size bytes and a terminator. */
+ITL_DEF void
+itl_line_buffer_reserve(char **buffer, size_t *capacity, size_t size)
+{
+  size_t wanted = *capacity > 0 ? *capacity : 256;
+
+  if (size < *capacity) {
+    return;
+  }
+
+  while (wanted <= size) {
+    wanted *= 2;
+  }
+
+  *buffer   = (char *) itl_realloc(*buffer, wanted);
+  *capacity = wanted;
+}
+
+/* Release a line buffer that itl_line_buffer_reserve grew. */
+ITL_DEF void
+itl_line_buffer_release(char **buffer, size_t *capacity)
+{
+  if (*buffer != NULL) {
+    ITL_FREE(*buffer);
+  }
+
+  *buffer   = NULL;
+  *capacity = 0;
+}
 /* True while the row index describes the line as the last frame drew it,
    which holds until an edit or a key that asks for a text refresh. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_row_index_is_current = false;
@@ -5741,9 +5787,10 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_row = 1;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_cursor_col = 0;
 /* The bytes the previous text refresh drew, the base a plain append writes its
    tail onto. The length is zero before the first text refresh. */
-ITL_DEF ITL_THREAD_LOCAL char   itl_g_le_prev_render[ITL_STRING_MAX_LEN] = {0};
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_render_len                 = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_length                     = 0;
+ITL_DEF ITL_THREAD_LOCAL char  *itl_g_le_prev_render          = NULL;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_render_capacity = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_render_len      = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_length          = 0;
 /* Whether the previous refresh left the cursor at the line end. The append fast
    path fires only then, otherwise a mid-line caret forces the full redraw. */
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_le_prev_cursor_at_end = false;
@@ -6522,7 +6569,11 @@ itl_le_commit_render(const char              *render,
                      const tl_highlight_span *spans,
                      size_t                   span_count)
 {
-  memcpy(itl_g_le_prev_render, render, render_len);
+  if (render_len > 0) {
+    itl_line_buffer_reserve(&itl_g_le_prev_render,
+                            &itl_g_le_prev_render_capacity, render_len);
+    memcpy(itl_g_le_prev_render, render, render_len);
+  }
   itl_g_le_prev_render_len = render_len;
   itl_g_le_prev_length     = line_length;
   itl_le_save_prev_spans(spans, span_count);
@@ -6535,13 +6586,16 @@ itl_le_reuse_prev_render(const itl_le_t *le)
 {
   if (itl_g_serialized_line_ready ||
       itl_g_le_prev_render_len != le->line->size ||
-      itl_g_le_prev_length != le->line->length ||
-      le->line->size >= sizeof(itl_g_serialized_line))
+      itl_g_le_prev_length != le->line->length)
   {
     return;
   }
 
-  memcpy(itl_g_serialized_line, itl_g_le_prev_render, le->line->size);
+  itl_line_buffer_reserve(&itl_g_serialized_line,
+                          &itl_g_serialized_line_capacity, le->line->size);
+  if (le->line->size > 0) {
+    memcpy(itl_g_serialized_line, itl_g_le_prev_render, le->line->size);
+  }
   itl_g_serialized_line[le->line->size] = '\0';
   itl_g_serialized_line_ready           = true;
 }
@@ -6558,11 +6612,13 @@ itl_le_serialize_line(itl_le_t *le)
   {
     const itl_utf8_t *appended = &le->line->chars[le->line->length - 1];
 
-    if (itl_g_le_prev_render_len + appended->size == le->line->size &&
-        le->line->size < sizeof(itl_g_serialized_line))
-    {
-      memcpy(itl_g_serialized_line, itl_g_le_prev_render,
-             itl_g_le_prev_render_len);
+    if (itl_g_le_prev_render_len + appended->size == le->line->size) {
+      itl_line_buffer_reserve(&itl_g_serialized_line,
+                              &itl_g_serialized_line_capacity, le->line->size);
+      if (itl_g_le_prev_render_len > 0) {
+        memcpy(itl_g_serialized_line, itl_g_le_prev_render,
+               itl_g_le_prev_render_len);
+      }
       memcpy(itl_g_serialized_line + itl_g_le_prev_render_len, appended->bytes,
              appended->size);
       itl_g_serialized_line[le->line->size] = '\0';
@@ -6572,8 +6628,10 @@ itl_le_serialize_line(itl_le_t *le)
     }
   }
 
+  itl_line_buffer_reserve(&itl_g_serialized_line,
+                          &itl_g_serialized_line_capacity, le->line->size);
   if (itl_string_to_cstr(le->line, itl_g_serialized_line,
-                         sizeof(itl_g_serialized_line)) != TL_SUCCESS)
+                         itl_g_serialized_line_capacity) != TL_SUCCESS)
   {
     return false;
   }
@@ -8746,7 +8804,7 @@ itl_le_tty_refresh_frame(itl_le_t *le)
   TL_ASSERT(le->line);
   TL_ASSERT(le->line->chars);
   TL_ASSERT(le->line->size >= le->line->length);
-  TL_ASSERT(le->line->length <= ITL_STRING_MAX_LEN);
+  TL_ASSERT(le->line->length <= itl_g_line_max);
 
   if (has_resize) {
     ITL_TRY(itl_tty_get_size(&tty_rows, &tty_cols), {
@@ -8922,7 +8980,7 @@ itl_le_tty_refresh_frame(itl_le_t *le)
      and the metrics pass that placed the cursor never sees them, the same
      zero-width handling the ghost text relies on. Out-of-bounds or empty spans
      are dropped here. */
-  const char       *itl_cur_render  = itl_g_serialized_line;
+  const char       *itl_cur_render  = NULL;
   bool              have_cur_render = false;
   tl_highlight_span itl_syntax_spans[ITL_HIGHLIGHT_MAX_SPANS];
   const char       *append_tail_sgr = NULL;
@@ -8931,6 +8989,7 @@ itl_le_tty_refresh_frame(itl_le_t *le)
       itl_le_reuse_prev_render(le);
     }
     have_cur_render             = itl_le_serialize_line(le);
+    itl_cur_render              = itl_g_serialized_line;
     itl_g_serialized_line_ready = false;
     if (itl_g_search_spans_active &&
         (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
@@ -9001,8 +9060,9 @@ itl_le_tty_refresh_frame(itl_le_t *le)
        the length is read off the line rather than recounted with strlen. */
     size_t cur_len = le->line->size;
     if (cur_len > itl_g_le_prev_render_len &&
-        memcmp(itl_cur_render, itl_g_le_prev_render,
-               itl_g_le_prev_render_len) == 0)
+        (itl_g_le_prev_render_len == 0 ||
+         memcmp(itl_cur_render, itl_g_le_prev_render,
+                itl_g_le_prev_render_len) == 0))
     {
       itl_char_buf_t *fb = &itl_g_char_buffer;
       size_t          tail_index;
@@ -9644,6 +9704,13 @@ tl_set_full_screen(int enabled)
 }
 
 TL_DEF void
+tl_set_line_max(size_t byte_count)
+{
+  itl_g_line_max =
+      byte_count > ITL_STRING_MAX_LEN ? byte_count : ITL_STRING_MAX_LEN;
+}
+
+TL_DEF void
 tl_set_title(const char *title)
 {
   itl_g_title = title;
@@ -9706,9 +9773,14 @@ tl_set_pair_role_callback(tl_pair_role_fn callback)
 ITL_DEF int
 itl_le_pair_role(const itl_le_t *le, uint8_t byte, int fallback)
 {
-  if (itl_g_pair_role_callback == NULL ||
-      itl_string_to_cstr(le->line, itl_g_serialized_line,
-                         sizeof(itl_g_serialized_line)) != TL_SUCCESS)
+  if (itl_g_pair_role_callback == NULL) {
+    return fallback;
+  }
+
+  itl_line_buffer_reserve(&itl_g_serialized_line,
+                          &itl_g_serialized_line_capacity, le->line->size);
+  if (itl_string_to_cstr(le->line, itl_g_serialized_line,
+                         itl_g_serialized_line_capacity) != TL_SUCCESS)
   {
     return fallback;
   }
@@ -10575,7 +10647,7 @@ itl_ghost_fill_from_history(const char *line_cstr, size_t line_byte_len)
 ITL_DEF void
 itl_ghost_update(itl_le_t *le)
 {
-  const char *line_cstr = itl_g_serialized_line;
+  const char *line_cstr;
   size_t      line_byte_len;
 
   itl_ghost_clear();
@@ -10593,6 +10665,8 @@ itl_ghost_update(itl_le_t *le)
   if (!itl_le_serialize_line(le)) {
     return;
   }
+
+  line_cstr = itl_g_serialized_line;
 
   /* The host turned the ghost off, so no source fills it. */
   if (!itl_g_ghost_enabled) {
@@ -16095,6 +16169,12 @@ tl_exit(void)
   itl_g_history_free();
   itl_vi_free();
   itl_kill_ring_free();
+  itl_line_buffer_release(&itl_g_serialized_line,
+                          &itl_g_serialized_line_capacity);
+  itl_line_buffer_release(&itl_g_le_prev_render,
+                          &itl_g_le_prev_render_capacity);
+  itl_g_serialized_line_ready = false;
+  itl_g_le_prev_render_len    = 0;
   ITL_FREE(itl_g_line_buffer.chars);
   itl_char_buf_release(&itl_g_char_buffer);
   itl_char_buf_release(&itl_g_view_discard);
@@ -17257,7 +17337,7 @@ itl_le_wrap_lines(itl_le_t *le, size_t first, size_t last)
                               le->line->chars[i].size);
   }
 
-  if (out->size < le->out_size && out->size <= ITL_STRING_MAX_LEN &&
+  if (out->size < le->out_size && out->size <= itl_g_line_max &&
       !itl_string_equal_bytes(le->line, out->data, out->size) &&
       itl_string_from_bytes(changed, out->data, out->size))
   {
@@ -17607,12 +17687,15 @@ itl_vi_do_paste(itl_le_t *le, bool is_before, size_t count)
   size_t        reg_index   = itl_vi_register_index(itl_g_vi_pending_register);
   itl_string_t *reg         = itl_vi_register_at(reg_index);
   bool          is_linewise = itl_g_vi_register_is_linewise[reg_index];
-  char          text[ITL_STRING_MAX_LEN];
+  char         *text;
 
   if (reg->length == 0) {
     return;
   }
-  if (itl_string_to_cstr(reg, text, sizeof(text)) != TL_SUCCESS) {
+
+  text = (char *) itl_malloc(reg->size + 1);
+  if (itl_string_to_cstr(reg, text, reg->size + 1) != TL_SUCCESS) {
+    ITL_FREE(text);
     return;
   }
 
@@ -17620,6 +17703,7 @@ itl_vi_do_paste(itl_le_t *le, bool is_before, size_t count)
 
   if (is_linewise) {
     itl_vi_paste_lines(le, text, is_before, count);
+    ITL_FREE(text);
     return;
   }
 
@@ -17628,6 +17712,7 @@ itl_vi_do_paste(itl_le_t *le, bool is_before, size_t count)
   }
 
   itl_vi_insert_repeated(le, text, count);
+  ITL_FREE(text);
 
   if (le->cursor_position > 0) {
     le->cursor_position -= 1;
@@ -18718,7 +18803,7 @@ itl_substitution_apply(const itl_le_t         *le,
   itl_char_buf_append_bytes(out, text + end, line->size - end);
 
   is_ok = match_count > 0 && out->size < le->out_size &&
-          out->size <= ITL_STRING_MAX_LEN;
+          out->size <= itl_g_line_max;
   if (is_ok) {
     itl_string_from_bytes(line, out->data, out->size);
   }
@@ -18818,7 +18903,7 @@ itl_le_format(itl_le_t *le, bool is_whole, const char *header)
   changed = itl_string_alloc();
   if (out->size == le->line->size && memcmp(out->data, text, out->size) == 0) {
     /* The text is already formatted. */
-  } else if (out->size < le->out_size && out->size <= ITL_STRING_MAX_LEN &&
+  } else if (out->size < le->out_size && out->size <= itl_g_line_max &&
              itl_string_from_bytes(changed, out->data, out->size))
   {
     itl_le_begin_edit(le);
@@ -20246,9 +20331,8 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
   TL_ASSERT(
       buffer_size > 1 &&
       "Size should be enough at least for one byte and a null terminator");
-  TL_ASSERT(
-      buffer_size <= ITL_STRING_MAX_LEN &&
-      "Size should be less than platform's allowed maximum string length");
+  TL_ASSERT(buffer_size <= itl_g_line_max + 1 &&
+            "Size should fit the line capacity and a null terminator");
   TL_ASSERT(buffer != NULL);
 
   itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
