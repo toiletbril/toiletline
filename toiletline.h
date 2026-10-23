@@ -5366,15 +5366,17 @@ itl_ctrl_z_key(void)
 
 #if defined ITL_POSIX || defined ITL_WIN32
 /* The modifier parameter of a CSI key is one plus a bit set of shift 1, alt 2,
-   and ctrl 4. The plain mapping below keeps the forms the editor always read:
-   2 is shift, 3 is alt, and 5 is ctrl. */
+   and ctrl 4. The editor reads shift, alt, ctrl, and shift with either of the
+   other two. */
 ITL_DEF int
 itl_csi_modifier(unsigned value)
 {
   switch (value) {
   case 2: return TL_MOD_SHIFT;
   case 3: return TL_MOD_ALT;
+  case 4: return TL_MOD_ALT | TL_MOD_SHIFT;
   case 5: return TL_MOD_CTRL;
+  case 6: return TL_MOD_CTRL | TL_MOD_SHIFT;
   }
 
   return 0;
@@ -5433,10 +5435,12 @@ itl_esc_parse_modified_key(unsigned code, unsigned modifier)
   bool     is_alt   = (bits & 2) != 0;
 
   /* Kitty reports the unshifted key, so Alt with Shift maps to the symbol the
-     chord types. */
+     chord types, and Alt-Shift-F and Alt-Shift-B select by word. */
   if (is_alt && !is_ctrl && (bits & ~(1u | 2u | 64u | 128u)) == 0 &&
       code < 128)
   {
+    int key;
+
     if (is_shift) {
       switch (code) {
       case '.': code = '>'; break;
@@ -5445,10 +5449,28 @@ itl_esc_parse_modified_key(unsigned code, unsigned modifier)
       default:  break;
       }
     }
-    return itl_alt_key((uint8_t) code);
+    key = itl_alt_key((uint8_t) code);
+    if (is_shift && (code == 'f' || code == 'b')) {
+      key |= TL_MOD_SHIFT;
+    }
+    return key;
   }
   if ((bits & ~(1u | 4u | 64u | 128u)) != 0 || !is_ctrl) {
     return TL_KEY_UNKN;
+  }
+  /* Ctrl-Shift with an emacs motion letter is that motion with Shift, so it
+     selects. */
+  if (is_shift) {
+    switch (code >= 'A' && code <= 'Z' ? code + ('a' - 'A') : code) {
+    case 'a': return TL_KEY_HOME | TL_MOD_SHIFT;
+    case 'e': return TL_KEY_END | TL_MOD_SHIFT;
+    case 'f': return TL_KEY_RIGHT | TL_MOD_SHIFT;
+    case 'b': return TL_KEY_LEFT | TL_MOD_SHIFT;
+    case 'n': return TL_KEY_DOWN | TL_MOD_SHIFT;
+    case 'p': return TL_KEY_UP | TL_MOD_SHIFT;
+    case 'v': return TL_KEY_PAGE_DOWN | TL_MOD_SHIFT;
+    default:  break;
+    }
   }
   if (code == 'z' || code == 'Z') {
     return is_shift ? TL_KEY_REDO : itl_ctrl_z_key();
@@ -11114,6 +11136,8 @@ itl_menu_directory_sgr(void)
 
 ITL_DEF tl_status_code
 itl_le_key_handle(itl_le_t *le, int esc);
+ITL_DEF void
+itl_vi_move_paragraph(itl_le_t *le, bool is_forward);
 ITL_DEF tl_status_code
 itl_emacs_execute_command(itl_le_t *le);
 ITL_DEF tl_status_code
@@ -15633,6 +15657,13 @@ itl_le_key_handle(itl_le_t *le, int esc)
     bool             is_up = (esc & TL_MASK_KEY) == TL_KEY_UP;
     bool was_vertical = itl_key_is_vertical(prev_control & TL_MASK_KEY);
 
+    /* Ctrl-Up and Ctrl-Down move by paragraph, as vi { and } do. */
+    if ((esc & TL_MOD_CTRL) != 0) {
+      itl_vi_move_paragraph(le, !is_up);
+      itl_g_tty_should_refresh_text = false;
+      break;
+    }
+
     /* Move a visual row while inside a multiline or wrapped buffer. The input's
        first row sits at prompt_rows in the metrics, since a multi-row prompt
        offsets the rows, so history is recalled there rather than at row zero,
@@ -18299,13 +18330,15 @@ itl_key_is_shift_motion(int key)
 }
 
 /* Moves the caret for a caret move with or without Shift. Up and Down step a
-   visual row and never recall history. */
+   visual row and never recall history, and with Ctrl they move by paragraph. */
 ITL_DEF void
 itl_emacs_selection_move(itl_le_t *le, int key)
 {
   int kind = key & TL_MASK_KEY;
 
-  if (kind == TL_KEY_UP || kind == TL_KEY_DOWN) {
+  if ((kind == TL_KEY_UP || kind == TL_KEY_DOWN) &&
+      (key & TL_MOD_CTRL) == 0)
+  {
     itl_vi_step_visual_row(le, kind == TL_KEY_UP);
     return;
   }
