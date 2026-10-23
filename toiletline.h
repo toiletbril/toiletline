@@ -34,8 +34,8 @@ extern "C"
 #if !defined TOILETLINE_H_
 #define TOILETLINE_H_
 
-#define TL_MAJOR_VERSION 0
-#define TL_MINOR_VERSION 8
+#define TL_MAJOR_VERSION 2
+#define TL_MINOR_VERSION 0
 #define TL_PATCH_VERSION 0
 
 /* Compile with -Werror on Windows */
@@ -2686,10 +2686,9 @@ itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
   uint8_t  rune_width;
   uint32_t codepoint;
 
-  /* Clamp the byte count to the platform cap, the same silent-truncation
-     policy itl_history_read_entry_fd uses, so a host setter that feeds an
-     oversized string never trips the length assert in
-     itl_string_recalc_size. */
+  /* Clamp the byte count to the platform cap at a character boundary, so a
+     host setter that feeds an oversized string never trips the length assert
+     in itl_string_recalc_size. */
   if (size > ITL_STRING_MAX_LEN) {
     size = ITL_STRING_MAX_LEN;
     while (size > 0 && (data[size] & 0xC0) == 0x80) {
@@ -3314,157 +3313,6 @@ itl_history_index_to_offset(size_t index)
   TL_ASSERT(index < itl_g_history_count);
   return itl_g_history_offsets[(itl_g_history_head + index) %
                                (TL_HISTORY_MAX_SIZE)];
-}
-
-/* Decodes the entry that starts at byte offset in the history file into
-   decoded, turning the backslash escapes the dumper wrote back into their
-   bytes, a backslash n into a newline and a doubled backslash into one
-   backslash. The decoded length is capped at capacity so one huge command
-   cannot grow the read. Returns false when the file cannot be read. */
-ITL_DEF bool
-itl_history_decode_entry_fd(ITL_FILE file,
-                            size_t   offset,
-                            char    *decoded,
-                            size_t   capacity,
-                            size_t  *decoded_size_out)
-{
-  char   chunk[ITL_HISTORY_FILE_BUFFER_SIZE];
-  size_t decoded_size            = 0;
-  bool   is_escape_pending          = false;
-  bool   is_carriage_return_pending = false;
-  bool   is_line_done               = false;
-  bool   was_truncated           = false;
-
-  ITL_TRACELN("reading history entry at offset %zu\n", offset);
-
-  if (!ITL_FILE_SEEK(file, offset)) {
-    ITL_TRACELN("could not seek history file to offset %zu: %s\n", offset,
-                strerror(errno));
-    return false;
-  }
-
-  while (!is_line_done) {
-    int read_amount = (int) ITL_READ(file, chunk, ITL_HISTORY_FILE_BUFFER_SIZE);
-    size_t i;
-
-    if (read_amount <= 0) {
-      break; /* End of file ends the last entry. */
-    }
-
-    for (i = 0; i < (size_t) read_amount && !is_line_done; ++i) {
-      uint8_t ch = (uint8_t) chunk[i];
-
-      if (is_carriage_return_pending) {
-        is_carriage_return_pending = false;
-        if (ch == '\n') {
-          is_line_done = true;
-          continue;
-        }
-
-        /* The record was written with CRLF endings. A carriage return anywhere
-           else is entry data. */
-        if (decoded_size < capacity) {
-          decoded[decoded_size++] = '\r';
-        } else {
-          was_truncated = true;
-          is_line_done     = true;
-          continue;
-        }
-      }
-
-      if (is_escape_pending) {
-        is_escape_pending = false;
-        if (ch == 'n') {
-          ch = 0x0A;
-        } else if (ch != '\\') {
-          /* An unknown escape keeps the leading backslash, then the byte falls
-             through to be appended on its own. */
-          if (decoded_size < capacity) {
-            decoded[decoded_size++] = '\\';
-          } else {
-            was_truncated = true;
-          }
-        }
-      } else if (ch == '\\') {
-        is_escape_pending = true;
-        continue;
-      } else if (ch == '\n') {
-        is_line_done = true;
-        continue;
-      } else if (ch == '\r') {
-        is_carriage_return_pending = true;
-        continue;
-      }
-
-      if (decoded_size < capacity) {
-        decoded[decoded_size++] = (char) ch;
-      } else {
-        was_truncated = true;
-        is_line_done     = true;
-      }
-    }
-  }
-
-  if (is_carriage_return_pending) {
-    if (decoded_size < capacity) {
-      decoded[decoded_size++] = '\r';
-    } else {
-      was_truncated = true;
-    }
-  }
-
-  if (was_truncated) {
-    ITL_TRACELN("history entry at offset %zu truncated to %zu bytes\n", offset,
-                capacity);
-  }
-
-  *decoded_size_out = decoded_size;
-
-  return true;
-}
-
-/* Loads the entry that starts at byte offset from the history file into out.
-   Returns false when the file cannot be read or the entry is not valid
-   UTF-8. */
-ITL_DEF bool
-itl_history_read_entry_fd(ITL_FILE file, size_t offset, itl_string_t *out)
-{
-  char   decoded[ITL_STRING_MAX_LEN];
-  size_t decoded_size;
-
-  if (!itl_history_decode_entry_fd(file, offset, decoded, sizeof(decoded),
-                                   &decoded_size))
-  {
-    return false;
-  }
-
-  return itl_string_from_bytes(out, decoded, decoded_size);
-}
-
-/* Opens the history file, loads one entry, and closes it. Callers that read
-   many entries in a loop should open once and use itl_history_read_entry_fd
-   instead. Returns false when the file cannot be opened or read. */
-ITL_DEF bool
-itl_history_read_entry(size_t offset, itl_string_t *out)
-{
-  ITL_FILE file;
-  bool     is_ok;
-
-  if (itl_g_history_path == NULL) {
-    return false;
-  }
-
-  file = ITL_FILE_OPEN_FOR_READ(itl_g_history_path);
-  if (ITL_FILE_IS_BAD(file)) {
-    ITL_TRACELN("could not open history file for read (%s): %s\n",
-                itl_g_history_path, strerror(errno));
-    return false;
-  }
-
-  is_ok = itl_history_read_entry_fd(file, offset, out);
-  ITL_FILE_CLOSE(file);
-
-  return is_ok;
 }
 
 ITL_DEF void
@@ -4147,13 +3995,17 @@ itl_history_decode_entry_bytes(const char *buffer_data,
   return true;
 }
 
+/* Loads the entry that starts at byte offset into out through the read
+   buffer, as the history keys do. Returns false when the file cannot be read
+   or the entry is not valid UTF-8. */
 ITL_DEF bool
 itl_history_read_entry_buffered(size_t offset, itl_string_t *out)
 {
   char   decoded[ITL_STRING_MAX_LEN + 1];
   size_t decoded_size;
 
-  if (!itl_history_decode_entry_buffered(offset, decoded, sizeof(decoded),
+  if (!itl_history_ensure_read_buffer() ||
+      !itl_history_decode_entry_buffered(offset, decoded, sizeof(decoded),
                                          &decoded_size))
   {
     return false;
@@ -4779,28 +4631,6 @@ itl_history_offsets_reset(void)
   itl_g_history_head        = 0;
   itl_g_history_count       = 0;
   itl_g_history_total_count = 0;
-  itl_history_read_fd_invalidate();
-}
-
-/* Accounts for a leading span that was dropped from the history file. The
-   retained entries keep their order and event numbers, and every live offset
-   shrinks by the same count. The cached read buffer maps the previous offsets
-   and is dropped. */
-ITL_DEF void
-itl_history_offsets_shift(size_t removed_byte_count)
-{
-  size_t index;
-
-  TL_ASSERT(removed_byte_count <= itl_g_history_file_size);
-
-  for (index = 0; index < itl_g_history_count; ++index) {
-    size_t slot = (itl_g_history_head + index) % (TL_HISTORY_MAX_SIZE);
-
-    TL_ASSERT(itl_g_history_offsets[slot] >= removed_byte_count);
-    itl_g_history_offsets[slot] -= removed_byte_count;
-  }
-
-  itl_g_history_file_size -= removed_byte_count;
   itl_history_read_fd_invalidate();
 }
 
@@ -16379,15 +16209,6 @@ itl_history_find_match(const char   *query,
                        itl_string_t *out)
 {
   return itl_history_scan_match(query, query_size, start_index, false, out);
-}
-
-ITL_DEF size_t
-itl_history_find_match_forward(const char   *query,
-                               size_t        query_size,
-                               size_t        start_index,
-                               itl_string_t *out)
-{
-  return itl_history_scan_match(query, query_size, start_index, true, out);
 }
 
 /* The newest navigable entry index, or ITL_HISTORY_NONE when history is empty.

@@ -864,7 +864,7 @@ test_history_multiline_file(void)
     ok = false;
   }
 
-  if (ok && (!itl_history_read_entry(itl_history_index_to_offset(0), got) ||
+  if (ok && (!itl_history_read_entry_buffered(itl_history_index_to_offset(0), got) ||
              !itl_string_equal(got, entry)))
   {
     TEST_PRINTF("multiline entry did not survive the roundtrip\n");
@@ -903,7 +903,7 @@ hist_entry_is(size_t index, const char *expected)
   bool is_equal;
 
   ITL_STRING_FROM_CSTR(want, expected);
-  is_equal = itl_history_read_entry(itl_history_index_to_offset(index), got) &&
+  is_equal = itl_history_read_entry_buffered(itl_history_index_to_offset(index), got) &&
              itl_string_equal(got, want);
 
   ITL_STRING_FREE(got);
@@ -1211,8 +1211,8 @@ test_history_dump_keeps_the_store(void)
   return ok;
 }
 
-/* Both readers decode a record the same way. A lone carriage return survives as
-   data and a CRLF ending is dropped on either path. */
+/* The reader keeps a lone carriage return as data and drops a CRLF
+   ending. */
 static bool
 test_history_carriage_return_rule(void)
 {
@@ -1220,17 +1220,12 @@ test_history_carriage_return_rule(void)
   bool  ok = true;
   FILE *f;
 
-  itl_string_t *buffered = itl_string_alloc();
-  itl_string_t *unbuffered = itl_string_alloc();
-
   itl_g_is_active = true;
   remove(path);
 
   f = fopen(path, "wb");
   if (f == NULL) {
     TEST_PRINTF("could not create file\n");
-    ITL_STRING_FREE(buffered);
-    ITL_STRING_FREE(unbuffered);
     itl_g_is_active = false;
     return false;
   }
@@ -1251,145 +1246,10 @@ test_history_carriage_return_rule(void)
   }
 
   if (ok && (!hist_entry_is(0, "a\rb") || !hist_entry_is(1, "c"))) {
-    TEST_PRINTF("the unbuffered reader mishandled a carriage return\n");
+    TEST_PRINTF("the reader mishandled a carriage return\n");
     ok = false;
   }
 
-  if (ok && !itl_history_ensure_read_buffer()) {
-    TEST_PRINTF("could not fill the read buffer\n");
-    ok = false;
-  }
-
-  if (ok) {
-    size_t index;
-
-    for (index = 0; index < itl_g_history_count; ++index) {
-      size_t offset = itl_history_index_to_offset(index);
-
-      if (!itl_history_read_entry_buffered(offset, buffered) ||
-          !itl_history_read_entry(offset, unbuffered) ||
-          !itl_string_equal(buffered, unbuffered))
-      {
-        TEST_PRINTF("entry %zu differs between the readers\n", index);
-        ok = false;
-      }
-    }
-  }
-
-  ITL_STRING_FREE(buffered);
-  ITL_STRING_FREE(unbuffered);
-  itl_g_history_free();
-  itl_g_is_active = false;
-  remove(path);
-  return ok;
-}
-
-/* A history write drops the entries the limit no longer reaches and shifts the
-   offsets that remain. The resulting state equals a scan of the shortened
-   file. */
-static bool
-test_history_offset_shift_matches_scan(void)
-{
-  const char *path = "tl_test_offset_shift.txt";
-  bool   ok = true;
-  size_t removed_byte_count = 0;
-  size_t shifted_offsets[2] = {0, 0};
-  size_t shifted_count = 0;
-  size_t original_total_count = 0;
-  size_t shifted_total_count = 0;
-  size_t shifted_file_size = 0;
-  size_t index;
-  FILE  *f;
-
-  itl_g_is_active = true;
-  remove(path);
-
-  f = fopen(path, "wb");
-  if (f == NULL) {
-    TEST_PRINTF("could not create file\n");
-    itl_g_is_active = false;
-    return false;
-  }
-  fwrite("one\ntwo\nthree\n", 1, 14, f);
-  fclose(f);
-
-  tl_set_history_limit(2);
-  if (tl_history_load(path) != TL_SUCCESS || itl_g_history_count != 2) {
-    TEST_PRINTF("the limited load did not retain two entries\n");
-    ok = false;
-  }
-
-  if (ok) {
-    original_total_count = itl_g_history_total_count;
-    removed_byte_count = itl_history_index_to_offset(0);
-    if (removed_byte_count != 4) {
-      TEST_PRINTF("expected the oldest retained entry at offset 4, got %zu\n",
-                  removed_byte_count);
-      ok = false;
-    }
-  }
-
-  if (ok) {
-    /* Leave behind what the replacement writes, which is the file without the
-       dropped span. */
-    f = fopen(path, "wb");
-    if (f == NULL) {
-      TEST_PRINTF("could not rewrite file\n");
-      ok = false;
-    } else {
-      fwrite("two\nthree\n", 1, 10, f);
-      fclose(f);
-    }
-  }
-
-  if (ok) {
-    itl_history_offsets_shift(removed_byte_count);
-    shifted_count = itl_g_history_count;
-    shifted_total_count = itl_g_history_total_count;
-    shifted_file_size = itl_g_history_file_size;
-
-    for (index = 0; index < shifted_count && index < 2; ++index) {
-      shifted_offsets[index] = itl_history_index_to_offset(index);
-    }
-
-    if (!hist_entry_is(0, "two") || !hist_entry_is(1, "three")) {
-      TEST_PRINTF("the shifted offsets do not read the retained entries\n");
-      ok = false;
-    }
-  }
-
-  if (ok && tl_history_load(path) != TL_SUCCESS) {
-    TEST_PRINTF("the reload of the shortened file failed\n");
-    ok = false;
-  }
-
-  if (ok && shifted_total_count != original_total_count) {
-    TEST_PRINTF("the shift changed the total from %zu to %zu\n",
-                original_total_count, shifted_total_count);
-    ok = false;
-  }
-
-  if (ok && (shifted_count != itl_g_history_count ||
-             shifted_file_size != itl_g_history_file_size))
-  {
-    TEST_PRINTF("the shift left %zu entries and %zu bytes, the scan left "
-                "%zu and %zu\n",
-                shifted_count, shifted_file_size, itl_g_history_count,
-                itl_g_history_file_size);
-    ok = false;
-  }
-
-  if (ok) {
-    for (index = 0; index < itl_g_history_count; ++index) {
-      if (shifted_offsets[index] != itl_history_index_to_offset(index)) {
-        TEST_PRINTF("offset %zu differs between the shift and the scan\n",
-                    index);
-        ok = false;
-      }
-    }
-  }
-
-  tl_set_history_limit(TL_HISTORY_MAX_SIZE);
   itl_g_history_free();
   itl_g_is_active = false;
   remove(path);
@@ -1434,7 +1294,7 @@ test_history_search(void)
      next forward step finds "git commit" at index 1, the mirror of the
      backward walk. */
   if (ok) {
-    match = itl_history_find_match_forward(SEARCH_QUERY("GiT"), 0, scratch);
+    match = itl_history_scan_match(SEARCH_QUERY("GiT"), 0, true, scratch);
     if (match != 0) {
       TEST_PRINTF("expected forward match at index 0, got %zu\n", match);
       ok = false;
@@ -1442,7 +1302,7 @@ test_history_search(void)
   }
   if (ok) {
     match =
-        itl_history_find_match_forward(SEARCH_QUERY("GiT"), match + 1, scratch);
+        itl_history_scan_match(SEARCH_QUERY("GiT"), match + 1, true, scratch);
     if (match != 1) {
       TEST_PRINTF("expected newer forward match at index 1, got %zu\n", match);
       ok = false;
@@ -1459,7 +1319,7 @@ test_history_search(void)
     }
   }
   if (ok) {
-    match = itl_history_find_match_forward(SEARCH_QUERY("zzz"), 0, scratch);
+    match = itl_history_scan_match(SEARCH_QUERY("zzz"), 0, true, scratch);
     if (match != ITL_HISTORY_NONE) {
       TEST_PRINTF("no forward match should return the sentinel, got %zu\n",
                   match);
@@ -1643,7 +1503,7 @@ test_history_search_matching(void)
   }
 
   if (ok) {
-    match = itl_history_find_match_forward(SEARCH_QUERY(""), 0, found);
+    match = itl_history_scan_match(SEARCH_QUERY(""), 0, true, found);
     if (match != 0) {
       TEST_PRINTF("the empty forward query matched %zu\n", match);
       ok = false;
@@ -1651,7 +1511,7 @@ test_history_search_matching(void)
   }
 
   if (ok) {
-    match = itl_history_find_match_forward(SEARCH_QUERY("echo"), 1, found);
+    match = itl_history_scan_match(SEARCH_QUERY("echo"), 1, true, found);
     if (match != 2) {
       TEST_PRINTF("the forward folded match was %zu\n", match);
       ok = false;
@@ -10145,8 +10005,6 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                    DEFINE_TEST_CASE(test_history_unterminated_line),
                                    DEFINE_TEST_CASE(
                                        test_history_carriage_return_rule),
-                                   DEFINE_TEST_CASE(
-                                       test_history_offset_shift_matches_scan),
                                    DEFINE_TEST_CASE(test_history_search),
                                    DEFINE_TEST_CASE(
                                        test_history_search_snapshot),
