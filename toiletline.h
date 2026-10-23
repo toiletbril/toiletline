@@ -8059,8 +8059,10 @@ itl_full_screen_rows(char        *out,
            "y to yank, esc to leave the selection";
     break;
   }
-  itl_prefix_append(out, out_size, &out_length, "\n");
-  itl_prefix_append(out, out_size, &out_length, itl_g_save_message);
+  if (itl_g_save_message[0] != '\0') {
+    itl_prefix_append(out, out_size, &out_length, "\n");
+    itl_prefix_append(out, out_size, &out_length, itl_g_save_message);
+  }
   itl_prefix_append(out, out_size, &out_length, "\n");
   itl_prefix_append(out, out_size, &out_length, keys);
 
