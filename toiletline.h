@@ -193,6 +193,8 @@ typedef enum
   /* Page Up and Page Down move the caret a window height up or down. */
   TL_KEY_PAGE_UP,
   TL_KEY_PAGE_DOWN,
+  /* Alt-W copies the selection of the full-screen layout to the kill ring. */
+  TL_KEY_COPY_REGION,
 
   /* Reported when a bracketed paste sequence begins. Handled internally. */
   TL_KEY_PASTE_BEGIN
@@ -1057,10 +1059,10 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_entered_raw_mode = false;
 /* The layout of tl_set_full_screen. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_full_screen = false;
 
-/* SGR mouse reports of presses, releases, and the wheel, turned on with the
-   full-screen layout. */
-#define ITL_MOUSE_ON  "\x1b[?1000h\x1b[?1006h"
-#define ITL_MOUSE_OFF "\x1b[?1006l\x1b[?1000l"
+/* SGR mouse reports of presses, releases, drags, and the wheel, turned on with
+   the full-screen layout. */
+#define ITL_MOUSE_ON  "\x1b[?1000h\x1b[?1002h\x1b[?1006h"
+#define ITL_MOUSE_OFF "\x1b[?1006l\x1b[?1002l\x1b[?1000l"
 /* Set while the host lets the interrupt key raise a signal, so raw mode entered
    again meanwhile, such as after a program run in the middle, keeps it. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_signal_keys_enabled = false;
@@ -5507,6 +5509,7 @@ itl_alt_key(uint8_t byte)
   case 127: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
 
   case 'y': return TL_KEY_YANK_POP;
+  case 'w': return TL_KEY_COPY_REGION;
   case 't': return TL_KEY_TRANSPOSE | TL_MOD_ALT;
   case 'x': return TL_KEY_EXECUTE_COMMAND;
 
@@ -5594,6 +5597,9 @@ ITL_DEF ITL_THREAD_LOCAL unsigned itl_g_mouse_button   = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t   itl_g_mouse_row      = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t   itl_g_mouse_column   = 0;
 ITL_DEF ITL_THREAD_LOCAL bool     itl_g_mouse_is_press = false;
+/* Where the last press of the first button put the caret. A drag away from
+   it selects the text between. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_mouse_anchor = 0;
 
 /* A CSI or SS3 sequence whose first byte after the introducer is a parameter
    byte. Every parameter and intermediate byte is consumed up to the final
@@ -6378,6 +6384,8 @@ ITL_DEF ITL_THREAD_LOCAL tl_highlight_span
                                 itl_g_search_spans[ITL_HIGHLIGHT_MAX_SPANS];
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_search_span_count  = 0;
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_multicursor_active = false;
+/* Set while the emacs selection of the full-screen layout is open. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_emacs_selection_active = false;
 
 ITL_DEF void
 itl_search_spans_clear(void)
@@ -8212,7 +8220,10 @@ itl_full_screen_rows(char        *out,
   }
   switch (itl_g_edit_mode) {
   case TL_EDIT_MODE_EMACS:
-    keys = "ctrl-x to see the menu, alt-x to run a command";
+    keys = itl_g_emacs_selection_active
+               ? "ctrl-w to cut, alt-w to copy, backspace to delete, "
+                 "ctrl-g to leave the selection"
+               : "ctrl-x to see the menu, alt-x to run a command";
     break;
   case TL_EDIT_MODE_VI_INSERT:
     keys = "esc to leave insert mode, ctrl-i to show the hint";
@@ -8938,7 +8949,8 @@ itl_le_tty_refresh_frame(itl_le_t *le)
   bool is_window_caret_frame =
       !itl_g_tty_should_refresh_text && !is_resize && !itl_g_tty_first_render &&
       !itl_g_search_spans_active && !itl_g_multicursor_active &&
-      !itl_g_is_finding && itl_g_minibuffer_label == NULL &&
+      !itl_g_emacs_selection_active && !itl_g_is_finding &&
+      itl_g_minibuffer_label == NULL &&
       itl_g_edit_mode != TL_EDIT_MODE_VI_VISUAL;
   bool should_draw_hint_only = false;
   size_t view_rows       = itl_le_view_rows(tty_rows);
@@ -9098,7 +9110,8 @@ itl_le_tty_refresh_frame(itl_le_t *le)
     itl_g_serialized_line_ready = false;
     if (itl_g_search_spans_active &&
         (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
-         itl_g_multicursor_active || itl_g_minibuffer_row_start > 0 ||
+         itl_g_multicursor_active || itl_g_emacs_selection_active ||
+         itl_g_minibuffer_row_start > 0 ||
          itl_g_minibuffer_label != NULL || itl_g_is_finding) &&
         have_cur_render && itl_should_run_highlight())
     {
@@ -11176,6 +11189,10 @@ ITL_DEF tl_status_code
 itl_emacs_repeat(itl_le_t *le);
 ITL_DEF tl_status_code
 itl_vi_ex_command(itl_le_t *le);
+ITL_DEF tl_status_code
+itl_vi_visual_loop(itl_le_t *le, bool is_linewise, size_t anchor);
+ITL_DEF tl_status_code
+itl_emacs_selection_loop(itl_le_t *le, size_t anchor);
 ITL_DEF void
 itl_vi_open_line(itl_le_t *le, bool is_above);
 ITL_DEF void
@@ -15482,61 +15499,116 @@ itl_le_delete_spaces(itl_le_t *le)
   itl_le_erase(le, end - start, false);
 }
 
-/* Move the caret to a press of the first button on the input of the
-   full-screen layout, and scroll the window three rows for the wheel. Any
-   other report leaves the caret. */
-ITL_DEF void
-itl_le_mouse(itl_le_t *le)
+/* Scrolls the window of the full-screen layout three rows for a wheel report,
+   and moves the caret only as far as it takes to stay inside the window. Any
+   other report is left to the caller. */
+ITL_DEF bool
+itl_le_mouse_scroll(itl_le_t *le)
 {
   size_t           cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
-  size_t           top  = 1 + itl_full_screen_title_rows();
   itl_le_metrics_t m;
-  size_t           row;
+  size_t           view_rows, last_top, view_top, row;
 
-  itl_g_tty_should_refresh_text = false;
-  if (!itl_g_full_screen || !itl_g_mouse_is_press) {
-    return;
+  if ((itl_g_mouse_button & 64u) == 0) {
+    return false;
   }
 
-  m = itl_le_compute_metrics(le, cols);
-  /* The wheel scrolls the window three rows, and the caret moves only as far
-     as it takes to stay inside the window. */
-  if ((itl_g_mouse_button & 64u) != 0) {
-    size_t view_rows = itl_le_view_rows(itl_g_tty_prev_rows);
-    size_t last_top  = m.total_rows > view_rows ? m.total_rows - view_rows : 0;
-    size_t view_top  = itl_g_view_top_row;
+  m         = itl_le_compute_metrics(le, cols);
+  view_rows = itl_le_view_rows(itl_g_tty_prev_rows);
+  last_top  = m.total_rows > view_rows ? m.total_rows - view_rows : 0;
+  view_top  = itl_g_view_top_row;
 
-    if ((itl_g_mouse_button & 1u) != 0) {
-      view_top = view_top + 3 < last_top ? view_top + 3 : last_top;
-    } else {
-      view_top = view_top > 3 ? view_top - 3 : 0;
-    }
-    itl_g_view_top_row            = view_top;
-    itl_g_tty_should_refresh_text = true;
-    if (m.cursor_row >= view_top && m.cursor_row < view_top + view_rows) {
-      return;
-    }
-    row = m.cursor_row < view_top ? view_top : view_top + view_rows - 1;
-    if (row < le->prompt_rows) {
-      row = le->prompt_rows;
-    }
-  } else if ((itl_g_mouse_button & (3u | 32u)) == 0 &&
-             itl_g_mouse_row >= top &&
-             itl_g_mouse_row - top < itl_le_view_rows(itl_g_tty_prev_rows))
-  {
-    row = itl_g_view_top_row + (itl_g_mouse_row - top);
-    if (row < le->prompt_rows) {
-      row = le->prompt_rows;
-    }
-    m.cursor_col = itl_g_mouse_column > 0 ? itl_g_mouse_column - 1 : 0;
+  if ((itl_g_mouse_button & 1u) != 0) {
+    view_top = view_top + 3 < last_top ? view_top + 3 : last_top;
   } else {
-    return;
+    view_top = view_top > 3 ? view_top - 3 : 0;
   }
-
+  itl_g_view_top_row            = view_top;
+  itl_g_tty_should_refresh_text = true;
+  if (m.cursor_row >= view_top && m.cursor_row < view_top + view_rows) {
+    return true;
+  }
+  row = m.cursor_row < view_top ? view_top : view_top + view_rows - 1;
+  if (row < le->prompt_rows) {
+    row = le->prompt_rows;
+  }
   if (row >= m.total_rows) {
     row = m.total_rows - 1;
   }
   le->cursor_position = itl_le_index_at_visual(le, cols, row, m.cursor_col);
+
+  return true;
+}
+
+/* The index under a press or a drag of the first button on the input of the
+   full-screen layout. A report anywhere else has no index. */
+ITL_DEF bool
+itl_le_mouse_index(itl_le_t *le, size_t *index)
+{
+  size_t           cols = itl_g_tty_prev_cols > 0 ? itl_g_tty_prev_cols : 80;
+  size_t           top  = 1 + itl_full_screen_title_rows();
+  itl_le_metrics_t m;
+  size_t           row, column;
+
+  if (!itl_g_full_screen || !itl_g_mouse_is_press ||
+      (itl_g_mouse_button & (3u | 64u)) != 0 || itl_g_mouse_row < top ||
+      itl_g_mouse_row - top >= itl_le_view_rows(itl_g_tty_prev_rows))
+  {
+    return false;
+  }
+
+  m   = itl_le_compute_metrics(le, cols);
+  row = itl_g_view_top_row + (itl_g_mouse_row - top);
+  if (row < le->prompt_rows) {
+    row = le->prompt_rows;
+  }
+  if (row >= m.total_rows) {
+    row = m.total_rows - 1;
+  }
+  column = itl_g_mouse_column > 0 ? itl_g_mouse_column - 1 : 0;
+  *index = itl_le_index_at_visual(le, cols, row, column);
+
+  return true;
+}
+
+/* Whether the last mouse report is a drag of the first button. */
+#define ITL_MOUSE_IS_DRAG() ((itl_g_mouse_button & 32u) != 0)
+
+/* Moves the caret to a press of the first button on the input of the
+   full-screen layout and scrolls the window for the wheel. A drag away from
+   the press opens the selection of the edit mode, the emacs selection or vi
+   visual mode. Any other report leaves the caret. */
+ITL_DEF tl_status_code
+itl_le_mouse(itl_le_t *le)
+{
+  size_t index;
+
+  itl_g_tty_should_refresh_text = false;
+  if (!itl_g_full_screen || !itl_g_mouse_is_press || itl_le_mouse_scroll(le) ||
+      !itl_le_mouse_index(le, &index))
+  {
+    return TL_SUCCESS;
+  }
+
+  le->cursor_position = index;
+  if (!ITL_MOUSE_IS_DRAG()) {
+    itl_g_mouse_anchor = index;
+    return TL_SUCCESS;
+  }
+  if (index == itl_g_mouse_anchor) {
+    return TL_SUCCESS;
+  }
+
+  itl_g_tty_should_refresh_text = true;
+  if (itl_g_edit_mode == TL_EDIT_MODE_EMACS) {
+    return itl_emacs_selection_loop(le, itl_g_mouse_anchor);
+  }
+  if (itl_g_edit_mode == TL_EDIT_MODE_VI_INSERT) {
+    itl_undo_close_insert_run();
+    itl_g_vi_is_recording_insert = false;
+  }
+
+  return itl_vi_visual_loop(le, false, itl_g_mouse_anchor);
 }
 
 /* Whether a key of this kind moves the caret between rows, so the next such
@@ -16018,7 +16090,10 @@ itl_le_key_handle(itl_le_t *le, int esc)
     }
     break;
 
-  case TL_KEY_MOUSE: itl_le_mouse(le); break;
+  case TL_KEY_MOUSE: return itl_le_mouse(le);
+
+  /* Alt-W copies only while the emacs selection is open. */
+  case TL_KEY_COPY_REGION: itl_g_tty_should_refresh_text = false; break;
 
   case TL_KEY_SAVE:
     if (itl_g_edit_mode == TL_EDIT_MODE_EMACS && itl_g_save_callback != NULL) {
@@ -17916,11 +17991,11 @@ itl_vi_step_visual_row(itl_le_t *le, bool is_up)
 }
 
 ITL_DEF tl_status_code
-itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
+itl_vi_visual_loop(itl_le_t *le, bool is_linewise, size_t anchor)
 {
   uint8_t byte;
 
-  itl_g_vi_visual_anchor = le->cursor_position;
+  itl_g_vi_visual_anchor = anchor;
   itl_g_edit_mode        = TL_EDIT_MODE_VI_VISUAL;
 
   while (true) {
@@ -17970,6 +18045,23 @@ itl_vi_visual_loop(itl_le_t *le, bool is_linewise)
 
     case TL_KEY_UP:
     case TL_KEY_DOWN: itl_vi_step_visual_row(le, kind == TL_KEY_UP); continue;
+
+    /* A drag moves the caret, and a press leaves the selection where it
+       lands. */
+    case TL_KEY_MOUSE: {
+      size_t index;
+
+      if (itl_le_mouse_scroll(le) || !itl_le_mouse_index(le, &index)) {
+        continue;
+      }
+      if (ITL_MOUSE_IS_DRAG()) {
+        le->cursor_position = index;
+        continue;
+      }
+      itl_modal_leave(le, TL_EDIT_MODE_VI_COMMAND, false);
+      itl_le_tty_refresh(le);
+      return itl_le_key_handle(le, key);
+    }
 
     default: break;
     }
@@ -18260,6 +18352,147 @@ itl_vi_block_loop(itl_le_t *le, int return_mode)
   }
 
   itl_modal_leave(le, return_mode, return_mode == TL_EDIT_MODE_VI_COMMAND);
+  itl_le_tty_refresh(le);
+
+  return TL_SUCCESS;
+}
+
+/* Whether the key is a Shift-modified caret move, which opens or grows the
+   emacs selection of the full-screen layout. */
+ITL_DEF bool
+itl_key_is_shift_motion(int key)
+{
+  int kind = key & TL_MASK_KEY;
+
+  return (key & TL_MOD_SHIFT) != 0 &&
+         (kind == TL_KEY_LEFT || kind == TL_KEY_RIGHT || kind == TL_KEY_UP ||
+          kind == TL_KEY_DOWN || kind == TL_KEY_HOME || kind == TL_KEY_END ||
+          kind == TL_KEY_PAGE_UP || kind == TL_KEY_PAGE_DOWN);
+}
+
+/* Moves the caret for a caret move with or without Shift. Up and Down step a
+   visual row and never recall history. */
+ITL_DEF void
+itl_emacs_selection_move(itl_le_t *le, int key)
+{
+  int kind = key & TL_MASK_KEY;
+
+  if (kind == TL_KEY_UP || kind == TL_KEY_DOWN) {
+    itl_vi_step_visual_row(le, kind == TL_KEY_UP);
+    return;
+  }
+  (void) itl_le_key_handle(le, key & ~TL_MOD_SHIFT);
+}
+
+/* Erases the selection [start, end) as one undo step and leaves the caret at
+   its start. */
+ITL_DEF void
+itl_le_erase_selection(itl_le_t *le, size_t start, size_t end)
+{
+  le->cursor_position = start;
+  itl_le_erase(le, end - start, false);
+}
+
+/* The emacs selection of the full-screen layout, from anchor to the caret.
+   Shift with a caret move and a drag of the first button grow it. Backspace
+   and Delete erase it, Ctrl-W kills it, Alt-W copies it, and typed text
+   replaces it. Ctrl-G, a bare escape, or a caret move without Shift leaves
+   it, and any other key leaves it and runs. */
+ITL_DEF tl_status_code
+itl_emacs_selection_loop(itl_le_t *le, size_t anchor)
+{
+  uint8_t byte;
+
+  itl_ghost_clear();
+  itl_g_emacs_selection_active = true;
+
+  while (true) {
+    size_t start = ITL_MIN(anchor, le->cursor_position);
+    size_t end   = ITL_MAX(anchor, le->cursor_position);
+    int    key, kind;
+
+    itl_g_search_span_count = 0;
+    if (start < end) {
+      itl_search_span_add(start, end, ITL_VI_SGR_SELECT);
+    }
+    itl_g_search_spans_active     = true;
+    itl_g_tty_should_refresh_text = true;
+    itl_le_tty_refresh(le);
+
+    if (!itl_modal_read_key(&byte, &key) || byte == 7) {
+      break;
+    }
+    kind = key & TL_MASK_KEY;
+
+    if (itl_key_is_shift_motion(key)) {
+      itl_emacs_selection_move(le, key);
+      continue;
+    }
+
+    if (kind == TL_KEY_MOUSE) {
+      size_t index;
+
+      if (itl_le_mouse_scroll(le) || !itl_le_mouse_index(le, &index)) {
+        continue;
+      }
+      if (ITL_MOUSE_IS_DRAG()) {
+        le->cursor_position = index;
+        continue;
+      }
+      itl_g_emacs_selection_active = false;
+      itl_search_spans_clear();
+      return itl_le_mouse(le);
+    }
+
+    itl_g_emacs_selection_active = false;
+    itl_search_spans_clear();
+    itl_g_tty_should_refresh_text = true;
+
+    if (byte == 23 || kind == TL_KEY_COPY_REGION) {
+      itl_kill_ring_save(le->line, start, end, false, false);
+      if (byte == 23) {
+        itl_le_erase_selection(le, start, end);
+      }
+      itl_g_le_action = ITL_LE_ACTION_KILL;
+      itl_le_tty_refresh(le);
+      return TL_SUCCESS;
+    }
+
+    if (key == TL_KEY_BACKSPACE || key == TL_KEY_DELETE) {
+      itl_le_erase_selection(le, start, end);
+      itl_le_tty_refresh(le);
+      return TL_SUCCESS;
+    }
+
+    /* An Alt-modified key arrives with its escape byte, which is not text. */
+    if (key == TL_KEY_CHAR) {
+      itl_le_erase_selection(le, start, end);
+      (void) itl_le_insert(le, itl_utf8_parse(byte));
+      itl_le_tty_refresh(le);
+      return TL_SUCCESS;
+    }
+
+    if (kind == TL_KEY_PASTE_BEGIN) {
+      itl_le_erase_selection(le, start, end);
+      itl_g_is_reading_paste = true;
+      itl_le_read_paste(le);
+      itl_g_is_reading_paste = false;
+      itl_le_tty_refresh(le);
+      return TL_SUCCESS;
+    }
+
+    itl_le_tty_refresh(le);
+    if (kind == TL_KEY_UP || kind == TL_KEY_DOWN) {
+      itl_emacs_selection_move(le, key);
+      return TL_SUCCESS;
+    }
+
+    return itl_le_key_handle(le, key);
+  }
+
+  itl_g_emacs_selection_active = false;
+  itl_search_spans_clear();
+  itl_g_tty_should_refresh_text = true;
   itl_le_tty_refresh(le);
 
   return TL_SUCCESS;
@@ -20072,9 +20305,13 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
 
   case '.': itl_vi_repeat_last_change(le); break;
 
-  case 'v': itl_vi_reset_pending(); return itl_vi_visual_loop(le, false);
+  case 'v':
+    itl_vi_reset_pending();
+    return itl_vi_visual_loop(le, false, le->cursor_position);
 
-  case 'V': itl_vi_reset_pending(); return itl_vi_visual_loop(le, true);
+  case 'V':
+    itl_vi_reset_pending();
+    return itl_vi_visual_loop(le, true, le->cursor_position);
 
   case ':': itl_vi_reset_pending(); return itl_vi_ex_command(le);
 
@@ -20344,6 +20581,19 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
         if (code != TL_SUCCESS) {
           return itl_le_finish_input(le, code);
         }
+      }
+    } else if (itl_g_edit_mode == TL_EDIT_MODE_EMACS && itl_g_full_screen &&
+               itl_key_is_shift_motion(input_type))
+    {
+      size_t anchor = le->cursor_position;
+
+      itl_undo_close_insert_run();
+      itl_emacs_selection_move(le, input_type);
+      code = le->cursor_position == anchor
+                 ? TL_SUCCESS
+                 : itl_emacs_selection_loop(le, anchor);
+      if (code != TL_SUCCESS) {
+        return itl_le_finish_input(le, code);
       }
     } else if (input_byte == 22 && itl_g_edit_mode == TL_EDIT_MODE_EMACS) {
       itl_ghost_clear();
