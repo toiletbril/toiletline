@@ -522,10 +522,10 @@ tl_set_status(const char *status);
 
 /**
  * Lay the editor out over the whole terminal for a host that edits a file:
- * the input fills every row but the title and the last rows, which hold the
- * status, a save message while one is set, the hints, and the command line,
- * and the completion menu is drawn
- * over the input next to the caret. Mouse reports are on while the layout is.
+ * the input fills every row but the title and the last two, which hold the
+ * status with the caret position and the edit mode with the save message or
+ * the keys, and also the hints and the command line, and the completion menu
+ * is drawn over the input next to the caret. Mouse reports are on while the layout is.
  * The host keeps the layout on the alternate screen, which the editor leaves
  * while an external editor runs. Off by default.
  */
@@ -7321,7 +7321,7 @@ itl_le_view_rows(size_t tty_rows)
   size_t title_rows = itl_full_screen_title_rows();
 
   if (itl_g_full_screen) {
-    return tty_rows > 5 + title_rows ? tty_rows - 4 - title_rows : 1;
+    return tty_rows > 3 + title_rows ? tty_rows - 2 - title_rows : 1;
   }
 
   return tty_rows > 3 ? tty_rows - 2 : 1;
@@ -7994,9 +7994,9 @@ itl_prefix_append_size(char *out, size_t out_size, size_t *length, size_t n)
 /* Write the rows the full-screen layout shows under the input into out and
    return them. An open command line takes the first row, with the keys it
    answers under it. A held prefix or a message comes next, then the hint
-   while TL_KEY_HOVER asks for it. Otherwise the rows show tl_set_status, the
-   caret position with the edit mode, an empty row, and the keys that open
-   the key menu and the commands. */
+   while TL_KEY_HOVER asks for it. Otherwise one row shows tl_set_status with
+   the caret position, and a second row shows the edit mode with the last save
+   message or the keys that open the key menu and the commands. */
 ITL_DEF const char *
 itl_full_screen_rows(char        *out,
                      size_t       out_size,
@@ -8114,17 +8114,20 @@ itl_full_screen_rows(char        *out,
   default:                      mode = "vi visual"; break;
   }
 
-  if (itl_g_status != NULL) {
+  if (itl_g_status != NULL && itl_g_status[0] != '\0') {
     itl_prefix_append(out, out_size, &out_length, itl_g_status);
+    itl_prefix_append(out, out_size, &out_length, ". ");
   }
-  itl_prefix_append(out, out_size, &out_length, "\nline ");
+  itl_prefix_append(out, out_size, &out_length, "line ");
   itl_prefix_append_size(out, out_size, &out_length, line_number);
   itl_prefix_append(out, out_size, &out_length, " of ");
   itl_prefix_append_size(out, out_size, &out_length, line_count);
   itl_prefix_append(out, out_size, &out_length, ", column ");
   itl_prefix_append_size(out, out_size, &out_length, column);
-  itl_prefix_append(out, out_size, &out_length, ", as ");
-  itl_prefix_append(out, out_size, &out_length, mode);
+  itl_prefix_append(out, out_size, &out_length, ", byte ");
+  itl_prefix_append_size(out, out_size, &out_length,
+                         itl_g_rows_cache.cursor_byte -
+                             itl_g_rows_cache.line_start + 1);
   if (itl_g_rows_cache.is_saved_different) {
     itl_prefix_append(out, out_size, &out_length, ", unsaved changes");
   }
@@ -8147,12 +8150,11 @@ itl_full_screen_rows(char        *out,
            "y to yank, esc to leave the selection";
     break;
   }
-  if (itl_g_save_message[0] != '\0') {
-    itl_prefix_append(out, out_size, &out_length, "\n");
-    itl_prefix_append(out, out_size, &out_length, itl_g_save_message);
-  }
-  itl_prefix_append(out, out_size, &out_length, "\n");
-  itl_prefix_append(out, out_size, &out_length, keys);
+  itl_prefix_append(out, out_size, &out_length, "\nemulating ");
+  itl_prefix_append(out, out_size, &out_length, mode);
+  itl_prefix_append(out, out_size, &out_length, ". ");
+  itl_prefix_append(out, out_size, &out_length,
+                    itl_g_save_message[0] != '\0' ? itl_g_save_message : keys);
 
   return out;
 }
