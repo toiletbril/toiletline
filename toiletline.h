@@ -261,6 +261,13 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt);
 TL_DEF void
 tl_set_predefined_input(const char *str);
 /**
+ * Place the caret of the next `tl_get_input()` at the start of a line,
+ * counted from 1. A line past the end places it at the start of the last
+ * line, and 0 keeps the caret at the end.
+ */
+TL_DEF void
+tl_set_predefined_line(size_t line_number);
+/**
  * Read a character without waiting and modify `tl_last_control_sequence`.
  * `char_buffer_size` must be between 2 and 5: one UTF-8 character of up to
  * four bytes plus the null terminator.
@@ -829,6 +836,7 @@ tl_show_completion_loading(void);
 /**
  * Selects the key set from a tl_edit_mode value. Any vi value starts each
  * line in vi insert mode, and any other value selects emacs mode.
+ * TL_EDIT_MODE_VI_COMMAND starts the next line in vi command mode instead.
  */
 TL_DEF void
 tl_set_edit_mode(int mode);
@@ -1824,6 +1832,9 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_alloc_count = 0;
    ITL_STRING_MAX_LEN for a long document, and its output buffer then needs one
    more byte than this. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_line_max = ITL_STRING_MAX_LEN;
+/* The line, counted from 1, where the next tl_get_input places the caret, or
+   0 to place it at the end. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_predefined_line = 0;
 
 ITL_DEF void *
 itl_malloc(size_t size)
@@ -2959,6 +2970,8 @@ typedef struct itl_undo_snapshot
 
 ITL_DEF ITL_THREAD_LOCAL int itl_g_edit_mode      = TL_EDIT_MODE_EMACS;
 ITL_DEF ITL_THREAD_LOCAL int itl_g_edit_mode_base = TL_EDIT_MODE_EMACS;
+/* The mode the next input starts in when it differs from the base, or -1. */
+ITL_DEF ITL_THREAD_LOCAL int itl_g_edit_mode_start = -1;
 
 ITL_DEF ITL_THREAD_LOCAL itl_vi_operator_kind itl_g_vi_pending_operator =
     ITL_VI_OP_NONE;
@@ -3394,7 +3407,9 @@ itl_le_init(itl_le_t     *le,
      render that does not exist. */
   itl_g_tty_first_render = true;
 
-  itl_g_edit_mode = itl_g_edit_mode_base;
+  itl_g_edit_mode =
+      itl_g_edit_mode_start >= 0 ? itl_g_edit_mode_start : itl_g_edit_mode_base;
+  itl_g_edit_mode_start = -1;
   itl_vi_reset_pending();
   itl_g_vi_visual_anchor       = 0;
   itl_g_vi_is_recording_insert = false;
@@ -7230,6 +7245,21 @@ itl_le_line_start_at_index(const itl_le_t *le, size_t line_index)
   return p;
 }
 
+/* The start of a line counted from 1, or of the last line when the input has
+   fewer lines. */
+ITL_DEF size_t
+itl_le_line_start_clamped(const itl_le_t *le, size_t line_number)
+{
+  size_t p = itl_le_line_start_at_index(le, line_number > 0 ? line_number - 1
+                                                            : 0);
+
+  while (p > 0 && !ITL_LE_IS_NEWLINE(le->line->chars[p - 1])) {
+    p -= 1;
+  }
+
+  return p;
+}
+
 ITL_DEF void
 itl_vi_sync_cursor_shape(itl_char_buf_t *b)
 {
@@ -10065,7 +10095,8 @@ tl_set_edit_mode(int mode)
     itl_g_edit_mode_base = TL_EDIT_MODE_EMACS;
   }
 
-  itl_g_edit_mode = itl_g_edit_mode_base;
+  itl_g_edit_mode       = itl_g_edit_mode_base;
+  itl_g_edit_mode_start = mode == TL_EDIT_MODE_VI_COMMAND ? mode : -1;
 }
 
 /* Insert a UTF-8 C-string at the cursor, one decoded character at a time, so
@@ -18554,6 +18585,20 @@ itl_emacs_multicursor_loop(itl_le_t *le)
 }
 
 ITL_DEF bool
+itl_vi_ex_is_line_number(const char *command)
+{
+  size_t i;
+
+  for (i = 0; command[i] != '\0'; ++i) {
+    if (command[i] < '0' || command[i] > '9') {
+      return false;
+    }
+  }
+
+  return i > 0;
+}
+
+ITL_DEF bool
 itl_vi_ex_is_quit(const char *command)
 {
   return strcmp(command, "q") == 0 || strcmp(command, "q!") == 0 ||
@@ -19607,7 +19652,12 @@ itl_vi_ex_command(itl_le_t *le)
   {
     header[0] = ':';
     strcpy(header + 1, command);
-    if (itl_vi_ex_is_quit(command) && strcmp(command, "q!") != 0 &&
+    if (itl_vi_ex_is_line_number(command)) {
+      le->cursor_position = itl_le_line_start_clamped(
+          le, (size_t) strtoul(command, NULL, 10));
+    } else if (strcmp(command, "$") == 0) {
+      le->cursor_position = itl_le_line_start_clamped(le, (size_t) -1);
+    } else if (itl_vi_ex_is_quit(command) && strcmp(command, "q!") != 0 &&
         itl_le_is_unsaved(le))
     {
       strcpy(itl_g_editor_message, "unsaved changes\n:q! to discard them");
@@ -20336,6 +20386,13 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
   TL_ASSERT(buffer != NULL);
 
   itl_le_init(le, &itl_g_line_buffer, buffer, buffer_size, prompt);
+  if (itl_g_predefined_line > 0) {
+    le->cursor_position = itl_le_line_start_clamped(le, itl_g_predefined_line);
+    itl_g_predefined_line = 0;
+  }
+  if (itl_g_edit_mode == TL_EDIT_MODE_VI_COMMAND) {
+    itl_vi_clamp_command_cursor(le);
+  }
   itl_le_set_hint_indent(le);
   itl_le_end_insertion_walk();
   itl_g_auto_pair_count = 0;
@@ -20584,6 +20641,12 @@ tl_set_predefined_input(const char *str)
   TL_ASSERT(itl_g_is_active && "tl_init() should be called");
   itl_string_shrink(&itl_g_line_buffer);
   ITL_STRING_FROM_CSTR(&itl_g_line_buffer, str);
+}
+
+TL_DEF void
+tl_set_predefined_line(size_t line_number)
+{
+  itl_g_predefined_line = line_number;
 }
 
 TL_DEF tl_status_code
