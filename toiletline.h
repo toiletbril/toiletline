@@ -5677,9 +5677,6 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_view_top_row   = 0;
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_view_is_active = false;
 ITL_DEF ITL_THREAD_LOCAL bool           itl_g_tty_is_dumb = true;
 
-ITL_DEF int
-itl_term_supports_decorations(void);
-
 /* *rows, *cols can be NULL. */
 ITL_DEF bool
 itl_tty_get_size(size_t *rows, size_t *cols)
@@ -17445,10 +17442,7 @@ itl_vi_operator_line(itl_le_t            *le,
     if (end >= le->line->length) {
       break;
     }
-    end += 1;
-    while (end < le->line->length && !ITL_LE_IS_NEWLINE(le->line->chars[end])) {
-      end += 1;
-    }
+    end = itl_le_line_end_of(le, end + 1);
   }
 
   itl_vi_record_operator(op, doubled_key, none, count);
