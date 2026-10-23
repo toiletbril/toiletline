@@ -304,9 +304,8 @@ tl_utf8_strlen(const char *utf8_str);
 TL_DEF size_t
 tl_utf8_strnlen(const char *utf8_str, size_t byte_count);
 /**
- * Emit newlines after getting the input.
- *
- * *buffer should be the buffer used in tl_readline().
+ * Moves the cursor below the input that the last tl_get_input() call drew.
+ * The buffer argument is not read.
  */
 TL_DEF tl_status_code
 tl_emit_newlines(const char *buffer);
@@ -818,6 +817,10 @@ tl_set_idle_callback(tl_idle_fn callback, int delay_ms, int repeat_ms);
 TL_DEF void
 tl_show_completion_loading(void);
 
+/**
+ * Selects the key set from a tl_edit_mode value. Any vi value starts each
+ * line in vi insert mode, and any other value selects emacs mode.
+ */
 TL_DEF void
 tl_set_edit_mode(int mode);
 
@@ -12712,17 +12715,14 @@ itl_menu_name_extends_token(const itl_le_t *le,
                             size_t          token_start,
                             const char     *name)
 {
-  size_t token_start_byte = 0;
+  size_t token_start_byte;
   size_t typed_bytes;
-  size_t i;
 
   if (token_start > le->line->length) {
     return false;
   }
-  for (i = 0; i < token_start; ++i) {
-    token_start_byte += le->line->chars[i].size;
-  }
-  typed_bytes = le->line->size - token_start_byte;
+  token_start_byte = itl_string_byte_offset(le->line, token_start);
+  typed_bytes      = le->line->size - token_start_byte;
 
   return strlen(name) >= typed_bytes &&
          itl_ascii_prefix_matches_casefold(name, line_cstr + token_start_byte,
