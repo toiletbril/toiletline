@@ -3982,7 +3982,7 @@ menu_keys_gathers(const char *text, const char *keys, char *out_line,
 {
   static const itl_menu_source source = {
       test_word_gather, true, true, false, true, false, false, NULL, NULL,
-      false, true, false};
+      NULL, false, true, false};
   char          out_buffer[BUFFER_SIZE];
   int           pipe_descriptors[2] = {-1, -1};
   int           null_descriptor = -1;
@@ -4186,7 +4186,7 @@ debounce_menu_gathers(size_t row_count, const char *keys, unsigned eof_ms,
 {
   static const itl_menu_source source = {
       test_debounce_gather, true, true, false, true, false, false, NULL, NULL,
-      false, true, false};
+      NULL, false, true, false};
   char          out_buffer[BUFFER_SIZE];
   int           pipe_descriptors[2] = {-1, -1};
   int           null_descriptor = -1;
@@ -4405,7 +4405,7 @@ staged_menu_run(const test_staged_step *steps, size_t step_count,
 {
   static const itl_menu_source source = {
       itl_menu_regather, true, true, false, true, false, false, NULL, NULL,
-      true, true, false};
+      NULL, true, true, false};
   char          out_buffer[BUFFER_SIZE];
   int           pipe_descriptors[2] = {-1, -1};
   int           null_descriptor = -1;

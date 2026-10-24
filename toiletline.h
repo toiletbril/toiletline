@@ -11986,9 +11986,6 @@ itl_menu_measure_for(const tl_completion *result,
 {
   size_t help_rows = 0;
 
-  if (itl_g_full_screen) {
-    help_keys = NULL;
-  }
   if (help_title != NULL) {
     itl_menu_geometry geometry = itl_menu_geometry_of(
         result, name_width, empty_text, help_title, help_keys);
@@ -12052,12 +12049,8 @@ itl_menu_draw(const tl_completion *result,
   }
   itl_frame_batch_begin();
 
-  /* A full-screen menu shows only the title, and its rows are boxes of spaces
-     two columns wider than their text on each side, with a blank row under
-     them. */
-  if (itl_g_full_screen) {
-    help_keys = NULL;
-  }
+  /* A full-screen menu draws its rows as boxes of spaces two columns wider
+     than their text on each side, with a blank row under them. */
   geometry   = itl_menu_geometry_of(result, name_width, empty_text, help_title,
                                     help_keys);
   anchor     = geometry.anchor;
@@ -12460,6 +12453,8 @@ typedef bool (*itl_menu_gather_fn)(itl_le_t *le, tl_completion *result);
    should_highlight belongs to a list whose entries are whole commands, and
    the host colors them the way it colors the line. help_title labels the
    source on the first row and help_keys lists the keys it answers beside it.
+   help_keys_full_screen lists them in the full-screen layout, where enter
+   breaks the line instead of submitting it.
    should_anchor_to_token belongs to a list of replacements for a token, and
    the rows then start under the token instead of the leftmost column.
    should_keep_best_tier belongs to a completion host. Typing narrows a list
@@ -12476,10 +12471,18 @@ typedef struct itl_menu_source
   bool               restore_on_escape;
   const char        *help_title;
   const char        *help_keys;
+  const char        *help_keys_full_screen;
   bool               should_anchor_to_token;
   bool               should_keep_best_tier;
   bool               should_stay_open;
 } itl_menu_source;
+
+/* The keys the menu of source lists beside its title in the current layout. */
+ITL_DEF const char *
+itl_menu_help_keys_of(const itl_menu_source *source)
+{
+  return itl_g_full_screen ? source->help_keys_full_screen : source->help_keys;
+}
 
 /* Read the key that ended the wait of a pending gather. It stays pending for
    the caller to type unless it is a lone escape or ctrl-c and the caller
@@ -12529,9 +12532,11 @@ itl_loading_frame_draw(itl_le_t *le)
           : itl_menu_anchor_column_of(le, itl_le_shell_word_start(le));
   itl_g_menu_prefix_width = itl_menu_prefix_width_for(le);
   layout = itl_menu_measure_for(&loading, tty_rows, 0, ITL_MENU_LOADING_TEXT,
-                                source->help_title, source->help_keys);
-  itl_menu_draw(&loading, 0, 0, layout, source->help_title, source->help_keys,
-                source->should_highlight, 0, ITL_MENU_LOADING_TEXT);
+                                source->help_title,
+                                itl_menu_help_keys_of(source));
+  itl_menu_draw(&loading, 0, 0, layout, source->help_title,
+                itl_menu_help_keys_of(source), source->should_highlight, 0,
+                ITL_MENU_LOADING_TEXT);
   itl_frame_batch_end();
   (void) itl_frame_batch_write();
   itl_terminal_drain_output();
@@ -14174,13 +14179,14 @@ itl_completion_menu_loop(itl_le_t              *le,
     empty_text =
         state.is_regather_armed ? ITL_MENU_LOADING_TEXT : ITL_MENU_EMPTY_TEXT;
     layout = itl_menu_measure_for(&result, tty_rows, name_width, empty_text,
-                                  source->help_title, source->help_keys);
+                                  source->help_title,
+                                  itl_menu_help_keys_of(source));
 
     window_start = itl_menu_window_start(result.count, selected, window_start,
                                          layout.candidate_rows);
     itl_menu_draw(&result, selected, window_start, layout, source->help_title,
-                  source->help_keys, source->should_highlight, name_width,
-                  empty_text);
+                  itl_menu_help_keys_of(source), source->should_highlight,
+                  name_width, empty_text);
     itl_frame_batch_end();
     itl_frame_batch_begin();
 
@@ -14556,6 +14562,7 @@ itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
       false,
       "selecting completions",
       "enter to run, tab to accept, esc to close, ctrl-g to restore",
+      "tab to accept, esc to close, ctrl-g to restore",
       true,
       true,
       true};
@@ -14725,6 +14732,7 @@ itl_history_menu(itl_le_t *le)
       true,
       true,
       "incremental history search",
+      "enter or tab to accept, esc or ctrl-g to cancel",
       "enter or tab to accept, esc or ctrl-g to cancel",
       false,
       false,
