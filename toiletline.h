@@ -2714,6 +2714,43 @@ itl_string_to_cstr(const itl_string_t *str, char *cstr, size_t cstr_size)
   return TL_SUCCESS;
 }
 
+/* Copies str into storage, or into a block from TL_MALLOC when it does not
+   fit, so a document longer than ITL_STRING_MAX_LEN still reaches the
+   completion host. Returns NULL when the block cannot be allocated. The
+   caller hands the result to itl_string_release_cstr. */
+ITL_DEF char *
+itl_string_acquire_cstr(const itl_string_t *str,
+                        char               *storage,
+                        size_t              storage_size)
+{
+  char  *block;
+  size_t block_size = str->size + 4;
+
+  if (itl_string_to_cstr(str, storage, storage_size) == TL_SUCCESS) {
+    return storage;
+  }
+
+  block = (char *) TL_MALLOC(block_size);
+  if (block == NULL) {
+    return NULL;
+  }
+  if (itl_string_to_cstr(str, block, block_size) != TL_SUCCESS) {
+    TL_FREE(block);
+    return NULL;
+  }
+
+  return block;
+}
+
+/* Frees a copy from itl_string_acquire_cstr when it is not storage. */
+ITL_DEF void
+itl_string_release_cstr(char *cstr, char *storage)
+{
+  if (cstr != NULL && cstr != storage) {
+    TL_FREE(cstr);
+  }
+}
+
 ITL_DEF bool
 itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
 {
@@ -12605,7 +12642,8 @@ itl_menu_regather(itl_le_t *le, tl_completion *result)
   bool          is_abandoned;
   bool          is_drawn = false;
   int           handled;
-  char          line_cstr[ITL_STRING_MAX_LEN];
+  char          storage[ITL_STRING_MAX_LEN];
+  char         *line_cstr;
   tl_completion fresh;
 
   memset(&fresh, 0, sizeof(fresh));
@@ -12614,12 +12652,13 @@ itl_menu_regather(itl_le_t *le, tl_completion *result)
   if (itl_g_complete_callback == NULL) {
     return false;
   }
-  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS)
-  {
+  line_cstr = itl_string_acquire_cstr(le->line, storage, sizeof(storage));
+  if (line_cstr == NULL) {
     return false;
   }
   handled = itl_complete_gather(le, line_cstr, &fresh, false, &is_abandoned,
                                 &is_drawn);
+  itl_string_release_cstr(line_cstr, storage);
   itl_g_regather_is_drawn      = is_drawn;
   itl_g_regather_was_abandoned = is_abandoned;
   if (!handled) {
@@ -14517,7 +14556,8 @@ itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
       true,
       true,
       true};
-  char          line_cstr[ITL_STRING_MAX_LEN];
+  char          storage[ITL_STRING_MAX_LEN];
+  char         *line_cstr;
   tl_completion result;
   size_t        token_len, lcp_len;
   bool          is_loading_drawn = false;
@@ -14529,8 +14569,8 @@ itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
   if (itl_g_complete_callback == NULL) {
     return false;
   }
-  if (itl_string_to_cstr(le->line, line_cstr, sizeof(line_cstr)) != TL_SUCCESS)
-  {
+  line_cstr = itl_string_acquire_cstr(le->line, storage, sizeof(storage));
+  if (line_cstr == NULL) {
     return false;
   }
   itl_g_loading_source =
@@ -14542,6 +14582,7 @@ itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
   }
   int itl_completion_handled = itl_complete_gather(
       le, line_cstr, &result, true, &is_abandoned, &is_loading_drawn);
+  itl_string_release_cstr(line_cstr, storage);
   itl_g_loading_source = NULL;
   itl_ghost_clear();
   itl_g_ghost_sticky_target[0] = '\0';
