@@ -14108,11 +14108,13 @@ itl_menu_opens_component(const itl_le_t      *le,
    candidates. Any other key closes the menu and then does its own work on the
    line. The returned status is the one the caller must return, and it carries a
    terminating key back to the host. The source holds everything that separates
-   one candidate list from another. */
+   one candidate list from another. original_line holds the line as the menu
+   opened on it, for ctrl-g to restore, or NULL when no copy could be made. */
 ITL_DEF tl_status_code
 itl_completion_menu_loop(itl_le_t              *le,
                          const tl_completion   *initial,
-                         const itl_menu_source *source)
+                         const itl_menu_source *source,
+                         const char            *original_line)
 {
   tl_completion         result = *initial;
   itl_menu_filter_state state;
@@ -14123,15 +14125,11 @@ itl_completion_menu_loop(itl_le_t              *le,
      the first pass fills the preview, and a regather puts it back there. */
   size_t previewed = (size_t) -1;
 
-  /* Typing and walking into a directory both edit the line. The line as it
-     stands is kept for ctrl-g to restore. A line too long for the buffer keeps
-     no copy and cancels in place. */
-  char   original_line[ITL_STRING_MAX_LEN];
+  /* Typing and walking into a directory both edit the line, so ctrl-g puts
+     original_line back. */
   size_t original_line_size = le->line->size;
   size_t original_cursor    = le->cursor_position;
-  bool   has_original_line =
-      itl_string_to_cstr(le->line, original_line, sizeof(original_line)) ==
-      TL_SUCCESS;
+  bool   has_original_line  = original_line != NULL;
 
   state.is_debounced = false;
   itl_menu_adopt_base(le, source, &state, &result);
@@ -14428,10 +14426,15 @@ itl_completion_menu_run(itl_le_t              *le,
                         const itl_menu_source *source)
 {
   tl_status_code status;
+  char           storage[ITL_STRING_MAX_LEN];
+  char          *original_line;
 
+  /* A copy that cannot be allocated leaves ctrl-g to cancel in place. */
+  original_line = itl_string_acquire_cstr(le->line, storage, sizeof(storage));
   itl_frame_batch_begin();
-  status = itl_completion_menu_loop(le, initial, source);
+  status = itl_completion_menu_loop(le, initial, source, original_line);
   itl_frame_batch_end();
+  itl_string_release_cstr(original_line, storage);
 
   return status;
 }
