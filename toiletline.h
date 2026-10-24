@@ -5553,9 +5553,10 @@ ITL_DEF ITL_THREAD_LOCAL unsigned itl_g_mouse_button   = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t   itl_g_mouse_row      = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t   itl_g_mouse_column   = 0;
 ITL_DEF ITL_THREAD_LOCAL bool     itl_g_mouse_is_press = false;
-/* Where the last press of the first button put the caret. A drag away from
-   it selects the text between. */
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_mouse_anchor = 0;
+/* Where the last press of the first button put the caret, or (size_t) -1
+   after a press outside the input. A drag away from it selects the text
+   between. */
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_mouse_anchor = (size_t) -1;
 
 /* A CSI or SS3 sequence whose first byte after the introducer is a parameter
    byte. Every parameter and intermediate byte is consumed up to the final
@@ -15620,9 +15621,14 @@ itl_le_mouse(itl_le_t *le)
   size_t index;
 
   itl_g_tty_should_refresh_text = false;
-  if (!itl_g_full_screen || !itl_g_mouse_is_press || itl_le_mouse_scroll(le) ||
-      !itl_le_mouse_index(le, &index))
-  {
+  if (!itl_g_full_screen || !itl_g_mouse_is_press || itl_le_mouse_scroll(le)) {
+    return TL_SUCCESS;
+  }
+  if (!itl_le_mouse_index(le, &index)) {
+    /* A press outside the input leaves no anchor for a later drag. */
+    if (!ITL_MOUSE_IS_DRAG()) {
+      itl_g_mouse_anchor = (size_t) -1;
+    }
     return TL_SUCCESS;
   }
 
@@ -15631,7 +15637,8 @@ itl_le_mouse(itl_le_t *le)
     itl_g_mouse_anchor = index;
     return TL_SUCCESS;
   }
-  if (index == itl_g_mouse_anchor) {
+  /* An edit since the press can leave the anchor past the end of the line. */
+  if (index == itl_g_mouse_anchor || itl_g_mouse_anchor > le->line->length) {
     return TL_SUCCESS;
   }
 
