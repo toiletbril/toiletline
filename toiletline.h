@@ -20213,6 +20213,33 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
 
   case TL_KEY_BACKSPACE: itl_le_move_left(le, 1); return TL_SUCCESS;
 
+  /* ctrl-i, which a legacy terminal sends as a tab, and the ctrl-k ctrl-i
+     chord show the hover hint. */
+  case TL_KEY_HOVER:
+  case TL_KEY_TAB:
+    itl_vi_reset_pending();
+    if ((key & TL_MOD_SHIFT) != 0) {
+      itl_g_tty_should_refresh_text = false;
+      return TL_SUCCESS;
+    }
+    return itl_le_key_handle(le, TL_KEY_HOVER);
+
+  case TL_KEY_KILL_LINE: {
+    uint8_t next_byte;
+    int     next_key;
+
+    itl_vi_reset_pending();
+    if (itl_le_await_chord(le, ITL_PREFIX_NONE, byte) &&
+        itl_modal_read_key(&next_byte, &next_key) &&
+        ((next_key & TL_MASK_KEY) == TL_KEY_TAB ||
+         (next_key & TL_MASK_KEY) == TL_KEY_HOVER || next_byte == 'i'))
+    {
+      return itl_le_key_handle(le, TL_KEY_HOVER);
+    }
+    itl_g_tty_should_refresh_text = false;
+    return TL_SUCCESS;
+  }
+
   case TL_KEY_UNKN: itl_vi_reset_pending(); return TL_SUCCESS;
 
   default: break;
