@@ -15826,17 +15826,16 @@ itl_le_key_handle(itl_le_t *le, int esc)
     itl_g_tty_should_refresh_text = false;
   } break;
   case TL_KEY_LEFT: {
-    size_t steps;
-    bool   cursor_was_on_space;
     if (le->cursor_position > 0 && le->cursor_position <= le->line->length) {
       if (esc & (TL_MOD_CTRL | TL_MOD_ALT)) {
-        cursor_was_on_space = (le->cursor_position == le->line->length) ||
-                              ITL_LE_CURSOR_IS_ON_SPACE(le);
-        steps = ITL_LE_STEPS_TO_TOKEN_BACKWARD(le);
-        if (steps > 0) {
-          itl_le_move_left(le, steps - 1);
+        /* The blanks before the caret are crossed, then the token before
+           them, so the caret lands at the start of that token. */
+        if (ITL_CHAR_IS_SPACE(
+                le->line->chars[le->cursor_position - 1].bytes[0]))
+        {
+          itl_le_move_left(le, ITL_LE_STEPS_TO_TOKEN_BACKWARD(le) - 1);
         }
-        if (!cursor_was_on_space) {
+        if (le->cursor_position > 0) {
           itl_le_move_left(le, ITL_LE_STEPS_TO_TOKEN_BACKWARD(le) - 1);
         }
       } else {
