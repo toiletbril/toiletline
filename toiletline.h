@@ -60,6 +60,12 @@ extern "C"
  * own programs run. Ctrl-Shift-Z redoes either way when the terminal reports
  * it apart from Ctrl-Z, which tl_set_extended_keys() asks the terminal for. */
 
+/* If defined, the large line, history, hint, and highlight buffers live in
+ * zero-filled static storage instead of thread-local storage. Static storage
+ * costs nothing until a page is written, while thread-local storage is
+ * cleared for the process and for every new thread. Define it in a host that
+ * reads lines from one thread only. */
+
 /* To use custom assertions or to disable them, you can define `TL_ASSERT` to
  * some other function or nothing before including. */
 #if !defined TL_ASSERT
@@ -1023,7 +1029,12 @@ ITL_READ_BYTE_RAW(void)
 #endif
 
 #define ITL_THREAD_LOCAL        __thread
-#define ITL_NO_RETURN            __attribute__((noreturn))
+#if defined TL_SHARED_EDITOR_BUFFERS
+#define ITL_EDITOR_BUFFER
+#else
+#define ITL_EDITOR_BUFFER ITL_THREAD_LOCAL
+#endif
+#define ITL_NO_RETURN           __attribute__((noreturn))
 #define ITL_UNREACHABLE_INTRIN() __builtin_unreachable()
 #define itl_debug_trap()         __builtin_trap()
 
@@ -2777,8 +2788,8 @@ itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
 #endif /* ITL_HISTORY_ENTRY_MAX_BYTES */
 
 ITL_DEF ITL_THREAD_LOCAL char  *itl_g_history_path = NULL;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_offsets[TL_HISTORY_MAX_SIZE];
-ITL_DEF ITL_THREAD_LOCAL size_t
+ITL_DEF ITL_EDITOR_BUFFER size_t itl_g_history_offsets[TL_HISTORY_MAX_SIZE];
+ITL_DEF ITL_EDITOR_BUFFER size_t
     itl_g_history_durable_offsets[TL_HISTORY_MAX_SIZE];
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_head              = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_count             = 0;
@@ -2800,7 +2811,7 @@ typedef struct itl_history_search_snapshot
 
 ITL_DEF ITL_THREAD_LOCAL tl_history_search_snapshot_fn
     itl_g_history_search_snapshot_callback = NULL;
-ITL_DEF ITL_THREAD_LOCAL itl_history_search_snapshot
+ITL_DEF ITL_EDITOR_BUFFER itl_history_search_snapshot
     itl_g_history_search_snapshot = {NULL, 0, {0}, 0, 0, false};
 
 struct itl_char_buf;
@@ -2828,7 +2839,7 @@ ITL_DEF ITL_THREAD_LOCAL itl_string_t *itl_g_history_draft = NULL;
 ITL_DEF ITL_THREAD_LOCAL int itl_g_history_prefix_search_enabled = 0;
 
 /* The typed text a prefix search matches entries against. */
-ITL_DEF ITL_THREAD_LOCAL char itl_g_history_prefix[ITL_STRING_MAX_LEN + 1] = {
+ITL_DEF ITL_EDITOR_BUFFER char itl_g_history_prefix[ITL_STRING_MAX_LEN + 1] = {
     0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_history_prefix_length = 0;
 
@@ -2843,12 +2854,12 @@ ITL_DEF ITL_THREAD_LOCAL itl_string_t itl_g_line_buffer = ITL_ZERO_INIT;
    so typing further into the suggestion stays on the same entry rather than
    re-scanning and flipping to a more recent one. Empty when no history entry is
    being suggested. Cleared when a fresh line starts in itl_le_init. */
-ITL_DEF ITL_THREAD_LOCAL char itl_g_ghost_sticky_target[ITL_STRING_MAX_LEN] = {
+ITL_DEF ITL_EDITOR_BUFFER char itl_g_ghost_sticky_target[ITL_STRING_MAX_LEN] = {
     0};
-ITL_DEF ITL_THREAD_LOCAL char
+ITL_DEF ITL_EDITOR_BUFFER char
     itl_g_ghost_completion_miss_prefix[ITL_STRING_MAX_LEN]                = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_completion_miss_prefix_length = 0;
-ITL_DEF ITL_THREAD_LOCAL char
+ITL_DEF ITL_EDITOR_BUFFER char
     itl_g_ghost_history_miss_prefix[ITL_STRING_MAX_LEN]                   = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_history_miss_prefix_length    = 0;
 /* The line as text, grown on demand to hold the whole line. */
@@ -3000,7 +3011,7 @@ ITL_DEF ITL_THREAD_LOCAL bool
 ITL_DEF ITL_THREAD_LOCAL itl_vi_change_record itl_g_vi_last_change =
     ITL_ZERO_INIT;
 
-ITL_DEF ITL_THREAD_LOCAL itl_undo_snapshot
+ITL_DEF ITL_EDITOR_BUFFER itl_undo_snapshot
     itl_g_undo_stack[ITL_UNDO_STACK_DEPTH]                 = ITL_ZERO_INIT;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_undo_count           = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_undo_head            = 0;
@@ -3722,7 +3733,7 @@ itl_history_find_prefixed(size_t      from,
                           const char *current,
                           size_t     *found_out)
 {
-  static ITL_THREAD_LOCAL char entry_cstr[ITL_STRING_MAX_LEN + 1];
+  static ITL_EDITOR_BUFFER char entry_cstr[ITL_STRING_MAX_LEN + 1];
   size_t                       index          = from;
   size_t                       current_length = strlen(current);
 
@@ -5876,7 +5887,7 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_indent_width = ITL_HINT_INDENT_WIDTH;
    first header_len bytes and the body follows without the line break. The
    style is copied, since the host pointer dies with the call. The layout of
    the next frame was cut for these columns and this row budget. */
-ITL_DEF ITL_THREAD_LOCAL char   itl_g_hint_source[ITL_HINT_TEXT_MAX + 1] = {0};
+ITL_DEF ITL_EDITOR_BUFFER char  itl_g_hint_source[ITL_HINT_TEXT_MAX + 1] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_source_len                    = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_header_len                    = 0;
 ITL_DEF ITL_THREAD_LOCAL char   itl_g_hint_sgr[ITL_HINT_SGR_MAX]         = {0};
@@ -5887,10 +5898,10 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_layout_rows                   = 0;
    style, indent, text, and reset, with a line feed between rows. The shown
    length and row count are zero when nothing sits under the input. The two
    compare byte for byte, so an unchanged hint costs no output. */
-ITL_DEF ITL_THREAD_LOCAL char   itl_g_hint_next[ITL_HINT_LAYOUT_MAX]  = {0};
+ITL_DEF ITL_EDITOR_BUFFER char  itl_g_hint_next[ITL_HINT_LAYOUT_MAX]  = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_next_len                   = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_next_rows                  = 0;
-ITL_DEF ITL_THREAD_LOCAL char   itl_g_hint_shown[ITL_HINT_LAYOUT_MAX] = {0};
+ITL_DEF ITL_EDITOR_BUFFER char  itl_g_hint_shown[ITL_HINT_LAYOUT_MAX] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_shown_len                  = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_shown_rows                 = 0;
 
@@ -6082,7 +6093,7 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_search_highlight_count   = 0;
 
 /* The ghost suggestion drawn dimmed after the cursor, and its byte length.
    Right or End accepts it. */
-ITL_DEF ITL_THREAD_LOCAL char   itl_g_ghost[ITL_STRING_MAX_LEN] = {0};
+ITL_DEF ITL_EDITOR_BUFFER char  itl_g_ghost[ITL_STRING_MAX_LEN] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_len                 = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_width               = 0;
 
@@ -6270,7 +6281,7 @@ typedef struct itl_prev_span_t
    the new frame's spans against these, since identical spans mean the colored
    regions did not move and the appended tail is uncolored, so the earlier
    bytes need no repaint. */
-ITL_DEF ITL_THREAD_LOCAL itl_prev_span_t
+ITL_DEF ITL_EDITOR_BUFFER itl_prev_span_t
                                 itl_g_le_prev_spans[ITL_HIGHLIGHT_MAX_SPANS];
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_span_count   = 0;
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_le_prev_spans_usable = false;
@@ -6286,7 +6297,7 @@ ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_finding = false;
 /* The index in the line where an open minibuffer row starts, or 0 when none
    is open. The buffer before it keeps its syntax highlighting. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_minibuffer_row_start = 0;
-ITL_DEF ITL_THREAD_LOCAL tl_highlight_span
+ITL_DEF ITL_EDITOR_BUFFER tl_highlight_span
                                 itl_g_search_spans[ITL_HIGHLIGHT_MAX_SPANS];
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_search_span_count  = 0;
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_multicursor_active = false;
@@ -6684,7 +6695,7 @@ itl_le_serialize_line(itl_le_t *le)
    the terminal size is the same and nothing else flushed since that frame. */
 #define ITL_ROW_CACHE_MAX_ROWS 512
 ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_row_cache = ITL_ZERO_INIT;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_row_cache_ends[ITL_ROW_CACHE_MAX_ROWS];
+ITL_DEF ITL_EDITOR_BUFFER size_t itl_g_row_cache_ends[ITL_ROW_CACHE_MAX_ROWS];
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_row_cache_count       = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_row_cache_tty_rows    = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_row_cache_tty_cols    = 0;
@@ -10637,7 +10648,7 @@ itl_ghost_fill_from_history(const char *line_cstr, size_t line_byte_len)
      window. */
   size_t scanned = 0;
   /* One scratch buffer for the whole scan. */
-  static ITL_THREAD_LOCAL char entry_cstr[ITL_STRING_MAX_LEN];
+  static ITL_EDITOR_BUFFER char entry_cstr[ITL_STRING_MAX_LEN];
   for (index = itl_g_history_count; index-- > 0;) {
     size_t offset = itl_history_index_to_offset(index);
     size_t entry_len;
@@ -12628,7 +12639,7 @@ itl_menu_regather(itl_le_t *le, tl_completion *result)
 #define ITL_HISTORY_MENU_MAX_ENTRIES 128
 #define ITL_HISTORY_MENU_POOL_SIZE   16384
 
-ITL_DEF ITL_THREAD_LOCAL char
+ITL_DEF ITL_EDITOR_BUFFER char
     itl_g_history_menu_pool[ITL_HISTORY_MENU_POOL_SIZE];
 ITL_DEF ITL_THREAD_LOCAL const char
     *itl_g_history_menu_entries[ITL_HISTORY_MENU_MAX_ENTRIES];
@@ -12915,8 +12926,8 @@ itl_menu_empty_candidates(tl_completion *result)
 #define ITL_MENU_FILTER_SCAN_MAX 65536
 #define ITL_MENU_FILTER_MAX      512
 
-ITL_DEF ITL_THREAD_LOCAL const char *itl_g_menu_filtered[ITL_MENU_FILTER_MAX];
-ITL_DEF ITL_THREAD_LOCAL const char
+ITL_DEF ITL_EDITOR_BUFFER const char *itl_g_menu_filtered[ITL_MENU_FILTER_MAX];
+ITL_DEF ITL_EDITOR_BUFFER const char
     *itl_g_menu_filtered_descriptions[ITL_MENU_FILTER_MAX];
 
 /* What the narrowing of one base learns once and reuses on every key. lengths
