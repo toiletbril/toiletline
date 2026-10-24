@@ -8103,6 +8103,27 @@ itl_full_screen_rows(char        *out,
                            ? itl_g_hint_callback(line, cursor_byte, sgr)
                            : NULL;
 
+    /* A host gives no hint while the caret is on a command word, so the word
+       under the caret is asked about again as if a blank followed it. */
+    if (itl_g_hint_callback != NULL && (hint == NULL || hint[0] == '\0')) {
+      size_t word_end = cursor_byte;
+      char  *cut;
+
+      while (line[word_end] != '\0' &&
+             strchr(" \t\n;|&()<>", line[word_end]) == NULL)
+      {
+        word_end += 1;
+      }
+      cut = word_end > 0 ? (char *) TL_MALLOC(word_end + 2) : NULL;
+      if (cut != NULL) {
+        memcpy(cut, line, word_end);
+        cut[word_end]     = ' ';
+        cut[word_end + 1] = '\0';
+        hint              = itl_g_hint_callback(cut, word_end + 1, sgr);
+        TL_FREE(cut);
+      }
+    }
+
     return hint != NULL && hint[0] != '\0' ? hint
                                            : "nothing to show under the caret";
   }
