@@ -2293,6 +2293,131 @@ test_vi_dot_skips_a_yank(void)
 }
 
 #if defined ITL_POSIX
+/* :help and :h list the colon commands in the message under the buffer,
+   and M-x help lists the M-x commands there. */
+static bool
+test_help_lists_the_commands(void)
+{
+  static const char *const keys[] = {"help\r", "h\r"};
+  char   out_buffer[BUFFER_SIZE];
+  bool   ok = true;
+  size_t i;
+
+  for (i = 0; i < countof(keys); ++i) {
+    int           pipe_descriptors[2] = {-1, -1};
+    int           null_descriptor = open("/dev/null", O_WRONLY);
+    int           saved_stdin = dup(STDIN_FILENO);
+    int           saved_stdout = dup(STDOUT_FILENO);
+    size_t        key_size = strlen(keys[i]);
+    itl_le_t      le = ITL_ZERO_INIT;
+    itl_string_t *line = itl_string_alloc();
+
+    itl_g_editor_message[0] = '\0';
+    if (pipe(pipe_descriptors) != 0 || null_descriptor < 0 ||
+        saved_stdin < 0 || saved_stdout < 0 ||
+        write(pipe_descriptors[1], keys[i], key_size) != (ssize_t) key_size ||
+        dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
+        dup2(null_descriptor, STDOUT_FILENO) < 0)
+    {
+      TEST_PRINTF("could not feed case %zu\n", i);
+      ok = false;
+    } else {
+      close(pipe_descriptors[1]);
+      pipe_descriptors[1] = -1;
+      ITL_STRING_FROM_CSTR(line, "text");
+      itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+      (void) itl_vi_ex_command(&le);
+      dup2(saved_stdout, STDOUT_FILENO);
+      if (strncmp(itl_g_editor_message, ":h", 2) != 0 ||
+          strstr(itl_g_editor_message, "\nw, write, q, q!, quit") == NULL ||
+          strstr(itl_g_editor_message, "h, help") == NULL)
+      {
+        TEST_PRINTF("case %zu left the message '%s'\n", i,
+                    itl_g_editor_message);
+        ok = false;
+      }
+    }
+
+    dup2(saved_stdin, STDIN_FILENO);
+    dup2(saved_stdout, STDOUT_FILENO);
+    if (saved_stdin >= 0) close(saved_stdin);
+    if (saved_stdout >= 0) close(saved_stdout);
+    if (null_descriptor >= 0) close(null_descriptor);
+    if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+    if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+    itl_g_key_queue_index = 0;
+    itl_g_key_queue_length = 0;
+    itl_g_pushback_byte = -1;
+    itl_g_tty_changed_size = 1;
+    itl_g_tty_first_render = true;
+    ITL_STRING_FREE(line);
+  }
+
+  {
+    itl_le_t      le = ITL_ZERO_INIT;
+    itl_string_t *line = itl_string_alloc();
+    size_t        index;
+
+    itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+    for (index = 0; index < ITL_COUNTOF(itl_emacs_commands); ++index) {
+      if (strcmp(itl_emacs_commands[index].name, "help") == 0) break;
+    }
+    (void) itl_emacs_run_command(&le, index);
+    if (strncmp(itl_g_editor_message, "\nbackward-delete-char", 21) != 0 ||
+        strstr(itl_g_editor_message, "yank-last-arg") == NULL)
+    {
+      TEST_PRINTF("M-x help left the message '%s'\n", itl_g_editor_message);
+      ok = false;
+    }
+    ITL_STRING_FREE(line);
+  }
+  itl_g_editor_message[0] = '\0';
+
+  return ok;
+}
+
+/* The full-screen footer keeps two rows for the status and grows for a
+   longer message up to eight rows. */
+static bool
+test_footer_grows_for_a_message(void)
+{
+  static const struct
+  {
+    const char *source;
+    size_t      header_len;
+    bool        is_status;
+    size_t      rows;
+  } cases[] = {
+      {"status line", 0, true, 2},
+      {"headerone\ntwo\nthree", 6, false, 4},
+      {"headera\nb\nc\nd\ne\nf\ng\nh\ni\nj", 6, false, 8},
+      {"headershort", 6, false, 2},
+  };
+  bool   ok = true;
+  size_t i;
+
+  for (i = 0; i < countof(cases); ++i) {
+    size_t rows;
+
+    strcpy(itl_g_hint_source, cases[i].source);
+    itl_g_hint_source_len     = strlen(cases[i].source);
+    itl_g_hint_header_len     = cases[i].header_len;
+    itl_g_footer_shows_status = cases[i].is_status;
+    rows                      = itl_footer_rows_wanted(80);
+    if (rows != cases[i].rows) {
+      TEST_PRINTF("case %zu wanted %zu rows, not %zu\n", i, rows,
+                  cases[i].rows);
+      ok = false;
+    }
+  }
+  itl_g_hint_source[0]      = '\0';
+  itl_g_hint_source_len     = 0;
+  itl_g_hint_header_len     = 0;
+  itl_g_footer_shows_status = true;
+
+  return ok;
+}
+
 /* Leaving the vi : command line by Escape, by Backspace on an empty command,
    or by Enter on an unknown command keeps the line and the caret where they
    were before the colon. */
@@ -8838,8 +8963,39 @@ test_prefix_hint_lists_the_waiting_keys(void)
   itl_g_prefix_kind     = ITL_PREFIX_EMACS_X;
   itl_g_minibuffer_text = "rep";
   ok &= test_hint_is("  pressed M-x\n  enter to run the command, tab to "
-                     "complete it\n  repeat, replace-regexp, replace-string",
+                     "complete it\n  repeat  repeat the last M-x command\n"
+                     "  replace-regexp  replace the matches of a regular "
+                     "expression\n  replace-string  replace a string",
                      200, "M-x");
+  itl_g_minibuffer_text = "kill";
+  ok &= test_hint_is("  pressed M-x\n  enter to run the command, tab to "
+                     "complete it\n  kill-kosh  leave the shell\n"
+                     "  kill-line  kill to the end of the row\n"
+                     "  kill-word  kill the next word",
+                     200, "M-x described");
+  itl_g_minibuffer_text = "u";
+  ok &= test_hint_is("  pressed M-x\n  enter to run the command, tab to "
+                     "complete it\n  undo  undo the last change\n"
+                     "  undo-redo  redo the last undone change\n"
+                     "  unix-line-discard  kill from the start of the row to "
+                     "the caret\n  upcase-word  uppercase the next word",
+                     200, "M-x four matches");
+  itl_g_minibuffer_text = "";
+  {
+    char   hint[4096];
+    size_t row_count = 0;
+    size_t i;
+
+    (void) itl_prefix_hint(hint, sizeof(hint));
+    for (i = 0; hint[i] != '\0'; ++i) {
+      row_count += hint[i] == '\n';
+    }
+    /* every command is listed, so the names share rows. */
+    if (strstr(hint, "backward-delete-char, ") == NULL || row_count > 12) {
+      TEST_PRINTF("M-x all commands: hint '%s'\n", hint);
+      ok = false;
+    }
+  }
   itl_g_minibuffer_text = "zz";
   ok &= test_hint_is("  pressed M-x\n  no command starts with this text", 200,
                      "M-x no match");
@@ -10074,6 +10230,10 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_tab_menu_stays_open_until_escape),
                                    DEFINE_TEST_CASE(
                                        test_vi_ex_command_keeps_the_caret),
+                                   DEFINE_TEST_CASE(
+                                       test_help_lists_the_commands),
+                                   DEFINE_TEST_CASE(
+                                       test_footer_grows_for_a_message),
                                    DEFINE_TEST_CASE(
                                        test_alt_backspace_sequences),
                                    DEFINE_TEST_CASE(

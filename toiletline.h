@@ -5910,6 +5910,17 @@ ITL_DEF ITL_THREAD_LOCAL tl_hint_fn itl_g_hint_callback = NULL;
 #define ITL_HINT_ROWS_MAX 17
 /* The most rows of a body without line breaks. */
 #define ITL_HINT_WRAPPED_ROWS_MAX 3
+
+/* The rows under the buffer of the full-screen layout. The status takes the
+   fewest, and a message, a hint, or a command line grows them up to the
+   most while it shows. */
+#define ITL_FOOTER_ROWS_MIN 2
+#define ITL_FOOTER_ROWS_MAX 8
+
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_footer_rows = ITL_FOOTER_ROWS_MIN;
+/* Whether the full-screen footer shows the status rather than a message, a
+   hint, or a command line. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_footer_shows_status = true;
 /* Every hint row starts with this indent. */
 #define ITL_HINT_INDENT       "  "
 #define ITL_HINT_INDENT_WIDTH 2
@@ -6040,7 +6051,7 @@ itl_full_screen_title_rows(void)
 
 /* The result of the last option command, shown in place of the hint rows
    until the next key. */
-ITL_DEF ITL_THREAD_LOCAL char itl_g_editor_message[512] = {0};
+ITL_DEF ITL_THREAD_LOCAL char itl_g_editor_message[2048] = {0};
 
 /* A one-line report of the last save, drawn on the empty status row of the
    full-screen layout until the next key. */
@@ -6064,55 +6075,69 @@ typedef enum
   ITL_EMACS_SAVE_OPTION    = -7,
   ITL_EMACS_FORMAT         = -8,
   ITL_EMACS_FORMAT_BUFFER  = -9,
-  ITL_EMACS_FILL_PARAGRAPH = -10
+  ITL_EMACS_FILL_PARAGRAPH = -10,
+  ITL_EMACS_HELP           = -11
 } itl_emacs_action;
 
-/* An M-x command and the key it runs, or an itl_emacs_action. The table is
-   sorted, so the hint and completion list the commands in order. */
+/* An M-x command, the key it runs or an itl_emacs_action, and what it does.
+   The table is sorted, so the hint and completion list the commands in
+   order. */
 typedef struct
 {
   const char *name;
   int         key;
+  const char *summary;
 } itl_emacs_command;
 
 static const itl_emacs_command itl_emacs_commands[] = {
-    {"backward-delete-char", TL_KEY_BACKSPACE},
-    {"backward-kill-word", TL_KEY_BACKSPACE | TL_MOD_CTRL},
-    {"backward-word", TL_KEY_LEFT | TL_MOD_CTRL},
-    {"beginning-of-history", TL_KEY_HISTORY_BEGINNING},
-    {"beginning-of-line", TL_KEY_HOME},
-    {"capitalize-word", TL_KEY_CAPITALIZE_WORD},
-    {"clear-screen", TL_KEY_CLEAR},
-    {"delete-char", TL_KEY_DELETE},
-    {"delete-horizontal-space", TL_KEY_DELETE_SPACES},
-    {"downcase-word", TL_KEY_DOWNCASE_WORD},
-    {"end-of-history", TL_KEY_HISTORY_END},
-    {"end-of-line", TL_KEY_END},
-    {"fill-paragraph", ITL_EMACS_FILL_PARAGRAPH},
-    {"format", ITL_EMACS_FORMAT},
-    {"format-buffer", ITL_EMACS_FORMAT_BUFFER},
-    {"forward-word", TL_KEY_RIGHT | TL_MOD_CTRL},
-    {"get-option", ITL_EMACS_GET_OPTION},
-    {"isearch-backward", TL_KEY_FIND_BACKWARD},
-    {"isearch-forward", TL_KEY_FIND},
-    {"kill-kosh", ITL_EMACS_KILL_KOSH},
-    {"kill-line", TL_KEY_KILL_LINE},
-    {"kill-word", TL_KEY_DELETE | TL_MOD_CTRL},
-    {"repeat", ITL_EMACS_REPEAT},
-    {"replace-regexp", ITL_EMACS_REPLACE_REGEXP},
-    {"replace-string", ITL_EMACS_REPLACE_STRING},
-    {"save-option", ITL_EMACS_SAVE_OPTION},
-    {"scroll-down-command", TL_KEY_PAGE_UP},
-    {"scroll-up-command", TL_KEY_PAGE_DOWN},
-    {"set-option", ITL_EMACS_SET_OPTION},
-    {"transpose-chars", TL_KEY_TRANSPOSE},
-    {"transpose-words", TL_KEY_TRANSPOSE | TL_MOD_ALT},
-    {"undo", TL_KEY_UNDO},
-    {"undo-redo", TL_KEY_REDO},
-    {"unix-line-discard", TL_KEY_KILL_LINE_BEFORE},
-    {"upcase-word", TL_KEY_UPCASE_WORD},
-    {"yank", TL_KEY_YANK},
-    {"yank-last-arg", TL_KEY_LAST_ARGUMENT},
+    {"backward-delete-char", TL_KEY_BACKSPACE,
+     "delete the character before the caret"},
+    {"backward-kill-word", TL_KEY_BACKSPACE | TL_MOD_CTRL,
+     "kill the word before the caret"},
+    {"backward-word", TL_KEY_LEFT | TL_MOD_CTRL, "move back one word"},
+    {"beginning-of-history", TL_KEY_HISTORY_BEGINNING,
+     "go to the first history entry"},
+    {"beginning-of-line", TL_KEY_HOME, "move to the start of the row"},
+    {"capitalize-word", TL_KEY_CAPITALIZE_WORD, "capitalize the next word"},
+    {"clear-screen", TL_KEY_CLEAR, "clear the screen"},
+    {"delete-char", TL_KEY_DELETE, "delete the character under the caret"},
+    {"delete-horizontal-space", TL_KEY_DELETE_SPACES,
+     "delete the blanks around the caret"},
+    {"downcase-word", TL_KEY_DOWNCASE_WORD, "lowercase the next word"},
+    {"end-of-history", TL_KEY_HISTORY_END, "go to the last history entry"},
+    {"end-of-line", TL_KEY_END, "move to the end of the row"},
+    {"fill-paragraph", ITL_EMACS_FILL_PARAGRAPH,
+     "wrap the paragraph at the wrap width"},
+    {"format", ITL_EMACS_FORMAT, "format the row"},
+    {"format-buffer", ITL_EMACS_FORMAT_BUFFER, "format the buffer"},
+    {"forward-word", TL_KEY_RIGHT | TL_MOD_CTRL, "move forward one word"},
+    {"get-option", ITL_EMACS_GET_OPTION, "show an option"},
+    {"help", ITL_EMACS_HELP, "list the commands"},
+    {"isearch-backward", TL_KEY_FIND_BACKWARD, "search backward as you type"},
+    {"isearch-forward", TL_KEY_FIND, "search forward as you type"},
+    {"kill-kosh", ITL_EMACS_KILL_KOSH, "leave the shell"},
+    {"kill-line", TL_KEY_KILL_LINE, "kill to the end of the row"},
+    {"kill-word", TL_KEY_DELETE | TL_MOD_CTRL, "kill the next word"},
+    {"repeat", ITL_EMACS_REPEAT, "repeat the last M-x command"},
+    {"replace-regexp", ITL_EMACS_REPLACE_REGEXP,
+     "replace the matches of a regular expression"},
+    {"replace-string", ITL_EMACS_REPLACE_STRING, "replace a string"},
+    {"save-option", ITL_EMACS_SAVE_OPTION, "store the options"},
+    {"scroll-down-command", TL_KEY_PAGE_UP, "show the previous page"},
+    {"scroll-up-command", TL_KEY_PAGE_DOWN, "show the next page"},
+    {"set-option", ITL_EMACS_SET_OPTION, "set an option"},
+    {"transpose-chars", TL_KEY_TRANSPOSE,
+     "swap the two characters around the caret"},
+    {"transpose-words", TL_KEY_TRANSPOSE | TL_MOD_ALT,
+     "swap the two words around the caret"},
+    {"undo", TL_KEY_UNDO, "undo the last change"},
+    {"undo-redo", TL_KEY_REDO, "redo the last undone change"},
+    {"unix-line-discard", TL_KEY_KILL_LINE_BEFORE,
+     "kill from the start of the row to the caret"},
+    {"upcase-word", TL_KEY_UPCASE_WORD, "uppercase the next word"},
+    {"yank", TL_KEY_YANK, "paste the last kill"},
+    {"yank-last-arg", TL_KEY_LAST_ARGUMENT,
+     "insert the last word of the previous command"},
 };
 
 ITL_DEF ITL_THREAD_LOCAL itl_prefix_kind itl_g_prefix_kind = ITL_PREFIX_NONE;
@@ -7385,14 +7410,16 @@ itl_le_tty_break_row(itl_char_buf_t *b,
 }
 
 /* The rows a block taller than the terminal shows at once. Two rows stay free
-   for the hint rows under it. */
+   for the hint rows under it, or the footer rows of the full-screen layout. */
 ITL_DEF size_t
 itl_le_view_rows(size_t tty_rows)
 {
   size_t title_rows = itl_full_screen_title_rows();
 
   if (itl_g_full_screen) {
-    return tty_rows > 3 + title_rows ? tty_rows - 2 - title_rows : 1;
+    return tty_rows > itl_g_footer_rows + 1 + title_rows
+               ? tty_rows - itl_g_footer_rows - title_rows
+               : 1;
   }
 
   return tty_rows > 3 ? tty_rows - 2 : 1;
@@ -7613,8 +7640,37 @@ itl_vi_ex_complete_option(char *text, size_t text_size)
   return strlen(text);
 }
 
+/* Appends name to the list in out, which shares rows between names, at most
+   72 columns wide or as wide as the hint rows of a wider terminal.
+   row_columns holds the width of the last row. */
+ITL_DEF void
+itl_list_append_name(char       *out,
+                     size_t      out_size,
+                     size_t     *out_length,
+                     const char *name,
+                     size_t     *row_columns)
+{
+  size_t name_length = strlen(name);
+  size_t row_width   = 72;
+
+  if (itl_g_tty_prev_cols > row_width + itl_g_hint_indent_width + 1) {
+    row_width = itl_g_tty_prev_cols - itl_g_hint_indent_width - 1;
+  }
+  if (*row_columns == 0 || *row_columns + 2 + name_length > row_width) {
+    itl_prefix_append(out, out_size, out_length,
+                      *row_columns == 0 ? "\n" : ",\n");
+    *row_columns = 0;
+  } else {
+    itl_prefix_append(out, out_size, out_length, ", ");
+    *row_columns += 2;
+  }
+  itl_prefix_append(out, out_size, out_length, name);
+  *row_columns += name_length;
+}
+
 /* Writes the M-x hint, which lists every command that starts with the text
-   typed so far on rows of at most 72 columns. */
+   typed so far. A few matches take one row each with what they do, and more
+   matches share rows. */
 ITL_DEF void
 itl_emacs_command_hint(char *out, size_t out_size, size_t *out_length)
 {
@@ -7622,6 +7678,7 @@ itl_emacs_command_hint(char *out, size_t out_size, size_t *out_length)
   size_t match_count = 0;
   size_t row_columns = 0;
   size_t i;
+  bool   is_described;
 
   for (i = 0; i < ITL_COUNTOF(itl_emacs_commands); ++i) {
     if (strncmp(itl_emacs_commands[i].name, itl_g_minibuffer_text,
@@ -7635,23 +7692,31 @@ itl_emacs_command_hint(char *out, size_t out_size, size_t *out_length)
                         ? "pressed M-x\nno command starts with this text"
                         : "pressed M-x\nenter to run the command, tab to "
                           "complete it");
+  /* the header and the keys row leave the rest of the footer rows. */
+  is_described = match_count <= ITL_FOOTER_ROWS_MAX - 2;
   for (i = 0; i < ITL_COUNTOF(itl_emacs_commands); ++i) {
-    const char *name        = itl_emacs_commands[i].name;
-    size_t      name_length = strlen(name);
+    const char *name = itl_emacs_commands[i].name;
 
     if (strncmp(name, itl_g_minibuffer_text, text_length) != 0) continue;
-    if (row_columns == 0 || row_columns + 2 + name_length > 72) {
+    if (is_described) {
+      itl_prefix_append(out, out_size, out_length, "\n");
+      itl_prefix_append(out, out_size, out_length, name);
+      itl_prefix_append(out, out_size, out_length, "  ");
       itl_prefix_append(out, out_size, out_length,
-                        row_columns == 0 ? "\n" : ",\n");
-      row_columns = 0;
+                        itl_emacs_commands[i].summary);
     } else {
-      itl_prefix_append(out, out_size, out_length, ", ");
-      row_columns += 2;
+      itl_list_append_name(out, out_size, out_length, name, &row_columns);
     }
-    itl_prefix_append(out, out_size, out_length, name);
-    row_columns += name_length;
   }
 }
+
+/* The colon commands as :help lists them. */
+static const char *const itl_vi_ex_command_names[] = {
+    "w",   "write", "q",    "q!",     "quit", "wq",   "wq!", "wqa",
+    "wqa!", "x",    "s",    "%s",     "&",    "&&",   "u",   "undo",
+    "red", "redo",  "e",    "edit",   "set",  "save", "format",
+    "%format", "N", "$",    "h",      "help",
+};
 
 /* Write the hint of the open prefix into out, or return false when no key
    waits. A vi count, register, or operator held between keys in normal mode
@@ -8084,7 +8149,8 @@ itl_full_screen_rows(char        *out,
   size_t      column      = 1;
   size_t      i;
 
-  out[0] = '\0';
+  out[0]                    = '\0';
+  itl_g_footer_shows_status = false;
 
   if (itl_g_minibuffer_label != NULL) {
     itl_prefix_append(out, out_size, &out_length, itl_g_minibuffer_label);
@@ -8128,6 +8194,7 @@ itl_full_screen_rows(char        *out,
     return hint != NULL && hint[0] != '\0' ? hint
                                            : "nothing to show under the caret";
   }
+  itl_g_footer_shows_status = true;
 
   /* The line breaks are found with memchr, and only the caret's line is
      walked by codepoint for the column. A frame that draws the same line
@@ -8852,7 +8919,42 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
 ITL_DEF bool
 itl_le_tty_refresh_frame(itl_le_t *le);
 
-/* Draws one frame. The line holds still while it is drawn. */
+/* The footer rows the composed hint wants on a terminal of cols columns: its
+   header row and each body row as wrapped, within the footer limits. The
+   status keeps the fewest rows. */
+ITL_DEF size_t
+itl_footer_rows_wanted(size_t cols)
+{
+  const char *body     = itl_g_hint_source + itl_g_hint_header_len;
+  size_t      body_len = itl_g_hint_source_len - itl_g_hint_header_len;
+  size_t      room     = cols > itl_g_hint_indent_width + 2
+                             ? cols - 1 - itl_g_hint_indent_width
+                             : 1;
+  size_t      rows     = itl_g_hint_header_len > 0 ? 1 : 0;
+
+  if (itl_g_footer_shows_status) {
+    return ITL_FOOTER_ROWS_MIN;
+  }
+  while (body_len > 0 && rows < ITL_FOOTER_ROWS_MAX) {
+    const char *line_end = (const char *) memchr(body, '\n', body_len);
+    size_t      line_len = line_end != NULL ? (size_t) (line_end - body)
+                                            : body_len;
+    size_t      width    = itl_visible_width(body, line_len);
+
+    rows += width == 0 ? 1 : (width + room - 1) / room;
+    if (line_end == NULL) {
+      break;
+    }
+    body += line_len + 1;
+    body_len -= line_len + 1;
+  }
+
+  return ITL_MIN(ITL_MAX(rows, ITL_FOOTER_ROWS_MIN), ITL_FOOTER_ROWS_MAX);
+}
+
+/* Draws one frame. The line holds still while it is drawn. A full-screen
+   footer that wants another number of rows than it had draws the frame again
+   with them. */
 ITL_DEF bool
 itl_le_tty_refresh(itl_le_t *le)
 {
@@ -8862,6 +8964,19 @@ itl_le_tty_refresh(itl_le_t *le)
   is_drawn                      = itl_le_tty_refresh_frame(le);
   itl_g_is_line_still           = false;
   itl_g_is_frame_text_unchanged = false;
+
+  if (is_drawn && itl_g_full_screen) {
+    size_t wanted = itl_footer_rows_wanted(ITL_MAX(itl_g_tty_prev_cols, 1));
+
+    if (wanted != itl_g_footer_rows) {
+      itl_g_footer_rows             = wanted;
+      itl_g_tty_should_refresh_text = true;
+      itl_g_is_line_still           = true;
+      is_drawn                      = itl_le_tty_refresh_frame(le);
+      itl_g_is_line_still           = false;
+      itl_g_is_frame_text_unchanged = false;
+    }
+  }
 
   return is_drawn;
 }
@@ -9824,7 +9939,9 @@ tl_set_full_screen(int enabled)
   if (is_enabled != itl_g_full_screen) {
     itl_tty_write_mouse_mode(is_enabled);
   }
-  itl_g_full_screen = is_enabled;
+  itl_g_full_screen         = is_enabled;
+  itl_g_footer_rows         = ITL_FOOTER_ROWS_MIN;
+  itl_g_footer_shows_status = true;
 }
 
 TL_DEF void
@@ -19782,6 +19899,20 @@ itl_vi_ex_command(itl_le_t *le)
           le, (size_t) strtoul(command, NULL, 10));
     } else if (strcmp(command, "$") == 0) {
       le->cursor_position = itl_le_line_start_clamped(le, (size_t) -1);
+    } else if (strcmp(command, "h") == 0 || strcmp(command, "help") == 0) {
+      size_t length = 0;
+
+      itl_g_editor_message[0] = '\0';
+      itl_prefix_append(itl_g_editor_message, sizeof(itl_g_editor_message),
+                        &length, header);
+      size_t row_columns = 0;
+      size_t i;
+
+      for (i = 0; i < ITL_COUNTOF(itl_vi_ex_command_names); ++i) {
+        itl_list_append_name(itl_g_editor_message,
+                             sizeof(itl_g_editor_message), &length,
+                             itl_vi_ex_command_names[i], &row_columns);
+      }
     } else if (itl_vi_ex_is_quit(command) && strcmp(command, "q!") != 0 &&
         itl_le_is_unsaved(le))
     {
@@ -19860,6 +19991,20 @@ itl_emacs_run_command(itl_le_t *le, size_t index)
   }
   if (action == ITL_EMACS_FILL_PARAGRAPH) {
     itl_le_fill_paragraph(le);
+    return TL_SUCCESS;
+  }
+  if (action == ITL_EMACS_HELP) {
+    size_t length      = 0;
+    size_t row_columns = 0;
+    size_t i;
+
+    /* the names take every footer row, with no header row above them. */
+    itl_g_editor_message[0] = '\0';
+    for (i = 0; i < ITL_COUNTOF(itl_emacs_commands); ++i) {
+      itl_list_append_name(itl_g_editor_message, sizeof(itl_g_editor_message),
+                           &length, itl_emacs_commands[i].name, &row_columns);
+    }
+    itl_g_tty_should_refresh_text = true;
     return TL_SUCCESS;
   }
   if (action == ITL_EMACS_SET_OPTION) {
