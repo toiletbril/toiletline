@@ -80,14 +80,20 @@ rectangle.
 Ctrl-V in emacs mode enters a multi-cursor edit and selects nothing. A cursor
 sits at the same column on every spanned logical line, and Up or Down grows the
 span by one line. A typed character is inserted at every cursor at once, and
-Backspace erases at every cursor. Ctrl-G leaves the multi-cursor edit.
+Backspace erases at every cursor. Ctrl-G leaves the multi-cursor edit. Ctrl-V
+from an emacs selection carries the selected text into the edit, and there Up
+or Down adds a new line holding a copy of it above or below the span, with a
+cursor on it.
+
+In emacs mode, Shift with a caret move opens a selection, and Shift with more
+caret moves grows it. A Shift move that cannot move the caret, such as
+Shift-Up on a single row, acts as the key alone. Backspace and Delete erase the
+selection, Ctrl-W kills it, Alt-W copies it to the kill ring, and typed text
+replaces it. Ctrl-G, Esc, or a caret move without Shift leaves the selection.
 
 The full-screen layout reports the mouse. A press of the first button moves the
 caret, and a drag from the press selects the text between, in visual mode in
-the vi modes. In emacs mode, a drag or Shift with a caret move opens a
-selection, and Shift with more caret moves grows it. Backspace and Delete erase
-the selection, Ctrl-W kills it, Alt-W copies it to the kill ring, and typed text
-replaces it. Ctrl-G, Esc, or a caret move without Shift leaves the selection.
+the vi modes and as an emacs selection in emacs mode.
 
 A line can span several rows. Alt-Enter inserts a newline and keeps editing. A
 backslash at the end of a line followed by Enter also continues onto a new row,

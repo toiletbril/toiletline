@@ -11335,6 +11335,8 @@ ITL_DEF tl_status_code
 itl_vi_visual_loop(itl_le_t *le, bool is_linewise, size_t anchor);
 ITL_DEF tl_status_code
 itl_emacs_selection_loop(itl_le_t *le, size_t anchor);
+ITL_DEF tl_status_code
+itl_emacs_multicursor_loop(itl_le_t *le, const itl_string_t *paste);
 ITL_DEF void
 itl_vi_open_line(itl_le_t *le, bool is_above);
 ITL_DEF void
@@ -18570,6 +18572,7 @@ ITL_DEF tl_status_code
 itl_emacs_selection_loop(itl_le_t *le, size_t anchor)
 {
   uint8_t byte;
+  bool    is_key;
 
   itl_ghost_clear();
   itl_g_emacs_selection_active = true;
@@ -18587,7 +18590,29 @@ itl_emacs_selection_loop(itl_le_t *le, size_t anchor)
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(le);
 
-    if (!itl_modal_read_key(&byte, &key) || byte == 7) {
+    byte   = 0;
+    is_key = itl_modal_read_key(&byte, &key);
+
+    /* Ctrl-V, which parses to no key, carries the selected text into
+       multi-cursor mode, where each added cursor gets a new row holding a
+       copy of it. */
+    if (byte == 22) {
+      itl_string_t  *paste = itl_string_alloc();
+      tl_status_code code;
+      size_t         index;
+
+      for (index = start; index < end; ++index) {
+        itl_string_insert(paste, paste->length, le->line->chars[index]);
+      }
+      itl_g_emacs_selection_active = false;
+      itl_search_spans_clear();
+      code = itl_emacs_multicursor_loop(le, paste->length > 0 ? paste : NULL);
+      ITL_STRING_FREE(paste);
+
+      return code;
+    }
+
+    if (!is_key || byte == 7) {
       break;
     }
     kind = key & TL_MASK_KEY;
@@ -18666,8 +18691,11 @@ itl_emacs_selection_loop(itl_le_t *le, size_t anchor)
   return TL_SUCCESS;
 }
 
+/* The emacs multi-cursor mode. Up and Down add a cursor on the row above or
+   below. With paste, they add a new row holding paste above the top row or
+   below the bottom row instead, and put a cursor on it. */
 ITL_DEF tl_status_code
-itl_emacs_multicursor_loop(itl_le_t *le)
+itl_emacs_multicursor_loop(itl_le_t *le, const itl_string_t *paste)
 {
   uint8_t byte;
   size_t  anchor_line = itl_le_line_index_of(le, le->cursor_position);
@@ -18729,6 +18757,46 @@ itl_emacs_multicursor_loop(itl_le_t *le)
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
       return itl_le_key_handle(le, key);
+    }
+
+    if ((kind == TL_KEY_UP || kind == TL_KEY_DOWN) && paste != NULL) {
+      itl_utf8_t newline   = itl_utf8_new((const uint8_t *) "\n", 1);
+      size_t     row_count = 1;
+      size_t     at, index;
+
+      if (le->line->size + paste->size + 1 >= le->out_size) {
+        continue;
+      }
+      for (index = 0; index < paste->length; ++index) {
+        if (paste->chars[index].size == 1 &&
+            paste->chars[index].bytes[0] == '\n')
+        {
+          row_count += 1;
+        }
+      }
+      if (!did_push_undo) {
+        itl_undo_push(le);
+        did_push_undo = true;
+      }
+      if (kind == TL_KEY_UP) {
+        at = itl_le_line_start_at_index(le, top_line);
+        itl_string_insert(le->line, at, newline);
+      } else {
+        at = itl_le_line_start_at_index(le, bottom_line);
+        at = itl_le_line_end_of(le, at);
+      }
+      for (index = paste->length; index > 0; --index) {
+        itl_string_insert(le->line, at, paste->chars[index - 1]);
+      }
+      if (kind == TL_KEY_UP) {
+        anchor_line = bottom_line + row_count;
+        active_line = top_line;
+      } else {
+        itl_string_insert(le->line, at, newline);
+        anchor_line = top_line;
+        active_line = bottom_line + row_count;
+      }
+      continue;
     }
 
     if (kind == TL_KEY_UP) {
@@ -20830,22 +20898,28 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
           return itl_le_finish_input(le, code);
         }
       }
-    } else if (itl_g_edit_mode == TL_EDIT_MODE_EMACS && itl_g_full_screen &&
+    } else if (itl_g_edit_mode == TL_EDIT_MODE_EMACS &&
                itl_key_is_shift_motion(input_type))
     {
       size_t anchor = le->cursor_position;
 
       itl_undo_close_insert_run();
       itl_emacs_selection_move(le, input_type);
-      code = le->cursor_position == anchor
-                 ? TL_SUCCESS
-                 : itl_emacs_selection_loop(le, anchor);
+      if (le->cursor_position != anchor) {
+        code = itl_emacs_selection_loop(le, anchor);
+      } else if (!itl_g_full_screen) {
+        /* A Shift move that cannot move the caret, such as Shift-Up on a
+           single row, acts as the key alone. */
+        code = itl_le_key_handle(le, input_type & ~TL_MOD_SHIFT);
+      } else {
+        code = TL_SUCCESS;
+      }
       if (code != TL_SUCCESS) {
         return itl_le_finish_input(le, code);
       }
     } else if (input_byte == 22 && itl_g_edit_mode == TL_EDIT_MODE_EMACS) {
       itl_ghost_clear();
-      code = itl_emacs_multicursor_loop(le);
+      code = itl_emacs_multicursor_loop(le, NULL);
       if (code != TL_SUCCESS) {
         return itl_le_finish_input(le, code);
       }
