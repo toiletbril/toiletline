@@ -18676,7 +18676,14 @@ itl_emacs_selection_loop(itl_le_t *le, size_t anchor)
 
     itl_le_tty_refresh(le);
     if (kind == TL_KEY_UP || kind == TL_KEY_DOWN) {
+      size_t position_before_move = le->cursor_position;
+
       itl_emacs_selection_move(le, key);
+      /* At the prompt, an Up or Down that cannot move the caret acts as the
+         key alone and recalls history. */
+      if (!itl_g_full_screen && le->cursor_position == position_before_move) {
+        return itl_le_key_handle(le, key);
+      }
       return TL_SUCCESS;
     }
 
@@ -20899,8 +20906,14 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
         }
       }
     } else if (itl_g_edit_mode == TL_EDIT_MODE_EMACS &&
-               itl_key_is_shift_motion(input_type))
+               itl_key_is_shift_motion(input_type) &&
+               !(((input_type & TL_MASK_KEY) == TL_KEY_RIGHT ||
+                  (input_type & TL_MASK_KEY) == TL_KEY_END) &&
+                 le->cursor_position == le->line->length &&
+                 itl_g_ghost_len > 0))
     {
+      /* A Shift-Right or Shift-End at the end of the line accepts the ghost
+         below, as the key alone does, and opens no selection. */
       size_t anchor = le->cursor_position;
 
       itl_undo_close_insert_run();
@@ -20910,6 +20923,7 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
       } else if (!itl_g_full_screen) {
         /* A Shift move that cannot move the caret, such as Shift-Up on a
            single row, acts as the key alone. */
+        itl_ghost_clear();
         code = itl_le_key_handle(le, input_type & ~TL_MOD_SHIFT);
       } else {
         code = TL_SUCCESS;
