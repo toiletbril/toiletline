@@ -21041,6 +21041,7 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
     if (is_plain_insert && itl_input_is_pending()) {
       itl_g_tty_did_skip_frame       = true;
       itl_g_tty_plain_append_pending = false;
+      itl_g_serialized_line_ready    = false;
       continue;
     }
     if (itl_g_tty_did_skip_frame) itl_le_prepare_full_frame();
