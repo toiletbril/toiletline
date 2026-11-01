@@ -6146,6 +6146,16 @@ ITL_DEF ITL_THREAD_LOCAL uint8_t itl_g_prefix_key = 0;
 
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_tty_plain_append_pending = false;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_tty_plain_append_width   = 0;
+ITL_DEF ITL_THREAD_LOCAL bool   itl_g_tty_did_skip_frame       = false;
+
+ITL_DEF void
+itl_le_prepare_full_frame(void)
+{
+  itl_g_tty_did_skip_frame       = false;
+  itl_g_tty_plain_append_pending = false;
+  itl_g_tty_should_refresh_text  = true;
+}
+
 #if !defined NDEBUG
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_append_refresh_count     = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_full_refresh_count       = 0;
@@ -10406,6 +10416,11 @@ itl_le_tty_draw_transient(itl_le_t *le)
 ITL_DEF tl_status_code
 itl_le_finish_input(itl_le_t *le, tl_status_code code)
 {
+  if (itl_g_tty_did_skip_frame) {
+    itl_le_prepare_full_frame();
+    itl_le_tty_refresh(le);
+  }
+
   bool was_ghost_drawn = itl_g_le_prev_ghost_len > 0;
   bool was_hint_drawn  = itl_g_hint_shown_len > 0;
   bool is_line_kept = code == TL_PRESSED_ENTER || code == TL_PRESSED_INTERRUPT;
@@ -20781,6 +20796,8 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
   itl_le_invalidate_prev_frame();
   itl_le_tty_refresh(le);
 
+  itl_g_tty_did_skip_frame = false;
+
   while (true) {
     itl_idle_arm();
     if (!itl_le_wait_for_key(le)) {
@@ -20837,6 +20854,10 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
        then takes the chord, and an unbound key starts the next key. */
     /* Ctrl-X chords belong to emacs mode, so vi mode ignores the key. */
     if (input_byte == 24 && itl_g_edit_mode != TL_EDIT_MODE_EMACS) {
+      if (itl_g_tty_did_skip_frame && !itl_input_is_pending()) {
+        itl_le_prepare_full_frame();
+        itl_le_tty_refresh(le);
+      }
       continue;
     }
     if (input_byte == 24 && !itl_le_await_chord(le, ITL_PREFIX_CTRL_X, 24)) {
@@ -20846,6 +20867,7 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
     input_type                     = itl_esc_parse(input_byte);
     itl_g_tty_plain_append_pending = false;
     bool is_auto_pair_kept         = false;
+    bool is_plain_insert           = false;
 
     /* Only a key that reaches itl_le_key_handle directly can continue a kill,
        a yank, or a last-argument walk. */
@@ -21006,6 +21028,7 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
       itl_g_tty_should_refresh_text = true;
       /* Recompute the ghost for the token the new character extended. */
       itl_ghost_update(le);
+      is_plain_insert = true;
     }
 
     if (!is_auto_pair_kept) {
@@ -21014,6 +21037,13 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
 
     ITL_TRACELN("strlen: %zu, hist index: %zu\n", le->line->length,
                 le->history_selected_index);
+
+    if (is_plain_insert && itl_input_is_pending()) {
+      itl_g_tty_did_skip_frame       = true;
+      itl_g_tty_plain_append_pending = false;
+      continue;
+    }
+    if (itl_g_tty_did_skip_frame) itl_le_prepare_full_frame();
     itl_le_tty_refresh(le);
   }
 
