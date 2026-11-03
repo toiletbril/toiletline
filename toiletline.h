@@ -201,6 +201,9 @@ typedef enum
   TL_KEY_PAGE_DOWN,
   /* Alt-W copies the selection of the full-screen layout to the kill ring. */
   TL_KEY_COPY_REGION,
+  /* Alt-Q wraps the lines of the emacs selection, or the paragraph under the
+     caret, at the wrap width. */
+  TL_KEY_FILL,
 
   /* Reported when a bracketed paste sequence begins. Handled internally. */
   TL_KEY_PASTE_BEGIN
@@ -593,8 +596,8 @@ TL_DEF void
 tl_set_auto_pair(int enabled);
 
 /*
- * Sets the column at which gq and M-x fill-paragraph wrap the lines. The
- * default is 80.
+ * Sets the column at which gq, Alt-Q, and M-x fill-paragraph wrap the lines.
+ * The default is 80.
  */
 TL_DEF void
 tl_set_wrap_width(size_t column_count);
@@ -5446,6 +5449,7 @@ itl_alt_key(uint8_t byte)
 
   case 'y': return TL_KEY_YANK_POP;
   case 'w': return TL_KEY_COPY_REGION;
+  case 'q': return TL_KEY_FILL;
   case 't': return TL_KEY_TRANSPOSE | TL_MOD_ALT;
   case 'x': return TL_KEY_EXECUTE_COMMAND;
 
@@ -11340,6 +11344,8 @@ ITL_DEF tl_status_code
 itl_le_key_handle(itl_le_t *le, int esc);
 ITL_DEF void
 itl_vi_move_paragraph(itl_le_t *le, bool is_forward);
+ITL_DEF void
+itl_le_fill_paragraph(itl_le_t *le);
 ITL_DEF tl_status_code
 itl_emacs_execute_command(itl_le_t *le);
 ITL_DEF tl_status_code
@@ -16278,6 +16284,8 @@ itl_le_key_handle(itl_le_t *le, int esc)
   /* Alt-W copies only while the emacs selection is open. */
   case TL_KEY_COPY_REGION: itl_g_tty_should_refresh_text = false; break;
 
+  case TL_KEY_FILL: itl_le_fill_paragraph(le); break;
+
   case TL_KEY_SAVE:
     if (itl_g_edit_mode == TL_EDIT_MODE_EMACS && itl_g_save_callback != NULL) {
       itl_le_save(le);
@@ -17484,7 +17492,7 @@ itl_vi_resolve_motion(itl_le_t  *le,
   return target;
 }
 
-/* The column at which gq and M-x fill-paragraph wrap the lines. */
+/* The column at which gq, Alt-Q, and M-x fill-paragraph wrap the lines. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_wrap_width = 80;
 
 TL_DEF void
@@ -18580,8 +18588,8 @@ itl_le_erase_selection(itl_le_t *le, size_t start, size_t end)
 
 /* The emacs selection of the full-screen layout, from anchor to the caret.
    Shift with a caret move and a drag of the first button grow it. Backspace
-   and Delete erase it, Ctrl-W kills it, Alt-W copies it, and typed text
-   replaces it. Ctrl-G, a bare escape, or a caret move without Shift leaves
+   and Delete erase it, Ctrl-W kills it, Alt-W copies it, Alt-Q wraps its
+   lines, and typed text replaces it. Ctrl-G, a bare escape, or a caret move without Shift leaves
    it, and any other key leaves it and runs. */
 ITL_DEF tl_status_code
 itl_emacs_selection_loop(itl_le_t *le, size_t anchor)
@@ -18668,6 +18676,12 @@ itl_emacs_selection_loop(itl_le_t *le, size_t anchor)
 
     if (key == TL_KEY_BACKSPACE || key == TL_KEY_DELETE) {
       itl_le_erase_selection(le, start, end);
+      itl_le_tty_refresh(le);
+      return TL_SUCCESS;
+    }
+
+    if (kind == TL_KEY_FILL) {
+      itl_le_wrap_lines(le, start, end > start ? end - 1 : end);
       itl_le_tty_refresh(le);
       return TL_SUCCESS;
     }

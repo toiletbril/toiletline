@@ -2293,6 +2293,62 @@ test_vi_dot_skips_a_yank(void)
 }
 
 #if defined ITL_POSIX
+/* Alt-Q in the emacs selection wraps the selected lines and leaves the
+   others. */
+static bool
+test_emacs_selection_fills_lines(void)
+{
+  static const char keys[] = "\x1bq";
+  char              out_buffer[BUFFER_SIZE];
+  int               pipe_descriptors[2] = {-1, -1};
+  int               null_descriptor     = open("/dev/null", O_WRONLY);
+  int               saved_stdin         = dup(STDIN_FILENO);
+  int               saved_stdout        = dup(STDOUT_FILENO);
+  size_t            saved_width         = itl_g_wrap_width;
+  itl_le_t          le                  = ITL_ZERO_INIT;
+  itl_string_t     *line                = itl_string_alloc();
+  bool              ok                  = true;
+
+  if (pipe(pipe_descriptors) != 0 || null_descriptor < 0 || saved_stdin < 0 ||
+      saved_stdout < 0 ||
+      write(pipe_descriptors[1], keys, sizeof(keys) - 1) !=
+          (ssize_t) (sizeof(keys) - 1) ||
+      dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
+      dup2(null_descriptor, STDOUT_FILENO) < 0)
+  {
+    TEST_PRINTF("could not feed the selection keys\n");
+    ok = false;
+  } else {
+    close(pipe_descriptors[1]);
+    pipe_descriptors[1] = -1;
+    ITL_STRING_FROM_CSTR(line, "a b c d\ne f g h\ni j k l");
+    itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+    itl_g_wrap_width   = 4;
+    le.cursor_position = 10;
+    (void) itl_emacs_selection_loop(&le, 2);
+    dup2(saved_stdout, STDOUT_FILENO);
+    ok &= test_line_is(line, "a b\nc d\ne f\ng h\ni j k l",
+                       "Alt-Q wraps the selected lines");
+  }
+
+  dup2(saved_stdin, STDIN_FILENO);
+  dup2(saved_stdout, STDOUT_FILENO);
+  if (saved_stdin >= 0) close(saved_stdin);
+  if (saved_stdout >= 0) close(saved_stdout);
+  if (null_descriptor >= 0) close(null_descriptor);
+  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+  itl_g_wrap_width       = saved_width;
+  itl_g_key_queue_index  = 0;
+  itl_g_key_queue_length = 0;
+  itl_g_pushback_byte    = -1;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 /* :help and :h list the colon commands in the message under the buffer,
    and M-x help lists the M-x commands there. */
 static bool
@@ -2832,6 +2888,8 @@ test_editing_key_sequences(void)
   ok &= itl_esc_parse(27) == TL_KEY_LAST_ARGUMENT;
   itl_g_pushback_byte = '_';
   ok &= itl_esc_parse(27) == TL_KEY_LAST_ARGUMENT;
+  itl_g_pushback_byte = 'q';
+  ok &= itl_esc_parse(27) == TL_KEY_FILL;
   ok &= itl_esc_parse(20) == TL_KEY_TRANSPOSE;
   ok &= itl_esc_parse(25) == TL_KEY_YANK;
   itl_g_pushback_byte = 5;
@@ -7991,6 +8049,12 @@ test_wrap_lines_fills_paragraphs(void)
   itl_le_fill_paragraph(&le);
   ok &= test_line_is(line, "  one two\n  three four\n\nfive six\nseven",
                      "fill keeps a wrapped paragraph");
+  ITL_STRING_FROM_CSTR(line, "a b c d e f g\n\nh i j k l m n");
+  le.cursor_position = line->length;
+  itl_g_wrap_width   = 6;
+  (void) itl_le_key_handle(&le, TL_KEY_FILL);
+  ok &= test_line_is(line, "a b c d e f g\n\nh i j\nk l m\nn",
+                     "Alt-Q fills the paragraph under the caret");
   itl_g_wrap_width = saved_width;
   ITL_STRING_FREE(line);
 
@@ -10230,6 +10294,8 @@ static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
                                        test_tab_menu_stays_open_until_escape),
                                    DEFINE_TEST_CASE(
                                        test_vi_ex_command_keeps_the_caret),
+                                   DEFINE_TEST_CASE(
+                                       test_emacs_selection_fills_lines),
                                    DEFINE_TEST_CASE(
                                        test_help_lists_the_commands),
                                    DEFINE_TEST_CASE(
