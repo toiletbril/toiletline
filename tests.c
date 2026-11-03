@@ -2293,58 +2293,65 @@ test_vi_dot_skips_a_yank(void)
 }
 
 #if defined ITL_POSIX
-/* Alt-Q in the emacs selection wraps the selected lines and leaves the
-   others. */
+/* Alt-Q and M-x fill-region in the emacs selection wrap the selected lines
+   and leave the others. */
 static bool
 test_emacs_selection_fills_lines(void)
 {
-  static const char keys[] = "\x1bq";
-  char              out_buffer[BUFFER_SIZE];
-  int               pipe_descriptors[2] = {-1, -1};
-  int               null_descriptor     = open("/dev/null", O_WRONLY);
-  int               saved_stdin         = dup(STDIN_FILENO);
-  int               saved_stdout        = dup(STDOUT_FILENO);
-  size_t            saved_width         = itl_g_wrap_width;
-  itl_le_t          le                  = ITL_ZERO_INIT;
-  itl_string_t     *line                = itl_string_alloc();
-  bool              ok                  = true;
+  static const char *const keys[] = {"\x1bq", "\x1bx" "fill-region\r"};
+  char                     out_buffer[BUFFER_SIZE];
+  size_t                   saved_width = itl_g_wrap_width;
+  bool                     ok          = true;
+  size_t                   i;
 
-  if (pipe(pipe_descriptors) != 0 || null_descriptor < 0 || saved_stdin < 0 ||
-      saved_stdout < 0 ||
-      write(pipe_descriptors[1], keys, sizeof(keys) - 1) !=
-          (ssize_t) (sizeof(keys) - 1) ||
-      dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
-      dup2(null_descriptor, STDOUT_FILENO) < 0)
-  {
-    TEST_PRINTF("could not feed the selection keys\n");
-    ok = false;
-  } else {
-    close(pipe_descriptors[1]);
-    pipe_descriptors[1] = -1;
-    ITL_STRING_FROM_CSTR(line, "a b c d\ne f g h\ni j k l");
-    itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
-    itl_g_wrap_width   = 4;
-    le.cursor_position = 10;
-    (void) itl_emacs_selection_loop(&le, 2);
+  for (i = 0; i < countof(keys); ++i) {
+    int           pipe_descriptors[2] = {-1, -1};
+    int           null_descriptor     = open("/dev/null", O_WRONLY);
+    int           saved_stdin         = dup(STDIN_FILENO);
+    int           saved_stdout        = dup(STDOUT_FILENO);
+    size_t        key_size            = strlen(keys[i]);
+    itl_le_t      le                  = ITL_ZERO_INIT;
+    itl_string_t *line                = itl_string_alloc();
+
+    if (pipe(pipe_descriptors) != 0 || null_descriptor < 0 ||
+        saved_stdin < 0 || saved_stdout < 0 ||
+        write(pipe_descriptors[1], keys[i], key_size) != (ssize_t) key_size ||
+        dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
+        dup2(null_descriptor, STDOUT_FILENO) < 0)
+    {
+      TEST_PRINTF("could not feed case %zu\n", i);
+      ok = false;
+    } else {
+      close(pipe_descriptors[1]);
+      pipe_descriptors[1] = -1;
+      ITL_STRING_FROM_CSTR(line, "a b c d\ne f g h\ni j k l");
+      itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
+      itl_g_edit_mode    = TL_EDIT_MODE_EMACS;
+      itl_g_wrap_width   = 4;
+      le.cursor_position = 10;
+      (void) itl_emacs_selection_loop(&le, 2);
+      dup2(saved_stdout, STDOUT_FILENO);
+      ok &= test_line_is(line, "a b\nc d\ne f\ng h\ni j k l",
+                         i == 0 ? "Alt-Q wraps the selected lines"
+                                : "M-x fill-region wraps the selected lines");
+    }
+
+    dup2(saved_stdin, STDIN_FILENO);
     dup2(saved_stdout, STDOUT_FILENO);
-    ok &= test_line_is(line, "a b\nc d\ne f\ng h\ni j k l",
-                       "Alt-Q wraps the selected lines");
+    if (saved_stdin >= 0) close(saved_stdin);
+    if (saved_stdout >= 0) close(saved_stdout);
+    if (null_descriptor >= 0) close(null_descriptor);
+    if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
+    if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
+    itl_g_key_queue_index  = 0;
+    itl_g_key_queue_length = 0;
+    itl_g_pushback_byte    = -1;
+    itl_g_tty_changed_size = 1;
+    itl_g_tty_first_render = true;
+    ITL_STRING_FREE(line);
   }
 
-  dup2(saved_stdin, STDIN_FILENO);
-  dup2(saved_stdout, STDOUT_FILENO);
-  if (saved_stdin >= 0) close(saved_stdin);
-  if (saved_stdout >= 0) close(saved_stdout);
-  if (null_descriptor >= 0) close(null_descriptor);
-  if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
-  if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
-  itl_g_wrap_width       = saved_width;
-  itl_g_key_queue_index  = 0;
-  itl_g_key_queue_length = 0;
-  itl_g_pushback_byte    = -1;
-  itl_g_tty_changed_size = 1;
-  itl_g_tty_first_render = true;
-  ITL_STRING_FREE(line);
+  itl_g_wrap_width = saved_width;
 
   return ok;
 }

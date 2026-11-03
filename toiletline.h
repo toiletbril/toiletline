@@ -6080,7 +6080,8 @@ typedef enum
   ITL_EMACS_FORMAT         = -8,
   ITL_EMACS_FORMAT_BUFFER  = -9,
   ITL_EMACS_FILL_PARAGRAPH = -10,
-  ITL_EMACS_HELP           = -11
+  ITL_EMACS_HELP           = -11,
+  ITL_EMACS_FILL_REGION    = -12
 } itl_emacs_action;
 
 /* An M-x command, the key it runs or an itl_emacs_action, and what it does.
@@ -6112,6 +6113,8 @@ static const itl_emacs_command itl_emacs_commands[] = {
     {"end-of-line", TL_KEY_END, "move to the end of the row"},
     {"fill-paragraph", ITL_EMACS_FILL_PARAGRAPH,
      "wrap the paragraph at the wrap width"},
+    {"fill-region", ITL_EMACS_FILL_REGION,
+     "wrap the selected lines, or the paragraph, at the wrap width"},
     {"format", ITL_EMACS_FORMAT, "format the row"},
     {"format-buffer", ITL_EMACS_FORMAT_BUFFER, "format the buffer"},
     {"forward-word", TL_KEY_RIGHT | TL_MOD_CTRL, "move forward one word"},
@@ -6380,6 +6383,11 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_search_span_count  = 0;
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_multicursor_active = false;
 /* Set while the emacs selection of the full-screen layout is open. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_emacs_selection_active = false;
+/* The selection that an M-x opened from the emacs selection acts on, valid
+   while has_region is set. */
+ITL_DEF ITL_THREAD_LOCAL bool   itl_g_emacs_has_region   = false;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_emacs_region_start = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_emacs_region_end   = 0;
 
 ITL_DEF void
 itl_search_spans_clear(void)
@@ -8307,8 +8315,8 @@ itl_full_screen_rows(char        *out,
   switch (itl_g_edit_mode) {
   case TL_EDIT_MODE_EMACS:
     keys = itl_g_emacs_selection_active
-               ? "ctrl-w to cut, alt-w to copy, backspace to delete, "
-                 "ctrl-g to leave the selection"
+               ? "ctrl-w to cut, alt-w to copy, alt-q to wrap, backspace to "
+                 "delete, ctrl-g to leave the selection"
                : "ctrl-x to see the menu, alt-x to run a command";
     break;
   case TL_EDIT_MODE_VI_INSERT:
@@ -18716,6 +18724,18 @@ itl_emacs_selection_loop(itl_le_t *le, size_t anchor)
       return TL_SUCCESS;
     }
 
+    if (kind == TL_KEY_EXECUTE_COMMAND) {
+      tl_status_code code;
+
+      itl_g_emacs_has_region   = start < end;
+      itl_g_emacs_region_start = start;
+      itl_g_emacs_region_end   = end;
+      code                     = itl_le_key_handle(le, key);
+      itl_g_emacs_has_region   = false;
+
+      return code;
+    }
+
     return itl_le_key_handle(le, key);
   }
 
@@ -20095,6 +20115,17 @@ itl_emacs_run_command(itl_le_t *le, size_t index)
   }
   if (action == ITL_EMACS_FILL_PARAGRAPH) {
     itl_le_fill_paragraph(le);
+    return TL_SUCCESS;
+  }
+  if (action == ITL_EMACS_FILL_REGION) {
+    if (itl_g_emacs_has_region &&
+        itl_g_emacs_region_end <= le->line->length)
+    {
+      itl_le_wrap_lines(le, itl_g_emacs_region_start,
+                        itl_g_emacs_region_end - 1);
+    } else {
+      itl_le_fill_paragraph(le);
+    }
     return TL_SUCCESS;
   }
   if (action == ITL_EMACS_HELP) {

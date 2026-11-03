@@ -88,8 +88,8 @@ cursor on it.
 In emacs mode, Shift with a caret move opens a selection, and Shift with more
 caret moves grows it. A Shift move that cannot move the caret, such as
 Shift-Up on a single row, acts as the key alone. Backspace and Delete erase the
-selection, Ctrl-W kills it, Alt-W copies it to the kill ring, Alt-Q wraps its
-lines at the wrap width, and typed text replaces it. Ctrl-G, Esc, or a caret move without Shift leaves the selection.
+selection, Ctrl-W kills it, Alt-W copies it to the kill ring, Alt-Q and M-x
+fill-region wrap its lines at the wrap width, and typed text replaces it. Ctrl-G, Esc, or a caret move without Shift leaves the selection.
 
 The full-screen layout reports the mouse. A press of the first button moves the
 caret, and a drag from the press selects the text between, in visual mode in
