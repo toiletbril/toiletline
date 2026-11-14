@@ -8231,11 +8231,18 @@ open_command_file(const char *path, bool should_accept, const char **message)
 static int
 complete_command_path(const char *text, tl_completion *out)
 {
-  static const char *const paths[] = {"dir/a file", "dir/a;file"};
+  static const char *const paths[]           = {"dir/a file", "dir/a;file"};
+  static const char *const directory_paths[] = {"dir/"};
   static char              oversized[ITL_STRING_MAX_LEN + 2];
   static const char       *oversized_paths[] = {oversized};
 
   memset(out, 0, sizeof(*out));
+  if (strcmp(text, "only") == 0) {
+    out->candidates = directory_paths;
+    out->count      = 1;
+
+    return 1;
+  }
   if (strcmp(text, "oversized") == 0) {
     memset(oversized, 'x', sizeof(oversized) - 1);
     oversized[sizeof(oversized) - 1] = '\0';
@@ -8369,6 +8376,34 @@ test_emacs_line_and_file_commands(void)
   if (run_emacs_keys(&le, "save-and-quit\r") != TL_PRESSED_WRITE_QUIT ||
       strcmp(output, "one\n  two\nthree") != 0)
     ok = false;
+  {
+    static const struct
+    {
+      const char *keys;
+      const char *path;
+    } completion_cases[] = {
+        {"find-file\ronly\t\t\r",       "dir/a"     },
+        {"find-file\rdir/\tX\t\r",      "dir/aX"    },
+        {"find-file\rdir/\t\x7f\t\r",   "dir/a"     },
+        {"find-file\rdir/\t\x15"
+         "dir/\t\r",           "dir/a"     },
+        {"find-file\rdir/\t\t\x1b[Z\r", "dir/a;file"}
+    };
+
+    should_open_succeed = true;
+
+    for (index = 0; index < ITL_COUNTOF(completion_cases); ++index) {
+      if (run_emacs_keys(&le, completion_cases[index].keys) !=
+              TL_PRESSED_OPEN_FILE ||
+          strcmp(opened_path, completion_cases[index].path) != 0 ||
+          did_accept_current)
+      {
+        TEST_PRINTF("path completion case %zu opened '%s'\n", index,
+                    opened_path);
+        ok = false;
+      }
+    }
+  }
   tl_set_saved_text(NULL);
   tl_set_save_callback(NULL);
   tl_set_open_file_callback(NULL);

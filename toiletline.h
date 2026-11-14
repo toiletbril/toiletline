@@ -20053,6 +20053,17 @@ itl_minibuffer_read(itl_le_t       *le,
     key      = itl_esc_parse(byte);
     key_kind = key & TL_MASK_KEY;
 
+    if (key_kind == TL_KEY_KILL_LINE_BEFORE || key_kind == TL_KEY_BACKSPACE ||
+        key == TL_KEY_CHAR)
+    {
+      if (paths != NULL) ITL_FREE(paths);
+      if (path_bytes != NULL) ITL_FREE(path_bytes);
+      paths                       = NULL;
+      path_bytes                  = NULL;
+      itl_g_minibuffer_paths      = NULL;
+      itl_g_minibuffer_path_count = 0;
+    }
+
     switch (key_kind) {
     case TL_KEY_ENTER:
       if (has_overflowed) {
@@ -20074,50 +20085,47 @@ itl_minibuffer_read(itl_le_t       *le,
               completion.count > 0 && completion.candidates != NULL &&
               completion.count <= SIZE_MAX / sizeof(*paths))
           {
-            size_t index;
-            size_t byte_count =
-                completion.longest_common_prefix != NULL
-                    ? strlen(completion.longest_common_prefix) + 1
-                    : 1;
-            size_t offset   = 0;
-            bool   is_valid = true;
+            if (completion.count == 1) {
+              replacement = completion.candidates[0];
+            } else {
+              size_t index;
+              size_t byte_count = 0;
+              size_t offset     = 0;
+              bool   is_valid   = true;
 
-            for (index = 0; index < completion.count; ++index) {
-              size_t length = strlen(completion.candidates[index]);
+              for (index = 0; index < completion.count; ++index) {
+                size_t length = strlen(completion.candidates[index]);
 
-              if (length >= SIZE_MAX - byte_count) {
-                is_valid = false;
-                break;
+                if (length >= SIZE_MAX - byte_count) {
+                  is_valid = false;
+                  break;
+                }
+                byte_count += length + 1;
               }
-              byte_count += length + 1;
-            }
-            if (is_valid) {
-              path_bytes = (char *) itl_malloc(byte_count);
-              paths =
-                  (const char **) itl_malloc(completion.count * sizeof(*paths));
-              path_count = completion.count;
+              if (is_valid) {
+                path_bytes = (char *) itl_malloc(byte_count);
+                paths      = (const char **) itl_malloc(completion.count *
+                                                        sizeof(*paths));
+                path_count = completion.count;
 
-              for (index = 0; index < path_count; ++index) {
-                size_t length = strlen(completion.candidates[index]) + 1;
+                for (index = 0; index < path_count; ++index) {
+                  size_t length = strlen(completion.candidates[index]) + 1;
 
-                paths[index] = path_bytes + offset;
-                memcpy(path_bytes + offset, completion.candidates[index],
-                       length);
-                offset += length;
+                  paths[index] = path_bytes + offset;
+                  memcpy(path_bytes + offset, completion.candidates[index],
+                         length);
+                  offset += length;
+                }
+                replacement = completion.longest_common_prefix;
+                if (replacement != NULL && strlen(replacement) <= text_length)
+                  replacement = NULL;
+                path_index                  = (size_t) -1;
+                itl_g_minibuffer_paths      = paths;
+                itl_g_minibuffer_path_count = path_count;
               }
-              strcpy(path_bytes + offset,
-                     completion.longest_common_prefix != NULL
-                         ? completion.longest_common_prefix
-                         : "");
-              replacement = path_count == 1 ? paths[0] : path_bytes + offset;
-              if (path_count > 1 && strlen(replacement) <= text_length)
-                replacement = NULL;
-              path_index                  = (size_t) -1;
-              itl_g_minibuffer_paths      = paths;
-              itl_g_minibuffer_path_count = path_count;
             }
           }
-          if (paths == NULL) itl_le_flash(le);
+          if (paths == NULL && replacement == NULL) itl_le_flash(le);
         } else if (paths != NULL) {
           if ((key & TL_MOD_SHIFT) != 0) {
             path_index = path_index == 0 || path_index == (size_t) -1
@@ -20140,14 +20148,6 @@ itl_minibuffer_read(itl_le_t       *le,
             memcpy(text, replacement, length + 1);
             text_length    = length;
             has_overflowed = false;
-            if (path_count == 1) {
-              ITL_FREE(paths);
-              ITL_FREE(path_bytes);
-              paths                       = NULL;
-              path_bytes                  = NULL;
-              itl_g_minibuffer_paths      = NULL;
-              itl_g_minibuffer_path_count = 0;
-            }
           } else {
             has_overflowed = true;
             itl_le_flash(le);
@@ -20174,21 +20174,9 @@ itl_minibuffer_read(itl_le_t       *le,
       text_length    = 0;
       text[0]        = '\0';
       has_overflowed = false;
-      if (paths != NULL) ITL_FREE(paths);
-      if (path_bytes != NULL) ITL_FREE(path_bytes);
-      paths                       = NULL;
-      path_bytes                  = NULL;
-      itl_g_minibuffer_paths      = NULL;
-      itl_g_minibuffer_path_count = 0;
       break;
 
     case TL_KEY_BACKSPACE:
-      if (paths != NULL) ITL_FREE(paths);
-      if (path_bytes != NULL) ITL_FREE(path_bytes);
-      paths                       = NULL;
-      path_bytes                  = NULL;
-      itl_g_minibuffer_paths      = NULL;
-      itl_g_minibuffer_path_count = 0;
       if (text_length > 0) {
         /* The whole last UTF-8 character goes, with its continuation bytes. */
         do {
@@ -20208,12 +20196,6 @@ itl_minibuffer_read(itl_le_t       *le,
     case TL_KEY_CHAR:
       /* An Alt-modified key arrives with its escape byte, which is not text. */
       if (key == TL_KEY_CHAR) {
-        if (paths != NULL) ITL_FREE(paths);
-        if (path_bytes != NULL) ITL_FREE(path_bytes);
-        paths                       = NULL;
-        path_bytes                  = NULL;
-        itl_g_minibuffer_paths      = NULL;
-        itl_g_minibuffer_path_count = 0;
         if (text_length >= text_size - 1) {
           has_overflowed = true;
           itl_le_flash(le);
