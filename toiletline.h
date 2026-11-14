@@ -115,7 +115,8 @@ typedef enum
   TL_PRESSED_TAB              = 6,
   TL_PRESSED_QUIT             = 7,
   /* :wq, :wq!, :x, :wqa, and :wqa! ask to save and leave. */
-  TL_PRESSED_WRITE_QUIT       = 8,
+  TL_PRESSED_WRITE_QUIT = 8,
+  TL_PRESSED_OPEN_FILE  = 9,
 
   /**
    * Codes below 0 are errors.
@@ -383,6 +384,16 @@ typedef int (*tl_complete_fn)(const char    *buffer,
 TL_DEF void
 tl_set_complete_callback(tl_complete_fn callback);
 
+typedef int (*tl_open_file_fn)(const char  *path,
+                               bool         should_accept_current,
+                               const char **out_message);
+TL_DEF void
+tl_set_open_file_callback(tl_open_file_fn callback);
+
+typedef int (*tl_path_complete_fn)(const char *text, tl_completion *out);
+TL_DEF void
+tl_set_path_complete_callback(tl_path_complete_fn callback);
+
 /**
  * The history selector callback. The host receives the matching history
  * entries, newest first, and picks one with a program of its own. It returns 1
@@ -534,9 +545,9 @@ tl_set_status(const char *status);
  * the input fills every row but the title and the last two, which hold the
  * status with the caret position and the edit mode with the save message or
  * the keys, and also the hints and the command line, and the completion menu
- * is drawn over the input next to the caret. Mouse reports are on while the layout is.
- * The host keeps the layout on the alternate screen, which the editor leaves
- * while an external editor runs. Off by default.
+ * is drawn over the input next to the caret. Mouse reports are on while the
+ * layout is. The host keeps the layout on the alternate screen, which the
+ * editor leaves while an external editor runs. Off by default.
  */
 TL_DEF void
 tl_set_full_screen(int enabled);
@@ -909,8 +920,18 @@ tl_set_edit_mode(int mode);
 #define ITL_STRING_MAX_LEN 8191
 #endif
 
+ITL_DEF bool
+itl_tty_is_tty(void)
+{
+  DWORD input_mode;
+  DWORD output_mode;
+
+  return GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &input_mode) != 0 &&
+         GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &output_mode) != 0;
+}
+
 #if !defined ITL_TTY_IS_TTY
-#define ITL_TTY_IS_TTY() ITL_ISATTY(STDIN_FILENO)
+#define ITL_TTY_IS_TTY() itl_tty_is_tty()
 #endif /* ITL_TTY_IS_TTY */
 
 #elif defined ITL_POSIX
@@ -1031,13 +1052,51 @@ ITL_READ_BYTE_RAW(void)
 #define ITL_HAS_REGEX
 #endif
 
-#define ITL_THREAD_LOCAL        __thread
+ITL_DEF int
+itl_tty_write(const char *data, size_t size)
+{
+  size_t write_size = size > INT_MAX ? INT_MAX : size;
+#if defined ITL_WIN32
+  DWORD  written = 0;
+  HANDLE output  = GetStdHandle(STD_OUTPUT_HANDLE);
+
+  if (output == NULL || output == INVALID_HANDLE_VALUE ||
+      !WriteFile(output, data, (DWORD) write_size, &written, NULL))
+  {
+    errno = EIO;
+
+    return -1;
+  }
+
+  return (int) written;
+#else
+  return (int) ITL_WRITE(ITL_STDOUT, data, write_size);
+#endif
+}
+
+ITL_DEF size_t
+itl_tty_write_all(const char *data, size_t size)
+{
+  size_t total_written = 0;
+
+  while (total_written < size) {
+    int written = itl_tty_write(data + total_written, size - total_written);
+
+    if (written < 0 && errno == EINTR) continue;
+    if (written <= 0) break;
+    total_written += (size_t) written;
+  }
+
+  return total_written;
+}
+
+#define ITL_THREAD_LOCAL __thread
 #if defined TL_SHARED_EDITOR_BUFFERS
 #define ITL_EDITOR_BUFFER
 #else
 #define ITL_EDITOR_BUFFER ITL_THREAD_LOCAL
 #endif
-#define ITL_NO_RETURN           __attribute__((noreturn))
+#define ITL_NO_RETURN            __attribute__((noreturn))
 #define ITL_UNREACHABLE_INTRIN() __builtin_unreachable()
 #define itl_debug_trap()         __builtin_trap()
 
@@ -1264,12 +1323,12 @@ itl_set_extended_keys_active(bool should_be_active)
   }
 
   if (should_be_active) {
-    ITL_TRY(ITL_WRITE(ITL_STDOUT, ITL_EXTENDED_KEYS_ON,
-                      sizeof(ITL_EXTENDED_KEYS_ON) - 1) != -1,
+    ITL_TRY(itl_tty_write(ITL_EXTENDED_KEYS_ON,
+                          sizeof(ITL_EXTENDED_KEYS_ON) - 1) != -1,
             return);
   } else {
-    ITL_TRY(ITL_WRITE(ITL_STDOUT, ITL_EXTENDED_KEYS_OFF,
-                      sizeof(ITL_EXTENDED_KEYS_OFF) - 1) != -1,
+    ITL_TRY(itl_tty_write(ITL_EXTENDED_KEYS_OFF,
+                          sizeof(ITL_EXTENDED_KEYS_OFF) - 1) != -1,
             {});
   }
   itl_g_extended_keys_active = should_be_active;
@@ -1281,7 +1340,9 @@ itl_set_extended_keys_active(bool should_be_active)
 TL_DEF tl_status_code
 tl_enter_raw_mode(void)
 {
-  ITL_TRY(!itl_g_entered_raw_mode, return TL_SUCCESS);
+  if (itl_g_entered_raw_mode && tl_exit_raw_mode() != TL_SUCCESS) {
+    return TL_ERROR;
+  }
 
   ITL_TRY(ITL_TTY_IS_TTY(), return TL_ERROR);
 
@@ -1297,7 +1358,7 @@ tl_enter_raw_mode(void)
      not submit. Only the POSIX parser decodes the markers, so on Windows the
      request would leak the bracket bytes as text. This is non-fatal when the
      terminal ignores it. */
-  ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[?2004h", 8) != -1, {});
+  ITL_TRY(itl_tty_write("\x1b[?2004h", 8) != -1, {});
 #endif
   itl_set_extended_keys_active(itl_g_extended_keys_enabled &&
                                !itl_g_signal_keys_enabled);
@@ -1319,12 +1380,12 @@ tl_exit_raw_mode(void)
   did_restore_mode = itl_exit_raw_mode_impl();
 
 #if defined ITL_POSIX
-  ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[?2004l", 8) != -1, {});
+  ITL_TRY(itl_tty_write("\x1b[?2004l", 8) != -1, {});
 #endif
   itl_set_extended_keys_active(false);
 
   if (itl_g_vi_cursor_shape != ITL_VI_CURSOR_DEFAULT_SHAPE) {
-    ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[0 q", 5) != -1, {});
+    ITL_TRY(itl_tty_write("\x1b[0 q", 5) != -1, {});
     itl_g_vi_cursor_shape = ITL_VI_CURSOR_DEFAULT_SHAPE;
   }
 
@@ -1817,16 +1878,13 @@ itl_raise_suspend(void)
      after SIGCONT, so raw mode is restored in normal context without a handler
      calling unsafe terminal functions. */
   if (itl_g_full_screen) {
-    ITL_TRY(ITL_WRITE(ITL_STDOUT, ITL_MOUSE_OFF, sizeof(ITL_MOUSE_OFF) - 1) !=
-                -1,
-            {});
+    ITL_TRY(itl_tty_write(ITL_MOUSE_OFF, sizeof(ITL_MOUSE_OFF) - 1) != -1, {});
   }
   tl_exit_raw_mode();
   raise(SIGTSTP);
   tl_enter_raw_mode();
   if (itl_g_full_screen) {
-    ITL_TRY(ITL_WRITE(ITL_STDOUT, ITL_MOUSE_ON, sizeof(ITL_MOUSE_ON) - 1) != -1,
-            {});
+    ITL_TRY(itl_tty_write(ITL_MOUSE_ON, sizeof(ITL_MOUSE_ON) - 1) != -1, {});
   }
   itl_g_tty_changed_size = 1;
 }
@@ -2456,8 +2514,8 @@ ITL_DEF void
 itl_string_extend(itl_string_t *str)
 {
   str->capacity = ITL_STRING_REALLOC_CAPACITY(str->capacity);
-  str->chars    = (itl_utf8_t *) itl_realloc(
-      str->chars, str->capacity * sizeof(itl_utf8_t));
+  str->chars    = (itl_utf8_t *) itl_realloc(str->chars,
+                                             str->capacity * sizeof(itl_utf8_t));
 }
 
 ITL_DEF bool
@@ -2536,8 +2594,8 @@ ITL_DEF void
 itl_string_shrink(itl_string_t *str)
 {
   str->capacity = ITL_STRING_INIT_SIZE;
-  str->chars    = (itl_utf8_t *) itl_realloc(
-      str->chars, str->capacity * sizeof(itl_utf8_t));
+  str->chars    = (itl_utf8_t *) itl_realloc(str->chars,
+                                             str->capacity * sizeof(itl_utf8_t));
 
   if (str->length > str->capacity) {
     str->length = str->capacity;
@@ -2827,7 +2885,7 @@ itl_string_from_bytes(itl_string_t *str, const char *data, size_t size)
 #define ITL_HISTORY_ENTRY_MAX_BYTES 2048
 #endif /* ITL_HISTORY_ENTRY_MAX_BYTES */
 
-ITL_DEF ITL_THREAD_LOCAL char  *itl_g_history_path = NULL;
+ITL_DEF ITL_THREAD_LOCAL char   *itl_g_history_path = NULL;
 ITL_DEF ITL_EDITOR_BUFFER size_t itl_g_history_offsets[TL_HISTORY_MAX_SIZE];
 ITL_DEF ITL_EDITOR_BUFFER size_t
     itl_g_history_durable_offsets[TL_HISTORY_MAX_SIZE];
@@ -2843,8 +2901,8 @@ typedef struct itl_history_search_snapshot
 {
   const char *contents;
   size_t      size;
-  size_t      offsets[TL_HISTORY_MAX_SIZE];
-  size_t      head;
+  size_t     *offsets;
+  size_t      capacity;
   size_t      count;
   bool        is_active;
 } itl_history_search_snapshot;
@@ -2852,7 +2910,31 @@ typedef struct itl_history_search_snapshot
 ITL_DEF ITL_THREAD_LOCAL tl_history_search_snapshot_fn
     itl_g_history_search_snapshot_callback = NULL;
 ITL_DEF ITL_EDITOR_BUFFER itl_history_search_snapshot
-    itl_g_history_search_snapshot = {NULL, 0, {0}, 0, 0, false};
+    itl_g_history_search_snapshot = {NULL, 0, NULL, 0, 0, false};
+
+typedef struct itl_history_corpus_entry
+{
+  size_t      offset;
+  size_t      length;
+  size_t      index;
+  const char *text;
+  unsigned    rank;
+} itl_history_corpus_entry;
+
+typedef struct itl_history_corpus
+{
+  char                     *bytes;
+  itl_history_corpus_entry *entries;
+  const char              **ordered;
+  size_t                    count;
+  bool                      is_ready;
+} itl_history_corpus;
+
+ITL_DEF ITL_THREAD_LOCAL itl_history_corpus itl_g_history_corpus =
+    ITL_ZERO_INIT;
+
+ITL_DEF void
+itl_history_search_snapshot_end(void);
 
 struct itl_char_buf;
 ITL_DEF ITL_THREAD_LOCAL struct itl_char_buf *itl_g_history_read_buffer = NULL;
@@ -2900,8 +2982,8 @@ ITL_DEF ITL_EDITOR_BUFFER char
     itl_g_ghost_completion_miss_prefix[ITL_STRING_MAX_LEN]                = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_completion_miss_prefix_length = 0;
 ITL_DEF ITL_EDITOR_BUFFER char
-    itl_g_ghost_history_miss_prefix[ITL_STRING_MAX_LEN]                   = {0};
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_history_miss_prefix_length    = 0;
+    itl_g_ghost_history_miss_prefix[ITL_STRING_MAX_LEN]                = {0};
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_ghost_history_miss_prefix_length = 0;
 /* The line as text, grown on demand to hold the whole line. */
 ITL_DEF ITL_THREAD_LOCAL char  *itl_g_serialized_line          = NULL;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_serialized_line_capacity = 0;
@@ -3094,10 +3176,14 @@ itl_undo_record_change(itl_undo_snapshot  *slot,
                        const itl_string_t *older,
                        const itl_string_t *newer)
 {
-  enum { BLOCK_LENGTH = 512 };
-  size_t shorter = older->length < newer->length ? older->length : newer->length;
-  size_t prefix  = 0;
-  size_t suffix  = 0;
+  enum
+  {
+    BLOCK_LENGTH = 512
+  };
+  size_t shorter =
+      older->length < newer->length ? older->length : newer->length;
+  size_t prefix = 0;
+  size_t suffix = 0;
 
   /* whole blocks with equal bytes hold equal characters, so only the first
      block that differs is compared character by character. */
@@ -3312,9 +3398,9 @@ itl_redo(itl_le_t *le)
   }
 
   if (itl_g_undo_count > 0) {
-    itl_undo_apply_newer(itl_g_undo_top_text,
-                         &itl_g_undo_stack[itl_undo_slot_before(
-                             itl_g_undo_head)]);
+    itl_undo_apply_newer(
+        itl_g_undo_top_text,
+        &itl_g_undo_stack[itl_undo_slot_before(itl_g_undo_head)]);
   } else {
     itl_string_copy(itl_g_undo_top_text, le->line);
   }
@@ -3774,8 +3860,8 @@ itl_history_find_prefixed(size_t      from,
                           size_t     *found_out)
 {
   static ITL_EDITOR_BUFFER char entry_cstr[ITL_STRING_MAX_LEN + 1];
-  size_t                       index          = from;
-  size_t                       current_length = strlen(current);
+  size_t                        index          = from;
+  size_t                        current_length = strlen(current);
 
   if (!itl_history_ensure_read_buffer()) {
     return false;
@@ -4064,7 +4150,7 @@ itl_history_decode_entry_bytes(const char *buffer_data,
                                size_t      capacity,
                                size_t     *decoded_size_out)
 {
-  size_t decoded_size   = 0;
+  size_t decoded_size      = 0;
   bool   is_escape_pending = false;
   size_t i;
 
@@ -4573,8 +4659,7 @@ itl_frame_batch_write(void)
   }
 #endif
 
-  is_written =
-      itl_write_all(ITL_STDOUT, batch->data, batch->size) == batch->size;
+  is_written  = itl_tty_write_all(batch->data, batch->size) == batch->size;
   batch->size = 0;
 
   return is_written;
@@ -4642,7 +4727,7 @@ itl_char_buf_flush(itl_char_buf_t *cb)
   }
 #endif
 
-  return itl_write_all(ITL_STDOUT, cb->data, cb->size) == cb->size;
+  return itl_tty_write_all(cb->data, cb->size) == cb->size;
 }
 
 #define ITL_CHAR_BUF_DUMP(cb) (void) itl_char_buf_flush(cb)
@@ -4795,13 +4880,13 @@ itl_history_record_meter_end(itl_history_record_meter_t *meter)
 ITL_DEF bool
 itl_history_scan_fd(ITL_FILE file)
 {
-  char    file_buffer[ITL_HISTORY_FILE_BUFFER_SIZE];
-  bool    is_escape_pending = false;
-  size_t  entry_start    = 0;
-  size_t  file_pos       = 0;
-  size_t  retained_limit = itl_g_history_limit;
-  uint8_t last_byte      = (uint8_t) '\n';
-  itl_history_record_meter_t meter = {0, false};
+  char                       file_buffer[ITL_HISTORY_FILE_BUFFER_SIZE];
+  bool                       is_escape_pending = false;
+  size_t                     entry_start       = 0;
+  size_t                     file_pos          = 0;
+  size_t                     retained_limit    = itl_g_history_limit;
+  uint8_t                    last_byte         = (uint8_t) '\n';
+  itl_history_record_meter_t meter             = {0, false};
 
   if (!ITL_FILE_SEEK(file, 0)) {
     return false;
@@ -4898,13 +4983,12 @@ ITL_DEF bool
 itl_history_search_snapshot_scan(const char *contents, size_t size)
 {
   bool                       is_escape_pending = false;
-  size_t                     entry_start    = 0;
+  size_t                     entry_start       = 0;
   size_t                     position;
   itl_history_record_meter_t meter = {0, false};
 
   itl_g_history_search_snapshot.contents = contents;
   itl_g_history_search_snapshot.size     = size;
-  itl_g_history_search_snapshot.head     = 0;
   itl_g_history_search_snapshot.count    = 0;
 
   for (position = 0; position < size; ++position) {
@@ -4924,19 +5008,20 @@ itl_history_search_snapshot_scan(const char *contents, size_t size)
         entry_start = position + 1;
         continue;
       }
-      if (itl_g_history_limit > 0) {
-        size_t slot = (itl_g_history_search_snapshot.head +
-                       itl_g_history_search_snapshot.count) %
-                      TL_HISTORY_MAX_SIZE;
-        itl_g_history_search_snapshot.offsets[slot] = entry_start;
-        if (itl_g_history_search_snapshot.count < itl_g_history_limit) {
-          itl_g_history_search_snapshot.count += 1;
-        } else {
-          itl_g_history_search_snapshot.head =
-              (itl_g_history_search_snapshot.head + 1) % TL_HISTORY_MAX_SIZE;
-        }
+      if (itl_g_history_search_snapshot.count ==
+          itl_g_history_search_snapshot.capacity)
+      {
+        size_t capacity = itl_g_history_search_snapshot.capacity;
+
+        if (capacity > SIZE_MAX / 2 / sizeof(size_t)) return false;
+        capacity = capacity == 0 ? 256 : capacity * 2;
+        itl_g_history_search_snapshot.offsets = (size_t *) itl_realloc(
+            itl_g_history_search_snapshot.offsets, capacity * sizeof(size_t));
+        itl_g_history_search_snapshot.capacity = capacity;
       }
-      entry_start = position + 1;
+      itl_g_history_search_snapshot
+          .offsets[itl_g_history_search_snapshot.count++] = entry_start;
+      entry_start                                         = position + 1;
       continue;
     }
     itl_history_record_meter_add(&meter, ch, false);
@@ -4953,13 +5038,17 @@ itl_history_search_snapshot_begin(void)
   const char *contents = NULL;
   size_t      size     = 0;
 
-  itl_g_history_search_snapshot.is_active = false;
+  itl_history_search_snapshot_end();
   if (itl_g_history_search_snapshot_callback == NULL) return;
   if (!itl_g_history_search_snapshot_callback(&contents, &size)) return;
   if (contents == NULL && size != 0) {
     return;
   }
-  if (!itl_history_search_snapshot_scan(contents, size)) return;
+  if (!itl_history_search_snapshot_scan(contents, size)) {
+    itl_history_search_snapshot_end();
+
+    return;
+  }
 
   itl_g_history_search_snapshot.is_active = true;
 }
@@ -4967,11 +5056,17 @@ itl_history_search_snapshot_begin(void)
 ITL_DEF void
 itl_history_search_snapshot_end(void)
 {
-  itl_g_history_search_snapshot.contents  = NULL;
-  itl_g_history_search_snapshot.size      = 0;
-  itl_g_history_search_snapshot.head      = 0;
-  itl_g_history_search_snapshot.count     = 0;
-  itl_g_history_search_snapshot.is_active = false;
+  if (itl_g_history_search_snapshot.offsets != NULL)
+    ITL_FREE(itl_g_history_search_snapshot.offsets);
+  if (itl_g_history_corpus.bytes != NULL) ITL_FREE(itl_g_history_corpus.bytes);
+  if (itl_g_history_corpus.entries != NULL)
+    ITL_FREE(itl_g_history_corpus.entries);
+  if (itl_g_history_corpus.ordered != NULL)
+    ITL_FREE(itl_g_history_corpus.ordered);
+
+  memset(&itl_g_history_search_snapshot, 0,
+         sizeof(itl_g_history_search_snapshot));
+  memset(&itl_g_history_corpus, 0, sizeof(itl_g_history_corpus));
 }
 
 ITL_DEF size_t
@@ -4989,9 +5084,7 @@ itl_history_search_index_to_offset(size_t index)
     return itl_history_index_to_offset(index);
 
   TL_ASSERT(index < itl_g_history_search_snapshot.count);
-  return itl_g_history_search_snapshot
-      .offsets[(itl_g_history_search_snapshot.head + index) %
-               TL_HISTORY_MAX_SIZE];
+  return itl_g_history_search_snapshot.offsets[index];
 }
 
 ITL_DEF bool
@@ -5278,17 +5371,15 @@ itl_paths_are_same_file(const char *first, const char *second)
   HANDLE                     second_handle;
   bool                       is_same = false;
 
-  first_handle = CreateFileA(first, 0, FILE_SHARE_READ | FILE_SHARE_WRITE |
-                                           FILE_SHARE_DELETE,
-                             NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
-                             NULL);
+  first_handle = CreateFileA(
+      first, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
   if (first_handle == INVALID_HANDLE_VALUE) {
     return false;
   }
-  second_handle = CreateFileA(second, 0, FILE_SHARE_READ | FILE_SHARE_WRITE |
-                                             FILE_SHARE_DELETE,
-                              NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
-                              NULL);
+  second_handle = CreateFileA(
+      second, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
   if (second_handle != INVALID_HANDLE_VALUE) {
     if (GetFileInformationByHandle(first_handle, &first_info) &&
         GetFileInformationByHandle(second_handle, &second_info))
@@ -5307,8 +5398,7 @@ itl_paths_are_same_file(const char *first, const char *second)
   struct stat first_status;
   struct stat second_status;
 
-  return stat(first, &first_status) == 0 &&
-         stat(second, &second_status) == 0 &&
+  return stat(first, &first_status) == 0 && stat(second, &second_status) == 0 &&
          first_status.st_dev == second_status.st_dev &&
          first_status.st_ino == second_status.st_ino;
 #endif
@@ -5488,8 +5578,7 @@ itl_esc_parse_modified_key(unsigned code, unsigned modifier)
 
   /* Kitty reports the unshifted key, so Alt with Shift maps to the symbol the
      chord types, and Alt-Shift-F and Alt-Shift-B select by word. */
-  if (is_alt && !is_ctrl && (bits & ~(1u | 2u | 64u | 128u)) == 0 &&
-      code < 128)
+  if (is_alt && !is_ctrl && (bits & ~(1u | 2u | 64u | 128u)) == 0 && code < 128)
   {
     int key;
 
@@ -5811,7 +5900,7 @@ ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_view_discard = ITL_ZERO_INIT;
    terminal, and whether the last frame drew such a window. */
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_view_top_row   = 0;
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_view_is_active = false;
-ITL_DEF ITL_THREAD_LOCAL bool           itl_g_tty_is_dumb = true;
+ITL_DEF ITL_THREAD_LOCAL bool   itl_g_tty_is_dumb    = true;
 
 /* *rows, *cols can be NULL. */
 ITL_DEF bool
@@ -5994,7 +6083,12 @@ typedef enum
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_minibuffer_text = "";
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_minibuffer_hint = "";
 /* Whether Tab in the open minibuffer completes an option name. */
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_minibuffer_completes_options = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_minibuffer_completes_options        = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_minibuffer_completes_paths          = false;
+ITL_DEF ITL_THREAD_LOCAL const char *const *itl_g_minibuffer_paths      = NULL;
+ITL_DEF ITL_THREAD_LOCAL size_t             itl_g_minibuffer_path_count = 0;
+ITL_DEF ITL_THREAD_LOCAL char              *itl_g_emacs_last_path       = NULL;
+ITL_DEF ITL_THREAD_LOCAL int                itl_g_emacs_last_command    = -1;
 
 /* The host option callback, or NULL. */
 ITL_DEF ITL_THREAD_LOCAL tl_option_fn itl_g_option_callback = NULL;
@@ -6007,7 +6101,7 @@ ITL_DEF ITL_THREAD_LOCAL tl_save_fn itl_g_save_callback = NULL;
 
 /* The saved contents of the edited file, set by tl_set_saved_text, or NULL,
    and a count of the calls that set it. */
-ITL_DEF ITL_THREAD_LOCAL const char *itl_g_saved_text       = NULL;
+ITL_DEF ITL_THREAD_LOCAL const char *itl_g_saved_text        = NULL;
 ITL_DEF ITL_THREAD_LOCAL size_t      itl_g_saved_text_serial = 0;
 
 /* True while a frame draws the line of the previous frame. */
@@ -6070,8 +6164,8 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_confirm_serial = 0;
 /* The M-x commands that are not a key of the editor. */
 typedef enum
 {
-  ITL_EMACS_KILL_KOSH = -1,
-  ITL_EMACS_REPEAT    = -2,
+  ITL_EMACS_KILL_KOSH      = -1,
+  ITL_EMACS_REPEAT         = -2,
   ITL_EMACS_REPLACE_STRING = -3,
   ITL_EMACS_REPLACE_REGEXP = -4,
   ITL_EMACS_SET_OPTION     = -5,
@@ -6081,7 +6175,10 @@ typedef enum
   ITL_EMACS_FORMAT_BUFFER  = -9,
   ITL_EMACS_FILL_PARAGRAPH = -10,
   ITL_EMACS_HELP           = -11,
-  ITL_EMACS_FILL_REGION    = -12
+  ITL_EMACS_FILL_REGION    = -12,
+  ITL_EMACS_GOTO_LINE      = -13,
+  ITL_EMACS_FIND_FILE      = -14,
+  ITL_EMACS_SAVE_AND_QUIT  = -15
 } itl_emacs_action;
 
 /* An M-x command, the key it runs or an itl_emacs_action, and what it does.
@@ -6095,56 +6192,59 @@ typedef struct
 } itl_emacs_command;
 
 static const itl_emacs_command itl_emacs_commands[] = {
-    {"backward-delete-char", TL_KEY_BACKSPACE,
-     "delete the character before the caret"},
-    {"backward-kill-word", TL_KEY_BACKSPACE | TL_MOD_CTRL,
-     "kill the word before the caret"},
-    {"backward-word", TL_KEY_LEFT | TL_MOD_CTRL, "move back one word"},
-    {"beginning-of-history", TL_KEY_HISTORY_BEGINNING,
-     "go to the first history entry"},
-    {"beginning-of-line", TL_KEY_HOME, "move to the start of the row"},
-    {"capitalize-word", TL_KEY_CAPITALIZE_WORD, "capitalize the next word"},
-    {"clear-screen", TL_KEY_CLEAR, "clear the screen"},
-    {"delete-char", TL_KEY_DELETE, "delete the character under the caret"},
+    {"backward-delete-char",    TL_KEY_BACKSPACE,
+     "delete the character before the caret"                                                          },
+    {"backward-kill-word",      TL_KEY_BACKSPACE | TL_MOD_CTRL,
+     "kill the word before the caret"                                                                 },
+    {"backward-word",           TL_KEY_LEFT | TL_MOD_CTRL,      "move back one word"                  },
+    {"beginning-of-history",    TL_KEY_HISTORY_BEGINNING,
+     "go to the first history entry"                                                                  },
+    {"beginning-of-line",       TL_KEY_HOME,                    "move to the start of the row"        },
+    {"capitalize-word",         TL_KEY_CAPITALIZE_WORD,         "capitalize the next word"            },
+    {"clear-screen",            TL_KEY_CLEAR,                   "clear the screen"                    },
+    {"delete-char",             TL_KEY_DELETE,                  "delete the character under the caret"},
     {"delete-horizontal-space", TL_KEY_DELETE_SPACES,
-     "delete the blanks around the caret"},
-    {"downcase-word", TL_KEY_DOWNCASE_WORD, "lowercase the next word"},
-    {"end-of-history", TL_KEY_HISTORY_END, "go to the last history entry"},
-    {"end-of-line", TL_KEY_END, "move to the end of the row"},
-    {"fill-paragraph", ITL_EMACS_FILL_PARAGRAPH,
-     "wrap the paragraph at the wrap width"},
-    {"fill-region", ITL_EMACS_FILL_REGION,
-     "wrap the selected lines, or the paragraph, at the wrap width"},
-    {"format", ITL_EMACS_FORMAT, "format the row"},
-    {"format-buffer", ITL_EMACS_FORMAT_BUFFER, "format the buffer"},
-    {"forward-word", TL_KEY_RIGHT | TL_MOD_CTRL, "move forward one word"},
-    {"get-option", ITL_EMACS_GET_OPTION, "show an option"},
-    {"help", ITL_EMACS_HELP, "list the commands"},
-    {"isearch-backward", TL_KEY_FIND_BACKWARD, "search backward as you type"},
-    {"isearch-forward", TL_KEY_FIND, "search forward as you type"},
-    {"kill-kosh", ITL_EMACS_KILL_KOSH, "leave the shell"},
-    {"kill-line", TL_KEY_KILL_LINE, "kill to the end of the row"},
-    {"kill-word", TL_KEY_DELETE | TL_MOD_CTRL, "kill the next word"},
-    {"repeat", ITL_EMACS_REPEAT, "repeat the last M-x command"},
-    {"replace-regexp", ITL_EMACS_REPLACE_REGEXP,
-     "replace the matches of a regular expression"},
-    {"replace-string", ITL_EMACS_REPLACE_STRING, "replace a string"},
-    {"save-option", ITL_EMACS_SAVE_OPTION, "store the options"},
-    {"scroll-down-command", TL_KEY_PAGE_UP, "show the previous page"},
-    {"scroll-up-command", TL_KEY_PAGE_DOWN, "show the next page"},
-    {"set-option", ITL_EMACS_SET_OPTION, "set an option"},
-    {"transpose-chars", TL_KEY_TRANSPOSE,
-     "swap the two characters around the caret"},
-    {"transpose-words", TL_KEY_TRANSPOSE | TL_MOD_ALT,
-     "swap the two words around the caret"},
-    {"undo", TL_KEY_UNDO, "undo the last change"},
-    {"undo-redo", TL_KEY_REDO, "redo the last undone change"},
-    {"unix-line-discard", TL_KEY_KILL_LINE_BEFORE,
-     "kill from the start of the row to the caret"},
-    {"upcase-word", TL_KEY_UPCASE_WORD, "uppercase the next word"},
-    {"yank", TL_KEY_YANK, "paste the last kill"},
-    {"yank-last-arg", TL_KEY_LAST_ARGUMENT,
-     "insert the last word of the previous command"},
+     "delete the blanks around the caret"                                                             },
+    {"downcase-word",           TL_KEY_DOWNCASE_WORD,           "lowercase the next word"             },
+    {"end-of-history",          TL_KEY_HISTORY_END,             "go to the last history entry"        },
+    {"end-of-line",             TL_KEY_END,                     "move to the end of the row"          },
+    {"fill-paragraph",          ITL_EMACS_FILL_PARAGRAPH,
+     "wrap the paragraph at the wrap width"                                                           },
+    {"fill-region",             ITL_EMACS_FILL_REGION,
+     "wrap the selected lines, or the paragraph, at the wrap width"                                   },
+    {"find-file",               ITL_EMACS_FIND_FILE,            "open a file"                         },
+    {"format",                  ITL_EMACS_FORMAT,               "format the row"                      },
+    {"format-buffer",           ITL_EMACS_FORMAT_BUFFER,        "format the buffer"                   },
+    {"forward-word",            TL_KEY_RIGHT | TL_MOD_CTRL,     "move forward one word"               },
+    {"get-option",              ITL_EMACS_GET_OPTION,           "show an option"                      },
+    {"goto-line",               ITL_EMACS_GOTO_LINE,            "go to a line"                        },
+    {"help",                    ITL_EMACS_HELP,                 "list the commands"                   },
+    {"isearch-backward",        TL_KEY_FIND_BACKWARD,           "search backward as you type"         },
+    {"isearch-forward",         TL_KEY_FIND,                    "search forward as you type"          },
+    {"kill-kosh",               ITL_EMACS_KILL_KOSH,            "leave the shell"                     },
+    {"kill-line",               TL_KEY_KILL_LINE,               "kill to the end of the row"          },
+    {"kill-word",               TL_KEY_DELETE | TL_MOD_CTRL,    "kill the next word"                  },
+    {"repeat",                  ITL_EMACS_REPEAT,               "repeat the last M-x command"         },
+    {"replace-regexp",          ITL_EMACS_REPLACE_REGEXP,
+     "replace the matches of a regular expression"                                                    },
+    {"replace-string",          ITL_EMACS_REPLACE_STRING,       "replace a string"                    },
+    {"save-and-quit",           ITL_EMACS_SAVE_AND_QUIT,        "save the buffer and leave"           },
+    {"save-option",             ITL_EMACS_SAVE_OPTION,          "store the options"                   },
+    {"scroll-down-command",     TL_KEY_PAGE_UP,                 "show the previous page"              },
+    {"scroll-up-command",       TL_KEY_PAGE_DOWN,               "show the next page"                  },
+    {"set-option",              ITL_EMACS_SET_OPTION,           "set an option"                       },
+    {"transpose-chars",         TL_KEY_TRANSPOSE,
+     "swap the two characters around the caret"                                                       },
+    {"transpose-words",         TL_KEY_TRANSPOSE | TL_MOD_ALT,
+     "swap the two words around the caret"                                                            },
+    {"undo",                    TL_KEY_UNDO,                    "undo the last change"                },
+    {"undo-redo",               TL_KEY_REDO,                    "redo the last undone change"         },
+    {"unix-line-discard",       TL_KEY_KILL_LINE_BEFORE,
+     "kill from the start of the row to the caret"                                                    },
+    {"upcase-word",             TL_KEY_UPCASE_WORD,             "uppercase the next word"             },
+    {"yank",                    TL_KEY_YANK,                    "paste the last kill"                 },
+    {"yank-last-arg",           TL_KEY_LAST_ARGUMENT,
+     "insert the last word of the previous command"                                                   },
 };
 
 ITL_DEF ITL_THREAD_LOCAL itl_prefix_kind itl_g_prefix_kind = ITL_PREFIX_NONE;
@@ -6164,11 +6264,11 @@ itl_le_prepare_full_frame(void)
 }
 
 #if !defined NDEBUG
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_append_refresh_count     = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_full_refresh_count       = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_metrics_scan_count       = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_history_candidate_count  = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_search_highlight_count   = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_append_refresh_count    = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_full_refresh_count      = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_metrics_scan_count      = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_history_candidate_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_search_highlight_count  = 0;
 #endif
 
 /* The ghost suggestion drawn dimmed after the cursor, and its byte length.
@@ -6509,8 +6609,8 @@ itl_le_collect_highlight(const char        *render,
 {
   tl_highlight hl;
 
-  hl.spans    = destination;
-  hl.count    = 0;
+  hl.spans         = destination;
+  hl.count         = 0;
   hl.capacity      = ITL_HIGHLIGHT_MAX_SPANS;
   hl.cursor        = itl_g_le_is_submitting ? TL_HIGHLIGHT_NO_CURSOR : cursor;
   hl.visible_start = itl_g_highlight_visible_start;
@@ -6781,10 +6881,10 @@ itl_le_serialize_line(itl_le_t *le)
 #define ITL_ROW_CACHE_MAX_ROWS 512
 ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_row_cache = ITL_ZERO_INIT;
 ITL_DEF ITL_EDITOR_BUFFER size_t itl_g_row_cache_ends[ITL_ROW_CACHE_MAX_ROWS];
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_row_cache_count       = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_row_cache_tty_rows    = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_row_cache_tty_cols    = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_row_cache_flush_count = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t  itl_g_row_cache_count       = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t  itl_g_row_cache_tty_rows    = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t  itl_g_row_cache_tty_cols    = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t  itl_g_row_cache_flush_count = 0;
 
 ITL_DEF void
 itl_le_invalidate_prev_frame(void)
@@ -6945,7 +7045,7 @@ ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_row_index_text  = ITL_ZERO_INIT;
 ITL_DEF ITL_THREAD_LOCAL itl_char_buf_t itl_g_row_index_lines = ITL_ZERO_INIT;
 ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_line_count = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_geometry[4];
-ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_end_row = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t         itl_g_row_index_end_row  = 0;
 ITL_DEF ITL_THREAD_LOCAL bool           itl_g_row_index_is_valid = false;
 /* True while a frame is drawn or a vertical motion reads the line, which
    leaves the line as the last frame drew it. */
@@ -7025,14 +7125,13 @@ itl_le_row_index(const itl_le_t *le,
   }
 
   if (itl_g_row_index_line_count > 0) {
-    const size_t *lines = (const size_t *) (const void *)
-                              itl_g_row_index_lines.data;
-    size_t        kept  = itl_row_index_find(lines, 0,
-                                             same_size / sizeof(itl_utf8_t));
+    const size_t *lines =
+        (const size_t *) (const void *) itl_g_row_index_lines.data;
+    size_t kept = itl_row_index_find(lines, 0, same_size / sizeof(itl_utf8_t));
 
-    i   = lines[2 * kept];
-    row = lines[2 * kept + 1];
-    col = kept == 0 ? first_col : indent;
+    i                          = lines[2 * kept];
+    row                        = lines[2 * kept + 1];
+    col                        = kept == 0 ? first_col : indent;
     itl_g_row_index_line_count = kept;
   }
 
@@ -7265,8 +7364,8 @@ itl_le_index_at_visual(const itl_le_t *le,
   /* The rows count from prompt_rows the way itl_le_compute_metrics counts them,
      so a target row from those metrics lands on the same input row under a
      multi-row prompt. */
-  size_t row = le->prompt_rows;
-  size_t col = itl_le_prompt_indent(le, cols);
+  size_t row        = le->prompt_rows;
+  size_t col        = itl_le_prompt_indent(le, cols);
   size_t best_index = 0;
   bool   has_best   = false;
   /* Only the line that reaches target_row is walked by character. */
@@ -7368,8 +7467,8 @@ itl_le_line_start_at_index(const itl_le_t *le, size_t line_index)
 ITL_DEF size_t
 itl_le_line_start_clamped(const itl_le_t *le, size_t line_number)
 {
-  size_t p = itl_le_line_start_at_index(le, line_number > 0 ? line_number - 1
-                                                            : 0);
+  size_t p =
+      itl_le_line_start_at_index(le, line_number > 0 ? line_number - 1 : 0);
 
   while (p > 0 && !ITL_LE_IS_NEWLINE(le->line->chars[p - 1])) {
     p -= 1;
@@ -7493,8 +7592,8 @@ itl_le_tty_view_break(itl_char_buf_t *b,
   size_t next = *row + 1;
 
   if (next > view_top && next < view_end) {
-    return itl_le_tty_break_row(b, is_span_open, should_suppress_pad,
-                                open_sgr, indent, row);
+    return itl_le_tty_break_row(b, is_span_open, should_suppress_pad, open_sgr,
+                                indent, row);
   }
 
   /* The first row of the window draws the break without its line feed: the
@@ -7608,9 +7707,9 @@ itl_option_list_rows(char       *out,
   }
   for (line = list; *line != '\0';) {
     const char *line_end = strchr(line, '\n');
-    size_t      length   = line_end != NULL ? (size_t) (line_end - line)
-                                            : strlen(line);
-    char        name[128];
+    size_t      length =
+        line_end != NULL ? (size_t) (line_end - line) : strlen(line);
+    char name[128];
 
     if (length > 0 && length < sizeof(name)) {
       memcpy(name, line, length);
@@ -7734,10 +7833,10 @@ itl_emacs_command_hint(char *out, size_t out_size, size_t *out_length)
 
 /* The colon commands as :help lists them. */
 static const char *const itl_vi_ex_command_names[] = {
-    "w",   "write", "q",    "q!",     "quit", "wq",   "wq!", "wqa",
-    "wqa!", "x",    "s",    "%s",     "&",    "&&",   "u",   "undo",
-    "red", "redo",  "e",    "edit",   "set",  "save", "format",
-    "%format", "N", "$",    "h",      "help",
+    "w",    "write",  "q",       "q!",   "quit", "wq",   "wq!",
+    "wqa",  "wqa!",   "x",       "s",    "%s",   "&",    "&&",
+    "u",    "undo",   "red",     "redo", "e",    "edit", "set",
+    "save", "format", "%format", "N",    "$",    "h",    "help",
 };
 
 /* Write the hint of the open prefix into out, or return false when no key
@@ -7811,6 +7910,15 @@ itl_prefix_hint(char *out, size_t out_size)
   }
   if (itl_g_prefix_kind == ITL_PREFIX_MINIBUFFER) {
     itl_prefix_append(out, out_size, &out_length, itl_g_minibuffer_hint);
+    if (itl_g_minibuffer_completes_paths) {
+      size_t index;
+      size_t row_columns = 0;
+
+      for (index = 0; index < itl_g_minibuffer_path_count; ++index) {
+        itl_list_append_name(out, out_size, &out_length,
+                             itl_g_minibuffer_paths[index], &row_columns);
+      }
+    }
     if (itl_g_minibuffer_completes_options) {
       (void) itl_option_list_rows(out, out_size, &out_length,
                                   itl_g_minibuffer_text);
@@ -8056,8 +8164,8 @@ itl_hint_layout(size_t cols, size_t row_budget)
     }
 
     if (line_count > body_rows && marked_line > body_rows / 2) {
-      size_t skip = ITL_MIN(marked_line - body_rows / 2,
-                            line_count - body_rows);
+      size_t skip =
+          ITL_MIN(marked_line - body_rows / 2, line_count - body_rows);
 
       for (i = 0; i < body_len && skip > 0; ++i) {
         if (body[i] == '\n') {
@@ -8073,8 +8181,7 @@ itl_hint_layout(size_t cols, size_t row_budget)
      with its leading blanks kept, so the host can align columns. */
   while (is_split && body_len > 0 && body_rows > 0) {
     const char *line_end = (const char *) memchr(body, '\n', body_len);
-    size_t      line_len = line_end != NULL ? (size_t) (line_end - body)
-                                            : body_len;
+    size_t line_len = line_end != NULL ? (size_t) (line_end - body) : body_len;
 
     itl_hint_append_cut_row(body, line_len, text_room);
     body_rows -= 1;
@@ -8258,8 +8365,7 @@ itl_full_screen_rows(char        *out,
     } else {
       line_size = strlen(line);
       while ((found = (const char *) memchr(
-                  found, '\n', line_size - (size_t) (found - line)))
-             != NULL)
+                  found, '\n', line_size - (size_t) (found - line))) != NULL)
       {
         size_t position = (size_t) (found - line);
 
@@ -8491,13 +8597,11 @@ itl_le_tty_draw_hint(itl_char_buf_t *b, size_t row_budget)
       const char *shown_end   = NULL;
       size_t      shown_count = 0;
 
-      if (row < itl_g_hint_shown_rows && shown_offset <= itl_g_hint_shown_len)
-      {
-        shown_end   = (const char *) memchr(
-            shown, '\n', itl_g_hint_shown_len - shown_offset);
-        shown_count = shown_end != NULL
-                          ? (size_t) (shown_end - shown)
-                          : itl_g_hint_shown_len - shown_offset;
+      if (row < itl_g_hint_shown_rows && shown_offset <= itl_g_hint_shown_len) {
+        shown_end   = (const char *) memchr(shown, '\n',
+                                            itl_g_hint_shown_len - shown_offset);
+        shown_count = shown_end != NULL ? (size_t) (shown_end - shown)
+                                        : itl_g_hint_shown_len - shown_offset;
         shown_offset += shown_count + 1;
       }
 
@@ -8577,12 +8681,11 @@ itl_le_tty_draw_right_prompt(itl_char_buf_t *b, size_t start_col)
 ITL_DEF void
 itl_le_tty_draw_title(itl_char_buf_t *b, size_t cols)
 {
-  size_t title_rows = 0;
-  size_t title_width =
-      itl_prompt_last_row_width(itl_g_title, &title_rows);
+  size_t title_rows  = 0;
+  size_t title_width = itl_prompt_last_row_width(itl_g_title, &title_rows);
   size_t rendered_width;
-  size_t cut = itl_prompt_render_cut(itl_g_title, title_width, cols,
-                                     &rendered_width);
+  size_t cut =
+      itl_prompt_render_cut(itl_g_title, title_width, cols, &rendered_width);
 
   itl_char_buf_append_cstr(b, "\x1b[1;1H");
   if (cut == 0) {
@@ -8724,8 +8827,8 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
                                size_t          tty_rows,
                                size_t          tty_cols)
 {
-  size_t          hint_start = b->size;
-  bool            is_applied = false;
+  size_t            hint_start    = b->size;
+  bool              is_applied    = false;
   static const char TITLE_START[] = "\x1b[1;1H";
   static const char TITLE_END[]   = "\x1b[2;1H";
 
@@ -8733,7 +8836,7 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
   itl_char_buf_t *state = itl_char_buf_alloc();
   size_t          ends[ITL_ROW_CACHE_MAX_ROWS];
   size_t          row_count = 0, first_row = 1, position = rows_start, i;
-  bool            is_valid  = true;
+  bool            is_valid = true;
 
   /* The title row is drawn by absolute moves, and the window rows after it
      start on the second screen row. */
@@ -8758,8 +8861,8 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
       itl_char_buf_append_bytes(rows, title, title_size);
       itl_sgr_state_fold(state, title, title_size);
       ends[row_count++] = rows->size;
-      position = (size_t) (title - b->data) + title_size + sizeof(TITLE_END) -
-                 1;
+      position =
+          (size_t) (title - b->data) + title_size + sizeof(TITLE_END) - 1;
     }
   } else {
     first_row = 1 + itl_full_screen_title_rows();
@@ -8769,10 +8872,9 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
     const char *start = b->data + position;
     const char *line_feed =
         (const char *) memchr(start, '\n', hint_start - position);
-    size_t size = line_feed != NULL ? (size_t) (line_feed - start)
-                                    : hint_start - position;
-    size_t content_size =
-        size > 0 && start[size - 1] == '\r' ? size - 1 : size;
+    size_t size         = line_feed != NULL ? (size_t) (line_feed - start)
+                                            : hint_start - position;
+    size_t content_size = size > 0 && start[size - 1] == '\r' ? size - 1 : size;
 
     itl_char_buf_append_bytes(rows, state->data, state->size);
     itl_char_buf_append_bytes(rows, start, content_size);
@@ -8793,17 +8895,16 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
       itl_g_row_cache_tty_cols == tty_cols &&
       itl_g_row_cache_flush_count == itl_g_flush_count)
   {
-    itl_char_buf_t *out          = itl_char_buf_alloc();
-    itl_char_buf_t *kept_state   = itl_char_buf_alloc();
-    size_t          kept         = 0;
-    size_t          last_row     = first_row + row_count - 1;
-    size_t          window_first = first_row == 1 && row_count > 1 &&
-                                           itl_full_screen_title_rows() > 0
-                                       ? 1
-                                       : 0;
-    size_t          changed_count = 0, best_changed_count, best_shift = 0;
-    bool            is_shift_up   = true;
-    size_t          shift;
+    itl_char_buf_t *out        = itl_char_buf_alloc();
+    itl_char_buf_t *kept_state = itl_char_buf_alloc();
+    size_t          kept       = 0;
+    size_t          last_row   = first_row + row_count - 1;
+    size_t          window_first =
+        first_row == 1 && row_count > 1 && itl_full_screen_title_rows() > 0 ? 1
+                                                                                     : 0;
+    size_t changed_count = 0, best_changed_count, best_shift = 0;
+    bool   is_shift_up = true;
+    size_t shift;
 
     itl_char_buf_append_bytes(out, b->data, clear_start);
 
@@ -8862,20 +8963,23 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
                                                   : first_row + window_first);
       itl_char_buf_append_cstr(out, ";1H");
       for (shift = 0; shift < best_shift; ++shift) {
-        itl_char_buf_append_cstr(out, is_shift_up ? "\x1b" "D" : "\x1b" "M");
+        itl_char_buf_append_cstr(out, is_shift_up ? "\x1b"
+                                                    "D"
+                                                  : "\x1b"
+                                                    "M");
       }
       itl_char_buf_append_cstr(out, "\x1b[r");
     }
 
     for (i = 0; i < row_count; ++i) {
-      size_t start = i == 0 ? 0 : ends[i - 1];
-      size_t size  = ends[i] - start;
+      size_t start     = i == 0 ? 0 : ends[i - 1];
+      size_t size      = ends[i] - start;
       size_t old_index = i;
 
       if (best_shift > 0 && i >= window_first) {
-        old_index = is_shift_up                       ? i + best_shift
+        old_index = is_shift_up                      ? i + best_shift
                     : i >= window_first + best_shift ? i - best_shift
-                                                      : (size_t) -1;
+                                                     : (size_t) -1;
       }
       if (itl_row_cache_matches(rows, ends, i, old_index)) {
         continue;
@@ -8884,9 +8988,8 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
       /* A row still holding its previous version keeps the cells up to its
          first change, and the rest of the row is cleared and drawn. */
       if (old_index < itl_g_row_cache_count) {
-        size_t old_start = old_index == 0
-                               ? 0
-                               : itl_g_row_cache_ends[old_index - 1];
+        size_t old_start =
+            old_index == 0 ? 0 : itl_g_row_cache_ends[old_index - 1];
         size_t column;
 
         kept = itl_row_common_prefix(
@@ -8959,9 +9062,8 @@ itl_footer_rows_wanted(size_t cols)
   }
   while (body_len > 0 && rows < ITL_FOOTER_ROWS_MAX) {
     const char *line_end = (const char *) memchr(body, '\n', body_len);
-    size_t      line_len = line_end != NULL ? (size_t) (line_end - body)
-                                            : body_len;
-    size_t      width    = itl_visible_width(body, line_len);
+    size_t line_len = line_end != NULL ? (size_t) (line_end - body) : body_len;
+    size_t width    = itl_visible_width(body, line_len);
 
     rows += width == 0 ? 1 : (width + room - 1) / room;
     if (line_end == NULL) {
@@ -9083,8 +9185,8 @@ itl_le_tty_refresh_frame(itl_le_t *le)
 
   /* A block taller than the terminal shows a window of rows that keeps the
      caret in view, and every frame of it is a full redraw of that window. */
-  bool   was_view_active = itl_g_view_is_active;
-  bool   is_view_active  = false;
+  bool was_view_active = itl_g_view_is_active;
+  bool is_view_active  = false;
   /* A window frame where only the caret moved inside the same window keeps the
      rows on screen and redraws only the rows under it that changed. A
      selection, a search, a command line, or several carets color rows by the
@@ -9095,10 +9197,10 @@ itl_le_tty_refresh_frame(itl_le_t *le)
       !itl_g_emacs_selection_active && !itl_g_is_finding &&
       itl_g_minibuffer_label == NULL &&
       itl_g_edit_mode != TL_EDIT_MODE_VI_VISUAL;
-  bool should_draw_hint_only = false;
-  size_t view_rows       = itl_le_view_rows(tty_rows);
-  size_t view_top        = 0;
-  size_t view_end        = (size_t) -1;
+  bool   should_draw_hint_only = false;
+  size_t view_rows             = itl_le_view_rows(tty_rows);
+  size_t view_top              = 0;
+  size_t view_end              = (size_t) -1;
   if (itl_le_may_exceed_view(le, cols, view_rows)) {
 #if !defined NDEBUG
     itl_g_debug_metrics_scan_count += 1;
@@ -9211,7 +9313,7 @@ itl_le_tty_refresh_frame(itl_le_t *le)
     /* The window check above already measured the block. */
   } else if (itl_g_tty_plain_append_pending && !is_resize &&
              !itl_g_tty_first_render && itl_g_le_prev_cursor_at_end &&
-      itl_g_le_prev_cursor_col + itl_g_tty_plain_append_width < cols)
+             itl_g_le_prev_cursor_col + itl_g_tty_plain_append_width < cols)
   {
     m.total_rows     = itl_g_le_prev_total_rows;
     m.cursor_row     = itl_g_le_prev_cursor_row - 1;
@@ -9255,8 +9357,8 @@ itl_le_tty_refresh_frame(itl_le_t *le)
     if (itl_g_search_spans_active &&
         (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
          itl_g_multicursor_active || itl_g_emacs_selection_active ||
-         itl_g_minibuffer_row_start > 0 ||
-         itl_g_minibuffer_label != NULL || itl_g_is_finding) &&
+         itl_g_minibuffer_row_start > 0 || itl_g_minibuffer_label != NULL ||
+         itl_g_is_finding) &&
         have_cur_render && itl_should_run_highlight())
     {
       size_t syntax_count = itl_le_collect_highlight(
@@ -9409,9 +9511,9 @@ itl_le_tty_refresh_frame(itl_le_t *le)
       ITL_TTY_MOVE_TO_COLUMN(b, 1);
       ITL_TTY_CLEAR_BELOW(b);
     } else {
-      row_clear_start      = b->size;
-      row_saved_hint_len   = itl_g_hint_shown_len;
-      row_saved_hint_rows  = itl_g_hint_shown_rows;
+      row_clear_start     = b->size;
+      row_saved_hint_len  = itl_g_hint_shown_len;
+      row_saved_hint_rows = itl_g_hint_shown_rows;
       /* Park at the top-left of the previous render. */
       itl_le_tty_move_to_block_top(b);
 
@@ -9517,10 +9619,9 @@ itl_le_tty_refresh_frame(itl_le_t *le)
     }
 
     for (; i < le->line->length; ++i) {
-      itl_utf8_t      ch  = le->line->chars[i];
-      itl_char_buf_t *out = row >= view_top && row < view_end
-                                ? b
-                                : &itl_g_view_discard;
+      itl_utf8_t      ch = le->line->chars[i];
+      itl_char_buf_t *out =
+          row >= view_top && row < view_end ? b : &itl_g_view_discard;
 
       /* A row outside the window draws nothing. Once the metrics are known,
          the rows below the window are not walked at all, and a row above it
@@ -9648,8 +9749,8 @@ itl_le_tty_refresh_frame(itl_le_t *le)
         }
 
         if (i >= trailing_start && ch.size == 1 && ch.bytes[0] == ' ') {
-          itl_char_buf_append_cstr(
-              out, itl_color_sequence(ITL_SHADED_BLANK_SGR));
+          itl_char_buf_append_cstr(out,
+                                   itl_color_sequence(ITL_SHADED_BLANK_SGR));
           itl_char_buf_append_byte(out, ' ');
           itl_char_buf_append_cstr(
               out, itl_color_sequence(ITL_DEFAULT_BACKGROUND_SGR));
@@ -9909,6 +10010,22 @@ tl_set_history_select_callback(tl_history_select_fn callback)
 
 /* The host edit callback for Ctrl-X Ctrl-E, or NULL when the key does
    nothing. */
+ITL_DEF ITL_THREAD_LOCAL tl_open_file_fn     itl_g_open_file_callback = NULL;
+ITL_DEF ITL_THREAD_LOCAL tl_path_complete_fn itl_g_path_complete_callback =
+    NULL;
+
+TL_DEF void
+tl_set_open_file_callback(tl_open_file_fn callback)
+{
+  itl_g_open_file_callback = callback;
+}
+
+TL_DEF void
+tl_set_path_complete_callback(tl_path_complete_fn callback)
+{
+  itl_g_path_complete_callback = callback;
+}
+
 ITL_DEF ITL_THREAD_LOCAL tl_edit_fn itl_g_edit_callback = NULL;
 
 TL_DEF void
@@ -10713,8 +10830,8 @@ itl_ghost_fill_from_token_text(itl_le_t   *le,
                                const char *text)
 {
   size_t typed_len;
-  size_t skip_offset       = 0;
-  size_t skipped           = 0;
+  size_t skip_offset = 0;
+  size_t skipped     = 0;
   size_t suffix_len;
   size_t token_start_bytes = 0;
   size_t cp;
@@ -11419,8 +11536,8 @@ itl_menu_measure(size_t tty_rows, size_t help_rows)
     size_t below = itl_g_le_prev_total_rows > itl_g_le_prev_cursor_row
                        ? itl_g_le_prev_total_rows - itl_g_le_prev_cursor_row
                        : 0;
-    size_t above = itl_g_le_prev_cursor_row > 0 ? itl_g_le_prev_cursor_row - 1
-                                                : 0;
+    size_t above =
+        itl_g_le_prev_cursor_row > 0 ? itl_g_le_prev_cursor_row - 1 : 0;
 
     itl_g_menu_is_above = below < 6 && above > below;
     available           = itl_g_menu_is_above ? above : below;
@@ -12242,10 +12359,9 @@ itl_menu_draw(const tl_completion *result,
   box_cols += itl_g_menu_prefix_width + 2;
   /* Every row is at least as wide as the title row. */
   if (layout.has_help_row && help_title != NULL) {
-    box_cols = ITL_MAX(box_cols,
-                       itl_g_menu_prefix_width +
-                           itl_visible_width(help_title, strlen(help_title)) +
-                           2);
+    box_cols = ITL_MAX(
+        box_cols, itl_g_menu_prefix_width +
+                      itl_visible_width(help_title, strlen(help_title)) + 2);
   }
 
   /* A full-screen menu covers the input, so the input is drawn again first,
@@ -12254,9 +12370,9 @@ itl_menu_draw(const tl_completion *result,
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(&itl_g_le);
     if (layout.has_help_row && help_title != NULL) {
-      overlay_rows = itl_menu_layout_help(NULL, help_title, help_keys,
-                                          text_width, anchor,
-                                          layout.help_row_count);
+      overlay_rows =
+          itl_menu_layout_help(NULL, help_title, help_keys, text_width, anchor,
+                               layout.help_row_count);
     }
     overlay_rows += result->count == 0 ? 1 : 0;
     overlay_rows += window_end - window_start + 1;
@@ -12645,6 +12761,7 @@ typedef struct itl_menu_source
   bool               should_anchor_to_token;
   bool               should_keep_best_tier;
   bool               should_stay_open;
+  bool               should_regather_on_edit;
 } itl_menu_source;
 
 /* The keys the menu of source lists beside its title in the current layout. */
@@ -12701,9 +12818,9 @@ itl_loading_frame_draw(itl_le_t *le)
           ? 0
           : itl_menu_anchor_column_of(le, itl_le_shell_word_start(le));
   itl_g_menu_prefix_width = itl_menu_prefix_width_for(le);
-  layout = itl_menu_measure_for(&loading, tty_rows, 0, ITL_MENU_LOADING_TEXT,
-                                source->help_title,
-                                itl_menu_help_keys_of(source));
+  layout =
+      itl_menu_measure_for(&loading, tty_rows, 0, ITL_MENU_LOADING_TEXT,
+                           source->help_title, itl_menu_help_keys_of(source));
   itl_menu_draw(&loading, 0, 0, layout, source->help_title,
                 itl_menu_help_keys_of(source), source->should_highlight, 0,
                 ITL_MENU_LOADING_TEXT);
@@ -12847,24 +12964,6 @@ itl_menu_regather(itl_le_t *le, tl_completion *result)
   return true;
 }
 
-/* The history rows the selector may list, and the pool that holds their bytes
-   back to back. One static block keeps a gather free of allocation, and both
-   ceilings bound what a long history can put on screen. */
-#define ITL_HISTORY_MENU_MAX_ENTRIES 128
-#define ITL_HISTORY_MENU_POOL_SIZE   16384
-
-ITL_DEF ITL_EDITOR_BUFFER char
-    itl_g_history_menu_pool[ITL_HISTORY_MENU_POOL_SIZE];
-ITL_DEF ITL_THREAD_LOCAL const char
-    *itl_g_history_menu_entries[ITL_HISTORY_MENU_MAX_ENTRIES];
-
-/* The same rows in the order the menu lists them, and the rank each row was
-   found with. The scan runs newest first and the order is settled after it. */
-ITL_DEF ITL_THREAD_LOCAL const char
-    *itl_g_history_menu_ordered[ITL_HISTORY_MENU_MAX_ENTRIES];
-ITL_DEF ITL_THREAD_LOCAL unsigned char
-    itl_g_history_menu_ranks[ITL_HISTORY_MENU_MAX_ENTRIES];
-
 /* True when needle appears in haystack at or after start, comparing ASCII
    letters without case. An empty needle matches every entry. */
 ITL_DEF bool
@@ -12947,109 +13046,217 @@ itl_menu_match_rank(const char *entry,
   return ITL_MENU_RANK_NONE;
 }
 
-/* Fill the menu candidates with the history entries the line matches, best
-   match first and newest first inside each group. The line is the search
-   query. The whole of it is replaced when a row is accepted. An entry already
-   gathered is dropped. A command run many times takes one row. */
+ITL_DEF bool
+itl_history_query_text(const itl_le_t *le,
+                       char           *out,
+                       size_t          capacity,
+                       size_t         *out_size)
+{
+  size_t start = itl_le_line_start_of(le, le->cursor_position);
+  size_t end   = itl_le_line_end_of(le, le->cursor_position);
+  size_t size  = 0;
+  size_t index;
+
+  *out_size = 0;
+  if (capacity == 0) return false;
+  out[0] = '\0';
+
+  for (index = start; index < end; ++index) {
+    size_t byte_count = le->line->chars[index].size;
+
+    if (byte_count >= capacity - size) return false;
+    memcpy(out + size, le->line->chars[index].bytes, byte_count);
+    size += byte_count;
+  }
+
+  out[size] = '\0';
+  *out_size = size;
+
+  return true;
+}
+
+ITL_DEF int
+itl_history_compare_text(const void *left, const void *right)
+{
+  const itl_history_corpus_entry *a = (const itl_history_corpus_entry *) left;
+  const itl_history_corpus_entry *b = (const itl_history_corpus_entry *) right;
+  int                             order = strcmp(a->text, b->text);
+
+  if (order != 0) return order;
+
+  return a->index > b->index ? -1 : a->index < b->index ? 1 : 0;
+}
+
+ITL_DEF int
+itl_history_compare_newest(const void *left, const void *right)
+{
+  const itl_history_corpus_entry *a = (const itl_history_corpus_entry *) left;
+  const itl_history_corpus_entry *b = (const itl_history_corpus_entry *) right;
+
+  return a->index > b->index ? -1 : a->index < b->index ? 1 : 0;
+}
+
+ITL_DEF bool
+itl_history_corpus_build(void)
+{
+  itl_history_corpus *corpus        = &itl_g_history_corpus;
+  size_t              history_count = itl_history_search_count();
+  size_t              byte_count    = 0;
+  size_t              byte_capacity = 0;
+  size_t              index;
+  size_t              unique_count = 0;
+  char                decoded[ITL_STRING_MAX_LEN + 1];
+
+  if (corpus->is_ready) return true;
+  if (!itl_history_search_prepare()) return false;
+  if (history_count == 0) {
+    corpus->is_ready = true;
+
+    return true;
+  }
+  if (history_count > SIZE_MAX / sizeof(*corpus->entries) ||
+      history_count > SIZE_MAX / sizeof(*corpus->ordered))
+  {
+    return false;
+  }
+
+  corpus->entries = (itl_history_corpus_entry *) itl_malloc(
+      history_count * sizeof(*corpus->entries));
+  corpus->ordered =
+      (const char **) itl_malloc(history_count * sizeof(*corpus->ordered));
+
+  for (index = 0; index < history_count; ++index) {
+    size_t                    length;
+    itl_history_corpus_entry *entry;
+
+    if (!itl_history_search_decode_entry(
+            itl_history_search_index_to_offset(index), decoded, sizeof(decoded),
+            &length) ||
+        length == 0)
+    {
+      continue;
+    }
+    if (length >= SIZE_MAX - byte_count) goto failed;
+    if (length + 1 > byte_capacity - byte_count) {
+      size_t required = byte_count + length + 1;
+      size_t capacity = byte_capacity == 0 ? 16384 : byte_capacity;
+
+      while (capacity < required) {
+        if (capacity > SIZE_MAX / 2) {
+          capacity = required;
+          break;
+        }
+        capacity *= 2;
+      }
+      corpus->bytes = (char *) itl_realloc(corpus->bytes, capacity);
+      byte_capacity = capacity;
+    }
+
+    memcpy(corpus->bytes + byte_count, decoded, length + 1);
+    entry         = &corpus->entries[corpus->count++];
+    entry->offset = byte_count;
+    entry->length = length;
+    entry->index  = index;
+    entry->rank   = ITL_MENU_RANK_NONE;
+    byte_count += length + 1;
+  }
+
+  for (index = 0; index < corpus->count; ++index) {
+    corpus->entries[index].text = corpus->bytes + corpus->entries[index].offset;
+  }
+
+  qsort(corpus->entries, corpus->count, sizeof(*corpus->entries),
+        itl_history_compare_text);
+
+  for (index = 0; index < corpus->count; ++index) {
+    if (unique_count == 0 || strcmp(corpus->entries[unique_count - 1].text,
+                                    corpus->entries[index].text) != 0)
+    {
+      corpus->entries[unique_count++] = corpus->entries[index];
+    }
+  }
+
+  corpus->count = unique_count;
+  qsort(corpus->entries, corpus->count, sizeof(*corpus->entries),
+        itl_history_compare_newest);
+  corpus->is_ready = true;
+
+  return true;
+
+failed:
+  if (corpus->bytes != NULL) ITL_FREE(corpus->bytes);
+  ITL_FREE(corpus->entries);
+  ITL_FREE(corpus->ordered);
+  memset(corpus, 0, sizeof(*corpus));
+
+  return false;
+}
+
 ITL_DEF bool
 itl_history_menu_gather(itl_le_t *le, tl_completion *result)
 {
-  char     query[ITL_STRING_MAX_LEN];
-  char     entry[ITL_STRING_MAX_LEN + 1];
-  size_t   query_len;
-  size_t   pool_used     = 0;
-  size_t   found_count   = 0;
-  size_t   placed_count  = 0;
-  size_t   history_count = itl_history_search_count();
-  size_t   index;
-  unsigned rank;
+  itl_history_corpus *corpus = &itl_g_history_corpus;
+  char               *query;
+  size_t              query_size;
+  size_t              query_end = itl_le_line_end_of(le, le->cursor_position);
+  size_t              counts[ITL_MENU_RANK_NONE] = {0};
+  size_t              positions[ITL_MENU_RANK_NONE];
+  size_t              count = 0;
+  size_t              index;
+  unsigned            rank;
 
-  if (history_count == 0 ||
+  memset(result, 0, sizeof(*result));
+  result->token_start         = 0;
+  result->token_end           = le->line->length;
+  result->is_space_suppressed = true;
+
+  if (itl_history_search_count() == 0 ||
       (!itl_g_history_search_snapshot.is_active && itl_g_history_path == NULL))
   {
     return false;
   }
-  if (itl_string_to_cstr(le->line, query, sizeof(query)) != TL_SUCCESS) {
-    return false;
+  query_size = 0;
+  for (index = itl_le_line_start_of(le, le->cursor_position); index < query_end;
+       ++index)
+  {
+    if (le->line->chars[index].size >= SIZE_MAX - query_size) return false;
+    query_size += le->line->chars[index].size;
   }
-  if (!itl_history_search_prepare()) {
-    return false;
-  }
+  query = (char *) itl_malloc(query_size + 1);
+  if (!itl_history_query_text(le, query, query_size + 1, &query_size) ||
+      !itl_history_corpus_build())
+  {
+    ITL_FREE(query);
 
-  query_len = le->line->size;
-
-  for (index = history_count; index-- > 0;) {
-    size_t   entry_len;
-    size_t   gathered;
-    unsigned entry_rank;
-    bool     is_repeat = false;
-
-    if (found_count >= ITL_HISTORY_MENU_MAX_ENTRIES) {
-      break;
-    }
-
-    if (!itl_history_search_decode_entry(
-            itl_history_search_index_to_offset(index), entry, sizeof(entry),
-            &entry_len))
-    {
-      continue;
-    }
-    if (entry_len == 0) {
-      continue;
-    }
-
-    entry_rank = itl_menu_match_rank(entry, entry_len, query, query_len);
-    if (entry_rank >= ITL_MENU_RANK_NONE) {
-      continue;
-    }
-    if (pool_used + entry_len + 1 > sizeof(itl_g_history_menu_pool)) {
-      break;
-    }
-
-    for (gathered = 0; gathered < found_count; ++gathered) {
-      if (strcmp(itl_g_history_menu_entries[gathered], entry) == 0) {
-        is_repeat = true;
-        break;
-      }
-    }
-
-    if (is_repeat) {
-      continue;
-    }
-
-    memcpy(itl_g_history_menu_pool + pool_used, entry, entry_len + 1);
-    itl_g_history_menu_entries[found_count] =
-        itl_g_history_menu_pool + pool_used;
-    itl_g_history_menu_ranks[found_count] = (unsigned char) entry_rank;
-    pool_used += entry_len + 1;
-    found_count += 1;
-  }
-
-  if (found_count == 0) {
     return false;
   }
 
-  /* The rows the query opens come first, then the ones holding it whole, then
-     the ones whose bytes merely appear in order. Each group keeps the newest
-     first order the scan gave it. */
+  for (index = 0; index < corpus->count; ++index) {
+    itl_history_corpus_entry *entry = &corpus->entries[index];
+
+    entry->rank =
+        itl_menu_match_rank(entry->text, entry->length, query, query_size);
+    if (entry->rank < ITL_MENU_RANK_NONE) counts[entry->rank]++;
+  }
+
+  ITL_FREE(query);
+
   for (rank = 0; rank < ITL_MENU_RANK_NONE; ++rank) {
-    for (index = 0; index < found_count; ++index) {
-      if (itl_g_history_menu_ranks[index] == rank) {
-        itl_g_history_menu_ordered[placed_count] =
-            itl_g_history_menu_entries[index];
-        placed_count += 1;
-      }
-    }
+    positions[rank] = count;
+    count += counts[rank];
   }
 
-  result->candidates            = itl_g_history_menu_ordered;
-  result->count                 = placed_count;
-  result->descriptions          = NULL;
-  result->longest_common_prefix = NULL;
-  result->token_start           = 0;
-  result->token_end             = le->line->length;
+  for (index = 0; index < corpus->count; ++index) {
+    const itl_history_corpus_entry *entry = &corpus->entries[index];
 
-  return true;
+    if (entry->rank < ITL_MENU_RANK_NONE)
+      corpus->ordered[positions[entry->rank]++] = entry->text;
+  }
+
+  result->candidates = count > 0 ? corpus->ordered : NULL;
+  result->count      = count;
+
+  return count > 0;
 }
 
 /* True when name opens with the typed token in either case, so the ghost of
@@ -14040,6 +14247,15 @@ itl_menu_adopt_base(itl_le_t              *le,
   state->is_regather_armed = false;
   itl_menu_index_drop(&itl_g_menu_index);
 
+  if (source->should_regather_on_edit) {
+    state->query[0]   = '\0';
+    state->query_len  = 0;
+    state->base_tier  = ITL_MENU_RANK_PREFIX;
+    itl_g_menu_due_ms = 0;
+
+    return;
+  }
+
   if (!itl_menu_query_text(le, result, state->query, sizeof(state->query),
                            &state->query_len))
   {
@@ -14092,6 +14308,14 @@ itl_menu_rebase(itl_le_t              *le,
                 itl_menu_filter_state *state,
                 tl_completion         *result)
 {
+  if (source->should_regather_on_edit) {
+    bool has_rows = itl_menu_gather_framed(le, source, true, result);
+
+    itl_menu_adopt_base(le, source, state, result);
+
+    return has_rows;
+  }
+
   if (!itl_menu_gather_framed(le, source, true, result)) {
     if (!itl_menu_query_text(le, result, state->query, sizeof(state->query),
                              &state->query_len))
@@ -14134,6 +14358,9 @@ itl_menu_regather_soon(itl_le_t              *le,
                        itl_menu_filter_state *state,
                        tl_completion         *result)
 {
+  if (source->should_regather_on_edit)
+    return itl_menu_rebase(le, source, state, result);
+
   if (itl_menu_cache_answer(le, source, state, result)) {
     return true;
   }
@@ -14190,6 +14417,9 @@ itl_menu_narrow(itl_le_t              *le,
   char   query[ITL_STRING_MAX_LEN];
   size_t query_len = 0;
 
+  if (source->should_regather_on_edit)
+    return itl_menu_rebase(le, source, state, result);
+
   if (state->is_regather_armed) {
     return itl_menu_regather_soon(le, source, state, result);
   }
@@ -14206,8 +14436,7 @@ itl_menu_narrow(itl_le_t              *le,
     {
       return false;
     }
-    if (state->base.count > 0 &&
-        state->base.count <= ITL_MENU_FILTER_SCAN_MAX)
+    if (state->base.count > 0 && state->base.count <= ITL_MENU_FILTER_SCAN_MAX)
     {
       if (itl_menu_filter_base(source, &state->base, state->base_tier, query,
                                query_len, result))
@@ -14345,12 +14574,12 @@ itl_completion_menu_loop(itl_le_t              *le,
             ? itl_menu_anchor_column_of(le, itl_le_shell_word_start(le))
             : itl_menu_anchor_column_of(le, result.token_start);
     itl_g_menu_prefix_width = itl_menu_prefix_width_for(le);
-    name_width = state.name_width;
+    name_width              = state.name_width;
     empty_text =
         state.is_regather_armed ? ITL_MENU_LOADING_TEXT : ITL_MENU_EMPTY_TEXT;
-    layout = itl_menu_measure_for(&result, tty_rows, name_width, empty_text,
-                                  source->help_title,
-                                  itl_menu_help_keys_of(source));
+    layout =
+        itl_menu_measure_for(&result, tty_rows, name_width, empty_text,
+                             source->help_title, itl_menu_help_keys_of(source));
 
     window_start = itl_menu_window_start(result.count, selected, window_start,
                                          layout.candidate_rows);
@@ -14469,8 +14698,7 @@ itl_completion_menu_loop(itl_le_t              *le,
         return TL_SUCCESS;
       }
 
-      if (kind == TL_KEY_TAB && !should_descend &&
-          !result.is_space_suppressed)
+      if (kind == TL_KEY_TAB && !should_descend && !result.is_space_suppressed)
       {
         itl_completion_append_space(le);
       }
@@ -14515,6 +14743,13 @@ itl_completion_menu_loop(itl_le_t              *le,
            itl_menu_byte_moves_token(byte));
 
       itl_le_insert(le, itl_utf8_parse(byte));
+      if (source->should_regather_on_edit) {
+        itl_menu_rebase(le, source, &state, &result);
+        selected     = 0;
+        window_start = 0;
+        previewed    = (size_t) -1;
+        continue;
+      }
       result.token_end += 1;
 
       if ((source->should_regather_new_words &&
@@ -14557,6 +14792,14 @@ itl_completion_menu_loop(itl_le_t              *le,
 
       if (erase_code != TL_SUCCESS) {
         return erase_code;
+      }
+
+      if (source->should_regather_on_edit) {
+        itl_menu_rebase(le, source, &state, &result);
+        selected     = 0;
+        window_start = 0;
+        previewed    = (size_t) -1;
+        continue;
       }
 
       erased_count          = cursor_before - le->cursor_position;
@@ -14719,6 +14962,20 @@ itl_completion_gather_following(itl_le_t              *le,
    the key, false when the host should fall back to the default TAB behavior.
    out_code receives the status the caller must return, which is TL_SUCCESS
    unless the menu re-dispatched a key that terminates the line. */
+ITL_DEF void
+itl_le_flash(itl_le_t *le)
+{
+  if (!itl_term_supports_decorations()) return;
+
+  itl_g_tty_flash_active        = true;
+  itl_g_tty_should_refresh_text = true;
+  itl_le_tty_refresh(le);
+  itl_flash_sleep();
+  itl_g_tty_flash_active        = false;
+  itl_g_tty_should_refresh_text = true;
+  itl_le_tty_refresh(le);
+}
+
 ITL_DEF bool
 itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
 {
@@ -14735,7 +14992,8 @@ itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
       "tab to accept, esc to close, ctrl-g to restore",
       true,
       true,
-      true};
+      true,
+      false};
   char          storage[ITL_STRING_MAX_LEN];
   char         *line_cstr;
   tl_completion result;
@@ -14777,17 +15035,7 @@ itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     if (is_loading_drawn) {
       itl_menu_erase();
     }
-    /* A dumb terminal cannot render the repaint the flash draws. The key is
-       still handled and no flash is attempted. */
-    if (itl_term_supports_decorations()) {
-      itl_g_tty_flash_active        = true;
-      itl_g_tty_should_refresh_text = true;
-      itl_le_tty_refresh(le);
-      itl_flash_sleep();
-      itl_g_tty_flash_active        = false;
-      itl_g_tty_should_refresh_text = true;
-      itl_le_tty_refresh(le);
-    }
+    itl_le_flash(le);
     return true;
   }
 
@@ -14906,7 +15154,8 @@ itl_history_menu(itl_le_t *le)
       "enter or tab to accept, esc or ctrl-g to cancel",
       false,
       false,
-      false};
+      false,
+      true};
 
   tl_completion result;
   char          original_line[ITL_STRING_MAX_LEN];
@@ -15302,11 +15551,11 @@ itl_le_transpose_words(itl_le_t *le)
   itl_string_t *line         = le->line;
   size_t        second_start = itl_le_word_start_from(
       line, itl_le_word_end_from(line, le->cursor_position));
-  size_t      second_end   = itl_le_word_end_from(line, second_start);
-  size_t      first_start  = itl_le_word_start_from(line, second_start);
-  size_t      first_end    = itl_le_word_end_from(line, first_start);
-  size_t      second_length;
-  size_t      gap_end;
+  size_t second_end  = itl_le_word_end_from(line, second_start);
+  size_t first_start = itl_le_word_start_from(line, second_start);
+  size_t first_end   = itl_le_word_end_from(line, first_start);
+  size_t second_length;
+  size_t gap_end;
 
   if (first_start == second_start || second_start < first_end) {
     itl_g_tty_should_refresh_text = false;
@@ -15487,11 +15736,11 @@ itl_le_edit_external(itl_le_t *le)
      editor runs from the main screen and the layout returns afterwards. */
   if (itl_g_full_screen) {
     itl_tty_write_mouse_mode(false);
-    ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[?1049l", 8) != -1, {});
+    ITL_TRY(itl_tty_write("\x1b[?1049l", 8) != -1, {});
   }
   is_edited = itl_g_edit_callback(le->out_buf, &edited) > 0 && edited != NULL;
   if (itl_g_full_screen) {
-    ITL_TRY(ITL_WRITE(ITL_STDOUT, "\x1b[?1049h", 8) != -1, {});
+    ITL_TRY(itl_tty_write("\x1b[?1049h", 8) != -1, {});
     itl_tty_write_mouse_mode(true);
     itl_le_invalidate_prev_frame();
   }
@@ -15636,7 +15885,7 @@ itl_le_change_word_case(itl_le_t *le, itl_case_change change)
 {
   /* As in emacs, the word starts at the first word character after the
      cursor and ends where the word characters do. */
-  size_t end = itl_le_word_end_from(le->line, le->cursor_position);
+  size_t end             = itl_le_word_end_from(le->line, le->cursor_position);
   bool   is_first_letter = true;
   size_t i;
 
@@ -15886,7 +16135,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
     }
     le->cursor_position = itl_le_index_at_visual(le, itl_g_tty_prev_cols,
                                                  target_row, le->goal_column);
-    itl_g_is_line_still           = false;
+    itl_g_is_line_still = false;
     itl_g_tty_should_refresh_text = false;
   } break;
 
@@ -15894,7 +16143,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_DOWN: {
     itl_le_metrics_t m;
     bool             is_up = (esc & TL_MASK_KEY) == TL_KEY_UP;
-    bool was_vertical = itl_key_is_vertical(prev_control & TL_MASK_KEY);
+    bool was_vertical      = itl_key_is_vertical(prev_control & TL_MASK_KEY);
 
     /* Ctrl-Up and Ctrl-Down move by paragraph, as vi { and } do. */
     if ((esc & TL_MOD_CTRL) != 0) {
@@ -16267,10 +16516,8 @@ itl_le_key_handle(itl_le_t *le, int esc)
     }
     break;
 
-  case TL_KEY_UPCASE_WORD: itl_le_change_word_case(le, ITL_CASE_UPPER); break;
-  case TL_KEY_DOWNCASE_WORD:
-    itl_le_change_word_case(le, ITL_CASE_LOWER);
-    break;
+  case TL_KEY_UPCASE_WORD:   itl_le_change_word_case(le, ITL_CASE_UPPER); break;
+  case TL_KEY_DOWNCASE_WORD: itl_le_change_word_case(le, ITL_CASE_LOWER); break;
   case TL_KEY_CAPITALIZE_WORD:
     itl_le_change_word_case(le, ITL_CASE_CAPITAL);
     break;
@@ -16470,6 +16717,9 @@ tl_exit(void)
   ITL_TRY(itl_restore_sigwinch_handler(), return TL_ERROR);
 #endif
 
+  if (itl_g_emacs_last_path != NULL) ITL_FREE(itl_g_emacs_last_path);
+  itl_g_emacs_last_path    = NULL;
+  itl_g_emacs_last_command = -1;
   itl_g_history_free();
   itl_vi_free();
   itl_kill_ring_free();
@@ -16761,8 +17011,10 @@ itl_history_search(itl_le_t *le)
   bool              has_rendered_preview = false;
 
   size_t saved_prompt_width = le->prompt_width;
+  size_t original_cursor    = le->cursor_position;
+  bool   did_replace        = false;
 
-  int  result   = TL_KEY_UNKN;
+  int  result       = TL_KEY_UNKN;
   bool was_accepted = false;
   /* When search starts on the draft, the current line is the user's draft and
      must be saved so a later step past the newest entry can restore it. */
@@ -16778,10 +17030,10 @@ itl_history_search(itl_le_t *le)
 
   /* A draft already typed becomes the initial query, so it moves into the
      search term instead of staying on the prompt line. */
-  if (le->line->length > 0) {
-    itl_string_copy(&query, le->line);
-    query_size =
-        itl_search_query_bytes(&query, query_bytes, sizeof(query_bytes));
+  if (itl_history_query_text(le, query_bytes, sizeof(query_bytes),
+                             &query_size) &&
+      query_size > 0 && itl_string_from_bytes(&query, query_bytes, query_size))
+  {
     match         = itl_history_find_match(query_bytes, query_size,
                                            ITL_HISTORY_NEWEST(), &match_str);
     is_narrowable = true;
@@ -16989,8 +17241,8 @@ itl_history_search(itl_le_t *le)
           /* A shorter query can match entries its longer form rejected, so the
              scan restarts from the newest entry. */
           if (query.length > 0) {
-            match = itl_history_find_match(query_bytes, query_size,
-                                           ITL_HISTORY_NEWEST(), &match_str);
+            match         = itl_history_find_match(query_bytes, query_size,
+                                                   ITL_HISTORY_NEWEST(), &match_str);
             is_narrowable = true;
           } else {
             match         = ITL_HISTORY_NONE;
@@ -17042,12 +17294,13 @@ itl_history_search(itl_le_t *le)
        out_size. */
     if (match_str.size + 1 <= le->out_size) {
       itl_string_copy(le->line, &match_str);
+      did_replace = true;
       le->history_selected_index =
           itl_g_history_search_snapshot.is_active ? ITL_HISTORY_NONE : match;
     }
   }
 
-  le->cursor_position = le->line->length;
+  le->cursor_position = did_replace ? le->line->length : original_cursor;
 
   ITL_FREE(query.chars);
   ITL_FREE(display.chars);
@@ -17103,6 +17356,8 @@ itl_history_select(itl_le_t *le, tl_status_code *out_code)
   result = itl_history_search(le);
 
 done:
+  itl_menu_cache_close();
+  itl_menu_index_free(&itl_g_menu_index);
   itl_history_search_snapshot_end();
   itl_hint_release();
   return result;
@@ -17535,10 +17790,10 @@ itl_le_line_is_blank(const itl_le_t *le, size_t line_start)
 ITL_DEF void
 itl_le_wrap_lines(itl_le_t *le, size_t first, size_t last)
 {
-  itl_char_buf_t *out     = itl_char_buf_alloc();
-  itl_string_t   *changed = itl_string_alloc();
-  size_t          start   = itl_le_line_start_of(le, first);
-  size_t          stop    = itl_le_line_end_of(le, last);
+  itl_char_buf_t *out          = itl_char_buf_alloc();
+  itl_string_t   *changed      = itl_string_alloc();
+  size_t          start        = itl_le_line_start_of(le, first);
+  size_t          stop         = itl_le_line_end_of(le, last);
   size_t          indent_start = 0, indent_end = 0, indent_width = 0;
   size_t          column = 0, written_count = 0, last_row_start = start;
   bool            has_row = false, is_in_paragraph = false;
@@ -17598,8 +17853,7 @@ itl_le_wrap_lines(itl_le_t *le, size_t first, size_t last)
         j += 1;
       }
 
-      if (column == (size_t) -1 || column + 1 + word_width > itl_g_wrap_width)
-      {
+      if (column == (size_t) -1 || column + 1 + word_width > itl_g_wrap_width) {
         if (has_row) {
           itl_char_buf_append_byte(out, '\n');
           written_count += 1;
@@ -17899,8 +18153,8 @@ itl_vi_do_replace(itl_le_t *le, itl_utf8_t ch, size_t count)
 
   /* A wider replacement can grow the line past the output buffer. */
   for (i = 0; i < count; ++i) {
-    new_size = new_size - le->line->chars[le->cursor_position + i].size +
-               ch.size;
+    new_size =
+        new_size - le->line->chars[le->cursor_position + i].size + ch.size;
   }
   if (new_size >= le->out_size) {
     return;
@@ -18072,7 +18326,7 @@ itl_vi_repeat_last_change(itl_le_t *le)
     int  motion_key = itl_g_vi_last_change.motion_key;
     bool is_doubled = (motion_key == 'd' || motion_key == 'c' ||
                        motion_key == 'y' || motion_key == 'q');
-    bool did_apply = false;
+    bool did_apply  = false;
     bool has_insert_text =
         itl_g_vi_last_change.did_enter_insert &&
         itl_g_vi_last_change.inserted_text != NULL &&
@@ -18576,9 +18830,7 @@ itl_emacs_selection_move(itl_le_t *le, int key)
 {
   int kind = key & TL_MASK_KEY;
 
-  if ((kind == TL_KEY_UP || kind == TL_KEY_DOWN) &&
-      (key & TL_MOD_CTRL) == 0)
-  {
+  if ((kind == TL_KEY_UP || kind == TL_KEY_DOWN) && (key & TL_MOD_CTRL) == 0) {
     itl_vi_step_visual_row(le, kind == TL_KEY_UP);
     return;
   }
@@ -18597,8 +18849,8 @@ itl_le_erase_selection(itl_le_t *le, size_t start, size_t end)
 /* The emacs selection of the full-screen layout, from anchor to the caret.
    Shift with a caret move and a drag of the first button grow it. Backspace
    and Delete erase it, Ctrl-W kills it, Alt-W copies it, Alt-Q wraps its
-   lines, and typed text replaces it. Ctrl-G, a bare escape, or a caret move without Shift leaves
-   it, and any other key leaves it and runs. */
+   lines, and typed text replaces it. Ctrl-G, a bare escape, or a caret move
+   without Shift leaves it, and any other key leaves it and runs. */
 ITL_DEF tl_status_code
 itl_emacs_selection_loop(itl_le_t *le, size_t anchor)
 {
@@ -19031,8 +19283,7 @@ typedef struct
 
 /* The last substitution of the colon command line, for & and &&. */
 ITL_DEF ITL_THREAD_LOCAL itl_substitution itl_g_vi_last_substitution;
-ITL_DEF ITL_THREAD_LOCAL bool             itl_g_vi_has_last_substitution =
-    false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_vi_has_last_substitution = false;
 
 /* Finds the first match of substitution in the first length bytes of text,
    which end with a NUL byte. pattern is the compiled regular expression of a
@@ -19140,8 +19391,7 @@ itl_substitution_apply(const itl_le_t         *le,
 #if defined ITL_HAS_REGEX
   regex_t compiled;
 
-  if (substitution->is_regex && regcomp(&compiled, substitution->old_text, 0))
-  {
+  if (substitution->is_regex && regcomp(&compiled, substitution->old_text, 0)) {
     return false;
   }
 #else
@@ -19160,19 +19410,16 @@ itl_substitution_apply(const itl_le_t         *le,
     begin = itl_string_byte_offset(line, itl_g_vi_ex_range_start);
     end   = itl_string_byte_offset(line, itl_g_vi_ex_range_end);
   } else if (!substitution->is_whole) {
-    for (begin = cursor_byte; begin > 0 && text[begin - 1] != '\n'; --begin) {
-    }
-    for (end = cursor_byte; end < line->size && text[end] != '\n'; ++end) {
-    }
+    for (begin = cursor_byte; begin > 0 && text[begin - 1] != '\n'; --begin) {}
+    for (end = cursor_byte; end < line->size && text[end] != '\n'; ++end) {}
   }
 
   itl_char_buf_append_bytes(out, text, begin);
   for (row_start = begin;; row_start = row_end + 1) {
     size_t row_len, position = 0;
 
-    for (row_end = row_start; row_end < end && text[row_end] != '\n';
-         ++row_end) {
-    }
+    for (row_end = row_start; row_end < end && text[row_end] != '\n'; ++row_end)
+    {}
     row_len = row_end - row_start;
     memcpy(row, text + row_start, row_len);
     row[row_len] = '\0';
@@ -19273,15 +19520,13 @@ itl_le_format(itl_le_t *le, bool is_whole, const char *header)
   text = (char *) itl_malloc(le->line->size + 1);
   itl_string_to_cstr(le->line, text, le->line->size + 1);
   cursor_byte = itl_string_byte_offset(le->line, le->cursor_position);
-  end = le->line->size;
+  end         = le->line->size;
   if (itl_g_vi_ex_has_range) {
     begin = itl_string_byte_offset(le->line, itl_g_vi_ex_range_start);
     end   = itl_string_byte_offset(le->line, itl_g_vi_ex_range_end);
   } else if (!is_whole) {
-    for (begin = cursor_byte; begin > 0 && text[begin - 1] != '\n'; --begin) {
-    }
-    for (end = cursor_byte; end < le->line->size && text[end] != '\n'; ++end) {
-    }
+    for (begin = cursor_byte; begin > 0 && text[begin - 1] != '\n'; --begin) {}
+    for (end = cursor_byte; end < le->line->size && text[end] != '\n'; ++end) {}
   }
 
   range = (char *) itl_malloc(end - begin + 1);
@@ -19352,8 +19597,7 @@ itl_vi_ex_parse_substitute(const char *command, itl_substitution *substitution)
   if (*at == '&' || strcmp(at, "s") == 0) {
     bool is_flag_kept = at[0] == '&' && at[1] == '&';
 
-    if (strcmp(at, "&") != 0 && strcmp(at, "&&") != 0 && strcmp(at, "s") != 0)
-    {
+    if (strcmp(at, "&") != 0 && strcmp(at, "&&") != 0 && strcmp(at, "s") != 0) {
       return 0;
     }
     if (!itl_g_vi_has_last_substitution) {
@@ -19446,8 +19690,7 @@ itl_emacs_complete(char *text, size_t text_size)
       common_length = strlen(name);
       continue;
     }
-    for (j = text_length; j < common_length && name[j] == first[j]; ++j) {
-    }
+    for (j = text_length; j < common_length && name[j] == first[j]; ++j) {}
     common_length = j;
   }
   if (first != NULL && common_length < text_size) {
@@ -19642,9 +19885,9 @@ itl_find_step(const itl_string_t *line,
     *text_length = strlen(text);
   }
   if (itl_g_find_has_match && line->length > 0) {
-    from = is_backward ? (itl_g_find_match_start + line->length - 1) %
-                             line->length
-                       : itl_g_find_match_start + 1;
+    from = is_backward
+               ? (itl_g_find_match_start + line->length - 1) % line->length
+               : itl_g_find_match_start + 1;
   }
   itl_g_find_has_match   = false;
   itl_g_find_is_backward = is_backward;
@@ -19676,12 +19919,17 @@ itl_minibuffer_read(itl_le_t       *le,
   itl_string_t *saved_line         = le->line;
   size_t        saved_cursor       = le->cursor_position;
 
-  size_t  text_length  = 0;
-  size_t  label_length = strlen(label);
-  bool    is_accepted  = false;
-  bool    is_done      = false;
-  bool    is_in_rows   = itl_g_full_screen;
-  uint8_t byte;
+  size_t       text_length    = 0;
+  size_t       label_length   = strlen(label);
+  bool         is_accepted    = false;
+  bool         is_done        = false;
+  bool         is_in_rows     = itl_g_full_screen;
+  bool         has_overflowed = false;
+  const char **paths          = NULL;
+  char        *path_bytes     = NULL;
+  size_t       path_count     = 0;
+  size_t       path_index     = 0;
+  uint8_t      byte;
 
   text[0] = '\0';
   itl_string_copy(original, le->line);
@@ -19706,8 +19954,8 @@ itl_minibuffer_read(itl_le_t       *le,
           itl_search_push_span(itl_g_find_match_start, itl_g_find_match_end,
                                ITL_FIND_SGR);
         }
-        le->cursor_position = itl_g_find_has_match ? itl_g_find_match_start
-                                                   : saved_cursor;
+        le->cursor_position =
+            itl_g_find_has_match ? itl_g_find_match_start : saved_cursor;
         itl_g_search_spans_active = itl_g_find_has_match;
       } else {
         /* The caret leaves the buffer for the command line, so a reversed
@@ -19720,14 +19968,14 @@ itl_minibuffer_read(itl_le_t       *le,
       itl_frame_batch_begin();
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
-      itl_char_buf_append_cstr(b, "\x1b" "7\x1b[");
+      itl_char_buf_append_cstr(b, "\x1b"
+                                  "7\x1b[");
       itl_char_buf_append_size_t(b, 1 + itl_full_screen_title_rows() +
                                         itl_le_view_rows(itl_g_tty_prev_rows));
       itl_char_buf_append_byte(b, ';');
-      itl_char_buf_append_size_t(
-          b, 1 + itl_g_hint_indent_width +
-                 itl_visible_width(label, label_length) +
-                 itl_visible_width(text, text_length));
+      itl_char_buf_append_size_t(b, 1 + itl_g_hint_indent_width +
+                                        itl_visible_width(label, label_length) +
+                                        itl_visible_width(text, text_length));
       itl_char_buf_append_byte(b, 'H');
       ITL_CHAR_BUF_DUMP(b);
       ITL_CHAR_BUF_CLEAR(b);
@@ -19735,7 +19983,8 @@ itl_minibuffer_read(itl_le_t       *le,
 
       bool is_read = ITL_READ_BYTE(&byte);
 
-      itl_char_buf_append_cstr(b, "\x1b" "8");
+      itl_char_buf_append_cstr(b, "\x1b"
+                                  "8");
       ITL_CHAR_BUF_DUMP(b);
       ITL_CHAR_BUF_CLEAR(b);
       if (!is_read) {
@@ -19743,31 +19992,49 @@ itl_minibuffer_read(itl_le_t       *le,
       }
     } else {
       ITL_CHAR_BUF_CLEAR(status);
-      /* The display is original plus '\n', the label, and the text, so its
-         length must stay under ITL_STRING_MAX_LEN or itl_string_from_bytes
-         traps. The preview of the original line is clipped to the remaining
-         budget. */
       {
-        size_t budget = ITL_STRING_MAX_LEN - 1 - label_length - text_length;
+        size_t shown_label_length =
+            ITL_MIN(label_length, ITL_STRING_MAX_LEN / 2);
+        size_t shown_text_length =
+            ITL_MIN(text_length, ITL_STRING_MAX_LEN - shown_label_length - 1);
+        size_t text_start = text_length - shown_text_length;
+        size_t budget;
+        size_t row_start;
+        size_t text_start_position;
+
+        while (text_start < text_length &&
+               ((unsigned char) text[text_start] & 0xC0) == 0x80)
+        {
+          ++text_start;
+        }
+        shown_text_length = text_length - text_start;
+        while (shown_label_length > 0 &&
+               ((unsigned char) label[shown_label_length] & 0xC0) == 0x80)
+        {
+          --shown_label_length;
+        }
+        budget =
+            ITL_STRING_MAX_LEN - shown_label_length - shown_text_length - 1;
         itl_string_copy(preview, original);
         if (preview->length > budget) {
           preview->length = budget;
           itl_string_recalc_size(preview);
         }
         itl_char_buf_append_string(status, preview);
+        itl_char_buf_append_byte(status, '\n');
+        row_start = preview->length + 1;
+        itl_char_buf_append_bytes(status, label, shown_label_length);
+        text_start_position =
+            row_start + tl_utf8_strnlen(label, shown_label_length);
+        itl_char_buf_append_bytes(status, text + text_start, shown_text_length);
+        itl_string_from_bytes(display, status->data, status->size);
+        le->line                   = display;
+        le->cursor_position        = display->length;
+        itl_g_minibuffer_row_start = row_start;
+        itl_g_search_span_count    = 0;
+        itl_search_push_span(text_start_position, display->length,
+                             ITL_MINIBUFFER_SGR);
       }
-      itl_char_buf_append_byte(status, '\n');
-      itl_char_buf_append_cstr(status, label);
-      itl_char_buf_append_cstr(status, text);
-
-      itl_string_from_bytes(display, status->data, status->size);
-
-      le->line                   = display;
-      le->cursor_position        = display->length;
-      itl_g_minibuffer_row_start = display->length - text_length - label_length;
-      itl_g_search_span_count    = 0;
-      itl_search_push_span(display->length - text_length, display->length,
-                           ITL_MINIBUFFER_SGR);
       if (itl_g_is_finding && itl_g_find_has_match &&
           itl_g_find_match_end <= preview->length)
       {
@@ -19788,12 +20055,105 @@ itl_minibuffer_read(itl_le_t       *le,
 
     switch (key_kind) {
     case TL_KEY_ENTER:
+      if (has_overflowed) {
+        itl_le_flash(le);
+        break;
+      }
       is_accepted = true;
       is_done     = true;
       break;
 
     case TL_KEY_TAB:
-      if (kind == ITL_PREFIX_EMACS_X) {
+      if (itl_g_minibuffer_completes_paths) {
+        const char *replacement = NULL;
+
+        if (paths == NULL && itl_g_path_complete_callback != NULL) {
+          tl_completion completion = ITL_ZERO_INIT;
+
+          if (itl_g_path_complete_callback(text, &completion) != 0 &&
+              completion.count > 0 && completion.candidates != NULL &&
+              completion.count <= SIZE_MAX / sizeof(*paths))
+          {
+            size_t index;
+            size_t byte_count =
+                completion.longest_common_prefix != NULL
+                    ? strlen(completion.longest_common_prefix) + 1
+                    : 1;
+            size_t offset   = 0;
+            bool   is_valid = true;
+
+            for (index = 0; index < completion.count; ++index) {
+              size_t length = strlen(completion.candidates[index]);
+
+              if (length >= SIZE_MAX - byte_count) {
+                is_valid = false;
+                break;
+              }
+              byte_count += length + 1;
+            }
+            if (is_valid) {
+              path_bytes = (char *) itl_malloc(byte_count);
+              paths =
+                  (const char **) itl_malloc(completion.count * sizeof(*paths));
+              path_count = completion.count;
+
+              for (index = 0; index < path_count; ++index) {
+                size_t length = strlen(completion.candidates[index]) + 1;
+
+                paths[index] = path_bytes + offset;
+                memcpy(path_bytes + offset, completion.candidates[index],
+                       length);
+                offset += length;
+              }
+              strcpy(path_bytes + offset,
+                     completion.longest_common_prefix != NULL
+                         ? completion.longest_common_prefix
+                         : "");
+              replacement = path_count == 1 ? paths[0] : path_bytes + offset;
+              if (path_count > 1 && strlen(replacement) <= text_length)
+                replacement = NULL;
+              path_index                  = (size_t) -1;
+              itl_g_minibuffer_paths      = paths;
+              itl_g_minibuffer_path_count = path_count;
+            }
+          }
+          if (paths == NULL) itl_le_flash(le);
+        } else if (paths != NULL) {
+          if ((key & TL_MOD_SHIFT) != 0) {
+            path_index = path_index == 0 || path_index == (size_t) -1
+                             ? path_count - 1
+                             : path_index - 1;
+          } else {
+            path_index =
+                path_index == (size_t) -1 || path_index + 1 == path_count
+                    ? 0
+                    : path_index + 1;
+          }
+          replacement = paths[path_index];
+        } else {
+          itl_le_flash(le);
+        }
+        if (replacement != NULL) {
+          size_t length = strlen(replacement);
+
+          if (length < text_size) {
+            memcpy(text, replacement, length + 1);
+            text_length    = length;
+            has_overflowed = false;
+            if (path_count == 1) {
+              ITL_FREE(paths);
+              ITL_FREE(path_bytes);
+              paths                       = NULL;
+              path_bytes                  = NULL;
+              itl_g_minibuffer_paths      = NULL;
+              itl_g_minibuffer_path_count = 0;
+            }
+          } else {
+            has_overflowed = true;
+            itl_le_flash(le);
+          }
+        }
+      } else if (kind == ITL_PREFIX_EMACS_X) {
         text_length = itl_emacs_complete(text, text_size);
       } else if (kind == ITL_PREFIX_VI_EX) {
         text_length = itl_vi_ex_complete_option(text, text_size);
@@ -19810,7 +20170,25 @@ itl_minibuffer_read(itl_le_t       *le,
       }
       break;
 
+    case TL_KEY_KILL_LINE_BEFORE:
+      text_length    = 0;
+      text[0]        = '\0';
+      has_overflowed = false;
+      if (paths != NULL) ITL_FREE(paths);
+      if (path_bytes != NULL) ITL_FREE(path_bytes);
+      paths                       = NULL;
+      path_bytes                  = NULL;
+      itl_g_minibuffer_paths      = NULL;
+      itl_g_minibuffer_path_count = 0;
+      break;
+
     case TL_KEY_BACKSPACE:
+      if (paths != NULL) ITL_FREE(paths);
+      if (path_bytes != NULL) ITL_FREE(path_bytes);
+      paths                       = NULL;
+      path_bytes                  = NULL;
+      itl_g_minibuffer_paths      = NULL;
+      itl_g_minibuffer_path_count = 0;
       if (text_length > 0) {
         /* The whole last UTF-8 character goes, with its continuation bytes. */
         do {
@@ -19818,6 +20196,7 @@ itl_minibuffer_read(itl_le_t       *le,
         } while (text_length > 0 &&
                  ((unsigned char) text[text_length] & 0xC0) == 0x80);
         text[text_length] = '\0';
+        if (text_length == 0) has_overflowed = false;
         if (itl_g_is_finding) {
           itl_find_refresh(original, text);
         }
@@ -19828,7 +20207,18 @@ itl_minibuffer_read(itl_le_t       *le,
 
     case TL_KEY_CHAR:
       /* An Alt-modified key arrives with its escape byte, which is not text. */
-      if (key == TL_KEY_CHAR && text_length < text_size - 1) {
+      if (key == TL_KEY_CHAR) {
+        if (paths != NULL) ITL_FREE(paths);
+        if (path_bytes != NULL) ITL_FREE(path_bytes);
+        paths                       = NULL;
+        path_bytes                  = NULL;
+        itl_g_minibuffer_paths      = NULL;
+        itl_g_minibuffer_path_count = 0;
+        if (text_length >= text_size - 1) {
+          has_overflowed = true;
+          itl_le_flash(le);
+          break;
+        }
         text[text_length++] = (char) byte;
         text[text_length]   = '\0';
         if (itl_g_is_finding) {
@@ -19854,16 +20244,20 @@ itl_minibuffer_read(itl_le_t       *le,
     }
   }
 
-  itl_g_prefix_kind          = ITL_PREFIX_NONE;
-  itl_g_minibuffer_text      = "";
-  itl_g_minibuffer_label     = NULL;
-  itl_g_minibuffer_row_start = 0;
-  le->prompt                 = saved_prompt;
-  le->prompt_size       = saved_prompt_size;
-  le->prompt_width      = saved_prompt_width;
-  le->prompt_rows       = saved_prompt_rows;
-  le->line              = saved_line;
-  le->cursor_position   = saved_cursor;
+  if (paths != NULL) ITL_FREE(paths);
+  if (path_bytes != NULL) ITL_FREE(path_bytes);
+  itl_g_minibuffer_paths      = NULL;
+  itl_g_minibuffer_path_count = 0;
+  itl_g_prefix_kind           = ITL_PREFIX_NONE;
+  itl_g_minibuffer_text       = "";
+  itl_g_minibuffer_label      = NULL;
+  itl_g_minibuffer_row_start  = 0;
+  le->prompt                  = saved_prompt;
+  le->prompt_size             = saved_prompt_size;
+  le->prompt_width            = saved_prompt_width;
+  le->prompt_rows             = saved_prompt_rows;
+  le->line                    = saved_line;
+  le->cursor_position         = saved_cursor;
   itl_search_spans_clear();
   itl_g_tty_should_refresh_text = true;
 
@@ -19896,8 +20290,8 @@ itl_le_find(itl_le_t   *le,
   itl_g_find_has_match   = false;
   itl_g_find_origin      = le->cursor_position;
   if (is_backward && le->line->length > 0) {
-    itl_g_find_origin = (le->cursor_position + le->line->length - 1) %
-                        le->line->length;
+    itl_g_find_origin =
+        (le->cursor_position + le->line->length - 1) % le->line->length;
   } else if (should_skip_cursor) {
     itl_g_find_origin = le->cursor_position + 1;
   }
@@ -20012,6 +20406,7 @@ itl_vi_ex_command(itl_le_t *le)
   char             header[72];
   itl_substitution substitution;
   tl_status_code   result = TL_SUCCESS;
+  int              substitution_result;
 
   if (itl_minibuffer_read(le, itl_g_vi_ex_has_range ? ":'<,'>" : ":",
                           ITL_PREFIX_VI_EX, command, sizeof(command)))
@@ -20019,8 +20414,8 @@ itl_vi_ex_command(itl_le_t *le)
     header[0] = ':';
     strcpy(header + 1, command);
     if (itl_vi_ex_is_line_number(command)) {
-      le->cursor_position = itl_le_line_start_clamped(
-          le, (size_t) strtoul(command, NULL, 10));
+      le->cursor_position =
+          itl_le_line_start_clamped(le, (size_t) strtoul(command, NULL, 10));
     } else if (strcmp(command, "$") == 0) {
       le->cursor_position = itl_le_line_start_clamped(le, (size_t) -1);
     } else if (strcmp(command, "h") == 0 || strcmp(command, "help") == 0) {
@@ -20033,12 +20428,11 @@ itl_vi_ex_command(itl_le_t *le)
       size_t i;
 
       for (i = 0; i < ITL_COUNTOF(itl_vi_ex_command_names); ++i) {
-        itl_list_append_name(itl_g_editor_message,
-                             sizeof(itl_g_editor_message), &length,
-                             itl_vi_ex_command_names[i], &row_columns);
+        itl_list_append_name(itl_g_editor_message, sizeof(itl_g_editor_message),
+                             &length, itl_vi_ex_command_names[i], &row_columns);
       }
     } else if (itl_vi_ex_is_quit(command) && strcmp(command, "q!") != 0 &&
-        itl_le_is_unsaved(le))
+               itl_le_is_unsaved(le))
     {
       strcpy(itl_g_editor_message, "unsaved changes\n:q! to discard them");
       itl_g_tty_should_refresh_text = true;
@@ -20059,8 +20453,6 @@ itl_vi_ex_command(itl_le_t *le)
       result = itl_le_key_handle(le, TL_KEY_UNDO);
     } else if (strcmp(command, "red") == 0 || strcmp(command, "redo") == 0) {
       result = itl_le_key_handle(le, TL_KEY_REDO);
-    } else if (itl_vi_ex_parse_substitute(command, &substitution) > 0) {
-      itl_le_substitute(le, &substitution);
     } else if (strncmp(command, "set ", 4) == 0 ||
                strncmp(command, "se ", 3) == 0)
     {
@@ -20075,8 +20467,13 @@ itl_vi_ex_command(itl_le_t *le)
       const char *name = command[4] == ' ' ? command + 5 : NULL;
 
       itl_option_run(TL_OPTION_SAVE,
-                     name != NULL && *name != '\0' ? name : NULL, NULL,
-                     header);
+                     name != NULL && *name != '\0' ? name : NULL, NULL, header);
+    } else if ((substitution_result =
+                    itl_vi_ex_parse_substitute(command, &substitution)) >= 0)
+    {
+      if (substitution_result > 0) itl_le_substitute(le, &substitution);
+    } else if (command[0] != '\0') {
+      itl_le_flash(le);
     }
   }
   itl_g_vi_ex_has_range = false;
@@ -20088,21 +20485,110 @@ itl_vi_ex_command(itl_le_t *le)
 
 /* The last command M-x ran and the answers it took, for repeat and Ctrl-X
    Z. */
-ITL_DEF ITL_THREAD_LOCAL int              itl_g_emacs_last_command = -1;
+
 ITL_DEF ITL_THREAD_LOCAL itl_substitution itl_g_emacs_last_substitution;
 ITL_DEF ITL_THREAD_LOCAL char             itl_g_emacs_last_option[64];
 ITL_DEF ITL_THREAD_LOCAL char             itl_g_emacs_last_value[64];
+
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_emacs_last_line_number = 1;
+
+typedef enum
+{
+  ITL_UNSAVED_CANCEL,
+  ITL_UNSAVED_SAVE,
+  ITL_UNSAVED_DISCARD
+} itl_unsaved_choice;
+
+ITL_DEF tl_status_code
+itl_emacs_find_file(itl_le_t *le, const char *path)
+{
+  bool        should_accept_current = false;
+  const char *message               = NULL;
+  int         is_prepared;
+
+  if (itl_g_open_file_callback == NULL) {
+    strcpy(itl_g_editor_message, "opening files is unavailable");
+    itl_le_flash(le);
+
+    return TL_SUCCESS;
+  }
+  if (le->line->size >= le->out_size) return TL_ERROR_SIZE;
+  if (itl_le_is_unsaved(le)) {
+    itl_unsaved_choice choice = ITL_UNSAVED_CANCEL;
+    char               answer[16];
+
+    while (true) {
+      itl_g_minibuffer_hint = "enter save, discard, or cancel";
+      if (!itl_minibuffer_read(le,
+                               "Unsaved changes: save, discard, or cancel: ",
+                               ITL_PREFIX_MINIBUFFER, answer, sizeof(answer)) ||
+          answer[0] == '\0' || strcmp(answer, "cancel") == 0)
+      {
+        break;
+      }
+      if (strcmp(answer, "save") == 0) {
+        choice = ITL_UNSAVED_SAVE;
+        break;
+      }
+      if (strcmp(answer, "discard") == 0) {
+        choice = ITL_UNSAVED_DISCARD;
+        break;
+      }
+      itl_le_flash(le);
+    }
+    if (choice == ITL_UNSAVED_CANCEL) return TL_SUCCESS;
+    if (choice == ITL_UNSAVED_SAVE) {
+      if (itl_g_save_callback == NULL) {
+        strcpy(itl_g_editor_message, "saving is unavailable");
+        itl_le_flash(le);
+
+        return TL_SUCCESS;
+      }
+      if (!itl_le_save(le)) return TL_SUCCESS;
+      should_accept_current = true;
+    }
+  }
+  is_prepared = itl_g_open_file_callback(path, should_accept_current, &message);
+  if (message != NULL) {
+    strncpy(itl_g_editor_message, message, sizeof(itl_g_editor_message) - 1);
+    itl_g_editor_message[sizeof(itl_g_editor_message) - 1] = '\0';
+  }
+  itl_g_tty_should_refresh_text = true;
+  if (!is_prepared) return TL_SUCCESS;
+
+  return itl_le_copy_out(le) ? TL_PRESSED_OPEN_FILE : TL_ERROR_SIZE;
+}
 
 ITL_DEF tl_status_code
 itl_emacs_run_command(itl_le_t *le, size_t index)
 {
   int action = itl_emacs_commands[index].key;
 
+  if (action == ITL_EMACS_GOTO_LINE) {
+    le->cursor_position =
+        itl_le_line_start_clamped(le, itl_g_emacs_last_line_number);
+    itl_g_tty_should_refresh_text = true;
+
+    return TL_SUCCESS;
+  }
+  if (action == ITL_EMACS_FIND_FILE)
+    return itl_emacs_find_file(le, itl_g_emacs_last_path);
+  if (action == ITL_EMACS_SAVE_AND_QUIT) {
+    if (itl_g_save_callback == NULL) {
+      strcpy(itl_g_editor_message, "saving is unavailable");
+      itl_le_flash(le);
+
+      return TL_SUCCESS;
+    }
+    if (le->line->size >= le->out_size) return TL_ERROR_SIZE;
+    if (!itl_le_save(le)) return TL_SUCCESS;
+
+    return itl_le_copy_out(le) ? TL_PRESSED_WRITE_QUIT : TL_ERROR_SIZE;
+  }
   if (action == ITL_EMACS_KILL_KOSH) {
     return itl_le_key_handle(le, TL_KEY_QUIT);
   }
-  if (action == ITL_EMACS_REPLACE_STRING ||
-      action == ITL_EMACS_REPLACE_REGEXP)
+  if (action == ITL_EMACS_REPLACE_STRING || action == ITL_EMACS_REPLACE_REGEXP)
   {
     itl_le_substitute(le, &itl_g_emacs_last_substitution);
     return TL_SUCCESS;
@@ -20118,9 +20604,7 @@ itl_emacs_run_command(itl_le_t *le, size_t index)
     return TL_SUCCESS;
   }
   if (action == ITL_EMACS_FILL_REGION) {
-    if (itl_g_emacs_has_region &&
-        itl_g_emacs_region_end <= le->line->length)
-    {
+    if (itl_g_emacs_has_region && itl_g_emacs_region_end <= le->line->length) {
       itl_le_wrap_lines(le, itl_g_emacs_region_start,
                         itl_g_emacs_region_end - 1);
     } else {
@@ -20268,8 +20752,7 @@ itl_emacs_read_option(itl_le_t *le, int action)
 
   value[0] = '\0';
   if (action == ITL_EMACS_SET_OPTION) {
-    itl_g_minibuffer_hint =
-        "pressed M-x set-option\nenter to set the value";
+    itl_g_minibuffer_hint = "pressed M-x set-option\nenter to set the value";
     strcpy(label, "Set ");
     strcat(label, option);
     strcat(label, " to: ");
@@ -20293,8 +20776,7 @@ itl_emacs_execute_command(itl_le_t *le)
   size_t           i;
   int              action;
 
-  if (!itl_minibuffer_read(le, "M-x ", ITL_PREFIX_EMACS_X, name,
-                           sizeof(name)))
+  if (!itl_minibuffer_read(le, "M-x ", ITL_PREFIX_EMACS_X, name, sizeof(name)))
   {
     return TL_SUCCESS;
   }
@@ -20304,6 +20786,8 @@ itl_emacs_execute_command(itl_le_t *le)
     }
   }
   if (i == ITL_COUNTOF(itl_emacs_commands)) {
+    if (name[0] != '\0') itl_le_flash(le);
+
     return TL_SUCCESS;
   }
 
@@ -20311,8 +20795,66 @@ itl_emacs_execute_command(itl_le_t *le)
   if (action == ITL_EMACS_REPEAT) {
     return itl_emacs_repeat(le);
   }
-  if (action == ITL_EMACS_REPLACE_STRING ||
-      action == ITL_EMACS_REPLACE_REGEXP)
+  if (action == ITL_EMACS_GOTO_LINE) {
+    char   answer[64];
+    size_t line_number = 0;
+    size_t index;
+    bool   is_valid = true;
+
+    itl_g_minibuffer_hint = "enter a positive line number";
+    if (!itl_minibuffer_read(le, "Goto line: ", ITL_PREFIX_MINIBUFFER, answer,
+                             sizeof(answer)) ||
+        answer[0] == '\0')
+    {
+      return TL_SUCCESS;
+    }
+
+    for (index = 0; answer[index] != '\0'; ++index) {
+      unsigned digit = (unsigned char) answer[index] - (unsigned) '0';
+
+      if (digit > 9 || line_number > (SIZE_MAX - digit) / 10) {
+        is_valid = false;
+        break;
+      }
+      line_number = line_number * 10 + digit;
+    }
+    if (!is_valid || line_number == 0) {
+      itl_le_flash(le);
+
+      return TL_SUCCESS;
+    }
+    itl_g_emacs_last_line_number = line_number;
+  }
+  if (action == ITL_EMACS_FIND_FILE) {
+    char *path;
+    bool  is_read;
+
+    if (itl_g_open_file_callback == NULL) return itl_emacs_find_file(le, NULL);
+    path                  = (char *) itl_malloc(itl_g_line_max + 1);
+    itl_g_minibuffer_hint = "tab to complete the path, enter to open it";
+    itl_g_minibuffer_completes_paths = true;
+    is_read = itl_minibuffer_read(le, "Find file: ", ITL_PREFIX_MINIBUFFER,
+                                  path, itl_g_line_max + 1);
+    itl_g_minibuffer_completes_paths = false;
+    if (!is_read || path[0] == '\0') {
+      ITL_FREE(path);
+
+      return TL_SUCCESS;
+    }
+    tl_status_code status = itl_emacs_find_file(le, path);
+
+    if (status != TL_PRESSED_OPEN_FILE) {
+      ITL_FREE(path);
+
+      return status;
+    }
+    if (itl_g_emacs_last_path != NULL) ITL_FREE(itl_g_emacs_last_path);
+    itl_g_emacs_last_path    = path;
+    itl_g_emacs_last_command = (int) i;
+
+    return status;
+  }
+  if (action == ITL_EMACS_REPLACE_STRING || action == ITL_EMACS_REPLACE_REGEXP)
   {
     if (!itl_emacs_read_replacement(le, action == ITL_EMACS_REPLACE_REGEXP,
                                     &substitution))
@@ -20374,9 +20916,8 @@ itl_vi_go_to_line(itl_le_t *le, size_t line)
 ITL_DEF void
 itl_vi_open_line(itl_le_t *le, bool is_above)
 {
-  le->cursor_position = is_above
-                            ? itl_le_line_start_of(le, le->cursor_position)
-                            : itl_le_line_end_of(le, le->cursor_position);
+  le->cursor_position = is_above ? itl_le_line_start_of(le, le->cursor_position)
+                                 : itl_le_line_end_of(le, le->cursor_position);
   itl_le_insert_cstr(le, "\n");
   if (is_above) {
     itl_le_move_left(le, 1);
@@ -20738,8 +21279,7 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
     break;
   case 'g': {
     uint8_t second_byte;
-    size_t  line =
-        itl_g_vi_pending_count == 0 ? 0 : itl_g_vi_pending_count - 1;
+    size_t  line = itl_g_vi_pending_count == 0 ? 0 : itl_g_vi_pending_count - 1;
 
     if (!itl_le_await_chord(le, ITL_PREFIX_VI_G, byte) ||
         !ITL_READ_BYTE(&second_byte))
@@ -20760,7 +21300,7 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
   /* j and k move count rows of the buffer as Down and Up do, and reach the
      history past its last or first row. */
   case 'k':
-  case 'j':   {
+  case 'j': {
     tl_status_code code = TL_SUCCESS;
     size_t         step;
 
@@ -21239,7 +21779,7 @@ tl_emit_newlines(const char *char_buffer)
   newlines_to_emit = itl_g_le_prev_total_rows - (itl_g_le_prev_cursor_row - 1);
 
   for (i = 0; i < newlines_to_emit; ++i) {
-    ITL_TRY(ITL_WRITE(ITL_STDOUT, "\n", 1) != -1, return TL_ERROR);
+    ITL_TRY(itl_tty_write(ITL_LF, ITL_LF_LEN) != -1, return TL_ERROR);
   }
 
   return TL_SUCCESS;

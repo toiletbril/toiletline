@@ -16,12 +16,13 @@
 #define TEST_PRINTF(...)                                                       \
   do {                                                                         \
     fputs(__func__, stdout);                                                   \
-    printf(": "__VA_ARGS__);                                                   \
+    printf(": " __VA_ARGS__);                                                  \
   } while (0)
 
 #define countof(a) (sizeof(a) / sizeof((a)[0]))
 
-static bool test_bytes_have(const char *data, size_t size, const char *needle);
+static bool
+test_bytes_have(const char *data, size_t size, const char *needle);
 
 typedef struct string_test_case string_test_case_t;
 
@@ -117,7 +118,7 @@ test_string_shift(void)
   };
 
   for (i = 0; i < countof(tests); ++i) {
-    test = tests[i];
+    test  = tests[i];
     shift = settings[i];
 
     ITL_STRING_FROM_CSTR(str, test.original);
@@ -172,7 +173,7 @@ test_string_erase(void)
   };
 
   for (i = 0; i < countof(tests); ++i) {
-    test = tests[i];
+    test  = tests[i];
     erase = settings[i];
 
     ITL_STRING_FROM_CSTR(str, test.original);
@@ -201,9 +202,9 @@ test_string_insert(void)
   string_test_case_t test;
   char               out_buffer[BUFFER_SIZE];
 
-  itl_string_t *str = itl_string_alloc();
-  itl_utf8_t    A = itl_utf8_new((uint8_t[4]){0x41}, 1);
-  itl_utf8_t    two_byte = itl_utf8_new((uint8_t[4]){0xC3, 0xA9}, 2);
+  itl_string_t *str      = itl_string_alloc();
+  itl_utf8_t    A        = itl_utf8_new((uint8_t[4]) {0x41}, 1);
+  itl_utf8_t    two_byte = itl_utf8_new((uint8_t[4]) {0xC3, 0xA9}, 2);
 
   /* clang-format off */
   const string_test_case_t tests[] = {
@@ -1431,6 +1432,178 @@ test_history_search_snapshot(void)
   itl_g_is_active = false;
   return ok;
 }
+
+static size_t history_selector_expected_count;
+static int history_selector_result;
+static bool history_selector_has_all_rows;
+
+static int
+select_complete_history(const char *const *entries, size_t count,
+                         const char **out_selected)
+{
+  history_selector_has_all_rows = count == history_selector_expected_count &&
+      count > 0 && strcmp(entries[0], "record 00000") == 0;
+  *out_selected = count > 0 ? entries[count - 1] : NULL;
+
+  return history_selector_result;
+}
+
+static bool
+test_history_complete_corpus(void)
+{
+  const size_t record_count = 66000;
+  const size_t capacity = record_count * 48 + 256;
+  char *contents = (char *) malloc(capacity);
+  char output[128];
+  char query[128];
+  size_t size = 0;
+  size_t index;
+  size_t pass;
+  size_t allocation_count;
+  size_t saved_limit = itl_g_history_limit;
+  size_t query_size;
+  bool ok = contents != NULL;
+  itl_string_t *line = NULL;
+  itl_le_t le = ITL_ZERO_INIT;
+  itl_menu_source source = ITL_ZERO_INIT;
+  itl_menu_filter_state state = ITL_ZERO_INIT;
+  tl_completion result = ITL_ZERO_INIT;
+  tl_status_code status;
+
+  itl_vi_free();
+  allocation_count = itl_g_alloc_count;
+  line = itl_string_alloc();
+  if (!ok) goto cleanup;
+
+  for (index = 0; index < record_count; ++index) {
+    int written = snprintf(contents + size, capacity - size,
+                           "record %05zu\n", index);
+
+    if (written < 0 || (size_t) written >= capacity - size) {
+      ok = false;
+      goto cleanup;
+    }
+    size += (size_t) written;
+    if (index % 100 == 0) {
+      memcpy(contents + size, "record 00000\n", sizeof("record 00000\n") - 1);
+      size += sizeof("record 00000\n") - 1;
+    }
+  }
+  memcpy(contents + size, "record 00000\n", sizeof("record 00000\n") - 1);
+  size += sizeof("record 00000\n") - 1;
+  history_search_snapshot_contents = contents;
+  history_search_snapshot_size = size;
+  tl_set_history_search_snapshot_callback(provide_history_search_snapshot);
+  source.gather = itl_history_menu_gather;
+  source.should_regather_on_edit = true;
+  itl_le_init(&le, line, output, sizeof(output), "");
+
+  for (pass = 0; pass < 3; ++pass) {
+    itl_g_history_limit = pass == 0 ? 0 : 1;
+    itl_history_search_snapshot_begin();
+    ITL_STRING_FROM_CSTR(line, "unrelated draft\nrecord\nother draft");
+    le.cursor_position = 19;
+    if (!itl_history_query_text(&le, query, sizeof(query), &query_size) ||
+        query_size != 6 || strcmp(query, "record") != 0 ||
+        !itl_menu_rebase(&le, &source, &state, &result) ||
+        result.count != record_count || !result.is_space_suppressed ||
+        result.token_start != 0 || result.token_end != line->length ||
+        strcmp(result.candidates[0], "record 00000") != 0 ||
+        strcmp(result.candidates[1], "record 65999") != 0 ||
+        strcmp(result.candidates[record_count - 1], "record 00001") != 0)
+    {
+      TEST_PRINTF("complete history was limited or reordered\n");
+      ok = false;
+      break;
+    }
+
+    ITL_STRING_FROM_CSTR(line, "record 00001");
+    le.cursor_position = line->length;
+    if (!itl_menu_narrow(&le, &source, &state, &result) || result.count != 1 ||
+        strcmp(result.candidates[0], "record 00001") != 0)
+    {
+      TEST_PRINTF("post-edit history lost an old entry\n");
+      ok = false;
+      break;
+    }
+    ITL_STRING_FROM_CSTR(line, "record");
+    le.cursor_position = 3;
+    if (!itl_menu_regather_soon(&le, &source, &state, &result) ||
+        result.count != record_count || le.cursor_position != 3)
+    {
+      ok = false;
+      break;
+    }
+    itl_history_search_snapshot_end();
+  }
+
+  ITL_STRING_FROM_CSTR(line, "other\nrecord\nremaining");
+  le.cursor_position = 9;
+  history_selector_expected_count = record_count;
+  tl_set_history_select_callback(select_complete_history);
+  history_selector_result = -1;
+  (void) itl_history_select(&le, &status);
+  if (!history_selector_has_all_rows || le.cursor_position != 9 ||
+      !search_match_is(line, "other\nrecord\nremaining")) ok = false;
+  history_selector_result = 1;
+  (void) itl_history_select(&le, &status);
+  if (!history_selector_has_all_rows ||
+      !search_match_is(line, "record 00001") ||
+      le.cursor_position != line->length || status != TL_SUCCESS ||
+      le.history_selected_index != ITL_HISTORY_NONE) ok = false;
+
+cleanup:
+  itl_history_search_snapshot_end();
+  tl_set_history_select_callback(NULL);
+  tl_set_history_search_snapshot_callback(NULL);
+  itl_g_history_limit = saved_limit;
+  itl_vi_free();
+  ITL_STRING_FREE(line);
+  free(contents);
+  if (itl_g_alloc_count != allocation_count) {
+    TEST_PRINTF("complete history retained allocations\n");
+    ok = false;
+  }
+
+  return ok;
+}
+
+static bool
+test_history_cursor_line_query(void)
+{
+  static const struct {
+    size_t cursor;
+    const char *expected;
+  } cases[] = {{0, "first"}, {3, "first"}, {5, "first"},
+               {6, ""}, {7, "  \xc3\xa9 line  "},
+               {12, "  \xc3\xa9 line  "}, {18, ""}};
+  itl_string_t *line = itl_string_alloc();
+  itl_le_t le = ITL_ZERO_INIT;
+  char query[64];
+  size_t size;
+  size_t index;
+  bool ok = true;
+
+  ITL_STRING_FROM_CSTR(line, "first\n\n  \xc3\xa9 line  \n");
+  le.line = line;
+
+  for (index = 0; index < countof(cases); ++index) {
+    le.cursor_position = cases[index].cursor;
+    if (!itl_history_query_text(&le, query, sizeof(query), &size) ||
+        size != strlen(cases[index].expected) ||
+        strcmp(query, cases[index].expected) != 0)
+    {
+      TEST_PRINTF("cursor-line query failed at %zu\n", cases[index].cursor);
+      ok = false;
+    }
+  }
+  le.cursor_position = 10;
+  if (itl_history_query_text(&le, query, 3, &size)) ok = false;
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+
 
 static bool
 test_history_search_matching(void)
@@ -3040,16 +3213,18 @@ struct test_key_reading
 };
 
 static bool
-test_read_terminal_bytes(const char *bytes, size_t size, bool should_parse,
+test_read_terminal_bytes(const char         *bytes,
+                         size_t              size,
+                         bool                should_parse,
                          test_key_reading_t *reading)
 {
   int     pipe_descriptors[2] = {-1, -1};
-  int     saved_stdin = -1;
-  bool    ok = false;
+  int     saved_stdin         = -1;
+  bool    ok                  = false;
   uint8_t byte;
 
-  reading->size = 0;
-  reading->key = -1;
+  reading->size        = 0;
+  reading->key         = -1;
   reading->was_drained = false;
   if (pipe(pipe_descriptors) != 0) goto cleanup;
   if (write(pipe_descriptors[1], bytes, size) != (ssize_t) size) goto cleanup;
@@ -3069,7 +3244,7 @@ test_read_terminal_bytes(const char *bytes, size_t size, bool should_parse,
     }
   }
   reading->was_drained = !itl_input_is_pending();
-  ok = true;
+  ok                   = true;
 
 cleanup:
   if (saved_stdin >= 0) {
@@ -3078,9 +3253,9 @@ cleanup:
   }
   if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
   if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
-  itl_g_key_queue_index = 0;
+  itl_g_key_queue_index  = 0;
   itl_g_key_queue_length = 0;
-  itl_g_pushback_byte = -1;
+  itl_g_pushback_byte    = -1;
   return ok;
 }
 
@@ -3124,12 +3299,13 @@ struct extended_key_case
 };
 
 static bool
-test_extended_key_case(const char *extended, const char *legacy,
-                       size_t legacy_size)
+test_extended_key_case(const char *extended,
+                       const char *legacy,
+                       size_t      legacy_size)
 {
   test_key_reading_t extended_bytes, extended_key, legacy_bytes, legacy_key;
-  const char        *expected = legacy != NULL ? legacy : extended;
-  size_t             expected_size = legacy == NULL  ? strlen(extended)
+  const char        *expected      = legacy != NULL ? legacy : extended;
+  size_t             expected_size = legacy == NULL    ? strlen(extended)
                                      : legacy_size > 0 ? legacy_size
                                                        : strlen(legacy);
 
@@ -3147,9 +3323,9 @@ test_extended_key_case(const char *extended, const char *legacy,
 
   if (extended_bytes.size != expected_size ||
       memcmp(extended_bytes.bytes, expected, expected_size) != 0 ||
-      (legacy != NULL && (legacy_bytes.size != expected_size ||
-                          memcmp(legacy_bytes.bytes, expected,
-                                 expected_size) != 0)))
+      (legacy != NULL &&
+       (legacy_bytes.size != expected_size ||
+        memcmp(legacy_bytes.bytes, expected, expected_size) != 0)))
   {
     TEST_PRINTF("ESC%s: read %zu bytes, want %zu\n", extended + 1,
                 extended_bytes.size, expected_size);
@@ -3335,10 +3511,14 @@ test_extended_keys_map_signal_keys(void)
 }
 
 /* Declared here because the strict C99 build hides the XSI terminal calls. */
-extern int   posix_openpt(int flags);
-extern int   grantpt(int descriptor);
-extern int   unlockpt(int descriptor);
-extern char *ptsname(int descriptor);
+extern int
+posix_openpt(int flags);
+extern int
+grantpt(int descriptor);
+extern int
+unlockpt(int descriptor);
+extern char *
+ptsname(int descriptor);
 
 typedef struct test_terminal_drain test_terminal_drain_t;
 
@@ -3360,7 +3540,7 @@ test_drain_terminal(void *argument)
   struct pollfd          pfd;
   char                   discarded[64];
 
-  pfd.fd = drain->master;
+  pfd.fd     = drain->master;
   pfd.events = POLLIN;
   for (;;) {
     int     ready = poll(&pfd, 1, 50);
@@ -3384,13 +3564,15 @@ test_drain_terminal(void *argument)
 }
 
 static bool
-test_drain_start(test_terminal_drain_t *drain, int master, char *buffer,
-                 size_t capacity)
+test_drain_start(test_terminal_drain_t *drain,
+                 int                    master,
+                 char                  *buffer,
+                 size_t                 capacity)
 {
-  drain->master = master;
-  drain->buffer = buffer;
-  drain->capacity = capacity;
-  drain->size = 0;
+  drain->master      = master;
+  drain->buffer      = buffer;
+  drain->capacity    = capacity;
+  drain->size        = 0;
   drain->should_stop = 0;
   drain->is_running =
       pthread_create(&drain->thread, NULL, test_drain_terminal, drain) == 0;
@@ -3410,17 +3592,18 @@ test_drain_stop(test_terminal_drain_t *drain)
 static bool
 test_extended_keys_follow_raw_mode(void)
 {
-  static const char expected[] = "\x1b[?2004h" ITL_EXTENDED_KEYS_ON
-      ITL_EXTENDED_KEYS_OFF ITL_EXTENDED_KEYS_ON ITL_EXTENDED_KEYS_OFF
-          ITL_EXTENDED_KEYS_ON "\x1b[?2004l" ITL_EXTENDED_KEYS_OFF;
-  struct termios saved_mode = itl_g_original_tty_mode;
-  bool           was_raw = itl_g_entered_raw_mode;
-  int            master = -1, slave = -1;
-  int            saved_stdin = -1, saved_stdout = -1;
-  char           written[256];
-  size_t         written_size = 0;
-  bool           ok = false;
-  test_terminal_drain_t drain = {0};
+  static const char expected[] =
+      "\x1b[?2004h" ITL_EXTENDED_KEYS_ON ITL_EXTENDED_KEYS_OFF
+          ITL_EXTENDED_KEYS_ON ITL_EXTENDED_KEYS_OFF ITL_EXTENDED_KEYS_ON
+      "\x1b[?2004l" ITL_EXTENDED_KEYS_OFF;
+  struct termios        saved_mode = itl_g_original_tty_mode;
+  bool                  was_raw    = itl_g_entered_raw_mode;
+  int                   master = -1, slave = -1;
+  int                   saved_stdin = -1, saved_stdout = -1;
+  char                  written[256];
+  size_t                written_size = 0;
+  bool                  ok           = false;
+  test_terminal_drain_t drain        = {0};
 
   master = posix_openpt(O_RDWR | O_NOCTTY);
   if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 ||
@@ -3430,13 +3613,12 @@ test_extended_keys_follow_raw_mode(void)
     goto cleanup;
   }
   slave = open(ptsname(master), O_RDWR | O_NOCTTY);
-  if (slave >= 0 &&
-      !test_drain_start(&drain, master, written, sizeof(written)))
+  if (slave >= 0 && !test_drain_start(&drain, master, written, sizeof(written)))
   {
     TEST_PRINTF("could not start the terminal reader\n");
     goto cleanup;
   }
-  saved_stdin = dup(STDIN_FILENO);
+  saved_stdin  = dup(STDIN_FILENO);
   saved_stdout = dup(STDOUT_FILENO);
   if (slave < 0 || saved_stdin < 0 || saved_stdout < 0 ||
       dup2(slave, STDIN_FILENO) < 0 || dup2(slave, STDOUT_FILENO) < 0)
@@ -3469,8 +3651,8 @@ cleanup:
   if (slave >= 0) close(slave);
   written_size = test_drain_stop(&drain);
   if (master >= 0) close(master);
-  itl_g_entered_raw_mode = was_raw;
-  itl_g_original_tty_mode = saved_mode;
+  itl_g_entered_raw_mode     = was_raw;
+  itl_g_original_tty_mode    = saved_mode;
   itl_g_extended_keys_active = false;
 
   if (!ok || written_size != sizeof(expected) - 1 ||
@@ -3490,18 +3672,19 @@ cleanup:
 static bool
 test_raw_mode_keeps_signal_keys(void)
 {
-  static const char expected[] = "\x1b[?2004h" ITL_EXTENDED_KEYS_ON
-      ITL_EXTENDED_KEYS_OFF "\x1b[?2004l\x1b[?2004h" ITL_EXTENDED_KEYS_ON
-          "\x1b[?2004l" ITL_EXTENDED_KEYS_OFF;
-  struct termios saved_mode = itl_g_original_tty_mode;
-  struct termios term;
-  bool           was_raw = itl_g_entered_raw_mode;
-  int            master = -1, slave = -1;
-  int            saved_stdin = -1, saved_stdout = -1;
-  char           written[256];
-  size_t         written_size = 0;
-  bool           ok = false;
-  test_terminal_drain_t drain = {0};
+  static const char expected[] =
+      "\x1b[?2004h" ITL_EXTENDED_KEYS_ON ITL_EXTENDED_KEYS_OFF
+      "\x1b[?2004l\x1b[?2004h" ITL_EXTENDED_KEYS_ON
+      "\x1b[?2004l" ITL_EXTENDED_KEYS_OFF;
+  struct termios        saved_mode = itl_g_original_tty_mode;
+  struct termios        term;
+  bool                  was_raw = itl_g_entered_raw_mode;
+  int                   master = -1, slave = -1;
+  int                   saved_stdin = -1, saved_stdout = -1;
+  char                  written[256];
+  size_t                written_size = 0;
+  bool                  ok           = false;
+  test_terminal_drain_t drain        = {0};
 
   master = posix_openpt(O_RDWR | O_NOCTTY);
   if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0 ||
@@ -3511,13 +3694,12 @@ test_raw_mode_keeps_signal_keys(void)
     goto cleanup;
   }
   slave = open(ptsname(master), O_RDWR | O_NOCTTY);
-  if (slave >= 0 &&
-      !test_drain_start(&drain, master, written, sizeof(written)))
+  if (slave >= 0 && !test_drain_start(&drain, master, written, sizeof(written)))
   {
     TEST_PRINTF("could not start the terminal reader\n");
     goto cleanup;
   }
-  saved_stdin = dup(STDIN_FILENO);
+  saved_stdin  = dup(STDIN_FILENO);
   saved_stdout = dup(STDOUT_FILENO);
   if (slave < 0 || saved_stdin < 0 || saved_stdout < 0 ||
       dup2(slave, STDIN_FILENO) < 0 || dup2(slave, STDOUT_FILENO) < 0)
@@ -3552,11 +3734,11 @@ cleanup:
   if (slave >= 0) close(slave);
   written_size = test_drain_stop(&drain);
   if (master >= 0) close(master);
-  itl_g_entered_raw_mode = was_raw;
-  itl_g_original_tty_mode = saved_mode;
-  itl_g_extended_keys_active = false;
+  itl_g_entered_raw_mode      = was_raw;
+  itl_g_original_tty_mode     = saved_mode;
+  itl_g_extended_keys_active  = false;
   itl_g_extended_keys_enabled = false;
-  itl_g_signal_keys_enabled = false;
+  itl_g_signal_keys_enabled   = false;
 
   if (!ok || written_size != sizeof(expected) - 1 ||
       memcmp(written, expected, written_size) != 0)
@@ -3572,11 +3754,11 @@ cleanup:
 static bool
 test_prefix_history_search_walks_matches(void)
 {
-  const char *path = "tl_test_prefix_search.txt";
-  char out_buffer[BUFFER_SIZE];
-  char line_buffer[BUFFER_SIZE];
-  bool ok = true;
-  itl_le_t le = ITL_ZERO_INIT;
+  const char   *path = "tl_test_prefix_search.txt";
+  char          out_buffer[BUFFER_SIZE];
+  char          line_buffer[BUFFER_SIZE];
+  bool          ok   = true;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   itl_g_is_active = true;
@@ -3665,15 +3847,15 @@ static bool
 test_menu_match_rank(void)
 {
   static const menu_rank_test_case_t cases[] = {
-      {"alpha", "", ITL_MENU_RANK_PREFIX},
-      {"al", "alpha", ITL_MENU_RANK_NONE},
-      {"ALPHA", "al", ITL_MENU_RANK_PREFIX},
-      {"aab", "ab", ITL_MENU_RANK_CONTAINS},
-      {"unALPHAed", "alpha", ITL_MENU_RANK_CONTAINS},
-      {"abcdefg", "adg", ITL_MENU_RANK_SUBSEQUENCE},
-      {"abc", "xyz", ITL_MENU_RANK_NONE},
-      {"\xC3\x84nder", "\xC3\xA4n", ITL_MENU_RANK_NONE},
-      {"\xC3\xA4nder", "\xC3\xA4n", ITL_MENU_RANK_PREFIX},
+      {"alpha",        "",          ITL_MENU_RANK_PREFIX     },
+      {"al",           "alpha",     ITL_MENU_RANK_NONE       },
+      {"ALPHA",        "al",        ITL_MENU_RANK_PREFIX     },
+      {"aab",          "ab",        ITL_MENU_RANK_CONTAINS   },
+      {"unALPHAed",    "alpha",     ITL_MENU_RANK_CONTAINS   },
+      {"abcdefg",      "adg",       ITL_MENU_RANK_SUBSEQUENCE},
+      {"abc",          "xyz",       ITL_MENU_RANK_NONE       },
+      {"\xC3\x84nder", "\xC3\xA4n", ITL_MENU_RANK_NONE       },
+      {"\xC3\xA4nder", "\xC3\xA4n", ITL_MENU_RANK_PREFIX     },
   };
   size_t i;
 
@@ -3697,17 +3879,17 @@ test_menu_filter_groups(void)
   static const char *candidates[] = {
       "alpha", "beta",  "malt",
       "abcl",  "ALIEN", "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E"};
-  static const char *descriptions[] = {"one",  "two",  "three",
-                                       "four", "five", "six"};
+  static const char *descriptions[]   = {"one",  "two",  "three",
+                                         "four", "five", "six"};
   static const char *expected_names[] = {"alpha", "ALIEN", "malt", "abcl"};
   static const char *expected_descriptions[] = {"one", "five", "three", "four"};
-  size_t        i;
-  tl_completion base = ITL_ZERO_INIT;
-  tl_completion result = ITL_ZERO_INIT;
+  size_t             i;
+  tl_completion      base   = ITL_ZERO_INIT;
+  tl_completion      result = ITL_ZERO_INIT;
 
-  base.candidates = candidates;
+  base.candidates   = candidates;
   base.descriptions = descriptions;
-  base.count = countof(candidates);
+  base.count        = countof(candidates);
 
   if (!itl_menu_narrow_ranked(&base, "al", 2, ITL_MENU_RANK_MODE_WHERE, 0,
                               &result))
@@ -3793,12 +3975,12 @@ test_menu_gather(itl_le_t *le, tl_completion *result)
     return false;
   }
 
-  result->candidates = candidates;
-  result->descriptions = NULL;
+  result->candidates            = candidates;
+  result->descriptions          = NULL;
   result->longest_common_prefix = NULL;
-  result->count = countof(candidates);
-  result->token_start = 0;
-  result->token_end = le->line->length;
+  result->count                 = countof(candidates);
+  result->token_start           = 0;
+  result->token_end             = le->line->length;
 
   return true;
 }
@@ -3809,16 +3991,17 @@ test_menu_gather(itl_le_t *le, tl_completion *result)
    measured and ranked for every key, and the rows of the wanted ranks are
    kept in rank order. The indexed narrowing must keep the very same rows. */
 static size_t
-test_reference_keep(const tl_completion *base, const unsigned char *ranks,
-                    unsigned first_rank, unsigned end_rank,
-                    const char **out_rows)
+test_reference_keep(const tl_completion *base,
+                    const unsigned char *ranks,
+                    unsigned             first_rank,
+                    unsigned             end_rank,
+                    const char         **out_rows)
 {
-  size_t kept = 0;
-  size_t row;
+  size_t   kept = 0;
+  size_t   row;
   unsigned rank;
 
-  for (rank = first_rank; rank < end_rank && kept < ITL_MENU_FILTER_MAX;
-       ++rank)
+  for (rank = first_rank; rank < end_rank && kept < ITL_MENU_FILTER_MAX; ++rank)
   {
     for (row = 0; row < base->count && kept < ITL_MENU_FILTER_MAX; ++row) {
       if (ranks[row] == rank) {
@@ -3831,18 +4014,21 @@ test_reference_keep(const tl_completion *base, const unsigned char *ranks,
 }
 
 static size_t
-test_reference_narrow(int mode, const tl_completion *base, const char *query,
-                      size_t query_len, unsigned base_tier,
-                      const char **out_rows)
+test_reference_narrow(int                  mode,
+                      const tl_completion *base,
+                      const char          *query,
+                      size_t               query_len,
+                      unsigned             base_tier,
+                      const char         **out_rows)
 {
   unsigned char ranks[TEST_REF_ROW_MAX];
   bool is_case_sensitive = itl_menu_query_is_case_sensitive(query, query_len);
-  unsigned best = ITL_MENU_TIER_NONE;
-  size_t row;
+  unsigned best          = ITL_MENU_TIER_NONE;
+  size_t   row;
 
   for (row = 0; row < base->count; ++row) {
-    const char *entry = base->candidates[row];
-    size_t entry_len = strlen(entry);
+    const char *entry     = base->candidates[row];
+    size_t      entry_len = strlen(entry);
 
     if (mode == 0) {
       ranks[row] = (unsigned char) itl_menu_match_rank(entry, entry_len, query,
@@ -3893,12 +4079,12 @@ test_reference_random(unsigned *state)
 static bool
 test_menu_index_narrows_like_the_plain_scan(void)
 {
-  static const char alphabet[] = "abcdeABCDEfgxyz0129-_./\xc3\xa9";
-  static char names[TEST_REF_ROW_MAX][16];
+  static const char  alphabet[] = "abcdeABCDEfgxyz0129-_./\xc3\xa9";
+  static char        names[TEST_REF_ROW_MAX][16];
   static const char *candidates[TEST_REF_ROW_MAX];
-  unsigned seed = 12345u;
-  size_t round;
-  bool ok = true;
+  unsigned           seed = 12345u;
+  size_t             round;
+  bool               ok = true;
 
   for (round = 0; round < 40 && ok; ++round) {
     tl_completion base = ITL_ZERO_INIT;
@@ -3915,19 +4101,19 @@ test_menu_index_narrows_like_the_plain_scan(void)
             alphabet[test_reference_random(&seed) % (sizeof(alphabet) - 1)];
       }
       names[row][length] = '\0';
-      candidates[row] = names[row];
+      candidates[row]    = names[row];
     }
     base.candidates = candidates;
-    base.count = count;
+    base.count      = count;
     itl_menu_index_drop(&itl_g_menu_index);
 
     for (trial = 0; trial < 12 && ok; ++trial) {
-      char query[8];
-      size_t length = test_reference_random(&seed) % 7;
-      size_t step;
-      int mode = (int) (test_reference_random(&seed) % 3);
-      unsigned base_tier = test_reference_random(&seed) % 3;
-      const char *source = candidates[test_reference_random(&seed) % count];
+      char        query[8];
+      size_t      length = test_reference_random(&seed) % 7;
+      size_t      step;
+      int         mode      = (int) (test_reference_random(&seed) % 3);
+      unsigned    base_tier = test_reference_random(&seed) % 3;
+      const char *source    = candidates[test_reference_random(&seed) % count];
 
       for (step = 0; step < length; ++step) {
         query[step] = step < strlen(source) && test_reference_random(&seed) % 4
@@ -3937,26 +4123,24 @@ test_menu_index_narrows_like_the_plain_scan(void)
       }
 
       for (step = 0; step <= length * 2 && ok; ++step) {
-        size_t query_len = step <= length ? step : length * 2 - step;
-        const char *expected[ITL_MENU_FILTER_MAX];
-        tl_completion result = ITL_ZERO_INIT;
-        size_t expected_count = test_reference_narrow(
+        size_t        query_len = step <= length ? step : length * 2 - step;
+        const char   *expected[ITL_MENU_FILTER_MAX];
+        tl_completion result         = ITL_ZERO_INIT;
+        size_t        expected_count = test_reference_narrow(
             mode, &base, query, query_len, base_tier, expected);
-        bool is_kept;
+        bool   is_kept;
         size_t at;
 
         if (mode == 0) {
-          is_kept = itl_menu_narrow_ranked(&base, query, query_len,
-                                           ITL_MENU_RANK_MODE_WHERE, 0,
-                                           &result);
+          is_kept = itl_menu_narrow_ranked(
+              &base, query, query_len, ITL_MENU_RANK_MODE_WHERE, 0, &result);
         } else if (mode == 1) {
           is_kept = itl_menu_narrow_ranked(&base, query, query_len,
                                            ITL_MENU_RANK_MODE_TIER, base_tier,
                                            &result);
         } else {
-          is_kept = itl_menu_narrow_ranked(&base, query, query_len,
-                                           ITL_MENU_RANK_MODE_PREFIX, 0,
-                                           &result);
+          is_kept = itl_menu_narrow_ranked(
+              &base, query, query_len, ITL_MENU_RANK_MODE_PREFIX, 0, &result);
         }
 
         if (is_kept != (expected_count > 0) ||
@@ -3981,22 +4165,21 @@ test_menu_index_narrows_like_the_plain_scan(void)
     }
   }
 
-
   return ok;
 }
 
 static bool
 test_menu_narrow_reuses_base(void)
 {
-  char                   out_buffer[BUFFER_SIZE];
-  itl_le_t               le = ITL_ZERO_INIT;
-  itl_menu_source        source = ITL_ZERO_INIT;
-  itl_menu_filter_state  state = ITL_ZERO_INIT;
-  tl_completion          result = ITL_ZERO_INIT;
-  itl_string_t          *line = itl_string_alloc();
+  char                  out_buffer[BUFFER_SIZE];
+  itl_le_t              le     = ITL_ZERO_INIT;
+  itl_menu_source       source = ITL_ZERO_INIT;
+  itl_menu_filter_state state  = ITL_ZERO_INIT;
+  tl_completion         result = ITL_ZERO_INIT;
+  itl_string_t         *line   = itl_string_alloc();
 
-  source.gather = test_menu_gather;
-  test_menu_gather_calls = 0;
+  source.gather             = test_menu_gather;
+  test_menu_gather_calls    = 0;
   test_menu_gather_has_rows = true;
 
   ITL_STRING_FROM_CSTR(line, "al");
@@ -4015,8 +4198,7 @@ test_menu_narrow_reuses_base(void)
   result.token_end += 1;
 
   if (!itl_menu_narrow(&le, &source, &state, &result) || result.count != 1 ||
-      strcmp(result.candidates[0], "album") != 0 ||
-      test_menu_gather_calls != 1)
+      strcmp(result.candidates[0], "album") != 0 || test_menu_gather_calls != 1)
   {
     TEST_PRINTF("a grown query kept %zu rows after %zu gathers\n", result.count,
                 test_menu_gather_calls);
@@ -4080,10 +4262,10 @@ static bool
 test_menu_at_sign_returns_to_host(void)
 {
   static const char *candidates[] = {"root@alpha", "root@beta"};
-  tl_completion      result = ITL_ZERO_INIT;
+  tl_completion      result       = ITL_ZERO_INIT;
 
-  result.candidates = candidates;
-  result.count = countof(candidates);
+  result.candidates            = candidates;
+  result.count                 = countof(candidates);
   result.longest_common_prefix = "root@";
 
   if (itl_completion_prefix_keeps_list(&result, "root", 4)) {
@@ -4112,23 +4294,22 @@ static bool   test_word_gather_is_unranked;
 static bool
 test_word_gather(itl_le_t *le, tl_completion *result)
 {
-  static const char *ranked_words[] = {"alpha", "album", "alcove", "beta"};
+  static const char *ranked_words[]   = {"alpha", "album", "alcove", "beta"};
   static const char *unranked_words[] = {"alpha", "Album", "alcove", "beta"};
-  static const char *notes[] = {"first", "second", "third", "fourth"};
+  static const char *notes[]          = {"first", "second", "third", "fourth"};
   const char *const *words =
       test_word_gather_is_unranked ? unranked_words : ranked_words;
   static const char *candidates[countof(ranked_words)];
   static const char *descriptions[countof(ranked_words)];
   char               token[BUFFER_SIZE];
-  size_t             token_len = 0;
+  size_t             token_len  = 0;
   size_t             kept_count = 0;
-  size_t             start = le->line->length;
+  size_t             start      = le->line->length;
   size_t             i;
 
   test_word_gather_calls += 1;
 
-  while (start > 0 && !ITL_CHAR_IS_SPACE(le->line->chars[start - 1].bytes[0]))
-  {
+  while (start > 0 && !ITL_CHAR_IS_SPACE(le->line->chars[start - 1].bytes[0])) {
     start -= 1;
   }
   for (i = start; i < le->line->length && token_len + 1 < sizeof(token); ++i) {
@@ -4142,7 +4323,7 @@ test_word_gather(itl_le_t *le, tl_completion *result)
                           : strncmp(words[i], token, token_len) == 0;
 
     if (does_match) {
-      candidates[kept_count] = words[i];
+      candidates[kept_count]   = words[i];
       descriptions[kept_count] = notes[i];
       kept_count += 1;
     }
@@ -4152,13 +4333,13 @@ test_word_gather(itl_le_t *le, tl_completion *result)
     return false;
   }
 
-  result->candidates = candidates;
-  result->descriptions = descriptions;
+  result->candidates            = candidates;
+  result->descriptions          = descriptions;
   result->longest_common_prefix = NULL;
-  result->count = kept_count;
-  result->token_start = start;
-  result->token_end = le->line->length;
-  result->is_tier_ranked = !test_word_gather_is_unranked;
+  result->count                 = kept_count;
+  result->token_start           = start;
+  result->token_end             = le->line->length;
+  result->is_tier_ranked        = !test_word_gather_is_unranked;
 
   return true;
 }
@@ -4167,22 +4348,35 @@ test_word_gather(itl_le_t *le, tl_completion *result)
    and return how many more gathers the keys cost. The line the keys left is
    written to out_line. */
 static size_t
-menu_keys_gathers(const char *text, const char *keys, char *out_line,
-                  size_t out_size)
+menu_keys_gathers(const char *text,
+                  const char *keys,
+                  char       *out_line,
+                  size_t      out_size)
 {
-  static const itl_menu_source source = {
-      test_word_gather, true, true, false, true, false, false, NULL, NULL,
-      NULL, false, true, false};
-  char          out_buffer[BUFFER_SIZE];
-  int           pipe_descriptors[2] = {-1, -1};
-  int           null_descriptor = -1;
-  int           saved_stdin = -1;
-  int           saved_stdout = -1;
-  size_t        calls = (size_t) -1;
-  size_t        key_count = strlen(keys);
-  tl_completion initial = ITL_ZERO_INIT;
-  itl_le_t      le = ITL_ZERO_INIT;
-  itl_string_t *line = itl_string_alloc();
+  static const itl_menu_source source = {test_word_gather,
+                                         true,
+                                         true,
+                                         false,
+                                         true,
+                                         false,
+                                         false,
+                                         NULL,
+                                         NULL,
+                                         NULL,
+                                         false,
+                                         true,
+                                         false,
+                                         false};
+  char                         out_buffer[BUFFER_SIZE];
+  int                          pipe_descriptors[2] = {-1, -1};
+  int                          null_descriptor     = -1;
+  int                          saved_stdin         = -1;
+  int                          saved_stdout        = -1;
+  size_t                       calls               = (size_t) -1;
+  size_t                       key_count           = strlen(keys);
+  tl_completion                initial             = ITL_ZERO_INIT;
+  itl_le_t                     le                  = ITL_ZERO_INIT;
+  itl_string_t                *line                = itl_string_alloc();
 
   out_line[0] = '\0';
   if (pipe(pipe_descriptors) != 0) goto cleanup;
@@ -4195,7 +4389,7 @@ menu_keys_gathers(const char *text, const char *keys, char *out_line,
   null_descriptor = open("/dev/null", O_WRONLY);
   if (null_descriptor < 0) goto cleanup;
 
-  saved_stdin = dup(STDIN_FILENO);
+  saved_stdin  = dup(STDIN_FILENO);
   saved_stdout = dup(STDOUT_FILENO);
   if (saved_stdin < 0 || saved_stdout < 0) goto cleanup;
   if (dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
@@ -4207,8 +4401,8 @@ menu_keys_gathers(const char *text, const char *keys, char *out_line,
   ITL_STRING_FROM_CSTR(line, text);
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
   itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 80;
+  itl_g_tty_prev_rows    = 24;
+  itl_g_tty_prev_cols    = 80;
 
   test_word_gather_calls = 0;
   (void) test_word_gather(&le, &initial);
@@ -4256,20 +4450,20 @@ static bool
 test_menu_keys_reuse_gathered_list(void)
 {
   static const menu_keys_case_t cases[] = {
-      {"cat al",  "bu",               "cat albu",    0},
-      {"cat al",  "c",                "cat alc",     0},
-      {"cat al",  "bu\x7f\x7f",       "cat al",      0},
-      {"cat al",  "bu\x7f\x7f\x7f",   "cat a",       1},
-      {"cat al",  " ",                "cat al ",     1},
-      {"cat al",  " b",               "cat al b",    2},
-      {"cat al",  "/",                "cat al/",     1},
-      {"cat al",  "/a",               "cat al/a",    2},
-      {"cat al",  "'",                "cat al'",     1},
-      {"cat al",  "=",                "cat al=",     1},
-      {"cat ",    "al",               "cat al",      1},
-      {"cat al",  "zz",               "cat alzz",    1},
-      {"cat al",  "ee",               "cat alee",    1},
-      {"cat al",  "P",                "cat alP",     1},
+      {"cat al", "bu",             "cat albu", 0},
+      {"cat al", "c",              "cat alc",  0},
+      {"cat al", "bu\x7f\x7f",     "cat al",   0},
+      {"cat al", "bu\x7f\x7f\x7f", "cat a",    1},
+      {"cat al", " ",              "cat al ",  1},
+      {"cat al", " b",             "cat al b", 2},
+      {"cat al", "/",              "cat al/",  1},
+      {"cat al", "/a",             "cat al/a", 2},
+      {"cat al", "'",              "cat al'",  1},
+      {"cat al", "=",              "cat al=",  1},
+      {"cat ",   "al",             "cat al",   1},
+      {"cat al", "zz",             "cat alzz", 1},
+      {"cat al", "ee",             "cat alee", 1},
+      {"cat al", "P",              "cat alP",  1},
   };
   bool   ok = true;
   char   line[BUFFER_SIZE];
@@ -4338,8 +4532,7 @@ test_debounce_gather(itl_le_t *le, tl_completion *result)
 
   test_debounce_gather_calls += 1;
 
-  while (start > 0 && !ITL_CHAR_IS_SPACE(le->line->chars[start - 1].bytes[0]))
-  {
+  while (start > 0 && !ITL_CHAR_IS_SPACE(le->line->chars[start - 1].bytes[0])) {
     start -= 1;
   }
   for (i = 0; i < test_debounce_row_count; ++i) {
@@ -4347,13 +4540,13 @@ test_debounce_gather(itl_le_t *le, tl_completion *result)
     candidates[i] = names[i];
   }
 
-  result->candidates = candidates;
-  result->descriptions = NULL;
+  result->candidates            = candidates;
+  result->descriptions          = NULL;
   result->longest_common_prefix = NULL;
-  result->count = test_debounce_row_count;
-  result->token_start = start;
-  result->token_end = le->line->length;
-  result->is_tier_ranked = 0;
+  result->count                 = test_debounce_row_count;
+  result->token_start           = start;
+  result->token_end             = le->line->length;
+  result->is_tier_ranked        = 0;
 
   return true;
 }
@@ -4371,23 +4564,37 @@ test_debounce_idle_callback(const char *buffer, size_t cursor)
    input after eof_ms. Returns how many gathers the keys cost, and writes the
    line they left. The idle delay is 40 ms. */
 static size_t
-debounce_menu_gathers(size_t row_count, const char *keys, unsigned eof_ms,
-                      char *out_line, size_t out_size)
+debounce_menu_gathers(size_t      row_count,
+                      const char *keys,
+                      unsigned    eof_ms,
+                      char       *out_line,
+                      size_t      out_size)
 {
-  static const itl_menu_source source = {
-      test_debounce_gather, true, true, false, true, false, false, NULL, NULL,
-      NULL, false, true, false};
-  char          out_buffer[BUFFER_SIZE];
-  int           pipe_descriptors[2] = {-1, -1};
-  int           null_descriptor = -1;
-  int           saved_stdin = -1;
-  int           saved_stdout = -1;
-  pid_t         child = -1;
-  size_t        calls = (size_t) -1;
-  size_t        key_count = strlen(keys);
-  tl_completion initial = ITL_ZERO_INIT;
-  itl_le_t      le = ITL_ZERO_INIT;
-  itl_string_t *line = itl_string_alloc();
+  static const itl_menu_source source = {test_debounce_gather,
+                                         true,
+                                         true,
+                                         false,
+                                         true,
+                                         false,
+                                         false,
+                                         NULL,
+                                         NULL,
+                                         NULL,
+                                         false,
+                                         true,
+                                         false,
+                                         false};
+  char                         out_buffer[BUFFER_SIZE];
+  int                          pipe_descriptors[2] = {-1, -1};
+  int                          null_descriptor     = -1;
+  int                          saved_stdin         = -1;
+  int                          saved_stdout        = -1;
+  pid_t                        child               = -1;
+  size_t                       calls               = (size_t) -1;
+  size_t                       key_count           = strlen(keys);
+  tl_completion                initial             = ITL_ZERO_INIT;
+  itl_le_t                     le                  = ITL_ZERO_INIT;
+  itl_string_t                *line                = itl_string_alloc();
 
   out_line[0] = '\0';
   if (pipe(pipe_descriptors) != 0) goto cleanup;
@@ -4406,7 +4613,7 @@ debounce_menu_gathers(size_t row_count, const char *keys, unsigned eof_ms,
   null_descriptor = open("/dev/null", O_WRONLY);
   if (null_descriptor < 0) goto cleanup;
 
-  saved_stdin = dup(STDIN_FILENO);
+  saved_stdin  = dup(STDIN_FILENO);
   saved_stdout = dup(STDOUT_FILENO);
   if (saved_stdin < 0 || saved_stdout < 0) goto cleanup;
   if (dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
@@ -4418,8 +4625,8 @@ debounce_menu_gathers(size_t row_count, const char *keys, unsigned eof_ms,
   ITL_STRING_FROM_CSTR(line, "cat it");
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
   itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 80;
+  itl_g_tty_prev_rows    = 24;
+  itl_g_tty_prev_cols    = 80;
   tl_set_idle_callback(test_debounce_idle_callback, 40, 10);
 
   test_debounce_row_count = row_count;
@@ -4466,8 +4673,8 @@ test_menu_debounces_every_list(void)
   bool                ok = true;
 
   for (index = 0; index < countof(row_counts); ++index) {
-    gathers = debounce_menu_gathers(row_counts[index], " ab", 10, line,
-                                    sizeof(line));
+    gathers =
+        debounce_menu_gathers(row_counts[index], " ab", 10, line, sizeof(line));
     if (gathers != 0 || strcmp(line, "cat it ab") != 0 ||
         itl_g_menu_due_ms != 0)
     {
@@ -4520,8 +4727,10 @@ static uint64_t         test_staged_start_ms;
    then offers test_staged_row_count rows. Every question is logged with its
    time. */
 static int
-test_staged_host(const char *buffer, size_t cursor, tl_completion *out,
-                 int for_listing)
+test_staged_host(const char    *buffer,
+                 size_t         cursor,
+                 tl_completion *out,
+                 int            for_listing)
 {
   static char        names[TEST_DEBOUNCE_ROW_MAX][12];
   static const char *candidates[TEST_DEBOUNCE_ROW_MAX];
@@ -4539,7 +4748,7 @@ test_staged_host(const char *buffer, size_t cursor, tl_completion *out,
   {
     memcpy(test_staged_work_prefix, buffer, start);
     test_staged_work_prefix[start] = '\0';
-    test_staged_work_done = 0;
+    test_staged_work_done          = 0;
   }
 
   if (test_staged_call_count < TEST_STAGED_LOG_MAX) {
@@ -4563,14 +4772,14 @@ test_staged_host(const char *buffer, size_t cursor, tl_completion *out,
     candidates[i] = names[i];
   }
 
-  out->candidates = candidates;
-  out->descriptions = NULL;
+  out->candidates            = candidates;
+  out->descriptions          = NULL;
   out->longest_common_prefix = NULL;
-  out->count = test_staged_row_count;
-  out->token_start = start;
-  out->token_end = cursor;
-  out->is_tier_ranked = 0;
-  out->is_space_suppressed = 0;
+  out->count                 = test_staged_row_count;
+  out->token_start           = start;
+  out->token_end             = cursor;
+  out->is_tier_ranked        = 0;
+  out->is_space_suppressed   = 0;
 
   return 1;
 }
@@ -4589,43 +4798,58 @@ test_staged_idle(const char *buffer, size_t cursor)
    of work. The input ends end_ms after the start. Returns false when the
    scenario could not run. The idle delay is 40 ms and the poll interval 10. */
 static bool
-staged_menu_run(const test_staged_step *steps, size_t step_count,
-                unsigned end_ms, size_t row_count, size_t pending_needed,
-                char *out_line, size_t out_size)
+staged_menu_run(const test_staged_step *steps,
+                size_t                  step_count,
+                unsigned                end_ms,
+                size_t                  row_count,
+                size_t                  pending_needed,
+                char                   *out_line,
+                size_t                  out_size)
 {
-  static const itl_menu_source source = {
-      itl_menu_regather, true, true, false, true, false, false, NULL, NULL,
-      NULL, true, true, false};
-  char          out_buffer[BUFFER_SIZE];
-  int           pipe_descriptors[2] = {-1, -1};
-  int           null_descriptor = -1;
-  int           saved_stdin = -1;
-  int           saved_stdout = -1;
-  pid_t         child = -1;
-  bool          did_run = false;
-  tl_completion initial = ITL_ZERO_INIT;
-  itl_le_t      le = ITL_ZERO_INIT;
-  itl_string_t *line = itl_string_alloc();
+  static const itl_menu_source source = {itl_menu_regather,
+                                         true,
+                                         true,
+                                         false,
+                                         true,
+                                         false,
+                                         false,
+                                         NULL,
+                                         NULL,
+                                         NULL,
+                                         true,
+                                         true,
+                                         false,
+                                         false};
+  char                         out_buffer[BUFFER_SIZE];
+  int                          pipe_descriptors[2] = {-1, -1};
+  int                          null_descriptor     = -1;
+  int                          saved_stdin         = -1;
+  int                          saved_stdout        = -1;
+  pid_t                        child               = -1;
+  bool                         did_run             = false;
+  tl_completion                initial             = ITL_ZERO_INIT;
+  itl_le_t                     le                  = ITL_ZERO_INIT;
+  itl_string_t                *line                = itl_string_alloc();
 
   out_line[0] = '\0';
   if (pipe(pipe_descriptors) != 0) goto cleanup;
 
-  test_staged_row_count = test_staged_initial_row_count;
+  test_staged_row_count      = test_staged_initial_row_count;
   test_staged_pending_needed = 0;
-  test_staged_work_done = 0;
+  test_staged_work_done      = 0;
   test_staged_work_prefix[0] = '\0';
   (void) test_staged_host("cat it", 6, &initial, 1);
-  test_staged_row_count = row_count;
+  test_staged_row_count      = row_count;
   test_staged_pending_needed = pending_needed;
-  test_staged_work_done = 0;
+  test_staged_work_done      = 0;
   test_staged_work_prefix[0] = '\0';
-  test_staged_call_count = 0;
+  test_staged_call_count     = 0;
   test_staged_finished_count = 0;
 
   child = fork();
   if (child < 0) goto cleanup;
   if (child == 0) {
-    size_t step;
+    size_t   step;
     unsigned elapsed_ms = 0;
 
     close(pipe_descriptors[0]);
@@ -4646,13 +4870,13 @@ staged_menu_run(const test_staged_step *steps, size_t step_count,
     _exit(0);
   }
   close(pipe_descriptors[1]);
-  pipe_descriptors[1] = -1;
+  pipe_descriptors[1]  = -1;
   test_staged_start_ms = itl_monotonic_ms();
 
   null_descriptor = open("/dev/null", O_WRONLY);
   if (null_descriptor < 0) goto cleanup;
 
-  saved_stdin = dup(STDIN_FILENO);
+  saved_stdin  = dup(STDIN_FILENO);
   saved_stdout = dup(STDOUT_FILENO);
   if (saved_stdin < 0 || saved_stdout < 0) goto cleanup;
   if (dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
@@ -4664,8 +4888,8 @@ staged_menu_run(const test_staged_step *steps, size_t step_count,
   ITL_STRING_FROM_CSTR(line, "cat it");
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
   itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 80;
+  itl_g_tty_prev_rows    = 24;
+  itl_g_tty_prev_cols    = 80;
   tl_set_complete_callback(test_staged_host);
   tl_set_idle_callback(test_staged_idle, 40, 10);
 
@@ -4677,7 +4901,7 @@ cleanup:
   tl_set_complete_callback(NULL);
   tl_set_idle_callback(NULL, 0, 0);
   itl_g_idle_is_load_poll = false;
-  itl_g_pushback_byte = -1;
+  itl_g_pushback_byte     = -1;
   if (saved_stdin >= 0) {
     dup2(saved_stdin, STDIN_FILENO);
     close(saved_stdin);
@@ -4706,7 +4930,11 @@ static bool
 test_menu_asks_once_a_word_pauses(void)
 {
   static const test_staged_step steps[] = {
-      {0, " "}, {120, "a"}, {130, "b"}, {140, "c"}};
+      {0,   " "},
+      {120, "a"},
+      {130, "b"},
+      {140, "c"}
+  };
   char line[BUFFER_SIZE];
   bool ok = true;
 
@@ -4736,7 +4964,11 @@ test_menu_asks_once_a_word_pauses(void)
 static bool
 test_menu_new_word_asks_after_its_pause(void)
 {
-  static const test_staged_step steps[] = {{0, " "}, {120, "a"}, {200, " "}};
+  static const test_staged_step steps[] = {
+      {0,   " "},
+      {120, "a"},
+      {200, " "}
+  };
   char line[BUFFER_SIZE];
   bool ok = true;
 
@@ -4763,7 +4995,12 @@ static bool
 test_menu_returns_to_a_gathered_word_without_asking(void)
 {
   static const test_staged_step steps[] = {
-      {0, " "}, {120, "a"}, {300, "\x7f"}, {330, "a"}, {360, "\x7f"}};
+      {0,   " "   },
+      {120, "a"   },
+      {300, "\x7f"},
+      {330, "a"   },
+      {360, "\x7f"}
+  };
   char line[BUFFER_SIZE];
   bool ok = true;
 
@@ -4786,7 +5023,10 @@ test_menu_returns_to_a_gathered_word_without_asking(void)
 static bool
 test_menu_walking_key_asks_at_once(void)
 {
-  static const test_staged_step steps[] = {{0, " "}, {10, "\x1b[B"}};
+  static const test_staged_step steps[] = {
+      {0,  " "     },
+      {10, "\x1b[B"}
+  };
   char line[BUFFER_SIZE];
   bool ok = true;
 
@@ -4818,7 +5058,11 @@ static bool
 test_menu_unfinished_gather_resumes_after_the_pause(void)
 {
   static const test_staged_step steps[] = {
-      {0, " "}, {70, "a"}, {100, "b"}, {130, "c"}};
+      {0,   " "},
+      {70,  "a"},
+      {100, "b"},
+      {130, "c"}
+  };
   char   line[BUFFER_SIZE];
   size_t gap_count = 0;
   size_t index;
@@ -4863,8 +5107,10 @@ static bool               test_tab_is_blank_token_empty;
    open with the token, ignoring case when asked to, and reports their common
    prefix the same way. */
 static int
-test_tab_counting_callback(const char *buffer, size_t cursor,
-                           tl_completion *completion, int for_listing)
+test_tab_counting_callback(const char    *buffer,
+                           size_t         cursor,
+                           tl_completion *completion,
+                           int            for_listing)
 {
   static const char *candidates[8];
   static char        prefix[BUFFER_SIZE];
@@ -4889,10 +5135,9 @@ test_tab_counting_callback(const char *buffer, size_t cursor,
     if (test_tab_is_blank_token_empty && token_len == 0) {
       break;
     }
-    bool        does_match =
-        test_tab_should_fold_prefix
-                   ? strncasecmp(word, buffer + start, token_len) == 0
-                   : strncmp(word, buffer + start, token_len) == 0;
+    bool does_match = test_tab_should_fold_prefix
+                          ? strncasecmp(word, buffer + start, token_len) == 0
+                          : strncmp(word, buffer + start, token_len) == 0;
 
     if (!does_match) {
       continue;
@@ -4901,10 +5146,9 @@ test_tab_counting_callback(const char *buffer, size_t cursor,
       prefix_len = strlen(word);
       memcpy(prefix, word, prefix_len);
     }
-    while (prefix_len > 0 &&
-           (test_tab_should_fold_prefix
-                ? strncasecmp(prefix, word, prefix_len) != 0
-                : strncmp(prefix, word, prefix_len) != 0))
+    while (prefix_len > 0 && (test_tab_should_fold_prefix
+                                  ? strncasecmp(prefix, word, prefix_len) != 0
+                                  : strncmp(prefix, word, prefix_len) != 0))
     {
       prefix_len -= 1;
     }
@@ -4913,12 +5157,12 @@ test_tab_counting_callback(const char *buffer, size_t cursor,
   }
   prefix[prefix_len] = '\0';
 
-  completion->candidates = candidates;
-  completion->descriptions = NULL;
+  completion->candidates            = candidates;
+  completion->descriptions          = NULL;
   completion->longest_common_prefix = prefix;
-  completion->count = kept_count;
-  completion->token_start = start;
-  completion->token_end = cursor;
+  completion->count                 = kept_count;
+  completion->token_start           = start;
+  completion->token_end             = cursor;
 
   return 1;
 }
@@ -4927,20 +5171,22 @@ test_tab_counting_callback(const char *buffer, size_t cursor,
    input ends, and return how many times the host was asked. The line the keys
    left is written to out_line. */
 static size_t
-tab_completion_calls(const char *text, const char *keys, char *out_line,
-                     size_t out_size)
+tab_completion_calls(const char *text,
+                     const char *keys,
+                     char       *out_line,
+                     size_t      out_size)
 {
   char           out_buffer[BUFFER_SIZE];
   int            pipe_descriptors[2] = {-1, -1};
-  int            null_descriptor = -1;
-  int            saved_stdin = -1;
-  int            saved_stdout = -1;
-  int            was_menu_enabled = itl_g_completion_menu_enabled;
-  size_t         calls = (size_t) -1;
-  size_t         key_count = strlen(keys);
-  tl_status_code completion_code = TL_SUCCESS;
-  itl_le_t       le = ITL_ZERO_INIT;
-  itl_string_t  *line = itl_string_alloc();
+  int            null_descriptor     = -1;
+  int            saved_stdin         = -1;
+  int            saved_stdout        = -1;
+  int            was_menu_enabled    = itl_g_completion_menu_enabled;
+  size_t         calls               = (size_t) -1;
+  size_t         key_count           = strlen(keys);
+  tl_status_code completion_code     = TL_SUCCESS;
+  itl_le_t       le                  = ITL_ZERO_INIT;
+  itl_string_t  *line                = itl_string_alloc();
 
   out_line[0] = '\0';
   if (pipe(pipe_descriptors) != 0) goto cleanup;
@@ -4953,7 +5199,7 @@ tab_completion_calls(const char *text, const char *keys, char *out_line,
   null_descriptor = open("/dev/null", O_WRONLY);
   if (null_descriptor < 0) goto cleanup;
 
-  saved_stdin = dup(STDIN_FILENO);
+  saved_stdin  = dup(STDIN_FILENO);
   saved_stdout = dup(STDOUT_FILENO);
   if (saved_stdin < 0 || saved_stdout < 0) goto cleanup;
   if (dup2(pipe_descriptors[0], STDIN_FILENO) < 0 ||
@@ -4964,9 +5210,9 @@ tab_completion_calls(const char *text, const char *keys, char *out_line,
 
   ITL_STRING_FROM_CSTR(line, text);
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
-  itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 80;
+  itl_g_tty_changed_size        = 0;
+  itl_g_tty_prev_rows           = 24;
+  itl_g_tty_prev_cols           = 80;
   itl_g_completion_menu_enabled = 1;
 
   test_tab_callback_calls = 0;
@@ -5020,20 +5266,20 @@ struct tab_calls_case
 static bool
 test_tab_prefix_menu_reuses_gather(void)
 {
-  static const char *const tools[] = {"tool-alpha", "tool-beta", "other"};
-  static const char *const paths[] = {"dir/a", "dir/b"};
-  static const char *const values[] = {"key=one", "key=two"};
-  static const char *const capitals[] = {"Alpha", "Album"};
-  static const tab_calls_case_t cases[] = {
-      {tools,    3, false, "run to",       "",   "run tool-",       1},
-      {tools,    3, false, "run to",       "a",  "run tool-a",      1},
-      {tools,    3, false, "run tool-",    "",   "run tool-",       1},
-      {tools,    3, false, "run ",         "",   "run ",            1},
-      {paths,    2, false, "run d",        "",   "run dir/",        2},
-      {values,   2, false, "run k",        "",   "run key=",        2},
-      {capitals, 2, true,  "run a",        "",   "run Al",          2},
-      {tools,    2, false, "run ",         "",   "run tool-",       1},
-      {tools,    2, false, "run ",         "b",  "run tool-b",      1},
+  static const char *const      tools[]  = {"tool-alpha", "tool-beta", "other"};
+  static const char *const      paths[]  = {"dir/a", "dir/b"};
+  static const char *const      values[] = {"key=one", "key=two"};
+  static const char *const      capitals[] = {"Alpha", "Album"};
+  static const tab_calls_case_t cases[]    = {
+      {tools,    3, false, "run to",    "",  "run tool-",  1},
+      {tools,    3, false, "run to",    "a", "run tool-a", 1},
+      {tools,    3, false, "run tool-", "",  "run tool-",  1},
+      {tools,    3, false, "run ",      "",  "run ",       1},
+      {paths,    2, false, "run d",     "",  "run dir/",   2},
+      {values,   2, false, "run k",     "",  "run key=",   2},
+      {capitals, 2, true,  "run a",     "",  "run Al",     2},
+      {tools,    2, false, "run ",      "",  "run tool-",  1},
+      {tools,    2, false, "run ",      "b", "run tool-b", 1},
   };
   bool   ok = true;
   char   line[BUFFER_SIZE];
@@ -5042,11 +5288,11 @@ test_tab_prefix_menu_reuses_gather(void)
   for (i = 0; i < countof(cases); ++i) {
     size_t calls;
 
-    test_tab_words = cases[i].words;
-    test_tab_word_count = cases[i].word_count;
+    test_tab_words              = cases[i].words;
+    test_tab_word_count         = cases[i].word_count;
     test_tab_should_fold_prefix = cases[i].should_fold_prefix;
-    calls = tab_completion_calls(cases[i].text, cases[i].keys, line,
-                                 sizeof(line));
+    calls =
+        tab_completion_calls(cases[i].text, cases[i].keys, line, sizeof(line));
 
     if (calls != cases[i].calls || strcmp(line, cases[i].line) != 0) {
       TEST_PRINTF("tab case %zu left '%s' after %zu calls\n", i, line, calls);
@@ -5054,8 +5300,8 @@ test_tab_prefix_menu_reuses_gather(void)
     }
   }
 
-  test_tab_words = NULL;
-  test_tab_word_count = 0;
+  test_tab_words              = NULL;
+  test_tab_word_count         = 0;
   test_tab_should_fold_prefix = false;
 
   return ok;
@@ -5067,9 +5313,9 @@ test_tab_prefix_menu_reuses_gather(void)
 static bool
 test_tab_sole_candidate_stops(void)
 {
-  static const char *const files[] = {"file1.txt", "other"};
+  static const char *const files[]       = {"file1.txt", "other"};
   static const char *const directories[] = {"local/", "other"};
-  static const char *const inside[] = {"local/a", "local/b"};
+  static const char *const inside[]      = {"local/a", "local/b"};
   static const struct
   {
     const char *const        *words;
@@ -5081,36 +5327,35 @@ test_tab_sole_candidate_stops(void)
     size_t                    calls;
     bool                      is_next_word_empty;
   } cases[] = {
-      {files,       2, TL_SPACE_AFTER_COMPLETION_ON,  "cat fi",
-       "\x1b", "cat file1.txt ", 2, false                                  },
-      {files,       2, TL_SPACE_AFTER_COMPLETION_ON,  "cat fi",
-       "o\x1b", "cat file1.txt o", 3, false                              },
-      {files,       2, TL_SPACE_AFTER_COMPLETION_ON,  "cat fi",
-       "\x1b", "cat file1.txt ", 2, true                                   },
-      {files,       2, TL_SPACE_AFTER_COMPLETION_OFF, "cat fi",
-       "\x1b", "cat file1.txt", 2, false                                   },
-      {directories, 2, TL_SPACE_AFTER_COMPLETION_ON,  "cd lo",
-       "\x1b", "cd local/ ", 2, false                                      },
-      {directories, 2, TL_SPACE_AFTER_COMPLETION_OFF, "cd lo",
-       "\x1b", "cd local/", 2, false                                       },
-      {inside,      2, TL_SPACE_AFTER_COMPLETION_OFF, "cd local/",
-       "\x1b", "cd local/", 1, false                                       },
+      {files,       2, TL_SPACE_AFTER_COMPLETION_ON,  "cat fi",    "\x1b",
+       "cat file1.txt ",  2, false},
+      {files,       2, TL_SPACE_AFTER_COMPLETION_ON,  "cat fi",    "o\x1b",
+       "cat file1.txt o", 3, false},
+      {files,       2, TL_SPACE_AFTER_COMPLETION_ON,  "cat fi",    "\x1b",
+       "cat file1.txt ",  2, true },
+      {files,       2, TL_SPACE_AFTER_COMPLETION_OFF, "cat fi",    "\x1b",
+       "cat file1.txt",   2, false},
+      {directories, 2, TL_SPACE_AFTER_COMPLETION_ON,  "cd lo",     "\x1b",
+       "cd local/ ",      2, false},
+      {directories, 2, TL_SPACE_AFTER_COMPLETION_OFF, "cd lo",     "\x1b",
+       "cd local/",       2, false},
+      {inside,      2, TL_SPACE_AFTER_COMPLETION_OFF, "cd local/", "\x1b",
+       "cd local/",       1, false},
   };
-  tl_space_after_completion previous_space_after =
-      itl_g_space_after_completion;
-  bool   ok = true;
-  char   line[BUFFER_SIZE];
-  size_t i;
+  tl_space_after_completion previous_space_after = itl_g_space_after_completion;
+  bool                      ok                   = true;
+  char                      line[BUFFER_SIZE];
+  size_t                    i;
 
   for (i = 0; i < countof(cases); ++i) {
     size_t calls;
 
-    test_tab_words = cases[i].words;
+    test_tab_words      = cases[i].words;
     test_tab_word_count = cases[i].word_count;
     tl_set_space_after_completion(cases[i].space_after);
     test_tab_is_blank_token_empty = cases[i].is_next_word_empty;
-    calls = tab_completion_calls(cases[i].text, cases[i].keys, line,
-                                 sizeof(line));
+    calls =
+        tab_completion_calls(cases[i].text, cases[i].keys, line, sizeof(line));
 
     if (calls != cases[i].calls || strcmp(line, cases[i].line) != 0) {
       TEST_PRINTF("sole case %zu left '%s' after %zu calls\n", i, line, calls);
@@ -5120,7 +5365,7 @@ test_tab_sole_candidate_stops(void)
 
   test_tab_is_blank_token_empty = false;
   tl_set_space_after_completion(previous_space_after);
-  test_tab_words = NULL;
+  test_tab_words      = NULL;
   test_tab_word_count = 0;
 
   return ok;
@@ -5131,14 +5376,13 @@ test_tab_sole_candidate_stops(void)
 static bool
 test_tab_menu_stays_open_until_escape(void)
 {
-  static const char *const files[] = {"file1.txt", "file2.txt"};
-  tl_space_after_completion previous_space_after =
-      itl_g_space_after_completion;
-  bool   ok = true;
-  char   line[BUFFER_SIZE];
-  size_t calls;
+  static const char *const  files[]              = {"file1.txt", "file2.txt"};
+  tl_space_after_completion previous_space_after = itl_g_space_after_completion;
+  bool                      ok                   = true;
+  char                      line[BUFFER_SIZE];
+  size_t                    calls;
 
-  test_tab_words = files;
+  test_tab_words      = files;
   test_tab_word_count = 2;
   tl_set_space_after_completion(TL_SPACE_AFTER_COMPLETION_ON);
   calls = tab_completion_calls("cat ", "\t\t\x1b", line, sizeof(line));
@@ -5149,7 +5393,7 @@ test_tab_menu_stays_open_until_escape(void)
   }
 
   tl_set_space_after_completion(previous_space_after);
-  test_tab_words = NULL;
+  test_tab_words      = NULL;
   test_tab_word_count = 0;
 
   return ok;
@@ -5163,7 +5407,7 @@ test_menu_cells(void)
   size_t             drawn;
   tl_highlight_span  spans[1];
   int                was_colors_enabled = itl_g_colors_enabled;
-  itl_char_buf_t    *b = itl_char_buf_alloc();
+  itl_char_buf_t    *b                  = itl_char_buf_alloc();
 
   itl_g_colors_enabled = 1;
 
@@ -5176,7 +5420,7 @@ test_menu_cells(void)
   }
 
   b->size = 0;
-  drawn = itl_menu_append_cell(b, "ab", 5, false);
+  drawn   = itl_menu_append_cell(b, "ab", 5, false);
 
   if (drawn != 2 || b->size != 2 || memcmp(b->data, "ab", 2) != 0) {
     TEST_PRINTF("an unpadded cell drew %zu columns in %zu bytes\n", drawn,
@@ -5185,7 +5429,7 @@ test_menu_cells(void)
   }
 
   b->size = 0;
-  drawn = itl_menu_append_cell(b, "abcdef", 3, true);
+  drawn   = itl_menu_append_cell(b, "abcdef", 3, true);
 
   if (drawn != 3 || b->size != 3 || memcmp(b->data, "abc", 3) != 0) {
     TEST_PRINTF("a clipped cell drew %zu columns in %zu bytes\n", drawn,
@@ -5194,7 +5438,7 @@ test_menu_cells(void)
   }
 
   b->size = 0;
-  drawn = itl_menu_append_cell(b, "\xE6\x97\xA5\xE6\x9C\xAC", 3, true);
+  drawn   = itl_menu_append_cell(b, "\xE6\x97\xA5\xE6\x9C\xAC", 3, true);
 
   if (drawn != 4 || b->size != 6 ||
       memcmp(b->data, "\xE6\x97\xA5\xE6\x9C\xAC", 6) != 0)
@@ -5205,7 +5449,7 @@ test_menu_cells(void)
   }
 
   b->size = 0;
-  drawn = itl_menu_append_cell(b, "\xE6\x97\xA5\xE6\x9C\xAC", 6, true);
+  drawn   = itl_menu_append_cell(b, "\xE6\x97\xA5\xE6\x9C\xAC", 6, true);
 
   if (drawn != 6 || b->size != 8 ||
       memcmp(b->data, "\xE6\x97\xA5\xE6\x9C\xAC  ", 8) != 0)
@@ -5227,10 +5471,10 @@ test_menu_cells(void)
     goto failed;
   }
 
-  b->size = 0;
+  b->size        = 0;
   spans[0].start = 1;
-  spans[0].end = 3;
-  spans[0].sgr = red;
+  spans[0].end   = 3;
+  spans[0].sgr   = red;
   itl_menu_append_colored_cell(b, "abcdef", 6, spans, 1, false);
 
   if (b->size != 15 || memcmp(b->data, "a\x1b[31mbc\x1b[0mdef", 15) != 0) {
@@ -5238,7 +5482,7 @@ test_menu_cells(void)
     goto failed;
   }
 
-  b->size = 0;
+  b->size      = 0;
   spans[0].end = 6;
   itl_menu_append_colored_cell(b, "abcdef", 3, spans, 1, true);
 
@@ -5260,16 +5504,15 @@ test_menu_cells(void)
   itl_menu_append_colored_cell(b, "abcdefgh", 7, NULL, 0, true);
   drawn = itl_menu_append_cell(b, "abcdefgh", 7, true);
 
-  if (drawn != 7 || b->size != 14 ||
-      memcmp(b->data, "abcd...abcd...", 14) != 0)
+  if (drawn != 7 || b->size != 14 || memcmp(b->data, "abcd...abcd...", 14) != 0)
   {
     TEST_PRINTF("cut cells wrote %zu bytes\n", b->size);
     goto failed;
   }
 
   itl_g_colors_enabled = 0;
-  b->size = 0;
-  spans[0].end = 3;
+  b->size              = 0;
+  spans[0].end         = 3;
   itl_menu_append_colored_cell(b, "abcdef", 6, spans, 1, false);
 
   if (b->size != 6 || memcmp(b->data, "abcdef", 6) != 0) {
@@ -5290,8 +5533,10 @@ failed:
 }
 
 static bool
-merged_spans_are(const tl_highlight_span *out, size_t count,
-                 const tl_highlight_span *expected, size_t expected_count)
+merged_spans_are(const tl_highlight_span *out,
+                 size_t                   count,
+                 const tl_highlight_span *expected,
+                 size_t                   expected_count)
 {
   size_t i;
 
@@ -5314,13 +5559,13 @@ static bool
 test_history_menu_multiline_display(void)
 {
   static const char *const names[] = {"line one\nline two", "plain\rnext"};
-  tl_completion result = ITL_ZERO_INIT;
-  char          display[32];
-  itl_char_buf_t *b = itl_char_buf_alloc();
-  bool            ok = true;
+  tl_completion            result  = ITL_ZERO_INIT;
+  char                     display[32];
+  itl_char_buf_t          *b  = itl_char_buf_alloc();
+  bool                     ok = true;
 
   result.candidates = names;
-  result.count = countof(names);
+  result.count      = countof(names);
 
   if (strcmp(itl_menu_display_name(names[0], display, sizeof(display)),
              "line one...") != 0 ||
@@ -5348,17 +5593,17 @@ test_history_menu_multiline_display(void)
 static bool
 test_menu_row_colors_directories(void)
 {
-  static const char *const names[] = {"dir/", "file"};
-  tl_completion  result = ITL_ZERO_INIT;
-  int            was_colors_enabled = itl_g_colors_enabled;
-  itl_char_buf_t *b = itl_char_buf_alloc();
-  bool            ok = true;
-  const char     *directory_sgr = itl_menu_directory_sgr();
-  char            colored_name[64];
+  static const char *const names[]            = {"dir/", "file"};
+  tl_completion            result             = ITL_ZERO_INIT;
+  int                      was_colors_enabled = itl_g_colors_enabled;
+  itl_char_buf_t          *b                  = itl_char_buf_alloc();
+  bool                     ok                 = true;
+  const char              *directory_sgr      = itl_menu_directory_sgr();
+  char                     colored_name[64];
 
   snprintf(colored_name, sizeof(colored_name), "%sdir/", directory_sgr);
-  result.candidates = names;
-  result.count = countof(names);
+  result.candidates    = names;
+  result.count         = countof(names);
   itl_g_colors_enabled = 1;
 
   itl_menu_append_row(b, &result, 0, 4, 0, false, false);
@@ -5381,7 +5626,7 @@ test_menu_row_colors_directories(void)
     ok = false;
   }
 
-  b->size = 0;
+  b->size              = 0;
   itl_g_colors_enabled = 0;
   itl_menu_append_row(b, &result, 0, 4, 0, false, false);
   if (test_bytes_have(b->data, b->size, directory_sgr)) {
@@ -5397,8 +5642,8 @@ test_menu_row_colors_directories(void)
 static bool
 test_merge_visual_spans(void)
 {
-  static const char *first = "\x1b[31m";
-  static const char *second = "\x1b[32m";
+  static const char *first   = "\x1b[31m";
+  static const char *second  = "\x1b[32m";
   static const char *inverse = "\x1b[7m";
   tl_highlight_span  syntax[3];
   tl_highlight_span  selection[1];
@@ -5407,11 +5652,11 @@ test_merge_visual_spans(void)
   size_t             count;
 
   syntax[0].start = 0;
-  syntax[0].end = 3;
-  syntax[0].sgr = first;
+  syntax[0].end   = 3;
+  syntax[0].sgr   = first;
   syntax[1].start = 3;
-  syntax[1].end = 6;
-  syntax[1].sgr = second;
+  syntax[1].end   = 6;
+  syntax[1].sgr   = second;
   count = itl_merge_visual_spans(syntax, 2, NULL, 0, 6, out, countof(out));
   expected[0] = syntax[0];
   expected[1] = syntax[1];
@@ -5424,8 +5669,8 @@ test_merge_visual_spans(void)
   syntax[1].sgr = first;
   count = itl_merge_visual_spans(syntax, 2, NULL, 0, 6, out, countof(out));
   expected[0].start = 0;
-  expected[0].end = 6;
-  expected[0].sgr = first;
+  expected[0].end   = 6;
+  expected[0].sgr   = first;
 
   if (!merged_spans_are(out, count, expected, 1)) {
     TEST_PRINTF("two adjacent runs merged into %zu spans\n", count);
@@ -5433,8 +5678,8 @@ test_merge_visual_spans(void)
   }
 
   selection[0].start = 2;
-  selection[0].end = 4;
-  selection[0].sgr = inverse;
+  selection[0].end   = 4;
+  selection[0].sgr   = inverse;
   count = itl_merge_visual_spans(NULL, 0, selection, 1, 6, out, countof(out));
   expected[0] = selection[0];
 
@@ -5444,15 +5689,15 @@ test_merge_visual_spans(void)
   }
 
   syntax[0].start = 0;
-  syntax[0].end = 6;
+  syntax[0].end   = 6;
   count = itl_merge_visual_spans(syntax, 1, selection, 1, 6, out, countof(out));
   expected[0].start = 0;
-  expected[0].end = 2;
-  expected[0].sgr = first;
-  expected[1] = selection[0];
+  expected[0].end   = 2;
+  expected[0].sgr   = first;
+  expected[1]       = selection[0];
   expected[2].start = 4;
-  expected[2].end = 6;
-  expected[2].sgr = first;
+  expected[2].end   = 6;
+  expected[2].sgr   = first;
 
   if (!merged_spans_are(out, count, expected, 3)) {
     TEST_PRINTF("a selection over syntax merged into %zu spans\n", count);
@@ -5460,7 +5705,7 @@ test_merge_visual_spans(void)
   }
 
   syntax[0].start = 1;
-  syntax[0].end = 2;
+  syntax[0].end   = 2;
   count = itl_merge_visual_spans(syntax, 1, NULL, 0, 4, out, countof(out));
   expected[0] = syntax[0];
 
@@ -5470,16 +5715,16 @@ test_merge_visual_spans(void)
   }
 
   syntax[0].start = 0;
-  syntax[0].end = 1;
+  syntax[0].end   = 1;
   syntax[1].start = 1;
-  syntax[1].end = 2;
-  syntax[1].sgr = second;
+  syntax[1].end   = 2;
+  syntax[1].sgr   = second;
   syntax[2].start = 2;
-  syntax[2].end = 3;
-  syntax[2].sgr = first;
-  count = itl_merge_visual_spans(syntax, 3, NULL, 0, 3, out, 2);
-  expected[0] = syntax[0];
-  expected[1] = syntax[1];
+  syntax[2].end   = 3;
+  syntax[2].sgr   = first;
+  count           = itl_merge_visual_spans(syntax, 3, NULL, 0, 3, out, 2);
+  expected[0]     = syntax[0];
+  expected[1]     = syntax[1];
 
   if (!merged_spans_are(out, count, expected, 2)) {
     TEST_PRINTF("an exhausted output holds %zu spans\n", count);
@@ -5577,9 +5822,9 @@ test_alt_backspace_sequences(void)
   int backspace_event;
 
   itl_g_pushback_byte = 127;
-  delete_event = itl_esc_parse(27);
+  delete_event        = itl_esc_parse(27);
   itl_g_pushback_byte = 8;
-  backspace_event = itl_esc_parse(27);
+  backspace_event     = itl_esc_parse(27);
 
   return delete_event == (TL_KEY_BACKSPACE | TL_MOD_CTRL) &&
          backspace_event == (TL_KEY_BACKSPACE | TL_MOD_CTRL);
@@ -5588,16 +5833,16 @@ test_alt_backspace_sequences(void)
 static bool
 test_pending_resize_wakes_input_wait(void)
 {
-  int pipe_descriptors[2] = {-1, -1};
-  int saved_stdin = -1;
-  bool did_block_signals = false;
-  bool result = false;
-  sigset_t saved_mask;
-  sigset_t wait_mask;
-  struct sigaction saved_alarm_action = ITL_ZERO_INIT;
+  int              pipe_descriptors[2] = {-1, -1};
+  int              saved_stdin         = -1;
+  bool             did_block_signals   = false;
+  bool             result              = false;
+  sigset_t         saved_mask;
+  sigset_t         wait_mask;
+  struct sigaction saved_alarm_action  = ITL_ZERO_INIT;
   struct sigaction saved_resize_action = ITL_ZERO_INIT;
-  struct sigaction alarm_action = ITL_ZERO_INIT;
-  struct sigaction resize_action = ITL_ZERO_INIT;
+  struct sigaction alarm_action        = ITL_ZERO_INIT;
+  struct sigaction resize_action       = ITL_ZERO_INIT;
 
   if (sigprocmask(SIG_SETMASK, NULL, &saved_mask) != 0) goto cleanup;
   wait_mask = saved_mask;
@@ -5613,7 +5858,7 @@ test_pending_resize_wakes_input_wait(void)
     goto cleanup;
   }
 
-  alarm_action.sa_handler = test_alarm_handler;
+  alarm_action.sa_handler  = test_alarm_handler;
   resize_action.sa_handler = itl_handle_sigwinch;
   if (sigemptyset(&alarm_action.sa_mask) != 0 ||
       sigemptyset(&resize_action.sa_mask) != 0 ||
@@ -5630,12 +5875,11 @@ test_pending_resize_wakes_input_wait(void)
   did_block_signals = true;
 
   itl_g_tty_changed_size = 0;
-  test_alarm_fired = 0;
+  test_alarm_fired       = 0;
   if (raise(SIGWINCH) != 0) goto cleanup;
   alarm(1);
   result = itl_wait_for_input_until(&wait_mask, -1) >= 0 &&
-           test_alarm_fired == 0 &&
-           itl_g_tty_changed_size != 0;
+           test_alarm_fired == 0 && itl_g_tty_changed_size != 0;
 
 cleanup:
   alarm(0);
@@ -5649,13 +5893,13 @@ cleanup:
   sigaction(SIGALRM, &saved_alarm_action, NULL);
   sigaction(SIGWINCH, &saved_resize_action, NULL);
   sigprocmask(SIG_SETMASK, &saved_mask, NULL);
-  test_alarm_fired = 0;
+  test_alarm_fired       = 0;
   itl_g_tty_changed_size = 1;
   return result;
 }
 
 static int test_idle_wait_call_count = 0;
-static int test_idle_wait_writer = -1;
+static int test_idle_wait_writer     = -1;
 
 static int
 test_idle_wait_callback(const char *buffer, size_t cursor)
@@ -5676,16 +5920,16 @@ static bool
 test_idle_hook_runs_in_the_input_wait(void)
 {
   int           pipe_descriptors[2] = {-1, -1};
-  int           saved_stdin = -1;
-  int           timeout_result = -1;
-  int           pending_result = -1;
-  bool          did_return = false;
-  bool          result = false;
+  int           saved_stdin         = -1;
+  int           timeout_result      = -1;
+  int           pending_result      = -1;
+  bool          did_return          = false;
+  bool          result              = false;
   uint64_t      started_ms;
   uint64_t      waited_ms = 0;
-  uint8_t       byte = 0;
+  uint8_t       byte      = 0;
   char          out_buffer[BUFFER_SIZE];
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
   sigset_t      wait_mask;
 
@@ -5701,14 +5945,14 @@ test_idle_hook_runs_in_the_input_wait(void)
   pending_result = itl_wait_for_input_until(&wait_mask, 1000);
   if (read(STDIN_FILENO, &byte, 1) != 1) goto cleanup;
 
-  itl_g_tty_changed_size = 0;
+  itl_g_tty_changed_size    = 0;
   test_idle_wait_call_count = 0;
-  test_idle_wait_writer = pipe_descriptors[1];
+  test_idle_wait_writer     = pipe_descriptors[1];
   tl_set_idle_callback(test_idle_wait_callback, 30, 10);
   itl_idle_arm();
   started_ms = itl_monotonic_ms();
   did_return = itl_le_wait_for_key(&le);
-  waited_ms = itl_monotonic_ms() - started_ms;
+  waited_ms  = itl_monotonic_ms() - started_ms;
 
   result = timeout_result == 0 && pending_result == 1 && did_return &&
            test_idle_wait_call_count == 2 && waited_ms >= 40 &&
@@ -5738,11 +5982,13 @@ cleanup:
 }
 
 static int test_pending_gather_calls = 0;
-static int test_pending_idle_calls = 0;
+static int test_pending_idle_calls   = 0;
 
 static int
-test_pending_gather_callback(const char *buffer, size_t cursor,
-                             tl_completion *completion, int for_listing)
+test_pending_gather_callback(const char    *buffer,
+                             size_t         cursor,
+                             tl_completion *completion,
+                             int            for_listing)
 {
   static const char *candidates[] = {"alpha"};
 
@@ -5753,13 +5999,13 @@ test_pending_gather_callback(const char *buffer, size_t cursor,
     return TL_COMPLETE_PENDING;
   }
 
-  completion->candidates = candidates;
-  completion->descriptions = NULL;
+  completion->candidates            = candidates;
+  completion->descriptions          = NULL;
   completion->longest_common_prefix = "alpha";
-  completion->count = 1;
-  completion->token_start = 0;
-  completion->token_end = cursor;
-  completion->is_space_suppressed = 1;
+  completion->count                 = 1;
+  completion->token_start           = 0;
+  completion->token_end             = cursor;
+  completion->is_space_suppressed   = 1;
 
   return 1;
 }
@@ -5778,20 +6024,22 @@ test_pending_idle_callback(const char *buffer, size_t cursor)
    written before the press and the pipe stays open so the wait never sees an
    end of input. Returns false when the press was not handled. */
 static bool
-pending_gather_press(const char *keys, char *out_line, size_t out_size,
-                     bool *out_is_byte_pending)
+pending_gather_press(const char *keys,
+                     char       *out_line,
+                     size_t      out_size,
+                     bool       *out_is_byte_pending)
 {
   char           out_buffer[BUFFER_SIZE];
   int            pipe_descriptors[2] = {-1, -1};
-  int            saved_stdin = -1;
-  int            was_menu_enabled = itl_g_completion_menu_enabled;
-  bool           was_handled = false;
-  tl_status_code completion_code = TL_SUCCESS;
-  itl_le_t       le = ITL_ZERO_INIT;
-  itl_string_t  *line = itl_string_alloc();
+  int            saved_stdin         = -1;
+  int            was_menu_enabled    = itl_g_completion_menu_enabled;
+  bool           was_handled         = false;
+  tl_status_code completion_code     = TL_SUCCESS;
+  itl_le_t       le                  = ITL_ZERO_INIT;
+  itl_string_t  *line                = itl_string_alloc();
 
   *out_is_byte_pending = false;
-  itl_g_pushback_byte = -1;
+  itl_g_pushback_byte  = -1;
   if (pipe(pipe_descriptors) != 0) goto cleanup;
   if (strlen(keys) > 0 &&
       write(pipe_descriptors[1], keys, strlen(keys)) != (ssize_t) strlen(keys))
@@ -5804,14 +6052,14 @@ pending_gather_press(const char *keys, char *out_line, size_t out_size,
 
   ITL_STRING_FROM_CSTR(line, "al");
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
-  itl_g_tty_changed_size = 0;
+  itl_g_tty_changed_size        = 0;
   itl_g_completion_menu_enabled = 0;
-  test_pending_gather_calls = 0;
-  test_pending_idle_calls = 0;
+  test_pending_gather_calls     = 0;
+  test_pending_idle_calls       = 0;
   tl_set_complete_callback(test_pending_gather_callback);
   tl_set_idle_callback(test_pending_idle_callback, 0, 5);
 
-  was_handled = itl_completion_handle_tab(&le, &completion_code);
+  was_handled          = itl_completion_handle_tab(&le, &completion_code);
   *out_is_byte_pending = itl_input_is_pending();
   itl_string_to_cstr(line, out_line, out_size);
 
@@ -5819,8 +6067,8 @@ cleanup:
   tl_set_complete_callback(NULL);
   tl_set_idle_callback(NULL, 0, 0);
   itl_g_completion_menu_enabled = was_menu_enabled;
-  itl_g_idle_is_load_poll = false;
-  itl_g_pushback_byte = -1;
+  itl_g_idle_is_load_poll       = false;
+  itl_g_pushback_byte           = -1;
   if (saved_stdin >= 0) {
     dup2(saved_stdin, STDIN_FILENO);
     close(saved_stdin);
@@ -5837,21 +6085,20 @@ static bool
 test_pending_gather_polls_the_idle_hook(void)
 {
   char line_buffer[BUFFER_SIZE] = "";
-  bool is_byte_pending = false;
-  bool did_finish =
-      pending_gather_press("", line_buffer, sizeof(line_buffer),
-                           &is_byte_pending) &&
-      strcmp(line_buffer, "alpha") == 0 && test_pending_gather_calls == 3 &&
-      test_pending_idle_calls == 3 && !is_byte_pending;
+  bool is_byte_pending          = false;
+  bool did_finish = pending_gather_press("", line_buffer, sizeof(line_buffer),
+                                         &is_byte_pending) &&
+                    strcmp(line_buffer, "alpha") == 0 &&
+                    test_pending_gather_calls == 3 &&
+                    test_pending_idle_calls == 3 && !is_byte_pending;
   bool did_serve_key;
   bool did_close_on_escape;
   bool did_close_on_interrupt;
 
-  did_serve_key =
-      pending_gather_press("x", line_buffer, sizeof(line_buffer),
-                           &is_byte_pending) &&
-      strcmp(line_buffer, "al") == 0 && test_pending_gather_calls == 1 &&
-      is_byte_pending;
+  did_serve_key = pending_gather_press("x", line_buffer, sizeof(line_buffer),
+                                       &is_byte_pending) &&
+                  strcmp(line_buffer, "al") == 0 &&
+                  test_pending_gather_calls == 1 && is_byte_pending;
   did_close_on_escape =
       pending_gather_press("\x1b", line_buffer, sizeof(line_buffer),
                            &is_byte_pending) &&
@@ -5877,47 +6124,51 @@ test_pending_gather_polls_the_idle_hook(void)
 #endif
 
 static int
-test_completion_callback(const char *buffer, size_t cursor,
-                         tl_completion *completion, int for_listing)
+test_completion_callback(const char    *buffer,
+                         size_t         cursor,
+                         tl_completion *completion,
+                         int            for_listing)
 {
   static const char *candidates[] = {"alpha"};
-  static size_t call_count;
+  static size_t      call_count;
 
   (void) buffer;
   (void) cursor;
   (void) for_listing;
-  completion->candidates = candidates;
-  completion->count = call_count++ == 0 ? 1 : 0;
+  completion->candidates  = candidates;
+  completion->count       = call_count++ == 0 ? 1 : 0;
   completion->token_start = 0;
-  completion->token_end = 2;
+  completion->token_end   = 2;
   return 1;
 }
 
 static int
-test_tailscale_completion_callback(const char *buffer, size_t cursor,
-                                   tl_completion *completion, int for_listing)
+test_tailscale_completion_callback(const char    *buffer,
+                                   size_t         cursor,
+                                   tl_completion *completion,
+                                   int            for_listing)
 {
   static const char *candidates[] = {"tailscale"};
 
   (void) buffer;
   (void) cursor;
   (void) for_listing;
-  completion->candidates = candidates;
-  completion->count = 1;
+  completion->candidates            = candidates;
+  completion->count                 = 1;
   completion->longest_common_prefix = "tailscale";
-  completion->token_start = 0;
-  completion->token_end = 4;
+  completion->token_start           = 0;
+  completion->token_end             = 4;
   return 1;
 }
 
 static bool
 test_ghost_prefers_recent_history(void)
 {
-  const char *path = "tl_test_ghost_history_priority.txt";
-  char out_buffer[BUFFER_SIZE];
-  char line_buffer[BUFFER_SIZE];
-  bool ok = true;
-  itl_le_t le = ITL_ZERO_INIT;
+  const char   *path = "tl_test_ghost_history_priority.txt";
+  char          out_buffer[BUFFER_SIZE];
+  char          line_buffer[BUFFER_SIZE];
+  bool          ok   = true;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   itl_g_is_active = true;
@@ -5965,19 +6216,21 @@ test_ghost_prefers_recent_history(void)
 }
 
 static int
-test_cased_completion_callback(const char *buffer, size_t cursor,
-                               tl_completion *completion, int for_listing)
+test_cased_completion_callback(const char    *buffer,
+                               size_t         cursor,
+                               tl_completion *completion,
+                               int            for_listing)
 {
   static const char *candidates[] = {"Tailscale"};
 
   (void) buffer;
   (void) cursor;
   (void) for_listing;
-  completion->candidates = candidates;
-  completion->count = 1;
+  completion->candidates            = candidates;
+  completion->count                 = 1;
   completion->longest_common_prefix = "Tailscale";
-  completion->token_start = 0;
-  completion->token_end = 4;
+  completion->token_start           = 0;
+  completion->token_end             = 4;
 
   return 1;
 }
@@ -5988,11 +6241,11 @@ test_ghost_history_corrects_case(void)
   const char   *path = "tl_test_ghost_case.txt";
   char          out_buffer[BUFFER_SIZE];
   char          line_buffer[BUFFER_SIZE];
-  bool          ok = true;
-  itl_le_t      le = ITL_ZERO_INIT;
+  bool          ok   = true;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
-  itl_g_is_active = true;
+  itl_g_is_active                = true;
   itl_g_tty_plain_append_pending = false;
   remove(path);
   tl_history_load(path);
@@ -6031,8 +6284,7 @@ test_ghost_history_corrects_case(void)
   itl_string_to_cstr(line, line_buffer, sizeof(line_buffer));
 
   if (strcmp(line_buffer, "tail") != 0 || le.cursor_position != 4) {
-    TEST_PRINTF("undo restored '%s' at %zu\n", line_buffer,
-                le.cursor_position);
+    TEST_PRINTF("undo restored '%s' at %zu\n", line_buffer, le.cursor_position);
     ok = false;
   }
 
@@ -6053,11 +6305,11 @@ test_ghost_completion_corrects_case(void)
   const char   *path = "tl_test_ghost_completion_case.txt";
   char          out_buffer[BUFFER_SIZE];
   char          line_buffer[BUFFER_SIZE];
-  bool          ok = true;
-  itl_le_t      le = ITL_ZERO_INIT;
+  bool          ok   = true;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
-  itl_g_is_active = true;
+  itl_g_is_active                = true;
   itl_g_tty_plain_append_pending = false;
   remove(path);
   tl_history_load(path);
@@ -6120,15 +6372,15 @@ test_menu_preview_needs_an_extending_row(void)
   bool               is_inner_match_hidden;
   bool               is_extending_shown;
   tl_completion      result = ITL_ZERO_INIT;
-  itl_le_t           le = ITL_ZERO_INIT;
-  itl_string_t      *line = itl_string_alloc();
+  itl_le_t           le     = ITL_ZERO_INIT;
+  itl_string_t      *line   = itl_string_alloc();
 
   ITL_STRING_FROM_CSTR(line, "cat p");
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
-  result.candidates = names;
-  result.count = countof(names);
+  result.candidates  = names;
+  result.count       = countof(names);
   result.token_start = 4;
-  result.token_end = 5;
+  result.token_end   = 5;
 
   itl_menu_ghost_preview(&le, &result, 0);
   is_inner_match_hidden = itl_g_ghost_len == 0;
@@ -6153,12 +6405,12 @@ test_ghost_sticky_target_continues(void)
 {
   const char   *path = "tl_test_ghost_sticky.txt";
   char          out_buffer[BUFFER_SIZE];
-  bool          ok = true;
+  bool          ok               = true;
   int           previous_enabled = itl_g_ghost_enabled;
-  itl_le_t      le = ITL_ZERO_INIT;
-  itl_string_t *line = itl_string_alloc();
+  itl_le_t      le               = ITL_ZERO_INIT;
+  itl_string_t *line             = itl_string_alloc();
 
-  itl_g_is_active = true;
+  itl_g_is_active                = true;
   itl_g_tty_plain_append_pending = false;
   remove(path);
   tl_history_load(path);
@@ -6196,7 +6448,7 @@ test_ghost_sticky_target_continues(void)
     ok = false;
   }
 
-  le.cursor_position = line->length;
+  le.cursor_position  = line->length;
   itl_g_ghost_enabled = 0;
   itl_ghost_update(&le);
   itl_g_ghost_enabled = previous_enabled;
@@ -6231,11 +6483,11 @@ test_ghost_clips_multiline_suggestion(void)
 {
   const char   *path = "tl_test_ghost_multiline.txt";
   char          out_buffer[BUFFER_SIZE];
-  bool          ok = true;
-  itl_le_t      le = ITL_ZERO_INIT;
+  bool          ok   = true;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
-  itl_g_is_active = true;
+  itl_g_is_active                = true;
   itl_g_tty_plain_append_pending = false;
   remove(path);
   tl_history_load(path);
@@ -6279,14 +6531,14 @@ test_ghost_clips_multiline_suggestion(void)
 static bool
 test_tab_clears_stale_ghost_target(void)
 {
-  char out_buffer[BUFFER_SIZE];
-  char line_buffer[BUFFER_SIZE];
-  bool replacement_ok;
-  bool was_handled;
-  tl_status_code completion_code = TL_SUCCESS;
-  int previous_supports_decorations = itl_g_supports_decorations;
-  itl_le_t le = ITL_ZERO_INIT;
-  itl_string_t *line = itl_string_alloc();
+  char           out_buffer[BUFFER_SIZE];
+  char           line_buffer[BUFFER_SIZE];
+  bool           replacement_ok;
+  bool           was_handled;
+  tl_status_code completion_code               = TL_SUCCESS;
+  int            previous_supports_decorations = itl_g_supports_decorations;
+  itl_le_t       le                            = ITL_ZERO_INIT;
+  itl_string_t  *line                          = itl_string_alloc();
 
   itl_g_supports_decorations = 0;
   ITL_STRING_FROM_CSTR(line, "ab");
@@ -6310,18 +6562,20 @@ test_tab_clears_stale_ghost_target(void)
 static int test_space_suppressed_flag;
 
 static int
-test_space_suppressing_callback(const char *buffer, size_t cursor,
-                                tl_completion *completion, int for_listing)
+test_space_suppressing_callback(const char    *buffer,
+                                size_t         cursor,
+                                tl_completion *completion,
+                                int            for_listing)
 {
   static const char *candidates[] = {"alpha"};
 
   (void) buffer;
   (void) cursor;
   (void) for_listing;
-  completion->candidates = candidates;
-  completion->count = 1;
-  completion->token_start = 0;
-  completion->token_end = 2;
+  completion->candidates          = candidates;
+  completion->count               = 1;
+  completion->token_start         = 0;
+  completion->token_end           = 2;
   completion->is_space_suppressed = test_space_suppressed_flag;
   return 1;
 }
@@ -6332,23 +6586,22 @@ test_space_suppressing_callback(const char *buffer, size_t cursor,
 static bool
 test_tab_honors_suppressed_space(void)
 {
-  static const int flags[] = {1, 0};
+  static const int   flags[]    = {1, 0};
   static const char *expected[] = {"alpha", "alpha "};
-  char out_buffer[BUFFER_SIZE];
-  char line_buffer[BUFFER_SIZE];
-  int previous_supports_decorations = itl_g_supports_decorations;
-  tl_space_after_completion previous_space_after =
-      itl_g_space_after_completion;
-  bool ok = true;
-  size_t index;
+  char               out_buffer[BUFFER_SIZE];
+  char               line_buffer[BUFFER_SIZE];
+  int                previous_supports_decorations = itl_g_supports_decorations;
+  tl_space_after_completion previous_space_after = itl_g_space_after_completion;
+  bool                      ok                   = true;
+  size_t                    index;
 
   itl_g_supports_decorations = 0;
   tl_set_space_after_completion(TL_SPACE_AFTER_COMPLETION_ON);
   tl_set_complete_callback(test_space_suppressing_callback);
   for (index = 0; index < 2; ++index) {
     tl_status_code completion_code = TL_SUCCESS;
-    itl_le_t le = ITL_ZERO_INIT;
-    itl_string_t *line = itl_string_alloc();
+    itl_le_t       le              = ITL_ZERO_INIT;
+    itl_string_t  *line            = itl_string_alloc();
 
     ITL_STRING_FROM_CSTR(line, "al");
     itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
@@ -6379,18 +6632,18 @@ test_external_screen_requires_raw_mode(void)
   bool begin_refused;
   bool end_refused;
   bool previous_active = itl_g_is_active;
-  bool previous_raw = itl_g_entered_raw_mode;
+  bool previous_raw    = itl_g_entered_raw_mode;
 
   itl_g_is_active = true;
 
   itl_g_entered_raw_mode = false;
-  begin_refused = tl_begin_external_screen() == TL_ERROR;
+  begin_refused          = tl_begin_external_screen() == TL_ERROR;
 
   itl_g_entered_raw_mode = true;
-  end_refused = tl_end_external_screen() == TL_ERROR;
+  end_refused            = tl_end_external_screen() == TL_ERROR;
 
   itl_g_entered_raw_mode = previous_raw;
-  itl_g_is_active = previous_active;
+  itl_g_is_active        = previous_active;
 
   return begin_refused && end_refused;
 }
@@ -6404,9 +6657,9 @@ test_whole_line_highlight_callback(const char *buffer, tl_highlight *out)
   }
 
   out->spans[0].start = 0;
-  out->spans[0].end = tl_utf8_strlen(buffer);
-  out->spans[0].sgr = "\x1b[32m";
-  out->count = out->spans[0].end > 0 ? 1 : 0;
+  out->spans[0].end   = tl_utf8_strlen(buffer);
+  out->spans[0].sgr   = "\x1b[32m";
+  out->count          = out->spans[0].end > 0 ? 1 : 0;
 
   return 1;
 }
@@ -6417,11 +6670,11 @@ test_append_path_keeps_spans(void)
   const char *keys = "abcd";
   char        out_buffer[BUFFER_SIZE];
   int         null_descriptor = -1;
-  int         saved_stdout = -1;
+  int         saved_stdout    = -1;
   size_t      key_index;
   bool        ok = false;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   null_descriptor = open("/dev/null", O_WRONLY);
@@ -6432,29 +6685,28 @@ test_append_path_keeps_spans(void)
   if (dup2(null_descriptor, STDOUT_FILENO) < 0) goto cleanup;
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
-  itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 80;
-  itl_g_tty_first_render = true;
-  itl_g_le_prev_total_rows = 1;
-  itl_g_le_prev_cursor_row = 1;
-  itl_g_le_prev_cursor_col = 0;
-  itl_g_le_prev_render_len = 0;
-  itl_g_le_prev_length = 0;
-  itl_g_le_prev_cursor_at_end = false;
-  itl_g_le_prev_spans_usable = false;
-  itl_g_le_prev_ghost_len = 0;
-  itl_g_tty_plain_append_pending = false;
+  itl_g_tty_changed_size           = 0;
+  itl_g_tty_prev_rows              = 24;
+  itl_g_tty_prev_cols              = 80;
+  itl_g_tty_first_render           = true;
+  itl_g_le_prev_total_rows         = 1;
+  itl_g_le_prev_cursor_row         = 1;
+  itl_g_le_prev_cursor_col         = 0;
+  itl_g_le_prev_render_len         = 0;
+  itl_g_le_prev_length             = 0;
+  itl_g_le_prev_cursor_at_end      = false;
+  itl_g_le_prev_spans_usable       = false;
+  itl_g_le_prev_ghost_len          = 0;
+  itl_g_tty_plain_append_pending   = false;
   itl_g_debug_append_refresh_count = 0;
-  itl_g_debug_full_refresh_count = 0;
+  itl_g_debug_full_refresh_count   = 0;
   tl_set_highlight_callback(test_whole_line_highlight_callback);
 
   for (key_index = 0; keys[key_index] != '\0'; ++key_index) {
-    itl_utf8_t appended_character =
-        itl_utf8_parse((uint8_t) keys[key_index]);
+    itl_utf8_t appended_character = itl_utf8_parse((uint8_t) keys[key_index]);
 
     itl_g_tty_plain_append_pending = le.cursor_position == le.line->length;
-    itl_g_tty_plain_append_width = itl_char_width(appended_character);
+    itl_g_tty_plain_append_width   = itl_char_width(appended_character);
     itl_le_insert(&le, appended_character);
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(&le);
@@ -6491,15 +6743,15 @@ test_drawn_metrics_match_the_walk(void)
   char              text[16];
   char              out_buffer[BUFFER_SIZE];
   int               null_descriptor = -1;
-  int               saved_stdout = -1;
-  size_t            length = 0;
+  int               saved_stdout    = -1;
+  size_t            length          = 0;
   size_t            cols;
-  size_t            failed_cols = 0;
+  size_t            failed_cols     = 0;
   size_t            failed_position = 0;
   itl_le_metrics_t  failed_expected = ITL_ZERO_INIT;
-  bool              ok = true;
+  bool              ok              = true;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   null_descriptor = open("/dev/null", O_WRONLY);
@@ -6525,7 +6777,7 @@ test_drawn_metrics_match_the_walk(void)
   text[length++] = '\n';
   text[length++] = 'c';
   text[length++] = 'd';
-  text[length] = '\0';
+  text[length]   = '\0';
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
   ITL_STRING_FROM_CSTR(line, text);
@@ -6537,16 +6789,16 @@ test_drawn_metrics_match_the_walk(void)
       itl_le_metrics_t expected;
 
       itl_le_invalidate_prev_frame();
-      itl_g_tty_changed_size = 0;
-      itl_g_tty_prev_rows = 24;
-      itl_g_tty_prev_cols = cols;
-      itl_g_tty_first_render = false;
+      itl_g_tty_changed_size         = 0;
+      itl_g_tty_prev_rows            = 24;
+      itl_g_tty_prev_cols            = cols;
+      itl_g_tty_first_render         = false;
       itl_g_tty_plain_append_pending = false;
-      itl_g_tty_should_refresh_text = true;
+      itl_g_tty_should_refresh_text  = true;
       itl_g_debug_metrics_scan_count = 0;
 
       le.cursor_position = position;
-      expected = itl_le_compute_metrics(&le, cols);
+      expected           = itl_le_compute_metrics(&le, cols);
       itl_le_tty_refresh(&le);
 
       if (itl_g_debug_metrics_scan_count != 0 ||
@@ -6554,10 +6806,10 @@ test_drawn_metrics_match_the_walk(void)
           itl_g_le_prev_cursor_row != expected.cursor_row + 1 ||
           itl_g_le_prev_cursor_col != expected.cursor_col)
       {
-        failed_cols = cols;
+        failed_cols     = cols;
         failed_position = position;
         failed_expected = expected;
-        ok = false;
+        ok              = false;
       }
     }
   }
@@ -6590,24 +6842,24 @@ static bool
 test_reflow_agrees_with_metrics(void)
 {
   const char *prompt = "one\ntwo\n> ";
-  const char *text = "alpha\nbeta gamma delta epsilon zeta\nomega";
+  const char *text   = "alpha\nbeta gamma delta epsilon zeta\nomega";
   char        out_buffer[BUFFER_SIZE];
   size_t      position;
   bool        ok = true;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), prompt);
   ITL_STRING_FROM_CSTR(line, text);
 
   for (position = 0; position <= line->length; ++position) {
-    size_t rows_above;
+    size_t           rows_above;
     itl_le_metrics_t m;
 
     le.cursor_position = position;
-    m = itl_le_compute_metrics(&le, 20);
-    rows_above = itl_le_reflow_rows_above_caret(&le, 20, 20);
+    m                  = itl_le_compute_metrics(&le, 20);
+    rows_above         = itl_le_reflow_rows_above_caret(&le, 20, 20);
 
     if (rows_above != m.cursor_row) {
       TEST_PRINTF("at %zu reflow gave %zu, metrics gave %zu\n", position,
@@ -6624,10 +6876,10 @@ test_reflow_agrees_with_metrics(void)
 static size_t
 test_reference_reflow(const itl_le_t *le, size_t old_cols, size_t new_cols)
 {
-  size_t ocols = old_cols > 1 ? old_cols : 1;
-  size_t ncols = new_cols > 1 ? new_cols : 1;
-  size_t indent = itl_le_continuation_indent(le, ocols);
-  size_t col = itl_le_prompt_indent(le, ocols);
+  size_t ocols      = old_cols > 1 ? old_cols : 1;
+  size_t ncols      = new_cols > 1 ? new_cols : 1;
+  size_t indent     = itl_le_continuation_indent(le, ocols);
+  size_t col        = itl_le_prompt_indent(le, ocols);
   size_t rows_above = le->prompt_rows;
   size_t i;
 
@@ -6672,14 +6924,14 @@ test_reference_reflow(const itl_le_t *le, size_t old_cols, size_t new_cols)
 static bool
 test_reflow_agrees_with_reference(void)
 {
-  static const char        wide[] = {(char) 0xE4, (char) 0xBD, (char) 0xA0};
+  static const char        wide[]    = {(char) 0xE4, (char) 0xBD, (char) 0xA0};
   static const char *const PROMPTS[] = {"", "> ", "one\ntwo\nkosh> "};
   char                     text[160];
   char                     out_buffer[BUFFER_SIZE];
   size_t                   prompt_index;
   bool                     ok = true;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   for (prompt_index = 0;
@@ -6722,7 +6974,7 @@ test_reflow_agrees_with_reference(void)
             size_t actual;
 
             le.cursor_position = position;
-            expected = test_reference_reflow(&le, old_cols, new_cols);
+            expected           = test_reference_reflow(&le, old_cols, new_cols);
             actual = itl_le_reflow_rows_above_caret(&le, old_cols, new_cols);
 
             if (expected != actual) {
@@ -6747,11 +6999,11 @@ test_reflow_agrees_with_reference(void)
 static itl_le_metrics_t
 test_reference_metrics(const itl_le_t *le, size_t tty_cols)
 {
-  itl_le_metrics_t m = ITL_ZERO_INIT;
-  size_t           cols = tty_cols > 1 ? tty_cols : 1;
+  itl_le_metrics_t m      = ITL_ZERO_INIT;
+  size_t           cols   = tty_cols > 1 ? tty_cols : 1;
   size_t           indent = itl_le_continuation_indent(le, cols);
-  size_t           row = le->prompt_rows;
-  size_t           col = itl_le_prompt_indent(le, cols);
+  size_t           row    = le->prompt_rows;
+  size_t           col    = itl_le_prompt_indent(le, cols);
   size_t           i;
 
   for (i = 0; i <= le->line->length; ++i) {
@@ -6792,14 +7044,14 @@ test_reference_metrics(const itl_le_t *le, size_t tty_cols)
 static bool
 test_ascii_runs_agree_with_reference(void)
 {
-  static const char        wide[] = {(char) 0xE4, (char) 0xBD, (char) 0xA0};
+  static const char        wide[]    = {(char) 0xE4, (char) 0xBD, (char) 0xA0};
   static const char *const PROMPTS[] = {"", "> ", "kosh rather long prompt> "};
   char                     text[128];
   char                     out_buffer[BUFFER_SIZE];
   size_t                   prompt_index;
   bool                     ok = true;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   for (prompt_index = 0;
@@ -6839,8 +7091,8 @@ test_ascii_runs_agree_with_reference(void)
           itl_le_metrics_t actual;
 
           le.cursor_position = position;
-          expected = test_reference_metrics(&le, cols);
-          actual = itl_le_compute_metrics(&le, cols);
+          expected           = test_reference_metrics(&le, cols);
+          actual             = itl_le_compute_metrics(&le, cols);
 
           if (expected.cursor_row != actual.cursor_row ||
               expected.cursor_col != actual.cursor_col ||
@@ -6882,8 +7134,8 @@ test_narrow_terminal_continues_near_the_left_edge(void)
       {100, 30, 0, 50},
   };
   char          out_buffer[BUFFER_SIZE];
-  bool          ok = true;
-  itl_le_t      le = ITL_ZERO_INIT;
+  bool          ok   = true;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
   size_t        i;
 
@@ -6894,7 +7146,7 @@ test_narrow_terminal_continues_near_the_left_edge(void)
 
   for (i = 0; i < countof(cases); ++i) {
     itl_le_metrics_t metrics = itl_le_compute_metrics(&le, cases[i].cols);
-    size_t           indent = itl_le_continuation_indent(&le, cases[i].cols);
+    size_t           indent  = itl_le_continuation_indent(&le, cases[i].cols);
 
     if (indent != cases[i].indent || metrics.cursor_row != cases[i].caret_row ||
         metrics.cursor_col != cases[i].caret_col)
@@ -6920,7 +7172,7 @@ test_wrap_predicates_agree_with_reference(void)
   size_t            cols;
   bool              ok = true;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "ab> ");
@@ -6951,8 +7203,8 @@ test_wrap_predicates_agree_with_reference(void)
         itl_le_metrics_t actual;
 
         le.cursor_position = position;
-        expected = test_reference_metrics(&le, cols);
-        actual = itl_le_compute_metrics(&le, cols);
+        expected           = test_reference_metrics(&le, cols);
+        actual             = itl_le_compute_metrics(&le, cols);
 
         if (expected.cursor_row != actual.cursor_row ||
             expected.cursor_col != actual.cursor_col ||
@@ -7001,7 +7253,7 @@ static size_t test_frame_capture_size = 0;
 static void
 test_frame_capture_sink(const char *data, size_t size)
 {
-  size_t room = sizeof(test_frame_capture) - test_frame_capture_size;
+  size_t room  = sizeof(test_frame_capture) - test_frame_capture_size;
   size_t taken = size < room ? size : room;
 
   memcpy(test_frame_capture + test_frame_capture_size, data, taken);
@@ -7017,11 +7269,11 @@ test_frame_capture_has(const char *needle)
 static void
 test_frame_capture_refresh(itl_le_t *le)
 {
-  itl_g_tty_first_render = true;
+  itl_g_tty_first_render         = true;
   itl_g_tty_plain_append_pending = false;
   itl_le_invalidate_prev_frame();
   itl_g_tty_should_refresh_text = true;
-  test_frame_capture_size = 0;
+  test_frame_capture_size       = 0;
   itl_le_tty_refresh(le);
 }
 
@@ -7031,10 +7283,10 @@ test_search_frames(const char *keys)
 {
   char          out_buffer[BUFFER_SIZE];
   int           pipe_descriptors[2] = {-1, -1};
-  int           saved_stdin = dup(STDIN_FILENO);
-  size_t        key_count = strlen(keys);
-  itl_le_t      le = ITL_ZERO_INIT;
-  itl_string_t *line = itl_string_alloc();
+  int           saved_stdin         = dup(STDIN_FILENO);
+  size_t        key_count           = strlen(keys);
+  itl_le_t      le                  = ITL_ZERO_INIT;
+  itl_string_t *line                = itl_string_alloc();
 
   test_frame_capture_size = 0;
   if (saved_stdin >= 0 && pipe(pipe_descriptors) == 0 &&
@@ -7045,11 +7297,11 @@ test_search_frames(const char *keys)
     pipe_descriptors[1] = -1;
     itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
     itl_g_tty_changed_size = 0;
-    itl_g_tty_prev_rows = 24;
-    itl_g_tty_prev_cols = 40;
+    itl_g_tty_prev_rows    = 24;
+    itl_g_tty_prev_cols    = 40;
     itl_g_debug_frame_sink = test_frame_capture_sink;
     (void) itl_history_search(&le);
-    itl_g_debug_frame_sink = NULL;
+    itl_g_debug_frame_sink    = NULL;
     itl_g_search_spans_active = false;
   }
 
@@ -7059,10 +7311,10 @@ test_search_frames(const char *keys)
   }
   if (pipe_descriptors[0] >= 0) close(pipe_descriptors[0]);
   if (pipe_descriptors[1] >= 0) close(pipe_descriptors[1]);
-  itl_g_key_queue_index = 0;
+  itl_g_key_queue_index  = 0;
   itl_g_key_queue_length = 0;
-  itl_g_pushback_byte = -1;
-  itl_g_tty_prev_cols = 80;
+  itl_g_pushback_byte    = -1;
+  itl_g_tty_prev_cols    = 80;
   itl_g_tty_changed_size = 1;
   itl_g_tty_first_render = true;
   ITL_STRING_FREE(line);
@@ -7074,7 +7326,7 @@ static bool
 test_history_search_marks_misses_and_cuts(void)
 {
   const char *path = "tl_test_search_marks.txt";
-  bool        ok = true;
+  bool        ok   = true;
 
   itl_g_is_active = true;
   remove(path);
@@ -7113,34 +7365,34 @@ test_loading_gather(itl_le_t *le, tl_completion *result)
 static bool
 test_loading_frame_drains_before_gather(void)
 {
-  char out_buffer[BUFFER_SIZE];
-  bool did_rebase;
-  bool ok;
-  int previous_errno;
-  int preserved_errno;
-  itl_le_t le = ITL_ZERO_INIT;
-  itl_menu_source source = ITL_ZERO_INIT;
-  itl_menu_filter_state state = ITL_ZERO_INIT;
-  tl_completion result = ITL_ZERO_INIT;
-  itl_string_t *line = itl_string_alloc();
+  char                  out_buffer[BUFFER_SIZE];
+  bool                  did_rebase;
+  bool                  ok;
+  int                   previous_errno;
+  int                   preserved_errno;
+  itl_le_t              le     = ITL_ZERO_INIT;
+  itl_menu_source       source = ITL_ZERO_INIT;
+  itl_menu_filter_state state  = ITL_ZERO_INIT;
+  tl_completion         result = ITL_ZERO_INIT;
+  itl_string_t         *line   = itl_string_alloc();
 
-  source.gather = test_loading_gather;
+  source.gather              = test_loading_gather;
   source.should_show_loading = true;
-  test_menu_gather_calls = 0;
-  test_menu_gather_has_rows = true;
+  test_menu_gather_calls     = 0;
+  test_menu_gather_has_rows  = true;
   ITL_STRING_FROM_CSTR(line, "al");
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "");
 
-  itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 80;
-  itl_g_debug_frame_sink = test_frame_capture_sink;
-  itl_g_debug_output_drain_count = 0;
+  itl_g_tty_changed_size          = 0;
+  itl_g_tty_prev_rows             = 24;
+  itl_g_tty_prev_cols             = 80;
+  itl_g_debug_frame_sink          = test_frame_capture_sink;
+  itl_g_debug_output_drain_count  = 0;
   test_loading_gather_drain_count = 0;
-  test_frame_capture_size = 0;
+  test_frame_capture_size         = 0;
 
   did_rebase = itl_menu_rebase(&le, &source, &state, &result);
-  ok = did_rebase && test_menu_gather_calls == 1 &&
+  ok         = did_rebase && test_menu_gather_calls == 1 &&
        itl_g_debug_output_drain_count == 1 &&
        test_loading_gather_drain_count == 1 &&
        test_frame_capture_has(ITL_MENU_LOADING_TEXT);
@@ -7153,15 +7405,15 @@ test_loading_frame_drains_before_gather(void)
   }
 
   itl_g_debug_frame_sink = NULL;
-  previous_errno = errno;
-  errno = EDOM;
+  previous_errno         = errno;
+  errno                  = EDOM;
   itl_terminal_drain_output();
-  preserved_errno = errno;
-  errno = previous_errno;
-  ok = ok && preserved_errno == EDOM;
+  preserved_errno                = errno;
+  errno                          = previous_errno;
+  ok                             = ok && preserved_errno == EDOM;
   itl_g_debug_output_drain_count = 0;
-  itl_g_tty_changed_size = 1;
-  itl_g_tty_first_render = true;
+  itl_g_tty_changed_size         = 1;
+  itl_g_tty_first_render         = true;
   ITL_STRING_FREE(line);
 
   return ok;
@@ -7206,7 +7458,7 @@ test_menu_rows_start_under_the_token(void)
   char               out_buffer[BUFFER_SIZE];
   bool               ok;
   size_t             anchor_column;
-  itl_le_t           le = ITL_ZERO_INIT;
+  itl_le_t           le     = ITL_ZERO_INIT;
   tl_completion      result = ITL_ZERO_INIT;
   itl_menu_layout    layout;
   itl_string_t      *line = itl_string_alloc();
@@ -7215,28 +7467,28 @@ test_menu_rows_start_under_the_token(void)
   ITL_STRING_FROM_CSTR(line, "echo al");
   le.cursor_position = line->length;
 
-  itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 80;
+  itl_g_tty_changed_size   = 0;
+  itl_g_tty_prev_rows      = 24;
+  itl_g_tty_prev_cols      = 80;
   itl_g_le_prev_total_rows = 1;
   itl_g_le_prev_cursor_row = 1;
-  result.candidates = candidates;
-  result.count = countof(candidates);
-  result.token_start = 5;
-  result.token_end = 7;
-  layout = itl_menu_measure(itl_g_tty_prev_rows, false);
+  result.candidates        = candidates;
+  result.count             = countof(candidates);
+  result.token_start       = 5;
+  result.token_end         = 7;
+  layout                   = itl_menu_measure(itl_g_tty_prev_rows, false);
 
   anchor_column = itl_menu_anchor_column_of(&le, result.token_start);
-  ok = anchor_column == 7;
+  ok            = anchor_column == 7;
 
-  itl_g_debug_frame_sink = test_frame_capture_sink;
-  test_frame_capture_size = 0;
+  itl_g_debug_frame_sink   = test_frame_capture_sink;
+  test_frame_capture_size  = 0;
   itl_g_menu_anchor_column = anchor_column;
   itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
   itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 5, "");
   ok = ok && test_frame_capture_has("\x1b[6G");
 
-  itl_g_tty_prev_cols = 12;
+  itl_g_tty_prev_cols     = 12;
   test_frame_capture_size = 0;
   itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 5, "");
   ok = ok && !test_frame_capture_has("\x1b[6G");
@@ -7248,11 +7500,11 @@ test_menu_rows_start_under_the_token(void)
 
   itl_g_menu_anchor_column = 0;
 
-  itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
-  itl_g_debug_frame_sink = NULL;
-  itl_g_tty_prev_cols = 80;
-  itl_g_tty_changed_size = 1;
-  itl_g_tty_first_render = true;
+  itl_g_menu_prefix_width = ITL_MENU_ROW_PREFIX_WIDTH;
+  itl_g_debug_frame_sink  = NULL;
+  itl_g_tty_prev_cols     = 80;
+  itl_g_tty_changed_size  = 1;
+  itl_g_tty_first_render  = true;
   ITL_STRING_FREE(line);
 
   return ok;
@@ -7262,39 +7514,39 @@ static bool
 test_menu_help_wraps_between_items(void)
 {
   static const char *candidates[] = {"alpha", "album"};
-  static const char  title[] = "selecting completions";
+  static const char  title[]      = "selecting completions";
   static const char  keys[] =
       "enter to run, tab to accept, esc to close, ctrl-g to restore";
-  tl_completion      result = ITL_ZERO_INIT;
-  itl_menu_layout    layout;
-  size_t             rows_wide;
-  size_t             rows_mid;
-  size_t             rows_narrow;
-  size_t             rows_cut;
-  bool               ok;
+  tl_completion   result = ITL_ZERO_INIT;
+  itl_menu_layout layout;
+  size_t          rows_wide;
+  size_t          rows_mid;
+  size_t          rows_narrow;
+  size_t          rows_cut;
+  bool            ok;
 
-  itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 40;
+  itl_g_tty_changed_size   = 0;
+  itl_g_tty_prev_rows      = 24;
+  itl_g_tty_prev_cols      = 40;
   itl_g_le_prev_total_rows = 1;
   itl_g_le_prev_cursor_row = 1;
   itl_g_menu_anchor_column = 0;
   itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
-  result.candidates = candidates;
-  result.count = countof(candidates);
+  result.candidates        = candidates;
+  result.count             = countof(candidates);
 
-  rows_wide = itl_menu_layout_help(NULL, title, keys, 100, 0, 24);
-  rows_mid = itl_menu_layout_help(NULL, title, keys, 57, 0, 24);
+  rows_wide   = itl_menu_layout_help(NULL, title, keys, 100, 0, 24);
+  rows_mid    = itl_menu_layout_help(NULL, title, keys, 57, 0, 24);
   rows_narrow = itl_menu_layout_help(NULL, title, keys, 37, 0, 24);
-  rows_cut = itl_menu_layout_help(NULL, title, keys, 37, 0, 2);
+  rows_cut    = itl_menu_layout_help(NULL, title, keys, 37, 0, 2);
   ok = rows_wide == 1 && rows_mid == 2 && rows_narrow == 3 && rows_cut == 2;
 
-  layout = itl_menu_measure_for(&result, itl_g_tty_prev_rows, 5, "", title,
-                                keys);
+  layout =
+      itl_menu_measure_for(&result, itl_g_tty_prev_rows, 5, "", title, keys);
   ok = ok && layout.has_help_row && layout.help_row_count == 3 &&
        layout.has_count_row && layout.candidate_rows == ITL_MENU_MAX_ROWS;
 
-  itl_g_debug_frame_sink = test_frame_capture_sink;
+  itl_g_debug_frame_sink  = test_frame_capture_sink;
   test_frame_capture_size = 0;
   itl_menu_draw(&result, 0, 0, layout, title, keys, false, 5, "");
   ok = ok && test_frame_capture_has("selecting completions, enter to run,") &&
@@ -7304,13 +7556,13 @@ test_menu_help_wraps_between_items(void)
 
   /* A tall block leaves no room, so the help text is dropped whole. */
   itl_g_le_prev_total_rows = 21;
-  layout = itl_menu_measure_for(&result, itl_g_tty_prev_rows, 5, "", title,
-                                keys);
+  layout =
+      itl_menu_measure_for(&result, itl_g_tty_prev_rows, 5, "", title, keys);
   ok = ok && !layout.has_help_row && layout.help_row_count == 0;
 
   /* One item wider than the row is cut with an ellipsis. */
   itl_g_le_prev_total_rows = 1;
-  itl_g_tty_prev_cols = 16;
+  itl_g_tty_prev_cols      = 16;
   layout = itl_menu_measure_for(&result, itl_g_tty_prev_rows, 5, "",
                                 "a title longer than the row", NULL);
   test_frame_capture_size = 0;
@@ -7325,11 +7577,11 @@ test_menu_help_wraps_between_items(void)
                 layout.help_row_count);
   }
 
-  itl_g_debug_frame_sink = NULL;
-  itl_g_tty_prev_cols = 80;
+  itl_g_debug_frame_sink   = NULL;
+  itl_g_tty_prev_cols      = 80;
   itl_g_le_prev_total_rows = 1;
-  itl_g_tty_changed_size = 1;
-  itl_g_tty_first_render = true;
+  itl_g_tty_changed_size   = 1;
+  itl_g_tty_first_render   = true;
 
   return ok;
 }
@@ -7337,26 +7589,26 @@ test_menu_help_wraps_between_items(void)
 static bool
 test_menu_anchor_accounts_for_descriptions(void)
 {
-  static const char *candidates[] = {"-a", "-all"};
+  static const char *candidates[]         = {"-a", "-all"};
   static const char *short_descriptions[] = {"all", "everything"};
-  static const char *long_descriptions[] = {
+  static const char *long_descriptions[]  = {
       "do not ignore entries starting with a dot",
       "list every entry including the implied dot entries"};
-  tl_completion      result = ITL_ZERO_INIT;
-  itl_menu_layout    layout;
-  bool               ok;
+  tl_completion   result = ITL_ZERO_INIT;
+  itl_menu_layout layout;
+  bool            ok;
 
-  itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 60;
+  itl_g_tty_changed_size   = 0;
+  itl_g_tty_prev_rows      = 24;
+  itl_g_tty_prev_cols      = 60;
   itl_g_le_prev_total_rows = 1;
   itl_g_le_prev_cursor_row = 1;
-  result.candidates = candidates;
-  result.count = countof(candidates);
-  result.descriptions = short_descriptions;
-  layout = itl_menu_measure(itl_g_tty_prev_rows, 0);
+  result.candidates        = candidates;
+  result.count             = countof(candidates);
+  result.descriptions      = short_descriptions;
+  layout                   = itl_menu_measure(itl_g_tty_prev_rows, 0);
 
-  itl_g_debug_frame_sink = test_frame_capture_sink;
+  itl_g_debug_frame_sink   = test_frame_capture_sink;
   itl_g_menu_anchor_column = 30;
   itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
 
@@ -7366,13 +7618,13 @@ test_menu_anchor_accounts_for_descriptions(void)
   ok = test_frame_capture_has("\x1b[29G");
 
   /* The candidates alone would fit, the descriptions do not. */
-  result.descriptions = long_descriptions;
+  result.descriptions     = long_descriptions;
   test_frame_capture_size = 0;
   itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
   ok = ok && !test_frame_capture_has("\x1b[29G");
 
   /* Without descriptions the same candidates stay under the token. */
-  result.descriptions = NULL;
+  result.descriptions     = NULL;
   test_frame_capture_size = 0;
   itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
   ok = ok && test_frame_capture_has("\x1b[29G");
@@ -7393,11 +7645,11 @@ test_menu_anchor_accounts_for_descriptions(void)
 
   itl_g_menu_anchor_column = 0;
 
-  itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
-  itl_g_debug_frame_sink = NULL;
-  itl_g_tty_prev_cols = 80;
-  itl_g_tty_changed_size = 1;
-  itl_g_tty_first_render = true;
+  itl_g_menu_prefix_width = ITL_MENU_ROW_PREFIX_WIDTH;
+  itl_g_debug_frame_sink  = NULL;
+  itl_g_tty_prev_cols     = 80;
+  itl_g_tty_changed_size  = 1;
+  itl_g_tty_first_render  = true;
 
   return ok;
 }
@@ -7422,19 +7674,19 @@ test_menu_anchor_wraps_the_help_rows(void)
       {70, 0 },
   };
   tl_completion result = ITL_ZERO_INIT;
-  bool          ok = true;
+  bool          ok     = true;
   size_t        i;
 
   itl_g_tty_prev_cols = 80;
-  result.candidates = candidates;
-  result.count = countof(candidates);
+  result.candidates   = candidates;
+  result.count        = countof(candidates);
 
   for (i = 0; i < countof(cases); ++i) {
     itl_menu_geometry geometry;
 
     itl_g_menu_anchor_column = cases[i].token_column;
 
-    itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
+    itl_g_menu_prefix_width = ITL_MENU_ROW_PREFIX_WIDTH;
     geometry = itl_menu_geometry_of(&result, 5, "", help_title, help_keys);
     if (geometry.anchor != cases[i].anchor) {
       TEST_PRINTF("token at %zu anchored at %zu\n", cases[i].token_column,
@@ -7445,7 +7697,7 @@ test_menu_anchor_wraps_the_help_rows(void)
 
   itl_g_menu_anchor_column = 0;
 
-  itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
+  itl_g_menu_prefix_width = ITL_MENU_ROW_PREFIX_WIDTH;
   return ok;
 }
 
@@ -7458,7 +7710,7 @@ test_colors_disabled_drop_span_escapes(void)
   bool is_text_seen;
   bool ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
@@ -7466,8 +7718,8 @@ test_colors_disabled_drop_span_escapes(void)
   le.cursor_position = line->length;
 
   itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 80;
+  itl_g_tty_prev_rows    = 24;
+  itl_g_tty_prev_cols    = 80;
   itl_g_debug_frame_sink = test_frame_capture_sink;
   tl_set_highlight_callback(test_whole_line_highlight_callback);
 
@@ -7478,7 +7730,7 @@ test_colors_disabled_drop_span_escapes(void)
   tl_set_colors_enabled(0);
   test_frame_capture_refresh(&le);
   is_colored_seen = test_frame_capture_has("\x1b[32m");
-  is_text_seen = test_frame_capture_has("abc");
+  is_text_seen    = test_frame_capture_has("abc");
 
   itl_g_debug_frame_sink = NULL;
   tl_set_highlight_callback(NULL);
@@ -7510,7 +7762,7 @@ test_submit_erases_the_drawn_ghost(void)
   bool              was_quiet_without_ghost;
   bool              ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
@@ -7518,16 +7770,16 @@ test_submit_erases_the_drawn_ghost(void)
   le.cursor_position = line->length;
 
   itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 80;
+  itl_g_tty_prev_rows    = 24;
+  itl_g_tty_prev_cols    = 80;
   itl_g_debug_frame_sink = test_frame_capture_sink;
 
   memcpy(itl_g_ghost, GHOST, sizeof(GHOST));
-  itl_g_ghost_len = sizeof(GHOST) - 1;
+  itl_g_ghost_len   = sizeof(GHOST) - 1;
   itl_g_ghost_width = sizeof(GHOST) - 1;
 
   test_frame_capture_refresh(&le);
-  was_ghost_drawn = test_frame_capture_has(GHOST);
+  was_ghost_drawn    = test_frame_capture_has(GHOST);
   was_ghost_recorded = itl_g_le_prev_ghost_len == sizeof(GHOST) - 1;
 
   test_frame_capture_size = 0;
@@ -7569,7 +7821,7 @@ test_csi_sequences(void)
 {
   static const char *const expected[] = {"\x1b[1G", "\x1b[12C", "\x1b[7A",
                                          "\x1b[4096B"};
-  itl_char_buf_t          *b = itl_char_buf_alloc();
+  itl_char_buf_t          *b          = itl_char_buf_alloc();
   size_t                   index;
   bool                     ok = true;
 
@@ -7599,18 +7851,18 @@ test_csi_sequences(void)
 static bool
 test_menu_band_survives_disabled_colors(void)
 {
-  static const char *const names[] = {"alpha"};
-  static const char *const descriptions[] = {"the first letter"};
-  tl_completion            result = ITL_ZERO_INIT;
+  static const char *const names[]            = {"alpha"};
+  static const char *const descriptions[]     = {"the first letter"};
+  tl_completion            result             = ITL_ZERO_INIT;
   int                      was_colors_enabled = itl_g_colors_enabled;
-  itl_char_buf_t          *b = itl_char_buf_alloc();
+  itl_char_buf_t          *b                  = itl_char_buf_alloc();
   bool                     is_band_seen;
   bool                     is_description_seen;
   bool                     ok;
 
-  result.candidates = names;
+  result.candidates   = names;
   result.descriptions = descriptions;
-  result.count = 1;
+  result.count        = 1;
 
   itl_g_colors_enabled = 0;
   itl_menu_append_row(b, &result, 0, 8, 20, true, true);
@@ -7684,8 +7936,8 @@ test_hint_row_is_cut_to_the_width(void)
 
   test_hint_text = "short";
   itl_hint_compose("x", 1, 20, 24);
-  is_short_kept = strcmp(itl_g_hint_next, "  short") == 0 &&
-                  itl_g_hint_next_rows == 1;
+  is_short_kept =
+      strcmp(itl_g_hint_next, "  short") == 0 && itl_g_hint_next_rows == 1;
 
   itl_hint_compose("x", 1, 7, 24);
   is_tiny_dropped = itl_g_hint_next_len == 0 && itl_g_hint_next_rows == 0;
@@ -7712,7 +7964,9 @@ test_hint_row_is_cut_to_the_width(void)
 }
 
 static bool
-test_hint_rows_are(const char *expected, size_t cols, size_t row_budget,
+test_hint_rows_are(const char *expected,
+                   size_t      cols,
+                   size_t      row_budget,
                    const char *step)
 {
   itl_hint_compose("x", 1, cols, row_budget);
@@ -7767,8 +8021,12 @@ cleanup:
 }
 
 static bool
-test_substitute_is(const char *before, size_t cursor, const char *command,
-                   int expected_result, const char *expected, const char *step)
+test_substitute_is(const char *before,
+                   size_t      cursor,
+                   const char *command,
+                   int         expected_result,
+                   const char *expected,
+                   const char *step)
 {
   char          out_buffer[BUFFER_SIZE];
   itl_le_t      le   = ITL_ZERO_INIT;
@@ -7795,8 +8053,8 @@ test_vi_ex_substitute(void)
 
   ok &= test_substitute_is("echo foo foo", 0, "s/foo/bar/", 1, "echo bar foo",
                            "first match");
-  ok &= test_substitute_is("echo foo foo", 0, "s/foo/bar/g", 1,
-                           "echo bar bar", "every match");
+  ok &= test_substitute_is("echo foo foo", 0, "s/foo/bar/g", 1, "echo bar bar",
+                           "every match");
   ok &= test_substitute_is("a foo\nb foo", 0, "s/foo/x/", 1, "a x\nb foo",
                            "cursor line only");
   ok &= test_substitute_is("a foo\nb foo", 8, "s/foo/x/", 1, "a foo\nb x",
@@ -7805,20 +8063,17 @@ test_vi_ex_substitute(void)
                            "whole buffer");
   ok &= test_substitute_is("cd /usr/lib", 0, "s#/usr#/opt#", 1, "cd /opt/lib",
                            "other delimiter");
-  ok &= test_substitute_is("a/b", 0, "s/\\//-/", 1, "a-b",
-                           "escaped delimiter");
-  ok &= test_substitute_is("echo foo", 0, "s/zz/x/", 0, "echo foo",
-                           "no match");
-  ok &= test_substitute_is("echo foo", 0, "s/foo/x/q", 0, "echo foo",
-                           "bad flag");
+  ok &= test_substitute_is("a/b", 0, "s/\\//-/", 1, "a-b", "escaped delimiter");
+  ok &= test_substitute_is("echo foo", 0, "s/zz/x/", 0, "echo foo", "no match");
+  ok &=
+      test_substitute_is("echo foo", 0, "s/foo/x/q", 0, "echo foo", "bad flag");
   ok &= test_substitute_is("echo foo", 0, "q", -1, "echo foo",
                            "not a substitution");
   ok &= test_substitute_is("echo fooo bar", 0, "s/fo*/x/", 1, "echo x bar",
                            "pattern");
   ok &= test_substitute_is("ab ab", 0, "s/\\(a\\)b/\\1\\1/g", 1, "aa aa",
                            "groups");
-  ok &= test_substitute_is("cat x", 0, "s/x/[&]/", 1, "cat [x]",
-                           "whole match");
+  ok &= test_substitute_is("cat x", 0, "s/x/[&]/", 1, "cat [x]", "whole match");
   ok &= test_substitute_is("abc", 0, "s/^/> /", 1, "> abc", "line start");
   ok &= test_substitute_is("abc", 0, "s/[/x/", 0, "abc", "bad pattern");
   ok &= test_substitute_is("a a", 0, "s/a/b/g", 1, "b b", "remembered");
@@ -7831,9 +8086,12 @@ test_vi_ex_substitute(void)
 }
 
 static bool
-test_emacs_replacement_is(const char *before, const char *old_text,
-                          const char *new_text, bool is_regex,
-                          const char *expected, const char *step)
+test_emacs_replacement_is(const char *before,
+                          const char *old_text,
+                          const char *new_text,
+                          bool        is_regex,
+                          const char *expected,
+                          const char *step)
 {
   char             out_buffer[BUFFER_SIZE];
   itl_le_t         le   = ITL_ZERO_INIT;
@@ -7869,8 +8127,8 @@ test_emacs_commands(void)
                                   "replace-string is literal");
   ok &= test_emacs_replacement_is("x\ny", "x", "&", false, "&\ny",
                                   "replace-string keeps &");
-  ok &= test_emacs_replacement_is("foo bar", "\\(o*\\) ", "[\\&|\\1]&",
-                                  true, "f[oo |oo]&bar",
+  ok &= test_emacs_replacement_is("foo bar", "\\(o*\\) ", "[\\&|\\1]&", true,
+                                  "f[oo |oo]&bar",
                                   "replace-regexp reads \\& and groups");
 
   strcpy(text, "rep");
@@ -7892,11 +8150,245 @@ test_emacs_commands(void)
   return ok;
 }
 
+#if defined ITL_POSIX && !defined NDEBUG
+static tl_status_code
+run_emacs_keys(itl_le_t *le, const char *keys)
+{
+  int            descriptors[2] = {-1, -1};
+  int            saved_input    = dup(STDIN_FILENO);
+  int            saved_output   = dup(STDOUT_FILENO);
+  int            null_output    = open("/dev/null", O_WRONLY);
+  tl_status_code result         = TL_ERROR;
+  size_t         length         = strlen(keys);
+
+  if (saved_input >= 0 && saved_output >= 0 && null_output >= 0 &&
+      pipe(descriptors) == 0 &&
+      write(descriptors[1], keys, length) == (ssize_t) length &&
+      dup2(descriptors[0], STDIN_FILENO) >= 0 &&
+      dup2(null_output, STDOUT_FILENO) >= 0)
+  {
+    close(descriptors[1]);
+    descriptors[1]          = -1;
+    itl_g_key_queue_index   = 0;
+    itl_g_key_queue_length  = 0;
+    itl_g_pushback_byte     = -1;
+    itl_g_tty_prev_rows     = 24;
+    itl_g_tty_prev_cols     = 80;
+    itl_g_tty_changed_size  = 0;
+    test_frame_capture_size = 0;
+    itl_g_debug_frame_sink  = test_frame_capture_sink;
+    result                  = itl_emacs_execute_command(le);
+    itl_g_debug_frame_sink  = NULL;
+  }
+  if (saved_input >= 0) {
+    dup2(saved_input, STDIN_FILENO);
+    close(saved_input);
+  }
+  if (saved_output >= 0) {
+    dup2(saved_output, STDOUT_FILENO);
+    close(saved_output);
+  }
+  if (null_output >= 0) close(null_output);
+  if (descriptors[0] >= 0) close(descriptors[0]);
+  if (descriptors[1] >= 0) close(descriptors[1]);
+  itl_g_key_queue_index  = 0;
+  itl_g_key_queue_length = 0;
+  itl_g_pushback_byte    = -1;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+
+  return result;
+}
+
+static int  file_save_count;
+static int  file_open_count;
+static bool should_save_succeed;
+static bool should_open_succeed;
+static bool did_accept_current;
+static char opened_path[256];
+
+static int
+save_command_buffer(const char *text, const char **message)
+{
+  ++file_save_count;
+  *message = should_save_succeed ? "saved" : "save failed";
+  if (should_save_succeed) tl_set_saved_text("one\n  two\nthree");
+
+  return should_save_succeed && strcmp(text, "one\n  two\nthree") == 0;
+}
+
+static int
+open_command_file(const char *path, bool should_accept, const char **message)
+{
+  ++file_open_count;
+  did_accept_current = should_accept;
+  snprintf(opened_path, sizeof(opened_path), "%s", path);
+  *message = should_open_succeed ? "opened" : "open failed";
+
+  return should_open_succeed;
+}
+
+static int
+complete_command_path(const char *text, tl_completion *out)
+{
+  static const char *const paths[] = {"dir/a file", "dir/a;file"};
+  static char              oversized[ITL_STRING_MAX_LEN + 2];
+  static const char       *oversized_paths[] = {oversized};
+
+  memset(out, 0, sizeof(*out));
+  if (strcmp(text, "oversized") == 0) {
+    memset(oversized, 'x', sizeof(oversized) - 1);
+    oversized[sizeof(oversized) - 1] = '\0';
+    out->candidates                  = oversized_paths;
+    out->count                       = 1;
+
+    return 1;
+  }
+  if (strcmp(text, "dir/") != 0) return 0;
+  out->candidates            = paths;
+  out->count                 = 2;
+  out->longest_common_prefix = "dir/a";
+
+  return 1;
+}
+
+static bool
+test_emacs_line_and_file_commands(void)
+{
+  static const struct
+  {
+    const char *keys;
+    size_t      position;
+  } cases[] = {
+      {"goto-line\r1\r",                     0 },
+      {"goto-line\r002\r",                   4 },
+      {"goto-line\r3\r",                     10},
+      {"goto-line\r999\r",                   10},
+      {"goto-line\r0\r",                     2 },
+      {"goto-line\r-1\r",                    2 },
+      {"goto-line\r 2\r",                    2 },
+      {"goto-line\r2x\r",                    2 },
+      {"goto-line\r184467440737095516160\r", 2 },
+      {"goto-line\r\x1b",                    2 }
+  };
+  char          output[128];
+  itl_string_t *line = itl_string_alloc();
+  itl_le_t      le   = ITL_ZERO_INIT;
+  bool          ok   = true;
+  size_t        index;
+  int           last_command;
+
+  ITL_STRING_FROM_CSTR(line, "one\n  two\nthree");
+  itl_le_init(&le, line, output, sizeof(output), "");
+  tl_set_edit_mode(TL_EDIT_MODE_EMACS);
+
+  for (index = 0; index < ITL_COUNTOF(cases); ++index) {
+    le.cursor_position = 2;
+    if (run_emacs_keys(&le, cases[index].keys) != TL_SUCCESS ||
+        le.cursor_position != cases[index].position ||
+        !test_line_is(line, "one\n  two\nthree", "goto-line"))
+    {
+      TEST_PRINTF("goto-line case %zu failed at %zu\n", index,
+                  le.cursor_position);
+      ok = false;
+    }
+  }
+  (void) run_emacs_keys(&le, "goto-line\r2\r");
+  last_command = itl_g_emacs_last_command;
+  (void) run_emacs_keys(&le, "unknown-command\r");
+  if (itl_g_emacs_last_command != last_command || le.cursor_position != 4)
+    ok = false;
+  le.cursor_position = 0;
+  (void) itl_emacs_repeat(&le);
+  if (le.cursor_position != 4) ok = false;
+
+  {
+    char   keys[256];
+    size_t offset          = strlen("goto-line\r");
+    size_t original_cursor = le.cursor_position;
+
+    strcpy(keys, "goto-line\r");
+    memset(keys + offset, '1', 90);
+    strcpy(keys + offset + 90, "\r\x1b");
+    (void) run_emacs_keys(&le, keys);
+    if (le.cursor_position != original_cursor) ok = false;
+    {
+      int supported = itl_g_supports_decorations;
+
+      itl_g_supports_decorations = 1;
+      (void) run_emacs_keys(&le, "zz\r");
+      itl_g_supports_decorations = supported;
+    }
+    if (!test_frame_capture_has(itl_flash_sgr_on())) {
+      TEST_PRINTF("unknown command did not draw its flash\n");
+      ok = false;
+    }
+  }
+
+  file_save_count     = 0;
+  file_open_count     = 0;
+  should_save_succeed = true;
+  should_open_succeed = true;
+  tl_set_save_callback(save_command_buffer);
+  tl_set_open_file_callback(open_command_file);
+  tl_set_path_complete_callback(complete_command_path);
+  tl_set_saved_text("old");
+  if (run_emacs_keys(&le, "find-file\roversized\t\r\x1b") != TL_SUCCESS ||
+      file_open_count != 0 || file_save_count != 0)
+    ok = false;
+  if (run_emacs_keys(&le, "find-file\rdir/\t\t\rcancel\r") != TL_SUCCESS ||
+      file_open_count != 0 || file_save_count != 0 ||
+      itl_g_emacs_last_command != last_command)
+    ok = false;
+  if (run_emacs_keys(&le, "find-file\rdir/\t\t\rdiscard\r") !=
+          TL_PRESSED_OPEN_FILE ||
+      strcmp(opened_path, "dir/a file") != 0 || did_accept_current ||
+      file_open_count != 1 || file_save_count != 0)
+    ok = false;
+  {
+    char *previous_path    = itl_g_emacs_last_path;
+    int   previous_command = itl_g_emacs_last_command;
+
+    if (run_emacs_keys(&le, "find-file\rdifferent\rcancel\r") != TL_SUCCESS ||
+        itl_g_emacs_last_path != previous_path ||
+        itl_g_emacs_last_command != previous_command)
+      ok = false;
+  }
+  should_open_succeed = false;
+  if (run_emacs_keys(&le, "find-file\rnew\rsave\r") != TL_SUCCESS ||
+      file_save_count != 1 || file_open_count != 2 || !did_accept_current ||
+      !test_line_is(line, "one\n  two\nthree", "failed open"))
+    ok = false;
+  should_save_succeed = false;
+  tl_set_saved_text("old");
+  if (run_emacs_keys(&le, "find-file\rnew\rsave\r") != TL_SUCCESS ||
+      file_save_count != 2 || file_open_count != 2)
+    ok = false;
+  if (run_emacs_keys(&le, "save-and-quit\r") != TL_SUCCESS) ok = false;
+  should_save_succeed = true;
+  if (run_emacs_keys(&le, "save-and-quit\r") != TL_PRESSED_WRITE_QUIT ||
+      strcmp(output, "one\n  two\nthree") != 0)
+    ok = false;
+  tl_set_saved_text(NULL);
+  tl_set_save_callback(NULL);
+  tl_set_open_file_callback(NULL);
+  tl_set_path_complete_callback(NULL);
+  if (itl_g_emacs_last_path != NULL) ITL_FREE(itl_g_emacs_last_path);
+  itl_g_emacs_last_path   = NULL;
+  itl_g_editor_message[0] = '\0';
+  itl_vi_free();
+  ITL_STRING_FREE(line);
+
+  return ok;
+}
+#endif
+
 static char test_option_record[128];
 
 static const char *
-test_option_callback(tl_option_action action, const char *name,
-                     const char *value)
+test_option_callback(tl_option_action action,
+                     const char      *name,
+                     const char      *value)
 {
   static const char *actions[] = {"set", "get", "save", "complete", "list"};
 
@@ -7928,7 +8420,8 @@ test_option_message_is(const char *expected, const char *step)
 }
 
 static bool
-test_option_message_is_text(const char *text, const char *expected,
+test_option_message_is_text(const char *text,
+                            const char *expected,
                             const char *step)
 {
   if (strcmp(text, expected) != 0) {
@@ -7974,8 +8467,8 @@ test_option_commands(void)
                                       "save completion");
     strcpy(text, "set editor.b=x");
     itl_vi_ex_complete_option(text, sizeof(text));
-    ok &= test_option_message_is_text(text, "set editor.b=x",
-                                      "value left alone");
+    ok &=
+        test_option_message_is_text(text, "set editor.b=x", "value left alone");
   }
   tl_set_option_callback(NULL);
   itl_g_editor_message[0] = '\0';
@@ -8027,8 +8520,8 @@ test_vi_counted_j(void)
   ok &= itl_le_line_index_of(&le, le.cursor_position) == 2;
   ok &= itl_g_vi_pending_count == 0;
   if (!ok) {
-    printf("2j left the cursor at %zu with the count %zu\n",
-           le.cursor_position, itl_g_vi_pending_count);
+    printf("2j left the cursor at %zu with the count %zu\n", le.cursor_position,
+           itl_g_vi_pending_count);
   }
   itl_g_edit_mode = TL_EDIT_MODE_EMACS;
   ITL_STRING_FREE(line);
@@ -8040,17 +8533,17 @@ static bool
 test_wrap_lines_fills_paragraphs(void)
 {
   char          out_buffer[BUFFER_SIZE];
-  itl_le_t      le   = ITL_ZERO_INIT;
-  itl_string_t *line = itl_string_alloc();
-  bool          ok   = true;
+  itl_le_t      le          = ITL_ZERO_INIT;
+  itl_string_t *line        = itl_string_alloc();
+  bool          ok          = true;
   size_t        saved_width = itl_g_wrap_width;
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), NULL);
   ITL_STRING_FROM_CSTR(line, "  one two three\nfour\n\nfive  six seven");
   itl_g_wrap_width = 12;
   itl_le_wrap_lines(&le, 0, line->length);
-  ok &= test_line_is(line, "  one two\n  three four\n\nfive six\nseven",
-                     "wrap");
+  ok &=
+      test_line_is(line, "  one two\n  three four\n\nfive six\nseven", "wrap");
   ok &= le.cursor_position == line->length - 5;
   le.cursor_position = 0;
   itl_le_fill_paragraph(&le);
@@ -8077,12 +8570,9 @@ test_find_wraps_and_folds_case(void)
   ITL_STRING_FROM_CSTR(line, "Beta alpha beta");
   ok &= itl_find_search(line, "beta", 1, false) &&
         itl_g_find_match_start == 11 && itl_g_find_match_end == 15;
-  ok &= itl_find_search(line, "beta", 12, false) &&
-        itl_g_find_match_start == 0;
-  ok &= itl_find_search(line, "Beta", 1, false) &&
-        itl_g_find_match_start == 0;
-  ok &= itl_find_search(line, "alpha", 3, true) &&
-        itl_g_find_match_start == 5;
+  ok &= itl_find_search(line, "beta", 12, false) && itl_g_find_match_start == 0;
+  ok &= itl_find_search(line, "Beta", 1, false) && itl_g_find_match_start == 0;
+  ok &= itl_find_search(line, "alpha", 3, true) && itl_g_find_match_start == 5;
   ok &= !itl_find_search(line, "gamma", 0, false) && !itl_g_find_has_match;
   itl_g_find_hint        = "find\nescape to go back";
   itl_g_find_origin      = 1;
@@ -8180,8 +8670,8 @@ test_rejected_edit_and_format_keep_the_line(void)
   tl_set_edit_callback(test_edit_invalid_callback);
   itl_le_key_handle(&le, TL_KEY_EDIT_EXTERNAL);
   ok &= test_line_is(line, "draft", "invalid edit");
-  ok &= test_option_message_is(
-      "the edited text is too long or not valid UTF-8", "edit message");
+  ok &= test_option_message_is("the edited text is too long or not valid UTF-8",
+                               "edit message");
   tl_set_edit_callback(NULL);
 
   itl_g_editor_message[0] = '\0';
@@ -8209,7 +8699,8 @@ test_string_byte_offset_counts_bytes(void)
   ok = itl_string_byte_offset(line, 0) == 0 &&
        itl_string_byte_offset(line, 2) == 2 &&
        itl_string_byte_offset(line, 99) == 3;
-  ITL_STRING_FROM_CSTR(line, "a\xe3\x81\x82" "b");
+  ITL_STRING_FROM_CSTR(line, "a\xe3\x81\x82"
+                             "b");
   ok &= itl_string_byte_offset(line, 1) == 1 &&
         itl_string_byte_offset(line, 2) == 4 &&
         itl_string_byte_offset(line, 99) == 5;
@@ -8225,8 +8716,8 @@ static bool
 test_undo_records_changes(void)
 {
   static const char *STATES[] = {
-      "",          "abc",     "abcdef",   "abXYZdef", "Zbc",
-      "Zbc tail",  "Zbc",     "head Zbc", "",         "a\xe3\x81\x82\x62",
+      "",         "abc", "abcdef",   "abXYZdef", "Zbc",
+      "Zbc tail", "Zbc", "head Zbc", "",         "a\xe3\x81\x82\x62",
   };
   char          out_buffer[BUFFER_SIZE];
   itl_le_t      le   = ITL_ZERO_INIT;
@@ -8276,8 +8767,7 @@ test_undo_records_changes(void)
     }
   }
   ok &= test_line_is(line, "state 11", "oldest kept state");
-  while (itl_redo(&le)) {
-  }
+  while (itl_redo(&le)) {}
   ok &= test_line_is(line, "last", "redo to the newest state");
 
   itl_undo_reset();
@@ -8369,7 +8859,7 @@ test_tab_takes_four_columns(void)
 static bool
 test_row_index_agrees_with_walk(itl_le_t *le, size_t cols)
 {
-  size_t indent = ITL_LE_INDENT(le, cols);
+  size_t indent    = ITL_LE_INDENT(le, cols);
   size_t first_col = itl_le_prompt_indent(le, cols);
   size_t position, target_row;
   bool   ok = true;
@@ -8452,15 +8942,15 @@ test_row_index(void)
 static bool
 test_row_index_follows_edits(void)
 {
-  static char long_text[1601];
-  itl_le_t    le   = ITL_ZERO_INIT;
+  static char   long_text[1601];
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
   bool          ok   = true;
   size_t        i;
 
-  le.line         = line;
-  le.prompt       = ">> ";
-  le.prompt_width = 3;
+  le.line                  = line;
+  le.prompt                = ">> ";
+  le.prompt_width          = 3;
   itl_g_row_index_is_valid = false;
   ITL_STRING_FROM_CSTR(line, "one two three\nfour five six seven\nlast line");
   ok &= test_row_index_agrees_with_walk(&le, 9);
@@ -8504,11 +8994,11 @@ test_row_common_prefix_stops_at_unsafe_bytes(void)
     size_t      kept;
     size_t      column;
   } CASES[] = {
-      {"abcd",                 "abxd",                 80, 2, 2},
-      {"\x1b[31mab",           "\x1b[31mac",           80, 6, 1},
-      {"ab\x1b]8;;u\x07x",      "ab\x1b]8;;u\x07y",      80, 2, 2},
-      {"a\xe6\x97\xa5z",        "a\xe6\x97\xa5y",        80, 1, 1},
-      {"abcdef",               "abcdex",               4,  3, 3},
+      {"abcd",             "abxd",             80, 2, 2},
+      {"\x1b[31mab",       "\x1b[31mac",       80, 6, 1},
+      {"ab\x1b]8;;u\x07x", "ab\x1b]8;;u\x07y", 80, 2, 2},
+      {"a\xe6\x97\xa5z",   "a\xe6\x97\xa5y",   80, 1, 1},
+      {"abcdef",           "abcdex",           4,  3, 3},
   };
   bool   ok = true;
   size_t i;
@@ -8534,8 +9024,8 @@ test_sgr_state_folds_to_the_last_reset(void)
 {
   static const char ROW[] = "\x1b[1m\x1b[31mab\x1b[0mcd\x1b[32me\x1b[K"
                             "\x1b[48;5;237m";
-  itl_char_buf_t *state = itl_char_buf_alloc();
-  bool            ok;
+  itl_char_buf_t   *state = itl_char_buf_alloc();
+  bool              ok;
 
   itl_sgr_state_fold(state, ROW, sizeof(ROW) - 1);
   ok = state->size == strlen("\x1b[32m\x1b[48;5;237m") &&
@@ -8570,7 +9060,7 @@ test_hint_body_wraps_at_words(void)
   static const char WRAPPED[] =
       "builtin synopsis\ncd [-L|-P] [-e] [dir] and some more words here";
   int  was_colors_enabled = itl_g_colors_enabled;
-  bool ok = true;
+  bool ok                 = true;
 
   tl_set_colors_enabled(0);
   tl_set_hint_callback(test_hint_callback);
@@ -8595,13 +9085,15 @@ test_hint_body_wraps_at_words(void)
   test_hint_text = "a header much wider than the row\nbody";
   ok &= test_hint_rows_are("  a header muc...\n  body", 18, 24, "header cut");
 
-  test_hint_text = "hdr\x01\nab\x1b" "cd\xC2\x9B" "ef\x7f\x02gh ij";
+  test_hint_text = "hdr\x01\nab\x1b"
+                   "cd\xC2\x9B"
+                   "ef\x7f\x02gh ij";
   ok &= test_hint_rows_are("  hdr\n  ab cd\n  ef  gh\n  ij", 9, 24,
                            "control bytes");
 
   test_hint_text = "explain\n  ls   list\n> -la  long listing format";
-  ok &= test_hint_rows_are("  explain\n    ls   list\n  > -la  long lis...",
-                           21, 24, "line breaks");
+  ok &= test_hint_rows_are("  explain\n    ls   list\n  > -la  long lis...", 21,
+                           24, "line breaks");
 
   test_hint_text = "head\n a\n b\n c\n> d\n e\n f";
   ok &= test_hint_rows_are("  head\n   c\n  > d\n   e", 21, 4,
@@ -8621,7 +9113,7 @@ static bool
 test_hint_rows_fit_a_short_terminal(void)
 {
   int  was_colors_enabled = itl_g_colors_enabled;
-  bool ok = true;
+  bool ok                 = true;
 
   tl_set_colors_enabled(0);
   tl_set_hint_callback(test_hint_callback);
@@ -8650,7 +9142,7 @@ static bool
 test_hint_rows_erase_when_shrinking(void)
 {
   int             was_colors_enabled = itl_g_colors_enabled;
-  itl_char_buf_t *b = itl_char_buf_alloc();
+  itl_char_buf_t *b                  = itl_char_buf_alloc();
   bool            was_three_drawn;
   bool            was_shrunk_to_one;
   bool            was_shrunk_to_none;
@@ -8669,17 +9161,17 @@ test_hint_rows_erase_when_shrinking(void)
                     test_bytes_have(b->data, b->size, "  gamma delta") &&
                     test_bytes_have(b->data, b->size, "\x1b[3A");
 
-  b->size = 0;
+  b->size        = 0;
   test_hint_text = "one";
   itl_hint_compose("x", 1, 16, 24);
   itl_le_tty_draw_hint(b, 24);
-  was_shrunk_to_one =
-      itl_g_hint_shown_rows == 1 &&
-      test_bytes_have(b->data, b->size,
-                      ITL_LF "\x1b[1G  one\x1b[K" ITL_LF "\x1b[1G\r\x1b[0K"
-                      ITL_LF "\x1b[1G\r\x1b[0K\x1b[3A");
+  was_shrunk_to_one = itl_g_hint_shown_rows == 1 &&
+                      test_bytes_have(b->data, b->size,
+                                      ITL_LF "\x1b[1G  one\x1b[K" ITL_LF
+                                             "\x1b[1G\r\x1b[0K" ITL_LF
+                                             "\x1b[1G\r\x1b[0K\x1b[3A");
 
-  b->size = 0;
+  b->size        = 0;
   test_hint_text = "";
   itl_hint_compose("x", 1, 16, 24);
   itl_le_tty_draw_hint(b, 24);
@@ -8687,7 +9179,7 @@ test_hint_rows_erase_when_shrinking(void)
       itl_g_hint_shown_rows == 0 && itl_g_hint_shown_len == 0 &&
       test_bytes_have(b->data, b->size, ITL_LF "\x1b[1G\r\x1b[0K\x1b[1A");
 
-  b->size = 0;
+  b->size        = 0;
   test_hint_text = "kind\nalpha beta gamma delta";
   itl_hint_compose("x", 1, 16, 24);
   itl_le_tty_draw_hint(b, 2);
@@ -8704,9 +9196,9 @@ test_hint_rows_erase_when_shrinking(void)
        was_relaid_out;
 
   if (!ok) {
-    TEST_PRINTF("three %d, one %d, none %d, relaid %d\n",
-                (int) was_three_drawn, (int) was_shrunk_to_one,
-                (int) was_shrunk_to_none, (int) was_relaid_out);
+    TEST_PRINTF("three %d, one %d, none %d, relaid %d\n", (int) was_three_drawn,
+                (int) was_shrunk_to_one, (int) was_shrunk_to_none,
+                (int) was_relaid_out);
   }
 
   return ok;
@@ -8714,20 +9206,23 @@ test_hint_rows_erase_when_shrinking(void)
 
 #if defined ITL_POSIX && !defined NDEBUG
 static void
-test_hint_prepare_frame(itl_le_t *le, itl_string_t *line, char *out_buffer,
-                        size_t out_size, const char *text)
+test_hint_prepare_frame(itl_le_t     *le,
+                        itl_string_t *line,
+                        char         *out_buffer,
+                        size_t        out_size,
+                        const char   *text)
 {
   itl_le_init(le, line, out_buffer, out_size, "> ");
   ITL_STRING_FROM_CSTR(line, "ec");
   le->cursor_position = line->length;
 
   itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 80;
+  itl_g_tty_prev_rows    = 24;
+  itl_g_tty_prev_cols    = 80;
   itl_g_debug_frame_sink = test_frame_capture_sink;
-  itl_g_hint_is_closed = false;
-  itl_g_hint_hold_count = 0;
-  test_hint_text = text;
+  itl_g_hint_is_closed   = false;
+  itl_g_hint_hold_count  = 0;
+  test_hint_text         = text;
   tl_set_hint_callback(test_hint_callback);
 }
 
@@ -8736,7 +9231,7 @@ test_hint_finish_frame(itl_string_t *line)
 {
   itl_g_debug_frame_sink = NULL;
   tl_set_hint_callback(NULL);
-  itl_g_hint_is_closed = false;
+  itl_g_hint_is_closed  = false;
   itl_g_hint_hold_count = 0;
   itl_hint_forget_shown();
   itl_hint_drop_next();
@@ -8758,7 +9253,7 @@ test_hint_row_draws_holds_and_erases(void)
   bool              was_hint_erased;
   bool              ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer), HINT);
@@ -8767,27 +9262,27 @@ test_hint_row_draws_holds_and_erases(void)
   was_hint_drawn = test_frame_capture_has(HINT) && itl_g_hint_shown_len > 0;
   was_block_unchanged = itl_g_le_prev_total_rows == 1;
 
-  test_frame_capture_size = 0;
+  test_frame_capture_size       = 0;
   itl_g_tty_should_refresh_text = false;
-  le.cursor_position = 1;
+  le.cursor_position            = 1;
   itl_le_tty_refresh(&le);
   is_cursor_move_quiet = !test_frame_capture_has(HINT);
 
-  le.cursor_position = line->length;
+  le.cursor_position            = line->length;
   itl_g_tty_should_refresh_text = true;
-  test_frame_capture_size = 0;
+  test_frame_capture_size       = 0;
   itl_hint_hold(&le);
   was_hint_held_away = !test_frame_capture_has(HINT) &&
                        test_frame_capture_size > 0 && itl_g_hint_shown_len == 0;
 
   itl_g_tty_should_refresh_text = true;
-  test_frame_capture_size = 0;
+  test_frame_capture_size       = 0;
   itl_le_tty_refresh(&le);
   was_hint_held_away = was_hint_held_away && !test_frame_capture_has(HINT);
 
   itl_hint_release();
   itl_g_tty_should_refresh_text = true;
-  test_frame_capture_size = 0;
+  test_frame_capture_size       = 0;
   itl_le_tty_refresh(&le);
   was_hint_back = test_frame_capture_has(HINT);
 
@@ -8842,7 +9337,7 @@ test_hint_rows_follow_the_frame(void)
   bool was_erased;
   bool ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer), HINT);
@@ -8854,9 +9349,9 @@ test_hint_rows_follow_the_frame(void)
                 test_frame_capture_has("  [--third-long-option]") &&
                 test_frame_capture_has("\x1b[3A");
 
-  itl_g_tty_prev_rows = 3;
+  itl_g_tty_prev_rows           = 3;
   itl_g_tty_should_refresh_text = true;
-  test_frame_capture_size = 0;
+  test_frame_capture_size       = 0;
   itl_le_tty_refresh(&le);
   was_held_back = itl_g_hint_shown_rows == 2 &&
                   test_frame_capture_count("\r\x1b[0K") >= 4 &&
@@ -8930,19 +9425,19 @@ test_save_keeps_editing(void)
 static void
 test_prefix_reset(void)
 {
-  itl_g_prefix_kind = ITL_PREFIX_NONE;
-  itl_g_prefix_key = 0;
+  itl_g_prefix_kind         = ITL_PREFIX_NONE;
+  itl_g_prefix_key          = 0;
   itl_g_vi_pending_operator = ITL_VI_OP_NONE;
-  itl_g_vi_pending_count = 0;
+  itl_g_vi_pending_count    = 0;
   itl_g_vi_pending_register = 0;
-  itl_g_edit_mode = TL_EDIT_MODE_EMACS;
+  itl_g_edit_mode           = TL_EDIT_MODE_EMACS;
 }
 
 static bool
 test_prefix_hint_lists_the_waiting_keys(void)
 {
   int  was_colors_enabled = itl_g_colors_enabled;
-  bool ok = true;
+  bool ok                 = true;
 
   tl_set_colors_enabled(0);
   tl_set_hint_callback(test_hint_callback);
@@ -8973,8 +9468,8 @@ test_prefix_hint_lists_the_waiting_keys(void)
   itl_g_vi_pending_operator = ITL_VI_OP_DELETE;
   ok &= test_hint_is("  usage", 200, "vi state outside normal mode");
 
-  itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
-  itl_g_vi_pending_count = 2;
+  itl_g_edit_mode           = TL_EDIT_MODE_VI_COMMAND;
+  itl_g_vi_pending_count    = 2;
   itl_g_vi_pending_register = 'a';
   ok &= test_hint_is("  pressed \"a2d\n  waiting for a motion such as w, b, "
                      "e, $, 0, ^, f, t, F, T, h, l, j, k, W, B, E, d again to "
@@ -8982,13 +9477,13 @@ test_prefix_hint_lists_the_waiting_keys(void)
                      200, "operator");
 
   itl_g_prefix_kind = ITL_PREFIX_VI_FIND;
-  itl_g_prefix_key = 't';
+  itl_g_prefix_key  = 't';
   ok &= test_hint_is("  pressed \"a2dt\n  waiting for a character to stop "
                      "before",
                      200, "operator find");
   test_prefix_reset();
 
-  itl_g_edit_mode = TL_EDIT_MODE_VI_COMMAND;
+  itl_g_edit_mode           = TL_EDIT_MODE_VI_COMMAND;
   itl_g_vi_pending_operator = ITL_VI_OP_CHANGE;
   ok &= test_hint_is("  pressed c\n  waiting for a motion such as w, b, e, "
                      "$, 0, ^, f, t, F, T, h, l, j, k, W, B, E, c again to "
@@ -9072,9 +9567,9 @@ test_prefix_hint_lists_the_waiting_keys(void)
                      "M-x no match");
   itl_g_minibuffer_text = "";
 
-  itl_g_edit_mode = TL_EDIT_MODE_VI_VISUAL;
+  itl_g_edit_mode   = TL_EDIT_MODE_VI_VISUAL;
   itl_g_prefix_kind = ITL_PREFIX_VI_FIND;
-  itl_g_prefix_key = 'F';
+  itl_g_prefix_key  = 'F';
   ok &= test_hint_is("  pressed F\n  waiting for a character to find backward",
                      200, "visual find");
   itl_g_prefix_key = 'T';
@@ -9094,7 +9589,7 @@ test_prefix_hint_lists_the_waiting_keys(void)
   return ok;
 }
 
-static int test_chord_writer = -1;
+static int  test_chord_writer         = -1;
 static bool test_chord_hint_was_drawn = false;
 
 static int
@@ -9104,11 +9599,10 @@ test_chord_idle_callback(const char *buffer, size_t cursor)
 
   (void) buffer;
   (void) cursor;
-  test_chord_hint_was_drawn =
-      test_frame_capture_has("  pressed ctrl-x") &&
-      test_frame_capture_has("  ctrl-e to edit") &&
-      !test_frame_capture_has("usage") &&
-      itl_g_prefix_kind == ITL_PREFIX_CTRL_X;
+  test_chord_hint_was_drawn = test_frame_capture_has("  pressed ctrl-x") &&
+                              test_frame_capture_has("  ctrl-e to edit") &&
+                              !test_frame_capture_has("usage") &&
+                              itl_g_prefix_kind == ITL_PREFIX_CTRL_X;
   if (write(test_chord_writer, &CTRL_U, 1) != 1) {
     return 0;
   }
@@ -9120,14 +9614,14 @@ test_ctrl_x_chord_shows_and_drops_its_hint(void)
 {
   char          out_buffer[BUFFER_SIZE];
   int           pipe_descriptors[2] = {-1, -1};
-  int           saved_stdin = -1;
-  bool          did_wait = false;
-  bool          was_resolved = false;
-  bool          was_hint_dropped = false;
-  bool          was_pending_quiet = false;
-  bool          was_unbound_pushed = false;
+  int           saved_stdin         = -1;
+  bool          did_wait            = false;
+  bool          was_resolved        = false;
+  bool          was_hint_dropped    = false;
+  bool          was_pending_quiet   = false;
+  bool          was_unbound_pushed  = false;
   bool          ok;
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer), "usage");
@@ -9142,12 +9636,12 @@ test_ctrl_x_chord_shows_and_drops_its_hint(void)
   test_chord_writer = pipe_descriptors[1];
   tl_set_idle_callback(test_chord_idle_callback, 10, 10);
   test_frame_capture_size = 0;
-  did_wait = itl_le_await_chord(&le, ITL_PREFIX_CTRL_X, 24);
-  was_resolved = itl_g_prefix_kind == ITL_PREFIX_NONE &&
-                 itl_esc_parse(24) == TL_KEY_UNDO;
+  did_wait                = itl_le_await_chord(&le, ITL_PREFIX_CTRL_X, 24);
+  was_resolved =
+      itl_g_prefix_kind == ITL_PREFIX_NONE && itl_esc_parse(24) == TL_KEY_UNDO;
   tl_set_idle_callback(NULL, 0, 0);
 
-  test_frame_capture_size = 0;
+  test_frame_capture_size       = 0;
   itl_g_tty_should_refresh_text = true;
   itl_le_tty_refresh(&le);
   was_hint_dropped = test_frame_capture_has("usage") &&
@@ -9155,7 +9649,7 @@ test_ctrl_x_chord_shows_and_drops_its_hint(void)
 
   if (write(pipe_descriptors[1], "q", 1) != 1) goto cleanup;
   test_frame_capture_size = 0;
-  was_pending_quiet = itl_le_await_chord(&le, ITL_PREFIX_CTRL_X, 24) &&
+  was_pending_quiet       = itl_le_await_chord(&le, ITL_PREFIX_CTRL_X, 24) &&
                       test_frame_capture_size == 0;
   was_unbound_pushed =
       itl_esc_parse(24) == TL_KEY_UNKN && itl_g_pushback_byte == 'q';
@@ -9195,7 +9689,7 @@ test_hint_row_follows_the_caret_and_clears(void)
   bool was_row_cleared;
   bool ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer), "");
@@ -9204,18 +9698,18 @@ test_hint_row_follows_the_caret_and_clears(void)
   test_frame_capture_refresh(&le);
   was_end_hint_drawn = test_frame_capture_has("hint at end");
 
-  test_frame_capture_size = 0;
+  test_frame_capture_size       = 0;
   itl_g_tty_should_refresh_text = false;
-  le.cursor_position = 0;
+  le.cursor_position            = 0;
   itl_le_tty_refresh(&le);
   was_middle_hint_drawn = test_frame_capture_has("hint in middle") &&
                           !test_frame_capture_has("hint at end");
 
   tl_set_hint_callback(test_hint_callback);
-  test_hint_text = "";
-  test_frame_capture_size = 0;
+  test_hint_text                = "";
+  test_frame_capture_size       = 0;
   itl_g_tty_should_refresh_text = false;
-  le.cursor_position = line->length;
+  le.cursor_position            = line->length;
   itl_le_tty_refresh(&le);
   was_row_cleared = test_frame_capture_size > 0 &&
                     !test_frame_capture_has("hint") &&
@@ -9243,7 +9737,7 @@ test_hint_row_keeps_multiline_rows_and_append_path(void)
   bool        was_last_hint_drawn;
   bool        ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer), "tip");
@@ -9251,30 +9745,29 @@ test_hint_row_keeps_multiline_rows_and_append_path(void)
   le.cursor_position = line->length;
 
   test_frame_capture_refresh(&le);
-  was_multiline_counted = itl_g_le_prev_total_rows == 2 &&
-                          test_frame_capture_has("tip");
+  was_multiline_counted =
+      itl_g_le_prev_total_rows == 2 && test_frame_capture_has("tip");
 
   itl_string_clear(line);
   le.cursor_position = 0;
   test_frame_capture_refresh(&le);
 
   itl_g_debug_append_refresh_count = 0;
-  itl_g_debug_full_refresh_count = 0;
+  itl_g_debug_full_refresh_count   = 0;
   for (key_index = 0; keys[key_index] != '\0'; ++key_index) {
     static const char *const texts[] = {"tip-a", "tip-b", "tip-c", "tip-d"};
-    itl_utf8_t               appended_character =
-        itl_utf8_parse((uint8_t) keys[key_index]);
+    itl_utf8_t appended_character = itl_utf8_parse((uint8_t) keys[key_index]);
 
-    test_hint_text = texts[key_index];
+    test_hint_text                 = texts[key_index];
     itl_g_tty_plain_append_pending = le.cursor_position == le.line->length;
-    itl_g_tty_plain_append_width = itl_char_width(appended_character);
+    itl_g_tty_plain_append_width   = itl_char_width(appended_character);
     itl_le_insert(&le, appended_character);
     itl_g_tty_should_refresh_text = true;
-    test_frame_capture_size = 0;
+    test_frame_capture_size       = 0;
     itl_le_tty_refresh(&le);
   }
-  was_last_hint_drawn = test_frame_capture_has("tip-d") &&
-                        !test_frame_capture_has("tip-c");
+  was_last_hint_drawn =
+      test_frame_capture_has("tip-d") && !test_frame_capture_has("tip-c");
 
   ok = was_multiline_counted && was_last_hint_drawn &&
        itl_g_debug_append_refresh_count == 4;
@@ -9290,10 +9783,10 @@ test_hint_row_keeps_multiline_rows_and_append_path(void)
   return ok;
 }
 
-static int         test_idle_outcome = 0;
+static int         test_idle_outcome    = 0;
 static int         test_idle_call_count = 0;
 static char        test_idle_line[BUFFER_SIZE];
-static size_t      test_idle_cursor = 0;
+static size_t      test_idle_cursor    = 0;
 static const char *test_idle_next_hint = NULL;
 
 static int
@@ -9322,7 +9815,7 @@ test_idle_hook_refreshes_the_hint_row(void)
   bool ok;
   int  repeat_wait_ms;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   test_hint_prepare_frame(&le, line, out_buffer, sizeof(out_buffer),
@@ -9330,13 +9823,13 @@ test_idle_hook_refreshes_the_hint_row(void)
   test_frame_capture_refresh(&le);
 
   test_idle_call_count = 0;
-  test_idle_line[0] = '\0';
+  test_idle_line[0]    = '\0';
   tl_set_idle_callback(test_idle_callback, 0, 50);
   itl_idle_arm();
   is_due_at_once = itl_idle_wait_ms() == 0;
 
-  test_idle_outcome = TL_IDLE_REFRESH;
-  test_idle_next_hint = "hint after";
+  test_idle_outcome       = TL_IDLE_REFRESH;
+  test_idle_next_hint     = "hint after";
   test_frame_capture_size = 0;
   itl_idle_run(&le);
   did_receive_line = test_idle_call_count == 1 &&
@@ -9349,14 +9842,14 @@ test_idle_hook_refreshes_the_hint_row(void)
   itl_idle_run(&le);
   is_unchanged_row_quiet = !test_frame_capture_has("hint after");
 
-  test_idle_outcome = TL_IDLE_AGAIN;
+  test_idle_outcome       = TL_IDLE_AGAIN;
   test_frame_capture_size = 0;
   itl_idle_run(&le);
   repeat_wait_ms = itl_idle_wait_ms();
-  is_repeat_due = repeat_wait_ms >= 0 && repeat_wait_ms <= 50;
+  is_repeat_due  = repeat_wait_ms >= 0 && repeat_wait_ms <= 50;
 
-  test_idle_outcome = 0;
-  test_idle_next_hint = "hint ignored";
+  test_idle_outcome       = 0;
+  test_idle_next_hint     = "hint ignored";
   test_frame_capture_size = 0;
   itl_idle_run(&le);
   is_plain_answer_silent = test_frame_capture_size == 0 &&
@@ -9422,7 +9915,7 @@ test_auto_pair_types_steps_and_erases(void)
   char out_buffer[BUFFER_SIZE];
   bool ok = true;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
@@ -9442,8 +9935,8 @@ test_auto_pair_types_steps_and_erases(void)
   ok = ok && itl_le_auto_pair_type(&le, '[') &&
        itl_le_auto_pair_type(&le, '{') &&
        test_auto_pair_line_is(&le, "[{}]", 2) && itl_g_auto_pair_count == 2;
-  ok = ok && itl_le_auto_pair_erase(&le) &&
-       test_auto_pair_line_is(&le, "[]", 1);
+  ok =
+      ok && itl_le_auto_pair_erase(&le) && test_auto_pair_line_is(&le, "[]", 1);
   ok = ok && itl_le_auto_pair_erase(&le) && test_auto_pair_line_is(&le, "", 0);
   ok = ok && !itl_le_auto_pair_erase(&le);
 
@@ -9454,17 +9947,17 @@ test_auto_pair_types_steps_and_erases(void)
        test_auto_pair_line_is(&le, "\"\"", 2);
 
   ITL_STRING_FROM_CSTR(line, "don");
-  le.cursor_position = line->length;
+  le.cursor_position    = line->length;
   itl_g_auto_pair_count = 0;
-  ok = ok && !itl_le_auto_pair_type(&le, '\'');
+  ok                    = ok && !itl_le_auto_pair_type(&le, '\'');
 
   ITL_STRING_FROM_CSTR(line, "\\");
   le.cursor_position = line->length;
-  ok = ok && !itl_le_auto_pair_type(&le, '(');
+  ok                 = ok && !itl_le_auto_pair_type(&le, '(');
 
   ITL_STRING_FROM_CSTR(line, "x");
   le.cursor_position = 0;
-  ok = ok && !itl_le_auto_pair_type(&le, '(');
+  ok                 = ok && !itl_le_auto_pair_type(&le, '(');
 
   ITL_STRING_FROM_CSTR(line, "()");
   le.cursor_position = 1;
@@ -9472,13 +9965,13 @@ test_auto_pair_types_steps_and_erases(void)
 
   tl_set_pair_role_callback(test_pair_role_inside_quote);
   ITL_STRING_FROM_CSTR(line, "' ");
-  le.cursor_position = line->length;
+  le.cursor_position    = line->length;
   itl_g_auto_pair_count = 0;
-  ok = ok && !itl_le_auto_pair_type(&le, '(') &&
+  ok                    = ok && !itl_le_auto_pair_type(&le, '(') &&
        !itl_le_auto_pair_type(&le, '"');
   ITL_STRING_FROM_CSTR(line, "a ");
   le.cursor_position = line->length;
-  ok = ok && itl_le_auto_pair_type(&le, '(') &&
+  ok                 = ok && itl_le_auto_pair_type(&le, '(') &&
        test_auto_pair_line_is(&le, "a ()", 3);
   ok = ok && itl_le_insert(&le, itl_utf8_parse('\'')) &&
        !itl_le_auto_pair_type(&le, ')') &&
@@ -9487,21 +9980,21 @@ test_auto_pair_types_steps_and_erases(void)
 
   itl_le_clear_line(&le);
   itl_g_auto_pair_count = 0;
-  ok = ok && itl_le_auto_pair_type(&le, '"') &&
+  ok                    = ok && itl_le_auto_pair_type(&le, '"') &&
        itl_le_insert(&le, itl_utf8_parse('$')) &&
        itl_le_auto_pair_type(&le, '(') &&
        test_auto_pair_line_is(&le, "\"$()\"", 3) && itl_g_auto_pair_count == 2;
 
   ITL_STRING_FROM_CSTR(line, "$\"");
-  le.cursor_position = 1;
+  le.cursor_position    = 1;
   itl_g_auto_pair_count = 0;
-  ok = ok && itl_le_auto_pair_type(&le, '{') &&
+  ok                    = ok && itl_le_auto_pair_type(&le, '{') &&
        test_auto_pair_line_is(&le, "${}\"", 2);
 
   ITL_STRING_FROM_CSTR(line, "\"x\"");
-  le.cursor_position = 0;
+  le.cursor_position    = 0;
   itl_g_auto_pair_count = 0;
-  ok = ok && !itl_le_auto_pair_type(&le, '"');
+  ok                    = ok && !itl_le_auto_pair_type(&le, '"');
 
   tl_set_auto_pair(0);
   ITL_STRING_FREE(line);
@@ -9515,7 +10008,7 @@ test_auto_pair_types_steps_and_erases(void)
 
 #define TEST_CARET_SGR "\x1b[4m"
 
-static size_t test_highlight_cursor = 0;
+static size_t test_highlight_cursor     = 0;
 static size_t test_highlight_call_count = 0;
 
 static int
@@ -9531,9 +10024,9 @@ test_caret_cell_highlight_callback(const char *buffer, tl_highlight *out)
   }
 
   out->spans[0].start = out->cursor;
-  out->spans[0].end = out->cursor + 1;
-  out->spans[0].sgr = TEST_CARET_SGR;
-  out->count = 1;
+  out->spans[0].end   = out->cursor + 1;
+  out->spans[0].sgr   = TEST_CARET_SGR;
+  out->count          = 1;
 
   return 1;
 }
@@ -9541,9 +10034,9 @@ test_caret_cell_highlight_callback(const char *buffer, tl_highlight *out)
 static void
 test_caret_highlight_move(itl_le_t *le, size_t position)
 {
-  test_frame_capture_size = 0;
+  test_frame_capture_size       = 0;
   itl_g_tty_should_refresh_text = false;
-  le->cursor_position = position;
+  le->cursor_position           = position;
   itl_le_tty_refresh(le);
 }
 
@@ -9560,7 +10053,7 @@ test_highlight_follows_the_caret(void)
   bool   was_byte_offset_passed;
   bool   ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
@@ -9568,8 +10061,8 @@ test_highlight_follows_the_caret(void)
   le.cursor_position = line->length;
 
   itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 80;
+  itl_g_tty_prev_rows    = 24;
+  itl_g_tty_prev_cols    = 80;
   itl_g_debug_frame_sink = test_frame_capture_sink;
   tl_set_highlight_callback(test_caret_cell_highlight_callback);
   tl_set_highlight_follows_cursor(1);
@@ -9599,7 +10092,8 @@ test_highlight_follows_the_caret(void)
                          itl_g_debug_full_refresh_count == full_count &&
                          !test_frame_capture_has(TEST_CARET_SGR);
 
-  ITL_STRING_FROM_CSTR(line, "\xd0\xb0" "bc");
+  ITL_STRING_FROM_CSTR(line, "\xd0\xb0"
+                             "bc");
   le.cursor_position = 1;
   test_frame_capture_refresh(&le);
   was_byte_offset_passed = test_highlight_cursor == 2;
@@ -9627,17 +10121,20 @@ test_highlight_follows_the_caret(void)
 #define TEST_RIGHT_PROMPT "\x1b[32mRP\x1b[0m"
 
 static void
-test_right_prompt_prepare_frame(itl_le_t *le, itl_string_t *line,
-                                char *out_buffer, size_t out_size,
-                                const char *text, size_t cols)
+test_right_prompt_prepare_frame(itl_le_t     *le,
+                                itl_string_t *line,
+                                char         *out_buffer,
+                                size_t        out_size,
+                                const char   *text,
+                                size_t        cols)
 {
   itl_le_init(le, line, out_buffer, out_size, "> ");
   ITL_STRING_FROM_CSTR(line, text);
   le->cursor_position = line->length;
 
   itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = cols;
+  itl_g_tty_prev_rows    = 24;
+  itl_g_tty_prev_cols    = cols;
   itl_g_debug_frame_sink = test_frame_capture_sink;
   tl_set_right_prompt(TEST_RIGHT_PROMPT);
 }
@@ -9648,7 +10145,7 @@ test_right_prompt_finish_frame(itl_string_t *line)
   itl_g_debug_frame_sink = NULL;
   tl_set_right_prompt(NULL);
   tl_set_transient_prompt(NULL);
-  itl_g_hint_is_closed = false;
+  itl_g_hint_is_closed   = false;
   itl_g_tty_changed_size = 1;
   itl_g_tty_first_render = true;
   itl_le_invalidate_prev_frame();
@@ -9673,7 +10170,7 @@ test_right_prompt_fits_the_first_row(void)
   bool was_hidden_when_held;
   bool ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   test_right_prompt_prepare_frame(&le, line, out_buffer, sizeof(out_buffer),
@@ -9692,8 +10189,8 @@ test_right_prompt_fits_the_first_row(void)
   ITL_STRING_FROM_CSTR(line, "abcdefghijklmnop");
   le.cursor_position = line->length;
   test_frame_capture_refresh(&le);
-  was_hidden_at_overlap = !test_frame_capture_has("RP") &&
-                          !itl_g_le_prev_right_prompt_is_shown;
+  was_hidden_at_overlap =
+      !test_frame_capture_has("RP") && !itl_g_le_prev_right_prompt_is_shown;
 
   ITL_STRING_FROM_CSTR(line, "ab\ncdefghijklmnopq");
   le.cursor_position = line->length;
@@ -9708,15 +10205,15 @@ test_right_prompt_fits_the_first_row(void)
   was_hidden_when_wrapped = !test_frame_capture_has("RP");
 
   ITL_STRING_FROM_CSTR(line, "");
-  le.cursor_position = 0;
+  le.cursor_position  = 0;
   itl_g_tty_prev_cols = 4;
   test_frame_capture_refresh(&le);
   was_hidden_when_narrow = !test_frame_capture_has("RP");
 
-  itl_g_tty_prev_cols = 20;
+  itl_g_tty_prev_cols        = 20;
   itl_g_right_prompt_is_held = true;
   test_frame_capture_refresh(&le);
-  was_hidden_when_held = !test_frame_capture_has("RP");
+  was_hidden_when_held       = !test_frame_capture_has("RP");
   itl_g_right_prompt_is_held = false;
 
   test_right_prompt_finish_frame(line);
@@ -9754,7 +10251,7 @@ test_right_prompt_follows_appends(void)
   bool        was_line_break_rejected;
   bool        ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   test_right_prompt_prepare_frame(&le, line, out_buffer, sizeof(out_buffer),
@@ -9766,10 +10263,10 @@ test_right_prompt_follows_appends(void)
     itl_utf8_t appended_character = itl_utf8_parse((uint8_t) keys[key_index]);
 
     itl_g_tty_plain_append_pending = le.cursor_position == le.line->length;
-    itl_g_tty_plain_append_width = itl_char_width(appended_character);
+    itl_g_tty_plain_append_width   = itl_char_width(appended_character);
     itl_le_insert(&le, appended_character);
     itl_g_tty_should_refresh_text = true;
-    test_frame_capture_size = 0;
+    test_frame_capture_size       = 0;
     itl_le_tty_refresh(&le);
     if (test_frame_capture_has(TEST_RIGHT_PROMPT)) {
       drawn_count += 1;
@@ -9779,7 +10276,7 @@ test_right_prompt_follows_appends(void)
 
   ITL_LE_ERASE_BACKWARD(&le, 1);
   itl_g_tty_should_refresh_text = true;
-  test_frame_capture_size = 0;
+  test_frame_capture_size       = 0;
   itl_le_tty_refresh(&le);
   was_back_after_erase = test_frame_capture_has(TEST_RIGHT_PROMPT) &&
                          itl_g_le_prev_right_prompt_is_shown;
@@ -9818,16 +10315,16 @@ test_transient_prompt_redraws_the_submitted_line(void)
   bool              was_plain_submit_left;
   bool              ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   test_right_prompt_prepare_frame(&le, line, out_buffer, sizeof(out_buffer),
                                   "ab\ncd", 40);
-  le.prompt = "top\n> ";
-  le.prompt_size = strlen(le.prompt);
-  le.prompt_width = itl_prompt_last_row_width(le.prompt, &le.prompt_rows);
-  test_hint_text = HINT;
-  itl_g_hint_is_closed = false;
+  le.prompt             = "top\n> ";
+  le.prompt_size        = strlen(le.prompt);
+  le.prompt_width       = itl_prompt_last_row_width(le.prompt, &le.prompt_rows);
+  test_hint_text        = HINT;
+  itl_g_hint_is_closed  = false;
   itl_g_hint_hold_count = 0;
   tl_set_hint_callback(test_hint_callback);
   tl_set_transient_prompt("$ ");
@@ -9836,26 +10333,26 @@ test_transient_prompt_redraws_the_submitted_line(void)
   test_frame_capture_size = 0;
   itl_le_finish_input(&le, TL_PRESSED_ENTER);
   was_block_erased = test_frame_capture_has("\x1b[2A\x1b[1G\x1b[0J");
-  was_line_redrawn = test_frame_capture_has("$ ab") &&
-                     itl_g_le_prev_total_rows == 2;
+  was_line_redrawn =
+      test_frame_capture_has("$ ab") && itl_g_le_prev_total_rows == 2;
   were_rows_dropped = test_frame_capture_has(TEST_RIGHT_PROMPT) &&
                       !test_frame_capture_has("top") &&
                       !test_frame_capture_has(HINT);
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
   ITL_STRING_FROM_CSTR(line, "ab");
-  le.cursor_position = line->length;
+  le.cursor_position   = line->length;
   itl_g_hint_is_closed = false;
   test_frame_capture_refresh(&le);
   test_frame_capture_size = 0;
   itl_le_finish_input(&le, TL_PRESSED_INTERRUPT);
-  was_interrupt_redrawn = test_frame_capture_has("\x1b[0J") &&
-                          test_frame_capture_has("$ ab");
+  was_interrupt_redrawn =
+      test_frame_capture_has("\x1b[0J") && test_frame_capture_has("$ ab");
 
   tl_set_transient_prompt(NULL);
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
   ITL_STRING_FROM_CSTR(line, "ab");
-  le.cursor_position = line->length;
+  le.cursor_position   = line->length;
   itl_g_hint_is_closed = false;
   test_frame_capture_refresh(&le);
   test_frame_capture_size = 0;
@@ -9895,7 +10392,7 @@ test_transient_right_prompt_redraws_a_finished_line(void)
   bool is_prompt_restored;
   bool ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   test_right_prompt_prepare_frame(&le, line, out_buffer, sizeof(out_buffer),
@@ -9929,8 +10426,8 @@ test_transient_right_prompt_redraws_a_finished_line(void)
   was_empty_erased = test_frame_capture_size > 0 &&
                      !test_frame_capture_has("RP") &&
                      !itl_g_le_prev_right_prompt_is_shown;
-  is_prompt_restored = itl_g_right_prompt_width == 2 &&
-                       !itl_g_right_prompt_is_held;
+  is_prompt_restored =
+      itl_g_right_prompt_width == 2 && !itl_g_right_prompt_is_held;
 
   tl_set_transient_right_prompt(NULL);
   test_right_prompt_finish_frame(line);
@@ -9948,7 +10445,9 @@ test_transient_right_prompt_redraws_a_finished_line(void)
 }
 #endif
 
-#define TEST_OSC_NAME    "a\x1b]0;PWN\x07" "z"
+#define TEST_OSC_NAME                                                          \
+  "a\x1b]0;PWN\x07"                                                            \
+  "z"
 #define TEST_OSC_VISIBLE "a^[]0;PWN^Gz"
 
 /* A control byte from a file name, a description, or a suggestion draws as its
@@ -9957,10 +10456,11 @@ test_transient_right_prompt_redraws_a_finished_line(void)
 static bool
 test_control_bytes_draw_visibly(void)
 {
-  static const char *names[] = {TEST_OSC_NAME, "c\xC2\x9B" "d"};
+  static const char *names[]            = {TEST_OSC_NAME, "c\xC2\x9B"
+                                                                     "d"};
   int                was_colors_enabled = itl_g_colors_enabled;
-  tl_completion      result = ITL_ZERO_INIT;
-  itl_char_buf_t    *b = itl_char_buf_alloc();
+  tl_completion      result             = ITL_ZERO_INIT;
+  itl_char_buf_t    *b                  = itl_char_buf_alloc();
   size_t             drawn;
   bool               is_cell_visible;
   bool               is_c1_visible;
@@ -9973,33 +10473,33 @@ test_control_bytes_draw_visibly(void)
 
   tl_set_colors_enabled(0);
 
-  drawn = itl_menu_append_cell(b, TEST_OSC_NAME, 20, false);
+  drawn           = itl_menu_append_cell(b, TEST_OSC_NAME, 20, false);
   is_cell_visible = drawn == 12 && b->size == 12 &&
                     memcmp(b->data, TEST_OSC_VISIBLE, 12) == 0;
 
   b->size = 0;
-  drawn = itl_menu_append_cell(b, names[1], 20, false);
-  is_c1_visible = drawn == 6 && b->size == 6 &&
-                  memcmp(b->data, "c\\x9bd", 6) == 0;
+  drawn   = itl_menu_append_cell(b, names[1], 20, false);
+  is_c1_visible =
+      drawn == 6 && b->size == 6 && memcmp(b->data, "c\\x9bd", 6) == 0;
 
   b->size = 0;
   itl_menu_append_colored_cell(b, TEST_OSC_NAME, 8, NULL, 0, true);
   is_colored_visible = b->size == 8 && memcmp(b->data, "a^[]0...", 8) == 0;
 
-  result.candidates = names;
-  result.count = countof(names);
+  result.candidates     = names;
+  result.count          = countof(names);
   is_name_width_counted = itl_menu_name_width(&result) == 12;
 
   b->size = 0;
-  drawn = itl_char_buf_append_visible(b, "x\xFF", 2, 10, false);
+  drawn   = itl_char_buf_append_visible(b, "x\xFF", 2, 10, false);
   is_invalid_byte_visible = drawn == 5 && itl_visible_width("x\xFF", 2) == 5 &&
                             b->size == 5 && memcmp(b->data, "x\\xff", 5) == 0;
 
   b->size = 0;
   memcpy(itl_g_ghost, TEST_OSC_NAME, sizeof(TEST_OSC_NAME));
-  itl_g_ghost_len = sizeof(TEST_OSC_NAME) - 1;
+  itl_g_ghost_len   = sizeof(TEST_OSC_NAME) - 1;
   itl_g_ghost_width = itl_visible_width(itl_g_ghost, itl_g_ghost_len);
-  is_ghost_visible = itl_g_ghost_width == 12 &&
+  is_ghost_visible  = itl_g_ghost_width == 12 &&
                      itl_le_tty_draw_ghost(b, true, 0, 80) &&
                      test_bytes_have(b->data, b->size, TEST_OSC_VISIBLE) &&
                      !test_bytes_have(b->data, b->size, "\x07") &&
@@ -10008,10 +10508,14 @@ test_control_bytes_draw_visibly(void)
   itl_g_le_prev_ghost_len = 0;
 
   tl_set_hint_callback(test_hint_callback);
-  test_hint_text = "a\xC2\x9B" "b\x1b" "c";
+  test_hint_text = "a\xC2\x9B"
+                   "b\x1b"
+                   "c";
   itl_hint_compose("x", 1, 20, 24);
   is_hint_blanked = strcmp(itl_g_hint_next, "  a b c") == 0;
-  test_hint_text = "a\x9B" "b\xE2\x82" "c\xC3\xA9";
+  test_hint_text  = "a\x9B"
+                    "b\xE2\x82"
+                    "c\xC3\xA9";
   itl_hint_compose("x", 1, 20, 24);
   is_hint_blanked &= strcmp(itl_g_hint_next, "  a b  c\xC3\xA9") == 0;
   tl_set_hint_callback(NULL);
@@ -10068,12 +10572,12 @@ test_right_prompt_rejects_controls(void)
 static bool
 test_last_argument_skips_invalid_words(void)
 {
-  static const char content[] = "echo first\necho caf\xE9\n";
+  static const char content[]      = "echo first\necho caf\xE9\n";
   static const char invalid_only[] = "echo caf\xE9\n";
-  const char       *path = "tl_test_last_argument_invalid.txt";
+  const char       *path           = "tl_test_last_argument_invalid.txt";
   char              out_buffer[BUFFER_SIZE];
-  bool              ok = true;
-  itl_le_t          le = ITL_ZERO_INIT;
+  bool              ok   = true;
+  itl_le_t          le   = ITL_ZERO_INIT;
   itl_string_t     *line = itl_string_alloc();
 
   itl_g_is_active = true;
@@ -10118,7 +10622,7 @@ test_menu_help_drops_items_past_the_last_row(void)
   bool            ok;
 
   rows = itl_menu_layout_help(b, "abcdefgh, ijklmnop", "x", 12, 0, 1);
-  ok = rows == 1 && test_bytes_have(b->data, b->size, "abcdefgh,") &&
+  ok   = rows == 1 && test_bytes_have(b->data, b->size, "abcdefgh,") &&
        !test_bytes_have(b->data, b->size, "ijkl") &&
        !test_bytes_have(b->data, b->size, "x");
 
@@ -10144,38 +10648,36 @@ test_line_render_shows_control_bytes(void)
   bool             is_append_visible;
   bool             ok;
 
-  itl_le_t      le = ITL_ZERO_INIT;
+  itl_le_t      le   = ITL_ZERO_INIT;
   itl_string_t *line = itl_string_alloc();
 
   tl_set_colors_enabled(0);
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
   ITL_STRING_FROM_CSTR(line, TEST_OSC_NAME "\xC2\x9B");
-  le.cursor_position = line->length;
+  le.cursor_position     = line->length;
   itl_g_tty_changed_size = 0;
-  itl_g_tty_prev_rows = 24;
-  itl_g_tty_prev_cols = 40;
+  itl_g_tty_prev_rows    = 24;
+  itl_g_tty_prev_cols    = 40;
   itl_g_debug_frame_sink = test_frame_capture_sink;
 
   expected = itl_le_compute_metrics(&le, 40);
   test_frame_capture_refresh(&le);
-  is_full_render_visible = test_frame_capture_has(TEST_OSC_VISIBLE "\\x9b") &&
-                           !test_frame_capture_has("\x07") &&
-                           !test_frame_capture_has("\x1b]") &&
-                           !test_frame_capture_has("\xC2\x9B") &&
-                           expected.cursor_col == 18 &&
-                           itl_g_le_prev_cursor_col == 18;
+  is_full_render_visible =
+      test_frame_capture_has(TEST_OSC_VISIBLE "\\x9b") &&
+      !test_frame_capture_has("\x07") && !test_frame_capture_has("\x1b]") &&
+      !test_frame_capture_has("\xC2\x9B") && expected.cursor_col == 18 &&
+      itl_g_le_prev_cursor_col == 18;
 
   itl_g_tty_plain_append_pending = true;
-  itl_g_tty_plain_append_width = itl_char_line_width(escape);
+  itl_g_tty_plain_append_width   = itl_char_line_width(escape);
   itl_le_insert(&le, escape);
-  itl_g_tty_should_refresh_text = true;
+  itl_g_tty_should_refresh_text    = true;
   itl_g_debug_append_refresh_count = 0;
-  test_frame_capture_size = 0;
+  test_frame_capture_size          = 0;
   itl_le_tty_refresh(&le);
-  is_append_visible = itl_g_debug_append_refresh_count == 1 &&
-                      test_frame_capture_has("^[") &&
-                      !test_frame_capture_has("\x1b\x1b") &&
-                      itl_g_le_prev_cursor_col == 20;
+  is_append_visible =
+      itl_g_debug_append_refresh_count == 1 && test_frame_capture_has("^[") &&
+      !test_frame_capture_has("\x1b\x1b") && itl_g_le_prev_cursor_col == 20;
 
   itl_g_debug_frame_sink = NULL;
   itl_g_tty_changed_size = 1;
@@ -10207,279 +10709,179 @@ struct test_case
 
 #define DEFINE_TEST_CASE(fn)                                                   \
   {                                                                            \
-    .name = #fn, .func = fn,                                                   \
+      .name = #fn,                                                             \
+      .func = fn,                                                              \
   }
 
-static test_case_t test_cases[] = {DEFINE_TEST_CASE(test_string_from_cstr),
-                                   DEFINE_TEST_CASE(test_string_shift),
-                                   DEFINE_TEST_CASE(test_string_erase),
-                                   DEFINE_TEST_CASE(test_string_insert),
-                                   DEFINE_TEST_CASE(test_char_buf),
-                                   DEFINE_TEST_CASE(
-                                       test_string_shift_directions),
-                                   DEFINE_TEST_CASE(
-                                       test_string_copy_uses_live_range),
-                                   DEFINE_TEST_CASE(test_string_to_cstr_limits),
-                                   DEFINE_TEST_CASE(
-                                       test_char_buf_growth_boundary),
-                                   DEFINE_TEST_CASE(test_parse_size),
-                                   DEFINE_TEST_CASE(test_utf8_strlen),
-                                   DEFINE_TEST_CASE(
-                                       test_string_from_bytes_truncates_at_rune_boundary),
-                                   DEFINE_TEST_CASE(
-                                       test_string_from_bytes_rejects_malformed_utf8),
-                                   DEFINE_TEST_CASE(test_char_width),
-                                   DEFINE_TEST_CASE(test_metrics),
-                                   DEFINE_TEST_CASE(test_find_substring),
-                                   DEFINE_TEST_CASE(test_history_multiline_file),
-                                   DEFINE_TEST_CASE(
-                                       test_rejected_ghost_history_prefix_is_cached),
+static test_case_t test_cases[] = {
+    DEFINE_TEST_CASE(test_string_from_cstr),
+    DEFINE_TEST_CASE(test_string_shift),
+    DEFINE_TEST_CASE(test_string_erase),
+    DEFINE_TEST_CASE(test_string_insert),
+    DEFINE_TEST_CASE(test_char_buf),
+    DEFINE_TEST_CASE(test_string_shift_directions),
+    DEFINE_TEST_CASE(test_string_copy_uses_live_range),
+    DEFINE_TEST_CASE(test_string_to_cstr_limits),
+    DEFINE_TEST_CASE(test_char_buf_growth_boundary),
+    DEFINE_TEST_CASE(test_parse_size),
+    DEFINE_TEST_CASE(test_utf8_strlen),
+    DEFINE_TEST_CASE(test_string_from_bytes_truncates_at_rune_boundary),
+    DEFINE_TEST_CASE(test_string_from_bytes_rejects_malformed_utf8),
+    DEFINE_TEST_CASE(test_char_width),
+    DEFINE_TEST_CASE(test_metrics),
+    DEFINE_TEST_CASE(test_find_substring),
+    DEFINE_TEST_CASE(test_history_multiline_file),
+    DEFINE_TEST_CASE(test_rejected_ghost_history_prefix_is_cached),
 #if defined ITL_WIN32
-                                   DEFINE_TEST_CASE(
-                                       test_windows_ghost_does_not_require_term),
+    DEFINE_TEST_CASE(test_windows_ghost_does_not_require_term),
 #endif
-                                   DEFINE_TEST_CASE(test_history_ring_cap),
-                                   DEFINE_TEST_CASE(test_history_dedup),
-                                   DEFINE_TEST_CASE(test_history_unterminated_line),
-                                   DEFINE_TEST_CASE(
-                                       test_history_carriage_return_rule),
-                                   DEFINE_TEST_CASE(test_history_search),
-                                   DEFINE_TEST_CASE(
-                                       test_history_search_snapshot),
-                                   DEFINE_TEST_CASE(
-                                       test_history_search_matching),
-                                   DEFINE_TEST_CASE(
-                                       test_history_search_rejects_malformed_entry),
-                                   DEFINE_TEST_CASE(
-                                       test_history_search_narrowing),
+    DEFINE_TEST_CASE(test_history_ring_cap),
+    DEFINE_TEST_CASE(test_history_dedup),
+    DEFINE_TEST_CASE(test_history_unterminated_line),
+    DEFINE_TEST_CASE(test_history_carriage_return_rule),
+    DEFINE_TEST_CASE(test_history_search),
+    DEFINE_TEST_CASE(test_history_search_snapshot),
+    DEFINE_TEST_CASE(test_history_complete_corpus),
+    DEFINE_TEST_CASE(test_history_cursor_line_query),
+    DEFINE_TEST_CASE(test_history_search_matching),
+    DEFINE_TEST_CASE(test_history_search_rejects_malformed_entry),
+    DEFINE_TEST_CASE(test_history_search_narrowing),
 #if defined ITL_POSIX
-                                   DEFINE_TEST_CASE(
-                                       test_history_search_preview_cache),
+    DEFINE_TEST_CASE(test_history_search_preview_cache),
 #endif
-                                   DEFINE_TEST_CASE(test_history_short_entry_skipped),
-                                   DEFINE_TEST_CASE(test_history_alloc_balance),
-                                   DEFINE_TEST_CASE(test_history_private_branch),
-                                   DEFINE_TEST_CASE(test_history_recall_after_peer_write),
-                                   DEFINE_TEST_CASE(
-                                       test_completion_replacement_is_atomic),
-                                   DEFINE_TEST_CASE(
-                                       test_alt_arrows_use_word_movement),
-                                   DEFINE_TEST_CASE(test_menu_match_rank),
-                                   DEFINE_TEST_CASE(test_menu_filter_groups),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_index_narrows_like_the_plain_scan),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_narrow_reuses_base),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_at_sign_returns_to_host),
-                                   DEFINE_TEST_CASE(test_menu_cells),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_row_colors_directories),
-                                   DEFINE_TEST_CASE(
-                                       test_history_menu_multiline_display),
-                                   DEFINE_TEST_CASE(test_merge_visual_spans),
+    DEFINE_TEST_CASE(test_history_short_entry_skipped),
+    DEFINE_TEST_CASE(test_history_alloc_balance),
+    DEFINE_TEST_CASE(test_history_private_branch),
+    DEFINE_TEST_CASE(test_history_recall_after_peer_write),
+    DEFINE_TEST_CASE(test_completion_replacement_is_atomic),
+    DEFINE_TEST_CASE(test_alt_arrows_use_word_movement),
+    DEFINE_TEST_CASE(test_menu_match_rank),
+    DEFINE_TEST_CASE(test_menu_filter_groups),
+    DEFINE_TEST_CASE(test_menu_index_narrows_like_the_plain_scan),
+    DEFINE_TEST_CASE(test_menu_narrow_reuses_base),
+    DEFINE_TEST_CASE(test_menu_at_sign_returns_to_host),
+    DEFINE_TEST_CASE(test_menu_cells),
+    DEFINE_TEST_CASE(test_menu_row_colors_directories),
+    DEFINE_TEST_CASE(test_history_menu_multiline_display),
+    DEFINE_TEST_CASE(test_merge_visual_spans),
 #if defined ITL_POSIX
-                                   DEFINE_TEST_CASE(
-                                       test_menu_keys_reuse_gathered_list),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_debounces_every_list),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_asks_once_a_word_pauses),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_new_word_asks_after_its_pause),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_returns_to_a_gathered_word_without_asking),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_unfinished_gather_resumes_after_the_pause),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_walking_key_asks_at_once),
-                                   DEFINE_TEST_CASE(
-                                       test_tab_prefix_menu_reuses_gather),
-                                   DEFINE_TEST_CASE(
-                                       test_tab_sole_candidate_stops),
-                                   DEFINE_TEST_CASE(
-                                       test_tab_menu_stays_open_until_escape),
-                                   DEFINE_TEST_CASE(
-                                       test_vi_ex_command_keeps_the_caret),
-                                   DEFINE_TEST_CASE(
-                                       test_emacs_selection_fills_lines),
-                                   DEFINE_TEST_CASE(
-                                       test_help_lists_the_commands),
-                                   DEFINE_TEST_CASE(
-                                       test_footer_grows_for_a_message),
-                                   DEFINE_TEST_CASE(
-                                       test_alt_backspace_sequences),
-                                   DEFINE_TEST_CASE(
-                                       test_pending_resize_wakes_input_wait),
-                                   DEFINE_TEST_CASE(
-                                       test_idle_hook_runs_in_the_input_wait),
-                                   DEFINE_TEST_CASE(
-                                       test_pending_gather_polls_the_idle_hook),
-                                   DEFINE_TEST_CASE(
-                                       test_write_all_resumes_a_partial_write),
+    DEFINE_TEST_CASE(test_menu_keys_reuse_gathered_list),
+    DEFINE_TEST_CASE(test_menu_debounces_every_list),
+    DEFINE_TEST_CASE(test_menu_asks_once_a_word_pauses),
+    DEFINE_TEST_CASE(test_menu_new_word_asks_after_its_pause),
+    DEFINE_TEST_CASE(test_menu_returns_to_a_gathered_word_without_asking),
+    DEFINE_TEST_CASE(test_menu_unfinished_gather_resumes_after_the_pause),
+    DEFINE_TEST_CASE(test_menu_walking_key_asks_at_once),
+    DEFINE_TEST_CASE(test_tab_prefix_menu_reuses_gather),
+    DEFINE_TEST_CASE(test_tab_sole_candidate_stops),
+    DEFINE_TEST_CASE(test_tab_menu_stays_open_until_escape),
+    DEFINE_TEST_CASE(test_vi_ex_command_keeps_the_caret),
+    DEFINE_TEST_CASE(test_emacs_selection_fills_lines),
+    DEFINE_TEST_CASE(test_help_lists_the_commands),
+    DEFINE_TEST_CASE(test_footer_grows_for_a_message),
+    DEFINE_TEST_CASE(test_alt_backspace_sequences),
+    DEFINE_TEST_CASE(test_pending_resize_wakes_input_wait),
+    DEFINE_TEST_CASE(test_idle_hook_runs_in_the_input_wait),
+    DEFINE_TEST_CASE(test_pending_gather_polls_the_idle_hook),
+    DEFINE_TEST_CASE(test_write_all_resumes_a_partial_write),
 #endif
-                                   DEFINE_TEST_CASE(
-                                       test_ctrl_right_accepts_one_ghost_word),
-                                   DEFINE_TEST_CASE(
-                                       test_ctrl_right_accepts_one_case_corrected_word),
-                                   DEFINE_TEST_CASE(
-                                       test_kill_ring_appends_yanks_and_cycles),
-                                   DEFINE_TEST_CASE(
-                                       test_kill_line_removes_an_empty_line),
-                                   DEFINE_TEST_CASE(
-                                       test_transpose_characters_and_words),
-                                   DEFINE_TEST_CASE(
-                                       test_emoji_sequences_move_and_measure_whole),
-                                   DEFINE_TEST_CASE(
-                                       test_completion_is_one_undo_step),
-                                   DEFINE_TEST_CASE(test_vi_dot_skips_a_yank),
-                                   DEFINE_TEST_CASE(
-                                       test_ghost_miss_skips_an_empty_word),
-                                   DEFINE_TEST_CASE(
-                                       test_last_argument_walks_history),
-                                   DEFINE_TEST_CASE(
-                                       test_edit_external_replaces_the_line),
-                                   DEFINE_TEST_CASE(test_editing_key_sequences),
+    DEFINE_TEST_CASE(test_ctrl_right_accepts_one_ghost_word),
+    DEFINE_TEST_CASE(test_ctrl_right_accepts_one_case_corrected_word),
+    DEFINE_TEST_CASE(test_kill_ring_appends_yanks_and_cycles),
+    DEFINE_TEST_CASE(test_kill_line_removes_an_empty_line),
+    DEFINE_TEST_CASE(test_transpose_characters_and_words),
+    DEFINE_TEST_CASE(test_emoji_sequences_move_and_measure_whole),
+    DEFINE_TEST_CASE(test_completion_is_one_undo_step),
+    DEFINE_TEST_CASE(test_vi_dot_skips_a_yank),
+    DEFINE_TEST_CASE(test_ghost_miss_skips_an_empty_word),
+    DEFINE_TEST_CASE(test_last_argument_walks_history),
+    DEFINE_TEST_CASE(test_edit_external_replaces_the_line),
+    DEFINE_TEST_CASE(test_editing_key_sequences),
 #if defined ITL_POSIX
-                                   DEFINE_TEST_CASE(test_modified_key_sequences),
-                                   DEFINE_TEST_CASE(test_ctrl_i_stays_apart_from_tab),
-                                   DEFINE_TEST_CASE(
-                                       test_extended_keys_read_as_legacy_bytes),
-                                   DEFINE_TEST_CASE(
-                                       test_extended_keys_map_signal_keys),
-                                   DEFINE_TEST_CASE(
-                                       test_extended_keys_follow_raw_mode),
-                                   DEFINE_TEST_CASE(
-                                       test_raw_mode_keeps_signal_keys),
+    DEFINE_TEST_CASE(test_modified_key_sequences),
+    DEFINE_TEST_CASE(test_ctrl_i_stays_apart_from_tab),
+    DEFINE_TEST_CASE(test_extended_keys_read_as_legacy_bytes),
+    DEFINE_TEST_CASE(test_extended_keys_map_signal_keys),
+    DEFINE_TEST_CASE(test_extended_keys_follow_raw_mode),
+    DEFINE_TEST_CASE(test_raw_mode_keeps_signal_keys),
 #endif
-                                   DEFINE_TEST_CASE(
-                                       test_prefix_history_search_walks_matches),
-                                   DEFINE_TEST_CASE(
-                                       test_ghost_prefers_recent_history),
-                                   DEFINE_TEST_CASE(
-                                       test_ghost_history_corrects_case),
-                                   DEFINE_TEST_CASE(
-                                       test_ghost_completion_corrects_case),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_preview_needs_an_extending_row),
-                                   DEFINE_TEST_CASE(
-                                       test_ghost_sticky_target_continues),
-                                   DEFINE_TEST_CASE(
-                                       test_ghost_clips_multiline_suggestion),
-                                   DEFINE_TEST_CASE(
-                                       test_tab_clears_stale_ghost_target),
-                                   DEFINE_TEST_CASE(
-                                       test_tab_honors_suppressed_space),
-                                   DEFINE_TEST_CASE(
-                                       test_external_screen_requires_raw_mode),
-                                   DEFINE_TEST_CASE(
-                                       test_reflow_agrees_with_metrics),
-                                   DEFINE_TEST_CASE(
-                                       test_reflow_agrees_with_reference),
-                                   DEFINE_TEST_CASE(
-                                       test_wrap_predicates_agree_with_reference),
-                                   DEFINE_TEST_CASE(
-                                       test_ascii_runs_agree_with_reference),
-                                   DEFINE_TEST_CASE(
-                                       test_narrow_terminal_continues_near_the_left_edge),
-                                   DEFINE_TEST_CASE(test_csi_sequences),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_band_survives_disabled_colors),
+    DEFINE_TEST_CASE(test_prefix_history_search_walks_matches),
+    DEFINE_TEST_CASE(test_ghost_prefers_recent_history),
+    DEFINE_TEST_CASE(test_ghost_history_corrects_case),
+    DEFINE_TEST_CASE(test_ghost_completion_corrects_case),
+    DEFINE_TEST_CASE(test_menu_preview_needs_an_extending_row),
+    DEFINE_TEST_CASE(test_ghost_sticky_target_continues),
+    DEFINE_TEST_CASE(test_ghost_clips_multiline_suggestion),
+    DEFINE_TEST_CASE(test_tab_clears_stale_ghost_target),
+    DEFINE_TEST_CASE(test_tab_honors_suppressed_space),
+    DEFINE_TEST_CASE(test_external_screen_requires_raw_mode),
+    DEFINE_TEST_CASE(test_reflow_agrees_with_metrics),
+    DEFINE_TEST_CASE(test_reflow_agrees_with_reference),
+    DEFINE_TEST_CASE(test_wrap_predicates_agree_with_reference),
+    DEFINE_TEST_CASE(test_ascii_runs_agree_with_reference),
+    DEFINE_TEST_CASE(test_narrow_terminal_continues_near_the_left_edge),
+    DEFINE_TEST_CASE(test_csi_sequences),
+    DEFINE_TEST_CASE(test_menu_band_survives_disabled_colors),
 #if defined ITL_POSIX && !defined NDEBUG
-                                   DEFINE_TEST_CASE(
-                                       test_history_search_marks_misses_and_cuts),
-                                   DEFINE_TEST_CASE(
-                                       test_loading_frame_drains_before_gather),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_rows_start_under_the_token),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_help_wraps_between_items),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_anchor_accounts_for_descriptions),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_anchor_wraps_the_help_rows),
-                                   DEFINE_TEST_CASE(
-                                       test_append_path_keeps_spans),
-                                   DEFINE_TEST_CASE(
-                                       test_drawn_metrics_match_the_walk),
-                                   DEFINE_TEST_CASE(
-                                       test_colors_disabled_drop_span_escapes),
-                                   DEFINE_TEST_CASE(
-                                       test_submit_erases_the_drawn_ghost),
-                                   DEFINE_TEST_CASE(
-                                       test_hint_row_draws_holds_and_erases),
-                                   DEFINE_TEST_CASE(
-                                       test_hint_rows_follow_the_frame),
-                                   DEFINE_TEST_CASE(
-                                       test_prefix_hint_lists_the_waiting_keys),
-                                   DEFINE_TEST_CASE(
-                                       test_ctrl_x_chord_shows_and_drops_its_hint),
-                                   DEFINE_TEST_CASE(
-                                       test_hint_row_follows_the_caret_and_clears),
-                                   DEFINE_TEST_CASE(
-                                       test_hint_row_keeps_multiline_rows_and_append_path),
-                                   DEFINE_TEST_CASE(
-                                       test_idle_hook_refreshes_the_hint_row),
-                                   DEFINE_TEST_CASE(
-                                       test_highlight_follows_the_caret),
-                                   DEFINE_TEST_CASE(
-                                       test_auto_pair_types_steps_and_erases),
-                                   DEFINE_TEST_CASE(
-                                       test_right_prompt_fits_the_first_row),
-                                   DEFINE_TEST_CASE(
-                                       test_right_prompt_follows_appends),
-                                   DEFINE_TEST_CASE(
-                                       test_transient_prompt_redraws_the_submitted_line),
-                                   DEFINE_TEST_CASE(
-                                       test_transient_right_prompt_redraws_a_finished_line),
-                                   DEFINE_TEST_CASE(
-                                       test_line_render_shows_control_bytes),
+    DEFINE_TEST_CASE(test_history_search_marks_misses_and_cuts),
+    DEFINE_TEST_CASE(test_loading_frame_drains_before_gather),
+    DEFINE_TEST_CASE(test_menu_rows_start_under_the_token),
+    DEFINE_TEST_CASE(test_menu_help_wraps_between_items),
+    DEFINE_TEST_CASE(test_menu_anchor_accounts_for_descriptions),
+    DEFINE_TEST_CASE(test_menu_anchor_wraps_the_help_rows),
+    DEFINE_TEST_CASE(test_append_path_keeps_spans),
+    DEFINE_TEST_CASE(test_drawn_metrics_match_the_walk),
+    DEFINE_TEST_CASE(test_colors_disabled_drop_span_escapes),
+    DEFINE_TEST_CASE(test_submit_erases_the_drawn_ghost),
+    DEFINE_TEST_CASE(test_hint_row_draws_holds_and_erases),
+    DEFINE_TEST_CASE(test_hint_rows_follow_the_frame),
+    DEFINE_TEST_CASE(test_prefix_hint_lists_the_waiting_keys),
+    DEFINE_TEST_CASE(test_ctrl_x_chord_shows_and_drops_its_hint),
+    DEFINE_TEST_CASE(test_hint_row_follows_the_caret_and_clears),
+    DEFINE_TEST_CASE(test_hint_row_keeps_multiline_rows_and_append_path),
+    DEFINE_TEST_CASE(test_idle_hook_refreshes_the_hint_row),
+    DEFINE_TEST_CASE(test_highlight_follows_the_caret),
+    DEFINE_TEST_CASE(test_auto_pair_types_steps_and_erases),
+    DEFINE_TEST_CASE(test_right_prompt_fits_the_first_row),
+    DEFINE_TEST_CASE(test_right_prompt_follows_appends),
+    DEFINE_TEST_CASE(test_transient_prompt_redraws_the_submitted_line),
+    DEFINE_TEST_CASE(test_transient_right_prompt_redraws_a_finished_line),
+    DEFINE_TEST_CASE(test_line_render_shows_control_bytes),
 #endif
-                                   DEFINE_TEST_CASE(
-                                       test_hint_row_is_cut_to_the_width),
-                                   DEFINE_TEST_CASE(test_paste_line_breaks),
-                                   DEFINE_TEST_CASE(test_vi_ex_substitute),
-                                   DEFINE_TEST_CASE(test_emacs_commands),
-                                   DEFINE_TEST_CASE(test_option_commands),
-                                   DEFINE_TEST_CASE(test_vi_go_to_line),
-                                   DEFINE_TEST_CASE(test_vi_counted_j),
-                                   DEFINE_TEST_CASE(
-                                       test_wrap_lines_fills_paragraphs),
-                                   DEFINE_TEST_CASE(
-                                       test_find_wraps_and_folds_case),
-                                   DEFINE_TEST_CASE(test_format_commands),
-                                   DEFINE_TEST_CASE(test_undo_records_changes),
-                                   DEFINE_TEST_CASE(test_page_keys_move_by_window),
-                                   DEFINE_TEST_CASE(test_history_dump_keeps_the_store),
-                                   DEFINE_TEST_CASE(
-                                       test_rejected_edit_and_format_keep_the_line),
-                                   DEFINE_TEST_CASE(test_string_byte_offset_counts_bytes),
-                                   DEFINE_TEST_CASE(test_vi_ex_write_commands),
-                                   DEFINE_TEST_CASE(test_tab_takes_four_columns),
-                                   DEFINE_TEST_CASE(
-                                       test_shaded_cell_writes_no_character),
-                                   DEFINE_TEST_CASE(
-                                       test_sgr_state_folds_to_the_last_reset),
-                                   DEFINE_TEST_CASE(test_row_index),
-                                   DEFINE_TEST_CASE(test_row_index_follows_edits),
-                                   DEFINE_TEST_CASE(
-                                       test_row_common_prefix_stops_at_unsafe_bytes),
-                                   DEFINE_TEST_CASE(test_save_keeps_editing),
-                                   DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
-                                   DEFINE_TEST_CASE(
-                                       test_hint_body_wraps_at_words),
-                                   DEFINE_TEST_CASE(
-                                       test_hint_rows_fit_a_short_terminal),
-                                   DEFINE_TEST_CASE(
-                                       test_hint_rows_erase_when_shrinking),
-                                   DEFINE_TEST_CASE(
-                                       test_control_bytes_draw_visibly),
-                                   DEFINE_TEST_CASE(
-                                       test_right_prompt_rejects_controls),
-                                   DEFINE_TEST_CASE(
-                                       test_last_argument_skips_invalid_words),
-                                   DEFINE_TEST_CASE(
-                                       test_menu_help_drops_items_past_the_last_row),
+    DEFINE_TEST_CASE(test_hint_row_is_cut_to_the_width),
+    DEFINE_TEST_CASE(test_paste_line_breaks),
+    DEFINE_TEST_CASE(test_vi_ex_substitute),
+    DEFINE_TEST_CASE(test_emacs_commands),
+#if defined ITL_POSIX && !defined NDEBUG
+    DEFINE_TEST_CASE(test_emacs_line_and_file_commands),
+#endif
+    DEFINE_TEST_CASE(test_option_commands),
+    DEFINE_TEST_CASE(test_vi_go_to_line),
+    DEFINE_TEST_CASE(test_vi_counted_j),
+    DEFINE_TEST_CASE(test_wrap_lines_fills_paragraphs),
+    DEFINE_TEST_CASE(test_find_wraps_and_folds_case),
+    DEFINE_TEST_CASE(test_format_commands),
+    DEFINE_TEST_CASE(test_undo_records_changes),
+    DEFINE_TEST_CASE(test_page_keys_move_by_window),
+    DEFINE_TEST_CASE(test_history_dump_keeps_the_store),
+    DEFINE_TEST_CASE(test_rejected_edit_and_format_keep_the_line),
+    DEFINE_TEST_CASE(test_string_byte_offset_counts_bytes),
+    DEFINE_TEST_CASE(test_vi_ex_write_commands),
+    DEFINE_TEST_CASE(test_tab_takes_four_columns),
+    DEFINE_TEST_CASE(test_shaded_cell_writes_no_character),
+    DEFINE_TEST_CASE(test_sgr_state_folds_to_the_last_reset),
+    DEFINE_TEST_CASE(test_row_index),
+    DEFINE_TEST_CASE(test_row_index_follows_edits),
+    DEFINE_TEST_CASE(test_row_common_prefix_stops_at_unsafe_bytes),
+    DEFINE_TEST_CASE(test_save_keeps_editing),
+    DEFINE_TEST_CASE(test_empty_prompt_drops_the_indents),
+    DEFINE_TEST_CASE(test_hint_body_wraps_at_words),
+    DEFINE_TEST_CASE(test_hint_rows_fit_a_short_terminal),
+    DEFINE_TEST_CASE(test_hint_rows_erase_when_shrinking),
+    DEFINE_TEST_CASE(test_control_bytes_draw_visibly),
+    DEFINE_TEST_CASE(test_right_prompt_rejects_controls),
+    DEFINE_TEST_CASE(test_last_argument_skips_invalid_words),
+    DEFINE_TEST_CASE(test_menu_help_drops_items_past_the_last_row),
 };
 
 int
