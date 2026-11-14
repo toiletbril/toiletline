@@ -6206,6 +6206,7 @@ static const itl_emacs_command itl_emacs_commands[] = {
     {"delete-horizontal-space", TL_KEY_DELETE_SPACES,
      "delete the blanks around the caret"                                                             },
     {"downcase-word",           TL_KEY_DOWNCASE_WORD,           "lowercase the next word"             },
+    {"edit",                    ITL_EMACS_FIND_FILE,            "open a file"                         },
     {"end-of-history",          TL_KEY_HISTORY_END,             "go to the last history entry"        },
     {"end-of-line",             TL_KEY_END,                     "move to the end of the row"          },
     {"fill-paragraph",          ITL_EMACS_FILL_PARAGRAPH,
@@ -11477,6 +11478,8 @@ ITL_DEF tl_status_code
 itl_emacs_repeat(itl_le_t *le);
 ITL_DEF tl_status_code
 itl_vi_ex_command(itl_le_t *le);
+ITL_DEF tl_status_code
+itl_emacs_find_file(itl_le_t *le, const char *path);
 ITL_DEF tl_status_code
 itl_vi_visual_loop(itl_le_t *le, bool is_linewise, size_t anchor);
 ITL_DEF tl_status_code
@@ -20384,17 +20387,20 @@ itl_vi_ex_set(const char *argument, const char *header)
 ITL_DEF tl_status_code
 itl_vi_ex_command(itl_le_t *le)
 {
-  char             command[64];
+  char            *command = (char *) itl_malloc(itl_g_line_max + 1);
   char             header[72];
   itl_substitution substitution;
   tl_status_code   result = TL_SUCCESS;
   int              substitution_result;
 
   if (itl_minibuffer_read(le, itl_g_vi_ex_has_range ? ":'<,'>" : ":",
-                          ITL_PREFIX_VI_EX, command, sizeof(command)))
+                          ITL_PREFIX_VI_EX, command, itl_g_line_max + 1))
   {
+    size_t header_length = 1;
+
     header[0] = ':';
-    strcpy(header + 1, command);
+    header[1] = '\0';
+    itl_prefix_append(header, sizeof(header), &header_length, command);
     if (itl_vi_ex_is_line_number(command)) {
       le->cursor_position =
           itl_le_line_start_clamped(le, (size_t) strtoul(command, NULL, 10));
@@ -20428,6 +20434,10 @@ itl_vi_ex_command(itl_le_t *le)
       if (itl_g_save_callback == NULL || itl_le_save(le)) {
         result = itl_le_copy_out(le) ? TL_PRESSED_WRITE_QUIT : TL_ERROR_SIZE;
       }
+    } else if (strncmp(command, "e ", 2) == 0 ||
+               strncmp(command, "edit ", 5) == 0)
+    {
+      result = itl_emacs_find_file(le, strchr(command, ' ') + 1);
     } else if (strcmp(command, "e") == 0 || strcmp(command, "edit") == 0) {
       /* Vi mode ignores Ctrl-X, so this is its way to the external editor. */
       result = itl_le_key_handle(le, TL_KEY_EDIT_EXTERNAL);
@@ -20458,6 +20468,7 @@ itl_vi_ex_command(itl_le_t *le)
       itl_le_flash(le);
     }
   }
+  ITL_FREE(command);
   itl_g_vi_ex_has_range = false;
   itl_vi_clamp_command_cursor(le);
   itl_g_tty_should_refresh_text = true;
