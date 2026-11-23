@@ -3915,8 +3915,8 @@ test_menu_filter_groups(void)
     }
   }
 
-  if (itl_menu_name_width(&result) != 5) {
-    TEST_PRINTF("narrowed name width is %zu\n", itl_menu_name_width(&result));
+  if (itl_menu_name_width(&result, false) != 5) {
+    TEST_PRINTF("narrowed name width is %zu\n", itl_menu_name_width(&result, false));
     return false;
   }
 
@@ -3943,8 +3943,8 @@ test_menu_filter_groups(void)
     }
   }
 
-  if (itl_menu_name_width(&result) != 6) {
-    TEST_PRINTF("wide name width is %zu\n", itl_menu_name_width(&result));
+  if (itl_menu_name_width(&result, false) != 6) {
+    TEST_PRINTF("wide name width is %zu\n", itl_menu_name_width(&result, false));
     return false;
   }
 
@@ -4366,6 +4366,7 @@ menu_keys_gathers(const char *text,
                                          false,
                                          true,
                                          false,
+                                         false,
                                          false};
   char                         out_buffer[BUFFER_SIZE];
   int                          pipe_descriptors[2] = {-1, -1};
@@ -4582,6 +4583,7 @@ debounce_menu_gathers(size_t      row_count,
                                          NULL,
                                          false,
                                          true,
+                                         false,
                                          false,
                                          false};
   char                         out_buffer[BUFFER_SIZE];
@@ -4818,6 +4820,7 @@ staged_menu_run(const test_staged_step *steps,
                                          NULL,
                                          true,
                                          true,
+                                         false,
                                          false,
                                          false};
   char                         out_buffer[BUFFER_SIZE];
@@ -5572,13 +5575,15 @@ test_history_menu_multiline_display(void)
       strcmp(names[0], "line one\nline two") != 0 ||
       strcmp(itl_menu_display_name(names[1], display, sizeof(display)),
              "plain...") != 0 ||
-      itl_menu_name_width(&result) != 11)
+      itl_menu_name_width(&result, false) != 11)
   {
     TEST_PRINTF("multiline menu display was not truncated correctly\n");
     ok = false;
   }
 
-  itl_menu_append_row(b, &result, 0, 11, 0, false, false);
+  itl_menu_append_row(b,
+                      itl_menu_display_name(names[0], display, sizeof(display)),
+                      NULL, 11, 0, false, false);
   if (!test_bytes_have(b->data, b->size, "line one...") ||
       test_bytes_have(b->data, b->size, "line two"))
   {
@@ -5594,7 +5599,6 @@ static bool
 test_menu_row_colors_directories(void)
 {
   static const char *const names[]            = {"dir/", "file"};
-  tl_completion            result             = ITL_ZERO_INIT;
   int                      was_colors_enabled = itl_g_colors_enabled;
   itl_char_buf_t          *b                  = itl_char_buf_alloc();
   bool                     ok                 = true;
@@ -5602,25 +5606,23 @@ test_menu_row_colors_directories(void)
   char                     colored_name[64];
 
   snprintf(colored_name, sizeof(colored_name), "%sdir/", directory_sgr);
-  result.candidates    = names;
-  result.count         = countof(names);
   itl_g_colors_enabled = 1;
 
-  itl_menu_append_row(b, &result, 0, 4, 0, false, false);
+  itl_menu_append_row(b, names[0], NULL, 4, 0, false, false);
   if (!test_bytes_have(b->data, b->size, colored_name)) {
     TEST_PRINTF("a directory row was not drawn in the directory color\n");
     ok = false;
   }
 
   b->size = 0;
-  itl_menu_append_row(b, &result, 1, 4, 0, false, false);
+  itl_menu_append_row(b, names[1], NULL, 4, 0, false, false);
   if (test_bytes_have(b->data, b->size, directory_sgr)) {
     TEST_PRINTF("a file row was drawn in the directory color\n");
     ok = false;
   }
 
   b->size = 0;
-  itl_menu_append_row(b, &result, 0, 4, 0, true, false);
+  itl_menu_append_row(b, names[0], NULL, 4, 0, true, false);
   if (test_bytes_have(b->data, b->size, directory_sgr)) {
     TEST_PRINTF("the selected directory row was colored\n");
     ok = false;
@@ -5628,7 +5630,7 @@ test_menu_row_colors_directories(void)
 
   b->size              = 0;
   itl_g_colors_enabled = 0;
-  itl_menu_append_row(b, &result, 0, 4, 0, false, false);
+  itl_menu_append_row(b, names[0], NULL, 4, 0, false, false);
   if (test_bytes_have(b->data, b->size, directory_sgr)) {
     TEST_PRINTF("a directory row was colored with colors disabled\n");
     ok = false;
@@ -7461,6 +7463,7 @@ test_menu_rows_start_under_the_token(void)
   itl_le_t           le     = ITL_ZERO_INIT;
   tl_completion      result = ITL_ZERO_INIT;
   itl_menu_layout    layout;
+  itl_menu_geometry  geometry;
   itl_string_t      *line = itl_string_alloc();
 
   itl_le_init(&le, line, out_buffer, sizeof(out_buffer), "> ");
@@ -7485,12 +7488,14 @@ test_menu_rows_start_under_the_token(void)
   test_frame_capture_size  = 0;
   itl_g_menu_anchor_column = anchor_column;
   itl_g_menu_prefix_width  = ITL_MENU_ROW_PREFIX_WIDTH;
-  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 5, "");
+  geometry = itl_menu_geometry_of(&result, 5, "", NULL, NULL);
+  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, false, &geometry, "");
   ok = ok && test_frame_capture_has("\x1b[6G");
 
   itl_g_tty_prev_cols     = 12;
   test_frame_capture_size = 0;
-  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 5, "");
+  geometry = itl_menu_geometry_of(&result, 5, "", NULL, NULL);
+  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, false, &geometry, "");
   ok = ok && !test_frame_capture_has("\x1b[6G");
 
   if (!ok) {
@@ -7511,6 +7516,39 @@ test_menu_rows_start_under_the_token(void)
 }
 
 static bool
+test_history_menu_uses_cramped_viewport(void)
+{
+  static const char *candidates[] = {"first\n\nthird"};
+  tl_completion result = ITL_ZERO_INIT;
+  bool ok;
+
+  itl_g_tty_changed_size = 0;
+  itl_g_tty_prev_rows = 4;
+  itl_g_le_prev_total_rows = 1;
+  itl_g_le_prev_cursor_row = 1;
+  result.candidates = candidates;
+  result.count = countof(candidates);
+
+  itl_menu_geometry geometry =
+      itl_menu_geometry_of(&result, 5, "", "history", NULL);
+  itl_menu_layout layout = itl_menu_measure_for(&geometry, 4, "history", NULL);
+
+  itl_g_debug_frame_sink = test_frame_capture_sink;
+  test_frame_capture_size = 0;
+  itl_menu_draw(&result, 0, 0, layout, "history", NULL, false, true, &geometry,
+                "");
+  ok = test_frame_capture_has("first") && test_frame_capture_has("third") &&
+       !test_frame_capture_has("history") && !test_frame_capture_has("showing");
+
+  itl_g_debug_frame_sink = NULL;
+  itl_g_tty_prev_rows = 24;
+  itl_g_tty_changed_size = 1;
+  itl_g_tty_first_render = true;
+
+  return ok;
+}
+
+static bool
 test_menu_help_wraps_between_items(void)
 {
   static const char *candidates[] = {"alpha", "album"};
@@ -7519,6 +7557,7 @@ test_menu_help_wraps_between_items(void)
       "enter to run, tab to accept, esc to close, ctrl-g to restore";
   tl_completion   result = ITL_ZERO_INIT;
   itl_menu_layout layout;
+  itl_menu_geometry geometry;
   size_t          rows_wide;
   size_t          rows_mid;
   size_t          rows_narrow;
@@ -7541,14 +7580,14 @@ test_menu_help_wraps_between_items(void)
   rows_cut    = itl_menu_layout_help(NULL, title, keys, 37, 0, 2);
   ok = rows_wide == 1 && rows_mid == 2 && rows_narrow == 3 && rows_cut == 2;
 
-  layout =
-      itl_menu_measure_for(&result, itl_g_tty_prev_rows, 5, "", title, keys);
+  geometry = itl_menu_geometry_of(&result, 5, "", title, keys);
+  layout = itl_menu_measure_for(&geometry, itl_g_tty_prev_rows, title, keys);
   ok = ok && layout.has_help_row && layout.help_row_count == 3 &&
        layout.has_count_row && layout.candidate_rows == ITL_MENU_MAX_ROWS;
 
   itl_g_debug_frame_sink  = test_frame_capture_sink;
   test_frame_capture_size = 0;
-  itl_menu_draw(&result, 0, 0, layout, title, keys, false, 5, "");
+  itl_menu_draw(&result, 0, 0, layout, title, keys, false, false, &geometry, "");
   ok = ok && test_frame_capture_has("selecting completions, enter to run,") &&
        test_frame_capture_has("tab to accept, esc to close,") &&
        test_frame_capture_has("ctrl-g to restore") &&
@@ -7556,18 +7595,19 @@ test_menu_help_wraps_between_items(void)
 
   /* A tall block leaves no room, so the help text is dropped whole. */
   itl_g_le_prev_total_rows = 21;
-  layout =
-      itl_menu_measure_for(&result, itl_g_tty_prev_rows, 5, "", title, keys);
+  layout = itl_menu_measure_for(&geometry, itl_g_tty_prev_rows, title, keys);
   ok = ok && !layout.has_help_row && layout.help_row_count == 0;
 
   /* One item wider than the row is cut with an ellipsis. */
   itl_g_le_prev_total_rows = 1;
   itl_g_tty_prev_cols      = 16;
-  layout = itl_menu_measure_for(&result, itl_g_tty_prev_rows, 5, "",
+  geometry = itl_menu_geometry_of(&result, 5, "",
+                                  "a title longer than the row", NULL);
+  layout = itl_menu_measure_for(&geometry, itl_g_tty_prev_rows,
                                 "a title longer than the row", NULL);
   test_frame_capture_size = 0;
   itl_menu_draw(&result, 0, 0, layout, "a title longer than the row", NULL,
-                false, 5, "");
+                false, false, &geometry, "");
   ok = ok && layout.help_row_count == 1 && test_frame_capture_has("...") &&
        !test_frame_capture_has("than the row");
 
@@ -7596,6 +7636,7 @@ test_menu_anchor_accounts_for_descriptions(void)
       "list every entry including the implied dot entries"};
   tl_completion   result = ITL_ZERO_INIT;
   itl_menu_layout layout;
+  itl_menu_geometry geometry;
   bool            ok;
 
   itl_g_tty_changed_size   = 0;
@@ -7614,28 +7655,34 @@ test_menu_anchor_accounts_for_descriptions(void)
 
   /* Candidates and descriptions fit to the right of the token. */
   test_frame_capture_size = 0;
-  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
+  geometry = itl_menu_geometry_of(&result, 4, "", NULL, NULL);
+  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, false, &geometry, "");
   ok = test_frame_capture_has("\x1b[29G");
 
   /* The candidates alone would fit, the descriptions do not. */
   result.descriptions     = long_descriptions;
   test_frame_capture_size = 0;
-  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
+  geometry = itl_menu_geometry_of(&result, 4, "", NULL, NULL);
+  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, false, &geometry, "");
   ok = ok && !test_frame_capture_has("\x1b[29G");
 
   /* Without descriptions the same candidates stay under the token. */
   result.descriptions     = NULL;
   test_frame_capture_size = 0;
-  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, 4, "");
+  geometry = itl_menu_geometry_of(&result, 4, "", NULL, NULL);
+  itl_menu_draw(&result, 0, 0, layout, NULL, NULL, false, false, &geometry, "");
   ok = ok && test_frame_capture_has("\x1b[29G");
 
   /* The candidates fit, a help item would be cut beside them. */
-  layout = itl_menu_measure_for(&result, itl_g_tty_prev_rows, 4, "",
+  geometry = itl_menu_geometry_of(&result, 4, "", "selecting completions",
+                                  "a help item far too wide for that row");
+  layout = itl_menu_measure_for(&geometry, itl_g_tty_prev_rows,
                                 "selecting completions",
                                 "a help item far too wide for that row");
   test_frame_capture_size = 0;
   itl_menu_draw(&result, 0, 0, layout, "selecting completions",
-                "a help item far too wide for that row", false, 4, "");
+                "a help item far too wide for that row", false, false,
+                &geometry, "");
   ok = ok && !test_frame_capture_has("\x1b[29G") &&
        test_frame_capture_has("a help item far too wide for that row");
 
@@ -7853,23 +7900,18 @@ test_menu_band_survives_disabled_colors(void)
 {
   static const char *const names[]            = {"alpha"};
   static const char *const descriptions[]     = {"the first letter"};
-  tl_completion            result             = ITL_ZERO_INIT;
   int                      was_colors_enabled = itl_g_colors_enabled;
   itl_char_buf_t          *b                  = itl_char_buf_alloc();
   bool                     is_band_seen;
   bool                     is_description_seen;
   bool                     ok;
 
-  result.candidates   = names;
-  result.descriptions = descriptions;
-  result.count        = 1;
-
   itl_g_colors_enabled = 0;
-  itl_menu_append_row(b, &result, 0, 8, 20, true, true);
+  itl_menu_append_row(b, names[0], descriptions[0], 8, 20, true, true);
   is_band_seen = test_bytes_have(b->data, b->size, ITL_MENU_SELECTED_SGR);
 
   ITL_CHAR_BUF_CLEAR(b);
-  itl_menu_append_row(b, &result, 0, 8, 20, false, true);
+  itl_menu_append_row(b, names[0], descriptions[0], 8, 20, false, true);
   is_description_seen =
       test_bytes_have(b->data, b->size, ITL_MENU_DESCRIPTION_SGR);
 
@@ -10523,7 +10565,7 @@ test_control_bytes_draw_visibly(void)
 
   result.candidates     = names;
   result.count          = countof(names);
-  is_name_width_counted = itl_menu_name_width(&result) == 12;
+  is_name_width_counted = itl_menu_name_width(&result, false) == 12;
 
   b->size = 0;
   drawn   = itl_char_buf_append_visible(b, "x\xFF", 2, 10, false);
@@ -10798,6 +10840,7 @@ static test_case_t test_cases[] = {
     DEFINE_TEST_CASE(test_menu_cells),
     DEFINE_TEST_CASE(test_menu_row_colors_directories),
     DEFINE_TEST_CASE(test_history_menu_multiline_display),
+    DEFINE_TEST_CASE(test_history_menu_uses_cramped_viewport),
     DEFINE_TEST_CASE(test_merge_visual_spans),
 #if defined ITL_POSIX
     DEFINE_TEST_CASE(test_menu_keys_reuse_gathered_list),
