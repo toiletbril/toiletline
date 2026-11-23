@@ -1851,10 +1851,13 @@ test_history_search_narrowing(void)
 }
 
 #if defined ITL_POSIX
+static size_t test_search_highlight_count;
+
 static int
 test_search_highlight_callback(const char *buffer, tl_highlight *out)
 {
   (void) buffer;
+  ++test_search_highlight_count;
 
   if (out->capacity == 0) {
     return 0;
@@ -1904,12 +1907,12 @@ search_highlight_calls(const char *keys, size_t key_count)
   itl_g_tty_changed_size = 0;
   itl_g_tty_prev_rows = 24;
   itl_g_tty_prev_cols = 80;
-  itl_g_debug_search_highlight_count = 0;
+  test_search_highlight_count = 0;
   tl_set_highlight_callback(test_search_highlight_callback);
 
   (void) itl_history_search(&le);
 
-  calls = itl_g_debug_search_highlight_count;
+  calls = test_search_highlight_count;
   tl_set_highlight_callback(NULL);
   itl_g_search_spans_active = false;
 
@@ -1933,7 +1936,7 @@ cleanup:
 }
 
 static bool
-test_history_search_preview_cache(void)
+test_history_search_preview_skips_syntax_highlighting(void)
 {
   const char *path = "tl_test_search_preview.txt";
   bool ok = true;
@@ -1949,7 +1952,7 @@ test_history_search_preview_cache(void)
   hist_append_cstr("aaa newer entry");
 
   query_only_calls = search_highlight_calls("aaa", 3);
-  if (query_only_calls != 2) {
+  if (query_only_calls != 0) {
     TEST_PRINTF("a query-only redraw highlighted %zu times\n",
                 query_only_calls);
     ok = false;
@@ -1957,7 +1960,7 @@ test_history_search_preview_cache(void)
 
   if (ok) {
     moving_calls = search_highlight_calls("aaa\x12", 4);
-    if (moving_calls != 3) {
+    if (moving_calls != 0) {
       TEST_PRINTF("a moving redraw highlighted %zu times\n", moving_calls);
       ok = false;
     }
@@ -10824,7 +10827,7 @@ static test_case_t test_cases[] = {
     DEFINE_TEST_CASE(test_history_search_rejects_malformed_entry),
     DEFINE_TEST_CASE(test_history_search_narrowing),
 #if defined ITL_POSIX
-    DEFINE_TEST_CASE(test_history_search_preview_cache),
+    DEFINE_TEST_CASE(test_history_search_preview_skips_syntax_highlighting),
 #endif
     DEFINE_TEST_CASE(test_history_short_entry_skipped),
     DEFINE_TEST_CASE(test_history_alloc_balance),

@@ -6138,11 +6138,17 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_minibuffer_path_selected = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_window_start = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_anchor = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_query_start = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_color_start = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_color_end = 0;
+ITL_DEF ITL_THREAD_LOCAL bool (*itl_g_file_picker_seed)(
+    const char *line, size_t cursor, char *text, size_t capacity,
+    size_t *root, size_t *start, size_t *end) = NULL;
 ITL_DEF ITL_THREAD_LOCAL int (*itl_g_file_picker_gather)(
     const char *text, size_t root_length, tl_completion *out) = NULL;
 ITL_DEF ITL_THREAD_LOCAL const char *(*itl_g_file_picker_quote)(
     const char *path) = NULL;
 ITL_DEF ITL_THREAD_LOCAL void (*itl_g_file_picker_close)(void) = NULL;
+ITL_DEF ITL_THREAD_LOCAL tl_open_file_fn itl_g_open_file_callback = NULL;
 ITL_DEF ITL_THREAD_LOCAL char              *itl_g_emacs_last_path       = NULL;
 ITL_DEF ITL_THREAD_LOCAL int                itl_g_emacs_last_command    = -1;
 
@@ -6325,7 +6331,6 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_append_refresh_count    = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_full_refresh_count      = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_metrics_scan_count      = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_history_candidate_count = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_debug_search_highlight_count  = 0;
 #endif
 
 /* The ghost suggestion drawn dimmed after the cursor, and its byte length.
@@ -6523,11 +6528,13 @@ ITL_DEF ITL_EDITOR_BUFFER itl_prev_span_t
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_le_prev_span_count   = 0;
 ITL_DEF ITL_THREAD_LOCAL bool   itl_g_le_prev_spans_usable = false;
 
-/* The reverse search builds its own highlight spans, the matched entry through
-   the host callback and the prompt label and the hint as bold and yellow runs.
-   The flag is set while the search block is on screen so the refresh draws
-   those spans rather than highlighting the whole block as a command. */
+/* Modal editor views supply their own spans instead of highlighting the whole
+   display buffer as a command. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_search_spans_active = false;
+/* The native search menus color the editable input, not the prompt or ghost. */
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_menu_search_input = false;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_menu_search_start = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_menu_search_end = 0;
 /* Whether a find minibuffer is open. Its match span is drawn over the syntax
    highlighting of the buffer. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_finding = false;
@@ -7927,14 +7934,17 @@ itl_prefix_hint(char *out, size_t out_size)
   out[0] = '\0';
   if (itl_g_prefix_kind == ITL_PREFIX_CTRL_X) {
     itl_prefix_append(out, out_size, &out_length,
+                      "pressed ctrl-x\nctrl-e to edit in $VISUAL, "
+                      "ctrl-u to undo, z to repeat the last M-x command, ");
+    if (itl_g_file_picker_quote != NULL || itl_g_open_file_callback != NULL) {
+      itl_prefix_append(out, out_size, &out_length,
+                        "ctrl-f to fuzzy file search, ");
+    }
+    itl_prefix_append(out, out_size, &out_length,
                       itl_g_save_callback != NULL
-                          ? "pressed ctrl-x\nctrl-e to edit in $VISUAL, "
-                            "ctrl-u to undo, z to repeat the last M-x "
-                            "command, s or ctrl-s to save, ctrl-c to leave, "
+                          ? "s or ctrl-s to save, ctrl-c to leave, "
                             "i to show the hint"
-                          : "pressed ctrl-x\nctrl-e to edit in $VISUAL, "
-                            "ctrl-u to undo, z to repeat the last M-x "
-                            "command, ctrl-c to leave the shell");
+                          : "ctrl-c to leave the shell");
     return true;
   }
   if (itl_g_prefix_kind == ITL_PREFIX_VI_EX &&
@@ -9450,7 +9460,23 @@ itl_le_tty_refresh_frame(itl_le_t *le)
     have_cur_render             = itl_le_serialize_line(le);
     itl_cur_render              = itl_g_serialized_line;
     itl_g_serialized_line_ready = false;
-    if (itl_g_search_spans_active &&
+    if (itl_g_menu_search_input || itl_g_minibuffer_paths != NULL) {
+      size_t start = itl_g_minibuffer_paths != NULL ? itl_g_picker_color_start
+                                                   : itl_g_menu_search_start;
+      size_t end = itl_g_minibuffer_paths != NULL ? itl_g_picker_color_end
+                                                 : itl_g_menu_search_end;
+      size_t syntax_count = !(itl_g_menu_search_input && start == 0 &&
+                              end == le->line->length) &&
+                            have_cur_render && itl_should_run_highlight()
+          ? itl_le_collect_highlight(itl_cur_render, itl_syntax_spans,
+                                     le->line->length, itl_le_cursor_byte_offset(le))
+          : 0;
+      tl_highlight_span input_span = {start, end, ITL_MINIBUFFER_SGR};
+      span_count = itl_merge_visual_spans(
+          itl_syntax_spans, syntax_count, &input_span,
+          itl_g_colors_enabled && start < end ? 1 : 0, le->line->length,
+          itl_spans, ITL_HIGHLIGHT_MAX_SPANS);
+    } else if (itl_g_search_spans_active &&
         (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
          itl_g_multicursor_active || itl_g_emacs_selection_active ||
          itl_g_minibuffer_row_start > 0 || itl_g_minibuffer_label != NULL ||
@@ -10113,9 +10139,7 @@ tl_set_history_select_callback(tl_history_select_fn callback)
   itl_g_history_select_callback = callback;
 }
 
-/* The host edit callback for Ctrl-X Ctrl-E, or NULL when the key does
-   nothing. */
-ITL_DEF ITL_THREAD_LOCAL tl_open_file_fn     itl_g_open_file_callback = NULL;
+/* The host callback for completing paths in the file picker. */
 ITL_DEF ITL_THREAD_LOCAL tl_path_complete_fn itl_g_path_complete_callback =
     NULL;
 
@@ -12144,7 +12168,7 @@ itl_picker_layout(size_t cols, size_t row_budget)
   }
 
   if (show_summary || (row_budget != 0 && paths->count == 0)) {
-    const char *summary = paths->has_more_paths ? "Searching files..." : "no matches";
+    const char *summary = paths->has_more_paths ? "searching..." : "no matches";
     if (paths->count != 0 && !paths->has_more_paths) {
       itl_menu_format_summary(count, sizeof(count), itl_g_picker_window_start + 1,
                              index, paths->count);
@@ -15342,6 +15366,13 @@ itl_completion_menu_loop(itl_le_t              *le,
     const char      *candidate    = NULL;
     itl_wait_outcome wait_outcome;
 
+    bool search_input = is_path_search || source->should_show_history_lines;
+    itl_g_menu_search_start = is_path_search ? result.path_query_start : 0;
+    itl_g_menu_search_end = is_path_search ? result.token_end : le->line->length;
+    if (search_input != itl_g_menu_search_input) {
+      itl_g_menu_search_input = search_input;
+      previewed = (size_t) -1;
+    }
     window_start = itl_menu_render(le, source, &state, &result, is_path_search,
                                    selected, window_start, &previewed);
     itl_frame_batch_end();
@@ -15396,6 +15427,8 @@ itl_completion_menu_loop(itl_le_t              *le,
 
     is_escape = byte == 27;
     key       = itl_esc_parse(byte);
+    /* In fuzzy mode plain Enter takes a candidate, never the submit path. */
+    if (is_path_search && key == TL_KEY_ENTER) key = TL_KEY_TAB;
     kind      = (tl_key_kind) (key & TL_MASK_KEY);
     bool is_ctrl_enter = source->should_submit_on_enter &&
                          key == (TL_KEY_ENTER | TL_MOD_CTRL);
@@ -15640,9 +15673,16 @@ itl_completion_menu_loop(itl_le_t              *le,
       }
 
       if (!itl_completion_replace_token(le, &result, candidate)) {
+        if (is_path_search && key == TL_KEY_TAB) continue;
         return TL_SUCCESS;
       }
       if (is_path_search) {
+        if (key == TL_KEY_TAB) {
+          if (!should_descend && !result.is_space_suppressed) {
+            itl_completion_append_space(le);
+          }
+          return TL_SUCCESS;
+        }
         if (itl_g_close_path_search != NULL) itl_g_close_path_search();
         is_path_search          = false;
         result.is_path_search   = false;
@@ -15909,6 +15949,10 @@ itl_completion_menu_run(itl_le_t              *le,
   original_line = itl_string_acquire_cstr(le->line, storage, sizeof(storage));
   itl_frame_batch_begin();
   status = itl_completion_menu_loop(le, initial, source, original_line);
+  if (itl_g_menu_search_input) {
+    itl_g_menu_search_input = false;
+    itl_g_tty_should_refresh_text = true;
+  }
   if (source->should_submit_on_enter && itl_g_close_path_search != NULL) {
     itl_g_close_path_search();
   }
@@ -17952,7 +17996,6 @@ itl_history_narrow_match(const char   *query,
 }
 
 #define ITL_SEARCH_SGR_GREEN  "\x1b[32m"
-#define ITL_SEARCH_SGR_YELLOW "\x1b[33m"
 #define ITL_SEARCH_SGR_BOLD   "\x1b[1m"
 
 /* Records one highlight span for the reverse search block, dropped once the
@@ -18074,14 +18117,10 @@ itl_history_search(itl_le_t *le)
      entry. Any directional key moves off the newest match and clears it. */
   bool is_narrowable = false;
 
-  /* The clipped preview text and the host spans over it, kept while the match
-     index and the terminal width stay put so a query keystroke redraws without
-     calling the highlighter again. */
+  /* Reuse the clipped preview while the match and terminal width stay put. */
   char              match_render[ITL_STRING_MAX_LEN];
   size_t            match_bytes  = 0;
   size_t            match_length = 0;
-  tl_highlight_span cached_spans[ITL_HIGHLIGHT_MAX_SPANS];
-  size_t            cached_span_count    = 0;
   size_t            rendered_match       = ITL_HISTORY_NONE;
   size_t            rendered_cols        = 0;
   bool              has_rendered_preview = false;
@@ -18178,28 +18217,6 @@ itl_history_search(itl_le_t *le)
       }
 
       match_render[match_bytes] = '\0';
-      cached_span_count         = 0;
-
-      /* Line one, the matched entry highlighted as the command it would
-         become. The match sits at offset zero, so the host's codepoint spans
-         index the display buffer unchanged. */
-      if (itl_should_run_highlight()) {
-        tl_highlight hl;
-        hl.spans         = cached_spans;
-        hl.count         = 0;
-        hl.capacity      = ITL_HIGHLIGHT_MAX_SPANS;
-        hl.cursor        = TL_HIGHLIGHT_NO_CURSOR;
-        hl.visible_start = 0;
-        hl.visible_end   = (size_t) -1;
-
-#if !defined NDEBUG
-        itl_g_debug_search_highlight_count += 1;
-#endif
-
-        if (itl_g_highlight_callback(match_render, &hl)) {
-          cached_span_count = ITL_MIN(hl.count, ITL_HIGHLIGHT_MAX_SPANS);
-        }
-      }
 
       if (is_cut && match_bytes + ITL_MENU_CUT_MARK_WIDTH < ITL_STRING_MAX_LEN)
       {
@@ -18216,26 +18233,23 @@ itl_history_search(itl_le_t *le)
 
     itl_g_search_span_count = 0;
 
-    for (s = 0; s < cached_span_count; ++s) {
-      itl_search_push_span(cached_spans[s].start, cached_spans[s].end,
-                           cached_spans[s].sgr);
-    }
+    if (itl_g_colors_enabled)
+      itl_search_push_span(0, match_length, ITL_MINIBUFFER_SGR);
 
     ITL_CHAR_BUF_CLEAR(&status);
     itl_char_buf_append_cstr(&status, match_render);
     itl_char_buf_append_byte(&status, '\n');
 
-    /* Line two, the search label in green and the typed query in yellow. The
-       label `(incremental search)` is 20 codepoints and the trailing ` '` is
-       two more. */
+    /* The label `(incremental search)` is 20 codepoints and ` '` adds two. */
     line2_start = match_length + 1;
     itl_char_buf_append_cstr(&status, "(incremental search) '");
     itl_search_push_span(line2_start, line2_start + 20, ITL_SEARCH_SGR_GREEN);
     query_start = line2_start + 22;
     if (query.length > 0) {
       itl_char_buf_append_string(&status, &query);
-      itl_search_push_span(query_start, query_start + query.length,
-                           ITL_SEARCH_SGR_YELLOW);
+      if (itl_g_colors_enabled)
+        itl_search_push_span(query_start, query_start + query.length,
+                             ITL_MINIBUFFER_SGR);
     }
     itl_char_buf_append_byte(&status, '\'');
     line3_start = query_start + query.length + 2;
@@ -20994,12 +21008,16 @@ itl_picker_needs_separator(itl_utf8_t ch)
   return ch.size != 1 || strchr(" \t\n;|&<>()", ch.bytes[0]) == NULL;
 }
 
+ITL_DEF bool
+itl_picker_insert_at(itl_le_t *le, const char *path, size_t start, size_t end);
+
 /* Render the live query without changing the buffer or the search text. */
 ITL_DEF void
 itl_picker_preview(itl_le_t *le, const itl_string_t *original,
                    itl_string_t *display, itl_string_t *query,
-                   itl_char_buf_t *scratch, size_t position, const char *text,
-                   size_t text_length, const tl_completion *paths)
+                   itl_char_buf_t *scratch, size_t position, size_t end,
+                   const char *text, size_t text_length, size_t caret,
+                   size_t root_length, const tl_completion *paths)
 {
   size_t cols = itl_g_tty_prev_cols, rows = itl_g_tty_prev_rows;
   size_t row = 0, column, indent, room, fit, drawn;
@@ -21012,7 +21030,7 @@ itl_picker_preview(itl_le_t *le, const itl_string_t *original,
   indent = ITL_LE_INDENT(le, cols);
   itl_wrap_walk_range(original, 0, position, cols, indent, &row, &column);
   room = cols > column + 1 ? cols - column - 1 : 0;
-  room = ITL_MIN(room, itl_g_line_max - original->length);
+  room = ITL_MIN(room, itl_g_line_max - (original->length - (end - position)));
   if (room < 2) gap = false;
   room -= gap;
   fit = itl_menu_cell_text_width(text, text_length, room);
@@ -21025,10 +21043,15 @@ itl_picker_preview(itl_le_t *le, const itl_string_t *original,
   if (scratch->size != 0)
     (void) itl_string_from_bytes(query, scratch->data, scratch->size);
   itl_string_copy(display, original);
-  if (query->length != 0) itl_undo_splice(display, position, 0, query);
+  if (query->length != 0 || end != position)
+    itl_undo_splice(display, position, end - position, query);
   le->line = display;
-  le->cursor_position = position + query->length;
+  le->cursor_position = position + ITL_MIN(query->length,
+      gap + tl_utf8_strnlen(text, caret));
   itl_g_picker_query_start = position + gap;
+  itl_g_picker_color_end = position + query->length;
+  itl_g_picker_color_start = position + ITL_MIN(query->length,
+      gap + tl_utf8_strnlen(text, root_length));
 
   if (fit == room && drawn == itl_visible_width(text, text_length)) {
     tl_completion typed = *paths;
@@ -21064,6 +21087,7 @@ itl_minibuffer_read(itl_le_t       *le,
   size_t        saved_cursor       = le->cursor_position;
 
   size_t       text_length    = 0;
+  size_t       query_caret    = 0;
   size_t       label_length   = strlen(label);
   bool         is_accepted    = false;
   bool         is_done        = false;
@@ -21071,9 +21095,12 @@ itl_minibuffer_read(itl_le_t       *le,
   bool         has_overflowed = false;
   tl_completion paths = ITL_ZERO_INIT;
   bool should_gather_paths = itl_g_minibuffer_completes_paths;
+  bool is_shell_picker = should_gather_paths && itl_g_file_picker_quote != NULL;
+  bool can_insert_path = true;
   bool is_streamed_picker  = should_gather_paths && itl_g_file_picker_gather != NULL;
   bool is_file_browser    = should_gather_paths && (is_in_rows || is_streamed_picker);
   size_t picker_position = should_gather_paths ? itl_picker_insertion_position(le) : 0;
+  size_t picker_end = picker_position;
   size_t root_length      = 0;
   uint64_t saved_menu_due = itl_g_menu_due_ms;
   bool has_selected_path   = false;
@@ -21084,7 +21111,19 @@ itl_minibuffer_read(itl_le_t       *le,
   if (is_file_browser && text_size >= sizeof("./")) {
     memcpy(text, "./", sizeof("./"));
     text_length = sizeof("./") - 1;
+    query_caret = text_length;
     root_length = text_length;
+  }
+  if (is_shell_picker && itl_g_file_picker_seed != NULL) {
+    char storage[ITL_STRING_MAX_LEN];
+    char *line = itl_string_acquire_cstr(le->line, storage, sizeof(storage));
+    can_insert_path = line != NULL && itl_g_file_picker_seed(
+        line, picker_position, text, text_size, &root_length,
+        &picker_position, &picker_end);
+    if (line != NULL) {
+      text_length = query_caret = strlen(text);
+    }
+    itl_string_release_cstr(line, storage);
   }
   itl_string_copy(original, le->line);
   itl_g_prefix_kind     = kind;
@@ -21114,8 +21153,9 @@ itl_minibuffer_read(itl_le_t       *le,
     }
 
     if (itl_g_minibuffer_completes_paths) {
-      itl_picker_preview(le, original, display, preview, status, picker_position,
-                         text, text_length, &paths);
+      itl_picker_preview(le, saved_line, display, preview, status, picker_position,
+                         picker_end, text, text_length, query_caret, root_length,
+                         &paths);
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
       if (is_streamed_picker) {
@@ -21235,12 +21275,52 @@ itl_minibuffer_read(itl_le_t       *le,
 
     key      = itl_esc_parse(byte);
     key_kind = key & TL_MASK_KEY;
-    if (is_file_browser && key == TL_KEY_TAB && paths.count > 0 &&
-        itl_menu_is_directory_name(
-            itl_picker_row_name(&paths, itl_g_minibuffer_path_selected)))
-    {
-      /* Plain Tab shares the directory action; Shift-Tab still cycles. */
-      key = key_kind = TL_KEY_RIGHT;
+    if (itl_g_minibuffer_completes_paths) {
+      if (key == TL_KEY_HOME || key == TL_KEY_END) {
+        query_caret = key == TL_KEY_HOME ? 0 : text_length;
+        continue;
+      }
+      if (key == (TL_KEY_LEFT | TL_MOD_CTRL)) {
+        while (query_caret > 0 &&
+               itl_byte_is_path_separator((uint8_t) text[query_caret - 1]))
+          --query_caret;
+        while (query_caret > 0 &&
+               !itl_byte_is_path_separator((uint8_t) text[query_caret - 1]))
+          --query_caret;
+        continue;
+      }
+      if (key == (TL_KEY_RIGHT | TL_MOD_CTRL)) {
+        while (query_caret < text_length &&
+               itl_byte_is_path_separator((uint8_t) text[query_caret]))
+          ++query_caret;
+        while (query_caret < text_length &&
+               !itl_byte_is_path_separator((uint8_t) text[query_caret]))
+          ++query_caret;
+        continue;
+      }
+    }
+    if (is_file_browser && (key == TL_KEY_ENTER || key == TL_KEY_TAB)) {
+      if (paths.count == 0) {
+        itl_le_flash(le);
+        continue;
+      }
+      if (is_shell_picker) {
+        if (!can_insert_path) {
+          itl_le_flash(le);
+          continue;
+        }
+        const char *path = itl_picker_row_name(&paths, itl_g_minibuffer_path_selected);
+        le->line = saved_line;
+        le->cursor_position = saved_cursor;
+        if (path[0] != '\0' &&
+            itl_picker_insert_at(le, path, picker_position, picker_end))
+        {
+          saved_cursor = le->cursor_position;
+          break;
+        }
+        continue;
+      }
+      key_kind = TL_KEY_ENTER;
     }
 
     if (itl_g_minibuffer_completes_paths &&
@@ -21253,36 +21333,8 @@ itl_minibuffer_read(itl_le_t       *le,
     }
 
     switch (key_kind) {
-    case TL_KEY_LEFT:
-      if (is_file_browser && key == (TL_KEY_LEFT | TL_MOD_CTRL) &&
-          paths.path_parent != NULL)
-      {
-        char saved_byte = text[root_length];
-        if (is_streamed_picker) text[root_length] = '\0';
-        const char *parent = paths.path_parent(text);
-        if (is_streamed_picker) text[root_length] = saved_byte;
-        size_t      size   = parent != NULL ? strlen(parent) : 0;
-
-        if (size > 0 && size < text_size) {
-          memcpy(text, parent, size + 1);
-          text_length         = size;
-          root_length         = size;
-          has_selected_path   = false;
-          has_completed_path_prefix = false;
-          has_overflowed      = false;
-          should_gather_paths = true;
-        } else {
-          itl_le_flash(le);
-        }
-      }
-      break;
-
     case TL_KEY_RIGHT:
-      if (!is_file_browser ||
-          (key != TL_KEY_RIGHT && key != (TL_KEY_RIGHT | TL_MOD_CTRL)))
-      {
-        break;
-      }
+      if (!is_file_browser || key != TL_KEY_RIGHT) break;
       /* Right enters directories; Enter accepts the selected path. */
       /* fall through */
     case TL_KEY_ENTER:
@@ -21307,6 +21359,7 @@ itl_minibuffer_read(itl_le_t       *le,
         }
         memcpy(text, path, size + 1);
         text_length = size;
+        query_caret = text_length;
         if (is_directory && (key_kind == TL_KEY_RIGHT || !is_file_browser)) {
           root_length = size;
           has_selected_path = false;
@@ -21373,6 +21426,7 @@ itl_minibuffer_read(itl_le_t       *le,
           if (length < text_size) {
             memcpy(text, replacement, length + 1);
             text_length         = length;
+            query_caret = text_length;
             if (is_streamed_picker && length > 0 &&
                 itl_byte_is_path_separator((uint8_t) text[length - 1]))
               root_length = length;
@@ -21406,10 +21460,28 @@ itl_minibuffer_read(itl_le_t       *le,
       text_length    = 0;
       text[0]        = '\0';
       root_length    = 0;
+      query_caret    = 0;
       has_overflowed = false;
       break;
 
     case TL_KEY_BACKSPACE:
+      if (itl_g_minibuffer_completes_paths && text_length > 0) {
+        size_t end = query_caret;
+        if (end == 0) break;
+        do {
+          --query_caret;
+        } while (query_caret > 0 && ((uint8_t) text[query_caret] & 0xC0) == 0x80);
+        memmove(text + query_caret, text + end, text_length - end + 1);
+        text_length -= end - query_caret;
+        if (query_caret < root_length) {
+          root_length -= ITL_MIN(root_length, end) - query_caret;
+          while (root_length > 0 &&
+                 !itl_byte_is_path_separator((uint8_t) text[root_length - 1]))
+            --root_length;
+        }
+        has_overflowed = false;
+        break;
+      }
       if (text_length > 0) {
         /* The whole last UTF-8 character goes, with its continuation bytes. */
         do {
@@ -21435,13 +21507,15 @@ itl_minibuffer_read(itl_le_t       *le,
     case TL_KEY_CHAR:
       /* An Alt-modified key arrives with its escape byte, which is not text. */
       if (key == TL_KEY_CHAR) {
-        if (is_file_browser) {
+        if (is_file_browser && query_caret == text_length) {
           /* An absolute literal replaces the initial relative directory. */
           if (text_length == 2 && memcmp(text, "./", 2) == 0 &&
               itl_byte_is_path_separator(byte))
           {
             text_length = 0;
             root_length = 0;
+            query_caret = 0;
+            text[0] = '\0';
           }
 #if defined ITL_WIN32
           if (text_length == 3 && memcmp(text, "./", 2) == 0 &&
@@ -21450,17 +21524,36 @@ itl_minibuffer_read(itl_le_t       *le,
             text[0]     = text[2];
             text_length = 1;
             root_length = 0;
+            query_caret = 1;
+            text[1] = '\0';
           }
 #endif
         }
-        if (text_length >= text_size - 1) {
-          has_overflowed = true;
-          itl_le_flash(le);
-          break;
+        if (itl_g_minibuffer_completes_paths) {
+          itl_utf8_t ch = itl_utf8_parse(byte);
+          if (ch.size == 0) break;
+          if (ch.size >= text_size - text_length) {
+            has_overflowed = true;
+            itl_le_flash(le);
+            break;
+          }
+          memmove(text + query_caret + ch.size, text + query_caret,
+                  text_length - query_caret + 1);
+          memcpy(text + query_caret, ch.bytes, ch.size);
+          if (query_caret < root_length) root_length += ch.size;
+          query_caret += ch.size;
+          text_length += ch.size;
+        } else {
+          if (text_length >= text_size - 1) {
+            has_overflowed = true;
+            itl_le_flash(le);
+            break;
+          }
+          text[text_length++] = (char) byte;
+          text[text_length]   = '\0';
         }
-        text[text_length++] = (char) byte;
-        text[text_length]   = '\0';
-        if (is_streamed_picker && itl_byte_is_path_separator(byte) &&
+        if (is_streamed_picker && query_caret == text_length &&
+            itl_byte_is_path_separator(byte) &&
             (text_length == 1 || itl_byte_is_path_separator((uint8_t) text[0]) ||
 #if defined ITL_WIN32
              (text_length >= 3 && text[1] == ':') ||
@@ -21821,22 +21914,22 @@ itl_emacs_find_file(itl_le_t *le, const char *path)
 
 /* Insert the quoted path as one shell word and one undo step. */
 ITL_DEF bool
-itl_picker_insert(itl_le_t *le, const char *path)
+itl_picker_insert_at(itl_le_t *le, const char *path, size_t start, size_t end)
 {
   tl_completion span = ITL_ZERO_INIT;
   const char *quoted = itl_g_file_picker_quote(path);
-  size_t position = itl_picker_insertion_position(le);
   bool inserted = false;
 
-  span.token_start = span.token_end = position;
+  span.token_start = start;
+  span.token_end = end;
   if (quoted != NULL) {
     bool before = false, after = false;
 
-    if (position > 0) {
-      before = itl_picker_needs_separator(le->line->chars[position - 1]);
+    if (start > 0) {
+      before = itl_picker_needs_separator(le->line->chars[start - 1]);
     }
-    if (position < le->line->length) {
-      after = itl_picker_needs_separator(le->line->chars[position]);
+    if (end < le->line->length) {
+      after = itl_picker_needs_separator(le->line->chars[end]);
     }
     if (!before && !after) {
       inserted = itl_completion_replace_token(le, &span, quoted);
@@ -21844,7 +21937,7 @@ itl_picker_insert(itl_le_t *le, const char *path)
       size_t length = strlen(quoted);
       size_t size = length + before + after;
 
-      if (le->line->size < le->out_size && size < le->out_size - le->line->size) {
+      if (size < le->out_size) {
         char *word = (char *) itl_malloc(size + 1);
         if (before) word[0] = ' ';
         memcpy(word + before, quoted, length);
@@ -21857,6 +21950,12 @@ itl_picker_insert(itl_le_t *le, const char *path)
     }
   }
   if (inserted) {
+    if (itl_g_space_after_completion !=
+            TL_SPACE_AFTER_COMPLETION_EXCEPT_AFTER_SLASH ||
+        !itl_menu_is_directory_name(path))
+    {
+      itl_completion_append_space(le);
+    }
     itl_g_tty_should_refresh_text = true;
     return true;
   }
@@ -21869,22 +21968,26 @@ itl_emacs_pick_file(itl_le_t *le, int command_index)
 {
   char          *path;
   bool           is_read;
+  bool is_shell = itl_g_open_file_callback == NULL;
   tl_status_code status;
 
   if (itl_g_open_file_callback == NULL && itl_g_file_picker_quote == NULL)
     return itl_emacs_find_file(le, NULL);
   path = (char *) itl_malloc(itl_g_line_max + 1);
-  itl_g_minibuffer_hint = "fuzzy file search, enter to select, "
-                          "tab/right to descend, ctrl+left parent";
+  itl_g_minibuffer_hint = is_shell
+      ? "fuzzy file search, tab or enter to insert, right to descend"
+      : "fuzzy file search, tab or enter to open, right to descend";
   itl_g_minibuffer_completes_paths = true;
   is_read = itl_minibuffer_read(le, "", ITL_PREFIX_MINIBUFFER,
                                path, itl_g_line_max + 1);
   itl_g_minibuffer_completes_paths = false;
+  if (is_shell) {
+    ITL_FREE(path);
+    return TL_SUCCESS;
+  }
   status = TL_SUCCESS;
   if (!is_read || path[0] == '\0' ||
-      (itl_g_open_file_callback != NULL
-           ? (status = itl_emacs_find_file(le, path)) != TL_PRESSED_OPEN_FILE
-           : !itl_picker_insert(le, path)))
+      (status = itl_emacs_find_file(le, path)) != TL_PRESSED_OPEN_FILE)
   {
     ITL_FREE(path);
     return status;
@@ -21911,8 +22014,7 @@ itl_emacs_run_command(itl_le_t *le, size_t index)
   if (action == ITL_EMACS_FIND_FILE) {
     if (itl_g_open_file_callback != NULL)
       return itl_emacs_find_file(le, itl_g_emacs_last_path);
-    if (itl_g_file_picker_quote != NULL && itl_g_emacs_last_path != NULL)
-      (void) itl_picker_insert(le, itl_g_emacs_last_path);
+    if (itl_g_file_picker_quote != NULL) return itl_emacs_pick_file(le, (int) index);
     return TL_SUCCESS;
   }
   if (action == ITL_EMACS_SAVE_AND_QUIT) {
