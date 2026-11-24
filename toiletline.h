@@ -1671,8 +1671,12 @@ itl_legacy_key_bytes(uint32_t code,
   case 127:
     if (is_alt) {
       out[length++] = 0x1B;
+      out[length++] = (key == 8 || is_ctrl) ? 8 : 127;
+      return length;
     }
-    out[length++] = (is_ctrl || key == 8) ? 8 : 127;
+    /* Legacy Ctrl-Backspace is Ctrl-W, which the decoder reads as the same
+       backward word erase. */
+    out[length++] = (is_ctrl && key == 127) ? 23 : key == 8 ? 8 : 127;
     return length;
   }
 
@@ -5662,6 +5666,7 @@ itl_esc_parse_modified_key(unsigned code, unsigned modifier)
   if (code == 'i' && !is_shift) {
     return TL_KEY_HOVER;
   }
+  if (code == 127) return TL_KEY_BACKSPACE | TL_MOD_CTRL;
 
   return TL_KEY_UNKN;
 }
@@ -7981,6 +7986,7 @@ itl_prefix_hint(char *out, size_t out_size)
                       "to substitute\n"
                       "u or undo to undo, red or redo to redo\n"
                       "e or edit to edit in $VISUAL\n"
+                      "fzf to open the file picker\n"
                       "&, &&, or s to repeat the substitution\n"
                       "set option=value, set option, set nooption, or set "
                       "option? to set or show an option\n"
@@ -9286,12 +9292,18 @@ itl_le_tty_refresh_frame(itl_le_t *le)
   cols   = ITL_MAX(tty_cols, 1);
   indent = ITL_LE_INDENT(le, cols);
   if (itl_g_minibuffer_paths != NULL) {
-    size_t row    = 0;
-    size_t column = itl_le_prompt_indent(le, cols);
+    if (itl_g_open_file_callback != NULL) {
+      /* The file host browser owns the whole screen, so its rows span every
+         column instead of following the buffer caret. */
+      itl_g_picker_anchor = 0;
+    } else {
+      size_t row    = 0;
+      size_t column = itl_le_prompt_indent(le, cols);
 
-    itl_wrap_walk_range(le->line, 0, itl_g_picker_query_start, cols, indent,
-                        &row, &column);
-    itl_g_picker_anchor = column + 1 < cols ? column : 0;
+      itl_wrap_walk_range(le->line, 0, itl_g_picker_query_start, cols, indent,
+                          &row, &column);
+      itl_g_picker_anchor = column + 1 < cols ? column : 0;
+    }
   }
 
   /* A block taller than the terminal shows a window of rows that keeps the
@@ -12178,7 +12190,9 @@ itl_picker_layout(size_t cols, size_t row_budget)
   row_budget = ITL_MIN(row_budget, (size_t) ITL_PICKER_MAX_ROWS);
   if (width == 0 || row_budget == 0) return;
 
-  row = itl_char_buf_alloc();
+  row               = itl_char_buf_alloc();
+  size_t start_len  = itl_g_hint_next_len;
+  size_t start_rows = itl_g_hint_next_rows;
 
   show_help = row_budget > 1;
   show_summary =
@@ -12221,6 +12235,23 @@ itl_picker_layout(size_t cols, size_t row_budget)
       summary = count;
     }
     itl_picker_append_row(row, summary, itl_color_sequence(ITL_DIM_SGR), width);
+  }
+  if (itl_g_open_file_callback != NULL && itl_g_full_screen &&
+      itl_g_hint_next_rows > start_rows)
+  {
+    size_t built_len  = itl_g_hint_next_len - start_len;
+    size_t built_rows = itl_g_hint_next_rows - start_rows;
+    size_t first_row  = itl_g_le_prev_total_rows;
+    size_t target_row =
+        itl_g_tty_prev_rows > built_rows ? itl_g_tty_prev_rows - built_rows : 0;
+    size_t prefix = target_row > first_row ? target_row - first_row : 0;
+
+    memmove(itl_g_hint_next + start_len + prefix + 4,
+            itl_g_hint_next + start_len, built_len);
+    memcpy(itl_g_hint_next + start_len, "\x1b[J", 4);
+    memset(itl_g_hint_next + start_len + 4, '\n', prefix);
+    itl_g_hint_next_len += prefix + 4;
+    itl_g_hint_next_rows += prefix;
   }
   itl_g_hint_next[itl_g_hint_next_len] = '\0';
   ITL_CHAR_BUF_FREE(row);
@@ -15523,7 +15554,9 @@ itl_completion_menu_loop(itl_le_t              *le,
     {
       itl_menu_gather_due(le, source, &state, &result);
       itl_menu_restart_rows(&selected, &window_start, &previewed);
-      if (kind == TL_KEY_TAB || kind == TL_KEY_DOWN || kind == TL_KEY_UP) {
+      if ((kind == TL_KEY_TAB && !is_path_search) || kind == TL_KEY_DOWN ||
+          kind == TL_KEY_UP)
+      {
         continue;
       }
     }
@@ -15642,21 +15675,76 @@ itl_completion_menu_loop(itl_le_t              *le,
       continue;
     }
 
+    bool is_query_edit =
+        is_path_search &&
+        (key == TL_KEY_CHAR || kind == TL_KEY_BACKSPACE ||
+         kind == TL_KEY_DELETE || kind == TL_KEY_KILL_LINE ||
+         kind == TL_KEY_KILL_LINE_BEFORE || kind == TL_KEY_LEFT ||
+         kind == TL_KEY_HOME || kind == TL_KEY_END);
+
     /* Query edits never cross into the directory being searched. */
-    if (is_path_search && (key == TL_KEY_CHAR || kind == TL_KEY_BACKSPACE)) {
+    if (is_query_edit) {
       itl_ghost_clear();
+      bool   left_fuzzy_mode = false;
+      size_t before          = le->cursor_position;
+
       if (key == TL_KEY_CHAR) {
         if (itl_le_insert(le, itl_utf8_parse(byte))) result.token_end += 1;
-      } else if (le->cursor_position > result.path_query_start) {
-        size_t before = le->cursor_position;
-        itl_le_key_handle(le, TL_KEY_BACKSPACE);
-        result.token_end -= before - le->cursor_position;
+      } else if (kind == TL_KEY_BACKSPACE &&
+                 le->cursor_position == result.path_query_start &&
+                 result.path_query_start > result.token_start)
+      {
+        /* The seeded root slash goes and the line keeps its dot. */
+        itl_le_erase(le, 1, true);
+        result.token_end--;
+        result.path_query_start = 0;
+        result.is_path_search   = false;
+        is_path_search          = false;
+        if (itl_g_close_path_search != NULL) itl_g_close_path_search();
+        result.path_row_name = NULL;
+        result.path_row_id   = NULL;
+        result.path_row_of   = NULL;
+        itl_g_menu_due_ms    = 0;
+        left_fuzzy_mode      = true;
+      } else if (kind == TL_KEY_KILL_LINE_BEFORE) {
+        size_t start =
+            before < result.path_query_start ? before : result.path_query_start;
+
+        itl_le_erase(le, before - start, true);
+        result.token_end -= before - start;
+      } else if (kind == TL_KEY_KILL_LINE) {
+        size_t end = before < result.token_end ? result.token_end : before;
+
+        itl_le_erase(le, end - before, false);
+        result.token_end = before;
+      } else if (kind == TL_KEY_HOME) {
+        le->cursor_position = result.path_query_start;
+      } else if (kind == TL_KEY_END) {
+        le->cursor_position = result.token_end;
+      } else if (kind == TL_KEY_LEFT) {
+        tl_status_code edit_code = itl_le_key_handle(le, key);
+
+        if (edit_code != TL_SUCCESS) return edit_code;
+        if (le->cursor_position < result.path_query_start)
+          le->cursor_position = result.path_query_start;
+      } else {
+        tl_status_code edit_code = itl_le_key_handle(le, key);
+
+        if (edit_code != TL_SUCCESS) return edit_code;
+        if (kind == TL_KEY_DELETE) {
+          if (result.token_end > before) result.token_end--;
+        } else if (le->cursor_position < before) {
+          result.token_end -= before - le->cursor_position;
+        }
+        if (le->cursor_position < result.path_query_start)
+          result.path_query_start = le->cursor_position;
       }
       if (!itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_REBASE))
       {
         itl_g_menu_due_ms = 0;
       }
       itl_menu_restart_rows(&selected, &window_start, &previewed);
+      if (left_fuzzy_mode) itl_g_tty_should_refresh_text = true;
       continue;
     }
 
@@ -20123,6 +20211,9 @@ itl_emacs_selection_loop(itl_le_t *le, size_t anchor)
 
   itl_g_emacs_selection_active = false;
   itl_search_spans_clear();
+  if (itl_g_open_file_callback != NULL && itl_g_full_screen) {
+    itl_le_invalidate_prev_frame();
+  }
   itl_g_tty_should_refresh_text = true;
   itl_le_tty_refresh(le);
 
@@ -21268,6 +21359,7 @@ itl_minibuffer_read(itl_le_t       *le,
       itl_picker_preview(le, saved_line, display, preview, status,
                          picker_position, picker_end, text, text_length,
                          query_caret, root_length, &paths);
+      if (itl_g_open_file_callback != NULL) itl_le_invalidate_prev_frame();
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
       if (is_streamed_picker) {
@@ -21390,7 +21482,9 @@ itl_minibuffer_read(itl_le_t       *le,
     key_kind = key & TL_MASK_KEY;
     if (itl_g_minibuffer_completes_paths) {
       if (key == TL_KEY_HOME || key == TL_KEY_END) {
-        query_caret = key == TL_KEY_HOME ? 0 : text_length;
+        query_caret = key == TL_KEY_HOME
+                          ? (itl_g_minibuffer_completes_paths ? root_length : 0)
+                          : text_length;
         continue;
       }
       if (key == (TL_KEY_LEFT | TL_MOD_CTRL)) {
@@ -21567,7 +21661,16 @@ itl_minibuffer_read(itl_le_t       *le,
       }
       break;
 
-    case TL_KEY_KILL_LINE_BEFORE:
+    case TL_KEY_KILL_LINE:
+      if (itl_g_minibuffer_completes_paths) {
+        memmove(text + query_caret, text + text_length,
+                text_length - query_caret + 1);
+        text_length = query_caret;
+        if (query_caret < root_length) root_length = query_caret;
+        has_overflowed      = false;
+        should_gather_paths = true;
+        break;
+      }
       text_length    = 0;
       text[0]        = '\0';
       root_length    = 0;
@@ -21575,10 +21678,75 @@ itl_minibuffer_read(itl_le_t       *le,
       has_overflowed = false;
       break;
 
+    case TL_KEY_KILL_LINE_BEFORE:
+      if (itl_g_minibuffer_completes_paths) {
+        memmove(text + root_length, text + query_caret,
+                text_length - query_caret + 1);
+        text_length -= query_caret - root_length;
+        query_caret         = root_length;
+        has_overflowed      = false;
+        should_gather_paths = true;
+        break;
+      }
+      text_length    = 0;
+      text[0]        = '\0';
+      root_length    = 0;
+      query_caret    = 0;
+      has_overflowed = false;
+      break;
+
+    case TL_KEY_DELETE:
+      if (itl_g_minibuffer_completes_paths && query_caret < text_length) {
+        size_t end = query_caret + 1;
+
+        while (end < text_length && ((uint8_t) text[end] & 0xC0) == 0x80)
+          ++end;
+        memmove(text + query_caret, text + end, text_length - end + 1);
+        text_length -= end - query_caret;
+        has_overflowed      = false;
+        should_gather_paths = true;
+      }
+      break;
+
     case TL_KEY_BACKSPACE: {
       const bool is_path = itl_g_minibuffer_completes_paths;
       size_t    *caret   = is_path ? &query_caret : &text_length;
 
+      if (is_path && query_caret == 0 && root_length > 0) {
+        /* Removing the seeded root slash leaves the dot and exits the rooted
+           search without putting the slash back. */
+        memmove(text + root_length - 1, text + root_length,
+                text_length - root_length + 1);
+        text_length--;
+        root_length               = 0;
+        has_overflowed            = false;
+        has_selected_path         = false;
+        has_completed_path_prefix = false;
+        should_gather_paths       = false;
+        break;
+      }
+      if (is_path && (key & TL_MOD_CTRL) != 0) {
+        size_t end   = query_caret;
+        size_t start = end;
+
+        while (start > 0 &&
+               itl_byte_is_path_separator((uint8_t) text[start - 1]))
+          --start;
+        while (start > 0 &&
+               !itl_byte_is_path_separator((uint8_t) text[start - 1]))
+          --start;
+        memmove(text + start, text + end, text_length - end + 1);
+        text_length -= end - start;
+        if (start < root_length) {
+          root_length -= ITL_MIN(root_length, end) - start;
+          while (root_length > 0 &&
+                 !itl_byte_is_path_separator((uint8_t) text[root_length - 1]))
+            --root_length;
+        }
+        query_caret    = start;
+        has_overflowed = false;
+        break;
+      }
       if (!erase_minibuffer_codepoint(text, &text_length, caret, &root_length,
                                       is_path))
       {

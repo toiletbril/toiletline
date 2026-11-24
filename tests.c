@@ -3369,7 +3369,7 @@ test_extended_keys_read_as_legacy_bytes(void)
       {"\x1b[27;5;9~",      "\t",         0},
       {"\x1b[127u",         "\x7f",       0},
       {"\x1b[127;3u",       "\x1b\x7f",   0},
-      {"\x1b[127;5u",       "\x08",       0},
+      {"\x1b[127;5u",       "\x17",       0},
       {"\x1b[127;7u",       "\x1b\x08",   0},
       {"\x1b[27;5;8~",      "\x08",       0},
       {"\x1b[32;5u",        "\0",         1},
@@ -9600,6 +9600,7 @@ test_prefix_hint_lists_the_waiting_keys(void)
                      "to substitute\n"
                      "  u or undo to undo, red or redo to redo\n"
                      "  e or edit to edit in $VISUAL\n"
+                     "  fzf to open the file picker\n"
                      "  &, &&, or s to repeat the substitution\n"
                      "  set option=value, set option, set nooption, or set "
                      "option? to set or show an option\n"
