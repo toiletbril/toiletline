@@ -7585,7 +7585,7 @@ test_menu_help_wraps_between_items(void)
 
   geometry = itl_menu_geometry_of(&result, 5, "", title, keys);
   layout = itl_menu_measure_for(&geometry, itl_g_tty_prev_rows, title, keys);
-  ok = ok && layout.has_help_row && layout.help_row_count == 3 &&
+  ok = ok && layout.help_row_count == 3 &&
        layout.has_count_row && layout.candidate_rows == ITL_MENU_MAX_ROWS;
 
   itl_g_debug_frame_sink  = test_frame_capture_sink;
@@ -7599,7 +7599,7 @@ test_menu_help_wraps_between_items(void)
   /* A tall block leaves no room, so the help text is dropped whole. */
   itl_g_le_prev_total_rows = 21;
   layout = itl_menu_measure_for(&geometry, itl_g_tty_prev_rows, title, keys);
-  ok = ok && !layout.has_help_row && layout.help_row_count == 0;
+  ok = ok && layout.help_row_count == 0;
 
   /* One item wider than the row is cut with an ellipsis. */
   itl_g_le_prev_total_rows = 1;

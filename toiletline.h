@@ -183,8 +183,7 @@ typedef enum
   TL_KEY_QUIT,
   /* Ctrl-X s and Ctrl-X Ctrl-S save through the save callback. */
   TL_KEY_SAVE,
-  /* Ctrl-X i, and Ctrl-I in vi insert mode of the full-screen layout, show
-     the hint under the caret. */
+  /* A disambiguated Ctrl-I or Ctrl-X i. */
   TL_KEY_HOVER,
   /* A mouse report of the full-screen layout. */
   TL_KEY_MOUSE,
@@ -4408,6 +4407,14 @@ itl_color_sequence(const char *sequence)
   return itl_g_colors_enabled ? sequence : "";
 }
 
+ITL_DEF tl_highlight_span
+itl_minibuffer_input_span(size_t start, size_t end)
+{
+  tl_highlight_span span = {start, end, itl_color_sequence(ITL_MINIBUFFER_SGR)};
+
+  return span;
+}
+
 /* Append the visible notation of a control byte or codepoint: caret notation
    below 0x80 and a hex escape at or above it, which also stands for a byte
    that starts no valid UTF-8 sequence. */
@@ -6085,6 +6092,7 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_indent_width = ITL_HINT_INDENT_WIDTH;
 ITL_DEF ITL_EDITOR_BUFFER char  itl_g_hint_source[ITL_HINT_TEXT_MAX + 1] = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_source_len                    = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_header_len                    = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_input_start                  = (size_t) -1;
 ITL_DEF ITL_THREAD_LOCAL char   itl_g_hint_sgr[ITL_HINT_SGR_MAX]         = {0};
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_layout_cols                   = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hint_layout_rows                   = 0;
@@ -6145,6 +6153,10 @@ ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_anchor                  = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_query_start             = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_color_start             = 0;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_color_end               = 0;
+ITL_DEF ITL_THREAD_LOCAL const itl_string_t *itl_g_picker_footer_query = NULL;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_footer_caret = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_footer_row = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_footer_column = 0;
 ITL_DEF ITL_THREAD_LOCAL bool (*itl_g_file_picker_seed)(const char *line,
                                                         size_t      cursor,
                                                         char       *text,
@@ -6201,10 +6213,6 @@ ITL_DEF ITL_THREAD_LOCAL itl_full_screen_rows_cache itl_g_rows_cache =
    tl_set_status, or NULL. */
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_title  = NULL;
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_status = NULL;
-
-/* The key count at which TL_KEY_HOVER asked for the hint, which shows until
-   the next key. */
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_hover_serial = 0;
 
 /* The label of a command line that the full-screen layout shows on the first
    row under the input, or NULL while none is open. */
@@ -7953,8 +7961,7 @@ itl_prefix_hint(char *out, size_t out_size)
     }
     itl_prefix_append(out, out_size, &out_length,
                       itl_g_save_callback != NULL
-                          ? "s or ctrl-s to save, ctrl-c to leave, "
-                            "i to show the hint"
+                          ? "s or ctrl-s to save, ctrl-c to leave"
                           : "ctrl-c to leave the shell");
     return true;
   }
@@ -8131,15 +8138,14 @@ itl_hint_fit(const char *text, size_t length, size_t limit)
 ITL_DEF void
 itl_hint_append_row(const char *text, size_t length, bool is_cut)
 {
-  /* The command line of the full-screen layout is the first row and takes no
-     hint style. */
-  const char *open = itl_g_hint_next_rows == 0 && itl_g_minibuffer_label != NULL
-                         ? ""
-                         : itl_color_sequence(itl_g_hint_sgr);
-  const char *reset     = itl_color_sequence(ITL_HIGHLIGHT_RESET);
-  size_t      open_len  = strlen(open);
-  size_t      reset_len = strlen(reset);
-  char       *out       = itl_g_hint_next + itl_g_hint_next_len;
+  bool        is_input_row =
+      itl_g_hint_next_rows == 0 && itl_g_minibuffer_label != NULL;
+  size_t      input_start = is_input_row ? itl_g_hint_input_start : length;
+  const char *open        = is_input_row ? "" : itl_color_sequence(itl_g_hint_sgr);
+  const char *reset       = itl_color_sequence(ITL_HIGHLIGHT_RESET);
+  size_t      open_len    = strlen(open);
+  size_t      reset_len   = strlen(reset);
+  char       *out         = itl_g_hint_next + itl_g_hint_next_len;
 
   while (length > 0 && text[length - 1] == ' ') {
     length -= 1;
@@ -8152,6 +8158,17 @@ itl_hint_append_row(const char *text, size_t length, bool is_cut)
   out += open_len;
   memcpy(out, ITL_HINT_INDENT, itl_g_hint_indent_width);
   out += itl_g_hint_indent_width;
+  if (input_start < length) {
+    tl_highlight_span span = itl_minibuffer_input_span(input_start, length);
+    size_t sgr_len         = strlen(span.sgr);
+
+    memcpy(out, text, span.start);
+    out += span.start;
+    memcpy(out, span.sgr, sgr_len);
+    out += sgr_len;
+    text += span.start;
+    length = span.end - span.start;
+  }
   memcpy(out, text, length);
   out += length;
   if (is_cut) {
@@ -8345,18 +8362,14 @@ itl_prefix_append_size(char *out, size_t out_size, size_t *length, size_t n)
   itl_prefix_append(out, out_size, length, digits + digit_count);
 }
 
-/* Write the rows the full-screen layout shows under the input into out and
-   return them. An open command line takes the first row, with the keys it
-   answers under it. A held prefix or a message comes next, then the hint
-   while TL_KEY_HOVER asks for it. Otherwise one row shows tl_set_status with
-   the caret position, and a second row shows the edit mode with the last save
-   message or the keys that open the key menu and the commands. */
+/* An open command line takes the first row, with its keys underneath.
+   A held prefix or a message comes next, otherwise show the file status
+   and caret position, then the edit mode and its keys or save message. */
 ITL_DEF const char *
 itl_full_screen_rows(char        *out,
                      size_t       out_size,
                      const char  *line,
-                     size_t       cursor_byte,
-                     const char **sgr)
+                     size_t       cursor_byte)
 {
   char        keys_text[1024];
   const char *mode;
@@ -8382,35 +8395,6 @@ itl_full_screen_rows(char        *out,
   }
   if (itl_prefix_hint(out, out_size)) {
     return out;
-  }
-  if (itl_g_hover_serial != 0 && itl_g_hover_serial == itl_g_key_serial) {
-    const char *hint = itl_g_hint_callback != NULL
-                           ? itl_g_hint_callback(line, cursor_byte, sgr)
-                           : NULL;
-
-    /* A host gives no hint while the caret is on a command word, so the word
-       under the caret is asked about again as if a blank followed it. */
-    if (itl_g_hint_callback != NULL && (hint == NULL || hint[0] == '\0')) {
-      size_t word_end = cursor_byte;
-      char  *cut;
-
-      while (line[word_end] != '\0' &&
-             strchr(" \t\n;|&()<>", line[word_end]) == NULL)
-      {
-        word_end += 1;
-      }
-      cut = word_end > 0 ? (char *) TL_MALLOC(word_end + 2) : NULL;
-      if (cut != NULL) {
-        memcpy(cut, line, word_end);
-        cut[word_end]     = ' ';
-        cut[word_end + 1] = '\0';
-        hint              = itl_g_hint_callback(cut, word_end + 1, sgr);
-        TL_FREE(cut);
-      }
-    }
-
-    return hint != NULL && hint[0] != '\0' ? hint
-                                           : "nothing to show under the caret";
   }
   itl_g_footer_shows_status = true;
 
@@ -8515,7 +8499,7 @@ itl_full_screen_rows(char        *out,
                : "ctrl-x to see the menu, alt-x to run a command";
     break;
   case TL_EDIT_MODE_VI_INSERT:
-    keys = "esc to leave insert mode, ctrl-i to show the hint";
+    keys = "esc to leave insert mode";
     break;
   case TL_EDIT_MODE_VI_COMMAND:
     keys = ": to enter a command, i to insert, d to delete, c to change, "
@@ -8550,19 +8534,23 @@ itl_hint_compose(const char *line,
   const char *sgr      = NULL;
   const char *returned = NULL;
   const char *line_break;
-  size_t      text_bytes = 0, kept_bytes = 0, header_end, i;
+  size_t      text_bytes  = 0, kept_bytes = 0, header_end, i;
+  size_t      input_start = itl_g_minibuffer_label != NULL
+                                ? strlen(itl_g_minibuffer_label)
+                                : (size_t) -1;
 
   itl_g_hint_source_len = 0;
   itl_g_hint_header_len = 0;
   itl_g_hint_source[0]  = '\0';
+  itl_g_hint_input_start = (size_t) -1;
 
   if (itl_g_minibuffer_paths != NULL) {
     itl_g_footer_shows_status = false;
     itl_hint_layout(cols, row_budget);
     return;
   } else if (itl_g_full_screen) {
-    returned = itl_full_screen_rows(prefix_text, sizeof(prefix_text), line,
-                                    cursor_byte, &sgr);
+    returned =
+        itl_full_screen_rows(prefix_text, sizeof(prefix_text), line, cursor_byte);
   } else if (itl_g_hint_callback != NULL && itl_g_hint_hold_count == 0 &&
              !itl_g_hint_is_closed)
   {
@@ -8593,6 +8581,7 @@ itl_hint_compose(const char *line,
     size_t  step_bytes, step_width;
     bool    is_notation;
 
+    if (i == input_start) itl_g_hint_input_start = kept_bytes;
     if (line_break != NULL && i == header_end) {
       itl_g_hint_header_len = kept_bytes;
       i                     = (size_t) (line_break - returned) + 1;
@@ -9138,6 +9127,21 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
 ITL_DEF bool
 itl_le_tty_refresh_frame(itl_le_t *le);
 
+ITL_DEF size_t
+itl_picker_max_rows(void)
+{
+  return ITL_PICKER_MAX_ROWS + (itl_g_picker_footer_query != NULL);
+}
+
+ITL_DEF size_t
+itl_picker_footer_rows(size_t tty_rows)
+{
+  size_t input_rows = itl_full_screen_title_rows() + 1;
+
+  return ITL_MIN(itl_picker_max_rows(),
+                 tty_rows > input_rows ? tty_rows - input_rows : 0);
+}
+
 /* The footer rows the composed hint wants on a terminal of cols columns: its
    header row and each body row as wrapped, within the footer limits. The
    status keeps the fewest rows. */
@@ -9151,19 +9155,7 @@ itl_footer_rows_wanted(size_t cols)
                              : 1;
   size_t      rows     = itl_g_hint_header_len > 0 ? 1 : 0;
   if (itl_g_minibuffer_paths != NULL) {
-    const tl_completion *paths = itl_g_minibuffer_paths;
-    size_t               available =
-        itl_g_tty_prev_rows -
-        ITL_MIN(itl_g_tty_prev_rows, itl_full_screen_title_rows() + 1);
-    size_t wanted =
-        paths->count == 0
-            ? 2
-            : 1 + ITL_MIN(paths->count, (size_t) ITL_PICKER_MAX_CANDIDATES) +
-                  (paths->has_more_paths ||
-                   paths->count > ITL_PICKER_MAX_CANDIDATES);
-    return ITL_MAX(
-        (size_t) ITL_FOOTER_ROWS_MIN,
-        ITL_MIN(available, ITL_MIN(wanted, (size_t) ITL_PICKER_MAX_ROWS)));
+    return itl_picker_footer_rows(itl_g_tty_prev_rows);
   }
 
   if (itl_g_footer_shows_status) {
@@ -9288,6 +9280,9 @@ itl_le_tty_refresh_frame(itl_le_t *le)
     tty_rows = itl_g_tty_prev_rows;
     tty_cols = itl_g_tty_prev_cols;
   }
+  if (itl_g_full_screen && itl_g_minibuffer_paths != NULL) {
+    itl_g_footer_rows = itl_picker_footer_rows(tty_rows);
+  }
 
   cols   = ITL_MAX(tty_cols, 1);
   indent = ITL_LE_INDENT(le, cols);
@@ -9334,13 +9329,7 @@ itl_le_tty_refresh_frame(itl_le_t *le)
        empty rows fill it below the input. */
     if (m.total_rows > view_rows || itl_g_full_screen) {
       is_view_active = true;
-      if (itl_g_full_screen && itl_g_minibuffer_paths != NULL) {
-        /* The picker uses the rows below the query instead of the document. */
-        view_rows = ITL_MIN(view_rows, m.cursor_row + 1);
-        view_top  = m.cursor_row + 1 - view_rows;
-      } else {
-        view_top = itl_g_view_top_row;
-      }
+      view_top = itl_g_view_top_row;
       if (m.cursor_row < view_top) {
         view_top = m.cursor_row;
       } else if (m.cursor_row >= view_top + view_rows) {
@@ -9495,7 +9484,7 @@ itl_le_tty_refresh_frame(itl_le_t *le)
                                          le->line->length,
                                          itl_le_cursor_byte_offset(le))
               : 0;
-      tl_highlight_span input_span = {start, end, ITL_MINIBUFFER_SGR};
+      tl_highlight_span input_span = itl_minibuffer_input_span(start, end);
       span_count                   = itl_merge_visual_spans(
           itl_syntax_spans, syntax_count, &input_span,
           itl_g_colors_enabled && start < end ? 1 : 0, le->line->length,
@@ -9955,7 +9944,8 @@ itl_le_tty_refresh_frame(itl_le_t *le)
       itl_char_buf_append_shaded_cell(b);
     }
     bool picker_ghost =
-        itl_g_minibuffer_paths != NULL && row < view_end &&
+        itl_g_minibuffer_paths != NULL && itl_g_picker_footer_query == NULL &&
+        row < view_end &&
         itl_le_tty_draw_ghost(b, le->cursor_position == le->line->length, col,
                               cols);
 
@@ -10043,7 +10033,16 @@ itl_le_tty_refresh_frame(itl_le_t *le)
     }
   }
 
-  ITL_TTY_MOVE_TO_COLUMN(b, m.cursor_col + 1);
+  if (itl_g_picker_footer_query != NULL && itl_g_picker_footer_row != 0) {
+    itl_char_buf_append_cstr(b, "\x1b[");
+    itl_char_buf_append_size_t(b, itl_full_screen_title_rows() + view_rows +
+                                      itl_g_picker_footer_row);
+    itl_char_buf_append_byte(b, ';');
+    itl_char_buf_append_size_t(b, itl_g_picker_footer_column + 1);
+    itl_char_buf_append_byte(b, 'H');
+  } else {
+    ITL_TTY_MOVE_TO_COLUMN(b, m.cursor_col + 1);
+  }
 
   if (is_view_active) {
     m.total_rows = view_rows;
@@ -11725,7 +11724,6 @@ typedef struct itl_menu_layout
   size_t candidate_rows;
   size_t body_rows;
   size_t help_row_count;
-  bool   has_help_row;
   bool   has_count_row;
 } itl_menu_layout;
 
@@ -11758,13 +11756,10 @@ itl_menu_measure(size_t tty_rows, size_t help_rows)
     available           = available > 0 ? available - 1 : 0;
   }
 
-  layout.has_help_row   = help_rows > 0 && available >= help_rows + 2;
-  layout.help_row_count = layout.has_help_row ? help_rows : 0;
+  layout.help_row_count = available >= help_rows + 2 ? help_rows : 0;
   layout.has_count_row  = available >= 2;
 
-  if (layout.has_help_row) {
-    available -= help_rows;
-  }
+  available -= layout.help_row_count;
 
   if (layout.has_count_row) {
     available -= 1;
@@ -12176,6 +12171,45 @@ itl_picker_append_row(itl_char_buf_t *row,
 }
 
 ITL_DEF void
+itl_picker_append_query_row(itl_char_buf_t *row, size_t width)
+{
+  const itl_string_t *query = itl_g_picker_footer_query;
+  tl_highlight_span input =
+      itl_minibuffer_input_span(itl_g_picker_color_start, query->length);
+  size_t column = 0;
+
+  ITL_CHAR_BUF_CLEAR(row);
+  if (itl_g_hint_next_rows > 0) itl_char_buf_append_byte(row, '\n');
+  itl_g_picker_footer_column = 0;
+
+  for (size_t i = 0; i < query->length; ++i) {
+    size_t char_width = itl_line_char_width(query->chars, i);
+
+    if (column + char_width > width) break;
+    if (i == input.start) itl_char_buf_append_cstr(row, input.sgr);
+    itl_char_buf_append_line_char(row, query->chars[i]);
+    column += char_width;
+    if (i < itl_g_picker_footer_caret) itl_g_picker_footer_column = column;
+  }
+
+  itl_char_buf_append_cstr(row, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+  if (itl_g_picker_footer_caret == query->length &&
+      column + itl_g_ghost_width <= width && itl_g_ghost_len != 0)
+  {
+    itl_char_buf_append_cstr(row, itl_color_sequence(ITL_DIM_SGR));
+    itl_char_buf_append_visible(row, itl_g_ghost, itl_g_ghost_len,
+                                itl_g_ghost_width, false);
+    itl_char_buf_append_cstr(row, itl_color_sequence(ITL_HIGHLIGHT_RESET));
+  }
+
+  if (row->size < sizeof(itl_g_hint_next) - itl_g_hint_next_len) {
+    memcpy(itl_g_hint_next + itl_g_hint_next_len, row->data, row->size);
+    itl_g_hint_next_len += row->size;
+    itl_g_picker_footer_row = ++itl_g_hint_next_rows;
+  }
+}
+
+ITL_DEF void
 itl_picker_layout(size_t cols, size_t row_budget)
 {
   const tl_completion *paths    = itl_g_minibuffer_paths;
@@ -12188,20 +12222,26 @@ itl_picker_layout(size_t cols, size_t row_budget)
   char            count[sizeof("showing - of ") + 9 * sizeof(size_t)];
 
   size_t available_rows = row_budget;
-  row_budget = ITL_MIN(row_budget, (size_t) ITL_PICKER_MAX_ROWS);
-  if (width == 0 || row_budget == 0) return;
+  bool   has_query = itl_g_picker_footer_query != NULL;
+
+  itl_g_picker_footer_row = 0;
+  row_budget = ITL_MIN(row_budget, itl_picker_max_rows());
+  if (width == 0 || row_budget == 0) {
+    return;
+  }
+
+  if (has_query) --row_budget;
 
   row               = itl_char_buf_alloc();
   size_t start_len  = itl_g_hint_next_len;
   size_t start_rows = itl_g_hint_next_rows;
 
-  show_help = row_budget > 1;
-  show_summary =
-      row_budget > 1 && paths->count > 0 &&
-      (paths->has_more_paths || paths->count > row_budget - show_help);
-  if (show_help && show_summary && row_budget == 2) show_help = false;
-  row_budget -= show_help + show_summary;
+  show_help = row_budget >= 3;
+  bool has_footer = row_budget >= 2;
+  row_budget -= show_help + has_footer;
   row_budget = ITL_MIN(row_budget, (size_t) ITL_PICKER_MAX_CANDIDATES);
+  show_summary =
+      has_footer && (paths->has_more_paths || paths->count > row_budget);
 
   if (row_budget != 0 && paths->count != 0) {
     itl_g_picker_window_start = itl_menu_window_start(
@@ -12217,6 +12257,10 @@ itl_picker_layout(size_t cols, size_t row_budget)
     itl_picker_append_row(row, itl_g_minibuffer_hint,
                           itl_color_sequence(ITL_DIM_SGR), width);
   }
+  if (has_query) {
+    itl_picker_append_query_row(row, width);
+  }
+
   for (index = itl_g_picker_window_start; index < end; ++index) {
     const char *name = itl_picker_row_name(paths, index);
     const char *sgr  = index == selected ? itl_menu_selected_sgr()
@@ -12227,16 +12271,31 @@ itl_picker_layout(size_t cols, size_t row_budget)
     itl_picker_append_row(row, name, sgr, width);
   }
 
-  if (show_summary || (row_budget != 0 && paths->count == 0)) {
-    const char *summary = paths->has_more_paths ? "searching..." : "no matches";
-    if (paths->count != 0 && !paths->has_more_paths) {
+  size_t body_rows = end - itl_g_picker_window_start;
+  if (row_budget != 0 && paths->count == 0 && !show_summary) {
+    const char *empty = paths->has_more_paths ? "searching..." : "no matches";
+
+    itl_picker_append_row(row, empty, itl_color_sequence(ITL_DIM_SGR), width);
+    ++body_rows;
+  }
+
+  while (body_rows < row_budget) {
+    itl_picker_append_row(row, "", "", width);
+    ++body_rows;
+  }
+
+  if (has_footer) {
+    const char *summary = !show_summary ? "" : "searching...";
+    if (show_summary && !paths->has_more_paths) {
       itl_menu_format_summary(count, sizeof(count),
                               itl_g_picker_window_start + 1, index,
                               paths->count);
+
       summary = count;
     }
     itl_picker_append_row(row, summary, itl_color_sequence(ITL_DIM_SGR), width);
   }
+
   if (itl_g_open_file_callback != NULL && itl_g_full_screen &&
       itl_g_hint_next_rows > start_rows)
   {
@@ -12253,6 +12312,7 @@ itl_picker_layout(size_t cols, size_t row_budget)
       memset(itl_g_hint_next + start_len + clear_len, '\n', prefix);
       itl_g_hint_next_len += prefix + clear_len;
       itl_g_hint_next_rows += prefix;
+      if (itl_g_picker_footer_row != 0) itl_g_picker_footer_row += prefix;
     }
   }
   itl_g_hint_next[itl_g_hint_next_len] = '\0';
@@ -12631,7 +12691,11 @@ itl_menu_geometry_of(const tl_completion *result,
                            ? itl_visible_width(empty_text, strlen(empty_text))
                            : 0;
 
-  if (result->count == 0) {
+  if (result->is_path_search) {
+    /* Match widths change as results arrive; only the help and empty message
+       decide whether the fuzzy menu fits under the token. */
+    needed_cols += sizeof(ITL_MENU_EMPTY_TEXT) - 1;
+  } else if (result->count == 0) {
     needed_cols += empty_width;
   } else {
     needed_cols += name_width + ITL_MENU_SELECTED_MARGIN_WIDTH;
@@ -12775,6 +12839,7 @@ itl_menu_draw(const tl_completion     *result,
   if (layout.candidate_rows == 0) {
     return window_start;
   }
+
   itl_frame_batch_begin();
 
   if (is_history) {
@@ -12788,9 +12853,10 @@ itl_menu_draw(const tl_completion     *result,
       for (i = 0; i < result->count && rows <= available; ++i) {
         rows += itl_history_menu_row_count(result->candidates[i]);
       }
+
       if (rows > layout.candidate_rows && rows <= available) {
         if (rows > layout.body_rows + layout.has_count_row) {
-          layout.has_help_row = false;
+          layout.help_row_count = 0;
         }
         layout.candidate_rows = rows;
         window_start          = 0;
@@ -12806,11 +12872,12 @@ itl_menu_draw(const tl_completion     *result,
     window_end   = ITL_MIN(window_start + layout.candidate_rows, result->count);
     body_row_count = window_end - window_start;
   }
-  bool has_loading_footer =
-      result->has_more_paths && result->count > 0 && layout.has_count_row;
+  bool has_fixed_rows     = result->is_path_search;
+  bool has_loading_footer = result->has_more_paths && layout.has_count_row &&
+                            (has_fixed_rows || result->count > 0);
   has_count_row = !has_loading_footer && layout.has_count_row &&
                   (window_start > 0 || window_end < result->count);
-  if (!is_history && has_count_row) ++body_row_count;
+  if (!is_history && !has_fixed_rows && has_count_row) ++body_row_count;
   detail_column = anchor + box_cols + ITL_MENU_SELECTED_MARGIN_WIDTH;
   if (has_count_row) {
     size_t count_width =
@@ -12885,8 +12952,9 @@ itl_menu_draw(const tl_completion     *result,
       detail_footer = NULL;
     }
   }
+
   /* Every row is at least as wide as the title row. */
-  if (layout.has_help_row && help_title != NULL) {
+  if (layout.help_row_count > 0) {
     box_cols = ITL_MAX(
         box_cols, itl_g_menu_prefix_width +
                       itl_visible_width(help_title, strlen(help_title)) + 2);
@@ -12897,36 +12965,38 @@ itl_menu_draw(const tl_completion     *result,
   if (itl_g_full_screen) {
     itl_g_tty_should_refresh_text = true;
     itl_le_tty_refresh(&itl_g_le);
-    if (layout.has_help_row && help_title != NULL) {
-      overlay_rows =
-          itl_menu_layout_help(NULL, help_title, help_keys, text_width, anchor,
-                               layout.help_row_count);
-    }
-    overlay_rows += result->count == 0 ? 1 : 0;
-    overlay_rows += body_row_count + 1;
-    overlay_rows += has_loading_footer;
-    if (is_history && has_count_row) {
-      overlay_rows += 1;
+    overlay_rows = layout.help_row_count;
+
+    if (has_fixed_rows) {
+      overlay_rows += layout.candidate_rows + layout.has_count_row + 1;
+    } else {
+      overlay_rows += result->count == 0 ? 1 : 0;
+      overlay_rows += body_row_count + 1;
+      overlay_rows += has_loading_footer;
+      if (is_history && has_count_row) overlay_rows += 1;
     }
   }
 
   ITL_CHAR_BUF_CLEAR(b);
   ITL_TTY_HIDE_CURSOR(b);
+
   if (itl_g_full_screen) {
     itl_menu_open_overlay(b, overlay_rows);
     move_down = 0;
   } else {
     move_down = itl_menu_open_area(b);
   }
+
   itl_menu_move_to_anchor(b, anchor);
 
-  if (layout.has_help_row && help_title != NULL) {
+  if (layout.help_row_count > 0) {
     itl_menu_paint_box_row(b, anchor, box_cols, row_cols);
     drawn_rows += itl_menu_layout_help(b, help_title, help_keys, text_width,
                                        anchor, layout.help_row_count);
   }
 
-  if (result->count == 0) {
+  size_t first_body_row = drawn_rows;
+  if (result->count == 0 && !(has_fixed_rows && has_loading_footer)) {
     itl_menu_begin_row(b, anchor, box_cols, row_cols, drawn_rows > 0);
     itl_menu_append_dimmed_row(b, empty_text, text_width);
     drawn_rows += 1;
@@ -13054,7 +13124,20 @@ itl_menu_draw(const tl_completion     *result,
     drawn_rows += 1;
   }
 
-  if (has_loading_footer) {
+  if (has_fixed_rows) {
+    while (drawn_rows - first_body_row < layout.candidate_rows) {
+      itl_menu_begin_row(b, anchor, box_cols, row_cols, drawn_rows > 0);
+      ++drawn_rows;
+    }
+    if (layout.has_count_row) {
+      itl_menu_begin_row(b, anchor, box_cols, row_cols, true);
+      if (has_loading_footer || has_count_row)
+        itl_menu_append_dimmed_row(
+            b, has_loading_footer ? ITL_MENU_LOADING_TEXT : count_text,
+            text_width);
+      ++drawn_rows;
+    }
+  } else if (has_loading_footer) {
     itl_menu_begin_row(b, anchor, box_cols, row_cols, true);
     itl_menu_append_dimmed_row(b, ITL_MENU_LOADING_TEXT, text_width);
     drawn_rows += 1;
@@ -14180,11 +14263,13 @@ itl_menu_keep_ranks(const itl_menu_index *index,
 
       row                             = index->survivors[position];
       itl_g_menu_filtered[kept_count] = base->candidates[row];
-      itl_g_menu_filtered_descriptions[kept_count] =
-          base->descriptions != NULL ? base->descriptions[row] : NULL;
+      if (base->descriptions != NULL) {
+        itl_g_menu_filtered_descriptions[kept_count] = base->descriptions[row];
+      }
       if (base->detail_keys != NULL) {
         itl_g_menu_filtered_detail_keys[kept_count] = base->detail_keys[row];
       }
+
       kept_count += 1;
     }
   }
@@ -14942,11 +15027,12 @@ itl_menu_adopt_base(itl_le_t              *le,
     state->base.count = 0;
   }
 
-  state->base_tier = itl_menu_best_tier(
-      &state->base,
-      state->base.count < ITL_MENU_FILTER_SCAN_MAX ? state->base.count
-                                                   : ITL_MENU_FILTER_SCAN_MAX,
-      state->query, state->query_len);
+  state->base_tier = ITL_MENU_TIER_NONE;
+  if (source->should_keep_best_tier && state->base.is_tier_ranked) {
+    state->base_tier = itl_menu_best_tier(
+        &state->base, ITL_MIN(state->base.count, ITL_MENU_FILTER_SCAN_MAX),
+        state->query, state->query_len);
+  }
 
   if (state->base.count > 0) {
     itl_menu_cache_store(le, source, state);
@@ -15199,20 +15285,20 @@ typedef enum
 
 /* Handle a path parent key without rewriting a root. */
 ITL_DEF itl_menu_parent_action
-itl_menu_parent_path(itl_le_t *le, const tl_completion *result, bool can_ascend)
+itl_menu_parent_path(itl_le_t              *le,
+                     const tl_completion *result,
+                     char                *path,
+                     size_t               path_length,
+                     bool                 can_ascend)
 {
-  char   path[ITL_STRING_MAX_LEN];
-  size_t end, root_start = 0, root_end;
+  size_t root_start = 0;
+  size_t root_end   = path_length;
 
-  if (!itl_menu_token_text(le, result->token_start, result->token_end, path,
-                           sizeof(path), &end) ||
-      end == 0)
-  {
+  if (path_length == 0) {
     return ITL_MENU_PARENT_UNUSED;
   }
 
   /* A root can be typed inside a single pair of quotes. */
-  root_end = end;
   if (path[0] == '\'' || path[0] == '"') {
     root_start = 1;
     if (root_end > root_start && path[root_end - 1] == path[0]) {
@@ -15230,25 +15316,34 @@ itl_menu_parent_path(itl_le_t *le, const tl_completion *result, bool can_ascend)
     {
       ++position;
     }
+
     if (position == root_end) {
       return ITL_MENU_PARENT_ROOT;
     }
   }
+
   if (!can_ascend) {
     return ITL_MENU_PARENT_UNUSED;
   }
-  end = itl_path_component_start(path, end);
+
+  size_t end = itl_path_component_start(path, path_length);
+
 #if defined ITL_WIN32
   if (path[1] == ':' && (end == 0 || (end == 3 && path[end] == '\0'))) {
     return ITL_MENU_PARENT_UNUSED;
   }
 #endif
+
+  char next = path[end];
+  bool was_replaced;
+
   path[end] = '\0';
   itl_ghost_clear();
   itl_menu_erase();
-  return itl_completion_replace_token(le, result, path)
-             ? ITL_MENU_PARENT_ASCENDED
-             : ITL_MENU_PARENT_UNUSED;
+  was_replaced = itl_completion_replace_token(le, result, path);
+  path[end]    = next;
+
+  return was_replaced ? ITL_MENU_PARENT_ASCENDED : ITL_MENU_PARENT_UNUSED;
 }
 
 /* A candidate that leaves the whole replacement span unchanged is not a
@@ -15598,22 +15693,27 @@ itl_completion_menu_loop(itl_le_t              *le,
         key == (TL_KEY_LEFT | TL_MOD_CTRL) && source->can_descend)
     {
       char   exited[ITL_STRING_MAX_LEN];
-      size_t exited_size;
+      char   identity[ITL_STRING_MAX_LEN];
+      size_t exited_length;
+
       if (!itl_menu_token_text(le, result.token_start, result.token_end, exited,
-                               sizeof(exited), &exited_size))
+                               sizeof(exited), &exited_length))
       {
-        exited[0] = '\0';
+        exited_length = 0;
       }
-      char identity[ITL_STRING_MAX_LEN];
+
       bool has_identity =
-          exited[0] != '\0' && itl_g_directory_identity != NULL &&
+          exited_length != 0 && exited[0] != '\0' &&
+          itl_g_directory_identity != NULL &&
           itl_g_directory_identity(exited, identity, sizeof(identity));
       itl_menu_parent_action parent = itl_menu_parent_path(
-          le, &result, is_directory_navigation || result.detail_keys != NULL);
+          le, &result, exited, exited_length,
+          is_directory_navigation || result.detail_keys != NULL);
 
       if (parent == ITL_MENU_PARENT_ROOT) {
         continue;
       }
+
       if (parent == ITL_MENU_PARENT_ASCENDED) {
         accepted_count          = 0;
         is_directory_navigation = true;
@@ -15636,6 +15736,7 @@ itl_completion_menu_loop(itl_le_t              *le,
             }
           }
         }
+
         window_start                  = 0;
         previewed                     = (size_t) -1;
         itl_g_tty_should_refresh_text = true;
@@ -17329,20 +17430,11 @@ itl_le_key_handle(itl_le_t *le, int esc)
   case TL_KEY_TAB: {
     tl_status_code completion_code = TL_SUCCESS;
 
-    size_t line_start = itl_le_line_start_of(le, le->cursor_position);
-    size_t i;
-    bool   is_blank_before = true;
-
-    for (i = line_start; i < le->cursor_position; ++i) {
-      if (!ITL_LE_IS_BLANK(le->line->chars[i])) {
-        is_blank_before = false;
+    if (itl_g_full_screen) {
+      if ((esc & (TL_MOD_SHIFT | TL_MOD_CTRL)) != 0) {
+        itl_g_tty_should_refresh_text = false;
         break;
       }
-    }
-
-    /* A file edited in the full-screen layout takes the tab as text while
-       only blanks come before the caret on its line. */
-    if (itl_g_full_screen && is_blank_before) {
       itl_le_insert_cstr(le, "\t");
       break;
     }
@@ -17351,11 +17443,6 @@ itl_le_key_handle(itl_le_t *le, int esc)
        callback, TAB keeps its old contract of returning to the host. */
     if (itl_completion_handle_tab(le, &completion_code)) {
       return completion_code;
-    }
-    /* A file edited in the full-screen layout takes the tab as text. */
-    if (itl_g_full_screen) {
-      itl_le_insert_cstr(le, "\t");
-      break;
     }
     ITL_TRY(itl_le_copy_out(le), return TL_ERROR_SIZE);
     return TL_PRESSED_TAB;
@@ -17773,16 +17860,9 @@ itl_le_key_handle(itl_le_t *le, int esc)
     break;
   case TL_KEY_DELETE_SPACES: itl_le_delete_spaces(le); break;
 
-  /* an unbound key changes nothing. */
-  case TL_KEY_UNKN: itl_g_tty_should_refresh_text = false; break;
-
-  case TL_KEY_HOVER:
-    if (itl_g_full_screen) {
-      itl_g_hover_serial = itl_g_key_serial;
-    } else {
-      itl_g_tty_should_refresh_text = false;
-    }
-    break;
+  /* An unbound key changes nothing. */
+  case TL_KEY_UNKN:
+  case TL_KEY_HOVER: itl_g_tty_should_refresh_text = false; break;
 
   case TL_KEY_MOUSE: return itl_le_mouse(le);
 
@@ -21236,6 +21316,23 @@ insert_minibuffer_byte(char   *text,
   return true;
 }
 
+/* Keep a rooted prefix that ends at the last separator before an erased span. */
+ITL_DEF void
+itl_minibuffer_shrink_root(const char *text,
+                           size_t     *root_length,
+                           size_t      start,
+                           size_t      end)
+{
+  if (start >= *root_length) return;
+
+  *root_length -= ITL_MIN(*root_length, end) - start;
+  while (*root_length > 0 &&
+         !itl_byte_is_path_separator((uint8_t) text[*root_length - 1]))
+  {
+    --*root_length;
+  }
+}
+
 ITL_DEF bool
 erase_minibuffer_codepoint(char   *text,
                            size_t *text_length,
@@ -21251,12 +21348,8 @@ erase_minibuffer_codepoint(char   *text,
 
   memmove(text + start, text + end, *text_length - end + 1);
   *text_length -= end - start;
-  if (is_path && start < *root_length) {
-    *root_length -= ITL_MIN(*root_length, end) - start;
-    while (*root_length > 0 &&
-           !itl_byte_is_path_separator((uint8_t) text[*root_length - 1]))
-      --*root_length;
-  }
+  if (is_path) itl_minibuffer_shrink_root(text, root_length, start, end);
+
   *caret = start;
   return true;
 }
@@ -21328,7 +21421,12 @@ itl_minibuffer_read(itl_le_t       *le,
     }
     itl_string_release_cstr(line, storage);
   }
-  itl_string_copy(original, le->line);
+  bool has_footer_query = should_gather_paths && is_in_rows && !is_shell_picker;
+  if (has_footer_query) {
+    itl_g_picker_footer_query = preview;
+  } else {
+    itl_string_copy(original, le->line);
+  }
   itl_g_prefix_kind     = kind;
   itl_g_minibuffer_text = text;
   if (should_gather_paths) itl_g_picker_window_start = 0;
@@ -21358,9 +21456,15 @@ itl_minibuffer_read(itl_le_t       *le,
     }
 
     if (itl_g_minibuffer_completes_paths) {
-      itl_picker_preview(le, saved_line, display, preview, status,
-                         picker_position, picker_end, text, text_length,
+      itl_picker_preview(le, has_footer_query ? original : saved_line, display,
+                         preview, status, has_footer_query ? 0 : picker_position,
+                         has_footer_query ? 0 : picker_end, text, text_length,
                          query_caret, root_length, &paths);
+      if (has_footer_query) {
+        itl_g_picker_footer_caret = le->cursor_position;
+        le->line = saved_line;
+        le->cursor_position = saved_cursor;
+      }
       if (itl_g_open_file_callback != NULL) itl_le_invalidate_prev_frame();
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
@@ -21462,8 +21566,9 @@ itl_minibuffer_read(itl_le_t       *le,
         le->cursor_position        = display->length;
         itl_g_minibuffer_row_start = row_start;
         itl_g_search_span_count    = 0;
-        itl_search_push_span(text_start_position, display->length,
-                             ITL_MINIBUFFER_SGR);
+        tl_highlight_span input =
+            itl_minibuffer_input_span(text_start_position, display->length);
+        itl_search_push_span(input.start, input.end, input.sgr);
       }
       if (itl_g_is_finding && itl_g_find_has_match &&
           itl_g_find_match_end <= preview->length)
@@ -21731,23 +21836,13 @@ itl_minibuffer_read(itl_le_t       *le,
         break;
       }
       if (is_path && (key & TL_MOD_CTRL) != 0) {
+        size_t start = itl_path_component_start(text, query_caret);
         size_t end   = query_caret;
-        size_t start = end;
 
-        while (start > 0 &&
-               itl_byte_is_path_separator((uint8_t) text[start - 1]))
-          --start;
-        while (start > 0 &&
-               !itl_byte_is_path_separator((uint8_t) text[start - 1]))
-          --start;
         memmove(text + start, text + end, text_length - end + 1);
         text_length -= end - start;
-        if (start < root_length) {
-          root_length -= ITL_MIN(root_length, end) - start;
-          while (root_length > 0 &&
-                 !itl_byte_is_path_separator((uint8_t) text[root_length - 1]))
-            --root_length;
-        }
+        itl_minibuffer_shrink_root(text, &root_length, start, end);
+
         query_caret    = start;
         has_overflowed = false;
         break;
@@ -21833,6 +21928,7 @@ itl_minibuffer_read(itl_le_t       *le,
   }
 
   itl_g_minibuffer_paths = NULL;
+  itl_g_picker_footer_query = NULL;
   if (itl_g_minibuffer_completes_paths) itl_ghost_clear();
   if (is_streamed_picker) itl_g_menu_due_ms = saved_menu_due;
   if (is_streamed_picker && itl_g_file_picker_close != NULL)
@@ -22121,18 +22217,19 @@ itl_emacs_find_file(itl_le_t *le, const char *path)
 
     while (true) {
       itl_g_minibuffer_hint = "enter save, discard, or cancel";
-      if (!itl_minibuffer_read(le,
-                               "Unsaved changes: save, discard, or cancel: ",
-                               ITL_PREFIX_MINIBUFFER, answer, sizeof(answer)) ||
-          answer[0] == '\0' || strcmp(answer, "cancel") == 0)
+      if (!itl_minibuffer_read(
+              le, "there are unsaved changes. save (s), discard (d), cancel (c): ",
+              ITL_PREFIX_MINIBUFFER, answer, sizeof(answer)) ||
+          answer[0] == '\0' || strcmp(answer, "c") == 0 ||
+          strcmp(answer, "cancel") == 0)
       {
         break;
       }
-      if (strcmp(answer, "save") == 0) {
+      if (strcmp(answer, "s") == 0 || strcmp(answer, "save") == 0) {
         choice = ITL_UNSAVED_SAVE;
         break;
       }
-      if (strcmp(answer, "discard") == 0) {
+      if (strcmp(answer, "d") == 0 || strcmp(answer, "discard") == 0) {
         choice = ITL_UNSAVED_DISCARD;
         break;
       }
@@ -22220,7 +22317,7 @@ itl_emacs_pick_file(itl_le_t *le, int command_index)
   path = (char *) itl_malloc(itl_g_line_max + 1);
   itl_g_minibuffer_hint =
       is_shell ? "fuzzy file search, tab or enter to insert, right to descend"
-               : "fuzzy file search, tab or enter to open, right to descend";
+               : "search to open another file";
   itl_g_minibuffer_completes_paths = true;
   is_read = itl_minibuffer_read(le, "", ITL_PREFIX_MINIBUFFER, path,
                                 itl_g_line_max + 1);
@@ -22722,16 +22819,11 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
 
   case TL_KEY_BACKSPACE: itl_le_move_left(le, 1); return TL_SUCCESS;
 
-  /* ctrl-i, which a legacy terminal sends as a tab, and the ctrl-k ctrl-i
-     chord show the hover hint. */
   case TL_KEY_HOVER:
   case TL_KEY_TAB:
     itl_vi_reset_pending();
-    if ((key & TL_MOD_SHIFT) != 0) {
-      itl_g_tty_should_refresh_text = false;
-      return TL_SUCCESS;
-    }
-    return itl_le_key_handle(le, TL_KEY_HOVER);
+    itl_g_tty_should_refresh_text = false;
+    return TL_SUCCESS;
 
   case TL_KEY_KILL_LINE: {
     uint8_t next_byte;
@@ -23110,7 +23202,14 @@ tl_get_input(char *buffer, size_t buffer_size, const char *prompt)
       return TL_ERROR;
     }
 
-    input_type                     = itl_esc_parse(input_byte);
+#if !defined ITL_WIN32
+    /* Ctrl-Space is not a document tab. Prompt readers keep legacy decoding. */
+    input_type = itl_g_full_screen && input_byte == 0
+                     ? TL_KEY_TAB | TL_MOD_CTRL
+                     : itl_esc_parse(input_byte);
+#else
+    input_type = itl_esc_parse(input_byte);
+#endif
     itl_g_tty_plain_append_pending = false;
     bool is_auto_pair_kept         = false;
     bool is_plain_insert           = false;
