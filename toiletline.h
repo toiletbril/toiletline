@@ -381,7 +381,7 @@ typedef struct tl_completion
   bool   can_search_paths;
   bool   is_path_search;
   size_t path_query_start;
-  bool should_search_siblings;
+  bool   should_search_siblings;
   const char *(*path_parent)(const char *candidate);
   bool has_more_paths;
   /* Fuzzy search may provide only the rows the editor asks for. The next
@@ -1233,8 +1233,8 @@ itl_enter_raw_mode_impl(void)
 
   itl_g_original_tty_out_mode = tty_out_mode;
   tty_out_mode                = (DWORD) ENABLE_PROCESSED_OUTPUT |
-                 ENABLE_VIRTUAL_TERMINAL_PROCESSING |
-                 DISABLE_NEWLINE_AUTO_RETURN;
+                                ENABLE_VIRTUAL_TERMINAL_PROCESSING |
+                                DISABLE_NEWLINE_AUTO_RETURN;
 
   ITL_TRY(SetConsoleMode(stdin_handle, tty_in_mode), return false);
   ITL_TRY(SetConsoleMode(stdout_handle, tty_out_mode), return false);
@@ -1883,7 +1883,7 @@ itl_wait_for_input_until(const sigset_t *previous_signals, int timeout_ms)
   timeout.tv_sec  = timeout_ms / 1000;
   timeout.tv_nsec = (long) (timeout_ms % 1000) * 1000000L;
   result          = pselect(STDIN_FILENO + 1, &readable, NULL, NULL,
-                   timeout_ms < 0 ? NULL : &timeout, previous_signals);
+                            timeout_ms < 0 ? NULL : &timeout, previous_signals);
   if (result == 0) {
     return 0;
   }
@@ -2565,8 +2565,8 @@ itl_string_reserve(itl_string_t *str, size_t length)
     capacity = ITL_STRING_REALLOC_CAPACITY(capacity);
   } while (capacity < length);
 
-  str->chars = (itl_utf8_t *) itl_realloc(str->chars,
-                                        capacity * sizeof(itl_utf8_t));
+  str->chars =
+      (itl_utf8_t *) itl_realloc(str->chars, capacity * sizeof(itl_utf8_t));
   str->capacity = capacity;
 }
 
@@ -2644,8 +2644,8 @@ ITL_DEF void
 itl_string_shrink(itl_string_t *str)
 {
   str->capacity = ITL_STRING_INIT_SIZE;
-  str->chars    = (itl_utf8_t *) itl_realloc(str->chars,
-                                             str->capacity * sizeof(itl_utf8_t));
+  str->chars = (itl_utf8_t *) itl_realloc(str->chars,
+                                          str->capacity * sizeof(itl_utf8_t));
 
   if (str->length > str->capacity) {
     str->length = str->capacity;
@@ -5861,7 +5861,7 @@ itl_esc_parse_ctrl_x(void)
 
   switch (byte) {
   case 5:   return TL_KEY_EDIT_EXTERNAL; /* ctrl e */
-  case 6:   return TL_KEY_FIND_FILE; /* ctrl f */
+  case 6:   return TL_KEY_FIND_FILE;     /* ctrl f */
   case 21:  return TL_KEY_UNDO;          /* ctrl u */
   case 'z': return TL_KEY_REPEAT;
   case 3:   return TL_KEY_QUIT; /* ctrl c */
@@ -5917,7 +5917,7 @@ itl_esc_parse(uint8_t byte)
   case 21: return TL_KEY_KILL_LINE_BEFORE; /* ctrl u */
   case 23: return TL_KEY_BACKSPACE | TL_MOD_CTRL;
 
-  case 8: /* old backspace */
+  case 8:   /* old backspace */
   case 127: return TL_KEY_BACKSPACE;
 
   case 31: return TL_KEY_UNDO;
@@ -6050,7 +6050,7 @@ ITL_DEF ITL_THREAD_LOCAL tl_hint_fn itl_g_hint_callback = NULL;
 
 /* Help and a count or loading row do not consume candidate slots. */
 #define ITL_PICKER_MAX_CANDIDATES 16
-#define ITL_PICKER_MAX_ROWS (ITL_PICKER_MAX_CANDIDATES + 2)
+#define ITL_PICKER_MAX_ROWS       (ITL_PICKER_MAX_CANDIDATES + 2)
 
 /* The rows under the buffer of the full-screen layout. The status takes the
    fewest, and a message, a hint, or a command line grows them up to the
@@ -6131,26 +6131,32 @@ typedef enum
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_minibuffer_text = "";
 ITL_DEF ITL_THREAD_LOCAL const char *itl_g_minibuffer_hint = "";
 /* Whether Tab in the open minibuffer completes an option name. */
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_minibuffer_completes_options        = false;
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_minibuffer_completes_paths          = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_minibuffer_completes_options     = false;
+ITL_DEF ITL_THREAD_LOCAL bool itl_g_minibuffer_completes_paths       = false;
 ITL_DEF ITL_THREAD_LOCAL const tl_completion *itl_g_minibuffer_paths = NULL;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_minibuffer_path_selected = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_window_start = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_anchor = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_query_start = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_color_start = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_color_end = 0;
-ITL_DEF ITL_THREAD_LOCAL bool (*itl_g_file_picker_seed)(
-    const char *line, size_t cursor, char *text, size_t capacity,
-    size_t *root, size_t *start, size_t *end) = NULL;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_minibuffer_path_selected       = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_window_start            = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_anchor                  = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_query_start             = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_color_start             = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_picker_color_end               = 0;
+ITL_DEF ITL_THREAD_LOCAL bool (*itl_g_file_picker_seed)(const char *line,
+                                                        size_t      cursor,
+                                                        char       *text,
+                                                        size_t      capacity,
+                                                        size_t     *root,
+                                                        size_t     *start,
+                                                        size_t     *end) = NULL;
 ITL_DEF ITL_THREAD_LOCAL int (*itl_g_file_picker_gather)(
     const char *text, size_t root_length, tl_completion *out) = NULL;
 ITL_DEF ITL_THREAD_LOCAL const char *(*itl_g_file_picker_quote)(
-    const char *path) = NULL;
+    const char *path)                                          = NULL;
 ITL_DEF ITL_THREAD_LOCAL void (*itl_g_file_picker_close)(void) = NULL;
+/* The host callback that opens a picked path. With NULL and a path completion
+   callback set, the picker inserts the path into the line instead. */
 ITL_DEF ITL_THREAD_LOCAL tl_open_file_fn itl_g_open_file_callback = NULL;
-ITL_DEF ITL_THREAD_LOCAL char              *itl_g_emacs_last_path       = NULL;
-ITL_DEF ITL_THREAD_LOCAL int                itl_g_emacs_last_command    = -1;
+ITL_DEF ITL_THREAD_LOCAL char           *itl_g_emacs_last_path    = NULL;
+ITL_DEF ITL_THREAD_LOCAL int             itl_g_emacs_last_command = -1;
 
 /* The host option callback, or NULL. */
 ITL_DEF ITL_THREAD_LOCAL tl_option_fn itl_g_option_callback = NULL;
@@ -6532,9 +6538,9 @@ ITL_DEF ITL_THREAD_LOCAL bool   itl_g_le_prev_spans_usable = false;
    display buffer as a command. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_search_spans_active = false;
 /* The native search menus color the editable input, not the prompt or ghost. */
-ITL_DEF ITL_THREAD_LOCAL bool itl_g_menu_search_input = false;
+ITL_DEF ITL_THREAD_LOCAL bool   itl_g_menu_search_input = false;
 ITL_DEF ITL_THREAD_LOCAL size_t itl_g_menu_search_start = 0;
-ITL_DEF ITL_THREAD_LOCAL size_t itl_g_menu_search_end = 0;
+ITL_DEF ITL_THREAD_LOCAL size_t itl_g_menu_search_end   = 0;
 /* Whether a find minibuffer is open. Its match span is drawn over the syntax
    highlighting of the buffer. */
 ITL_DEF ITL_THREAD_LOCAL bool itl_g_is_finding = false;
@@ -7900,10 +7906,10 @@ itl_emacs_command_hint(char *out, size_t out_size, size_t *out_length)
 
 /* The colon commands as :help lists them. */
 static const char *const itl_vi_ex_command_names[] = {
-    "w",    "write",  "q",       "q!",   "quit", "wq",   "wq!",
-    "wqa",  "wqa!",   "x",       "s",    "%s",   "&",    "&&",
-    "u",    "undo",   "red",     "redo", "e",    "edit", "set",
-    "save", "format", "%format", "N",    "$",    "h",    "help", "fzf",
+    "w",    "write", "q", "q!",   "quit", "wq",   "wq!",    "wqa",
+    "wqa!", "x",     "s", "%s",   "&",    "&&",   "u",      "undo",
+    "red",  "redo",  "e", "edit", "set",  "save", "format", "%format",
+    "N",    "$",     "h", "help", "fzf",
 };
 
 /* A streamed name is borrowed until the next row lookup. */
@@ -8679,8 +8685,8 @@ itl_le_tty_draw_hint(itl_char_buf_t *b, size_t row_budget)
       size_t      shown_count = 0;
 
       if (row < itl_g_hint_shown_rows && shown_offset <= itl_g_hint_shown_len) {
-        shown_end   = (const char *) memchr(shown, '\n',
-                                            itl_g_hint_shown_len - shown_offset);
+        shown_end = (const char *) memchr(shown, '\n',
+                                          itl_g_hint_shown_len - shown_offset);
         shown_count = shown_end != NULL ? (size_t) (shown_end - shown)
                                         : itl_g_hint_shown_len - shown_offset;
         shown_offset += shown_count + 1;
@@ -8982,7 +8988,7 @@ itl_le_tty_redraw_changed_rows(itl_char_buf_t *b,
     size_t          last_row   = first_row + row_count - 1;
     size_t          window_first =
         first_row == 1 && row_count > 1 && itl_full_screen_title_rows() > 0 ? 1
-                                                                                     : 0;
+                                                                            : 0;
     size_t changed_count = 0, best_changed_count, best_shift = 0;
     bool   is_shift_up = true;
     size_t shift;
@@ -9140,13 +9146,18 @@ itl_footer_rows_wanted(size_t cols)
   size_t      rows     = itl_g_hint_header_len > 0 ? 1 : 0;
   if (itl_g_minibuffer_paths != NULL) {
     const tl_completion *paths = itl_g_minibuffer_paths;
-    size_t available = itl_g_tty_prev_rows -
+    size_t               available =
+        itl_g_tty_prev_rows -
         ITL_MIN(itl_g_tty_prev_rows, itl_full_screen_title_rows() + 1);
-    size_t wanted = paths->count == 0 ? 2 : 1 +
-        ITL_MIN(paths->count, (size_t) ITL_PICKER_MAX_CANDIDATES) +
-        (paths->has_more_paths || paths->count > ITL_PICKER_MAX_CANDIDATES);
-    return ITL_MAX((size_t) ITL_FOOTER_ROWS_MIN,
-                   ITL_MIN(available, ITL_MIN(wanted, (size_t) ITL_PICKER_MAX_ROWS)));
+    size_t wanted =
+        paths->count == 0
+            ? 2
+            : 1 + ITL_MIN(paths->count, (size_t) ITL_PICKER_MAX_CANDIDATES) +
+                  (paths->has_more_paths ||
+                   paths->count > ITL_PICKER_MAX_CANDIDATES);
+    return ITL_MAX(
+        (size_t) ITL_FOOTER_ROWS_MIN,
+        ITL_MIN(available, ITL_MIN(wanted, (size_t) ITL_PICKER_MAX_ROWS)));
   }
 
   if (itl_g_footer_shows_status) {
@@ -9275,7 +9286,7 @@ itl_le_tty_refresh_frame(itl_le_t *le)
   cols   = ITL_MAX(tty_cols, 1);
   indent = ITL_LE_INDENT(le, cols);
   if (itl_g_minibuffer_paths != NULL) {
-    size_t row = 0;
+    size_t row    = 0;
     size_t column = itl_le_prompt_indent(le, cols);
 
     itl_wrap_walk_range(le->line, 0, itl_g_picker_query_start, cols, indent,
@@ -9314,7 +9325,7 @@ itl_le_tty_refresh_frame(itl_le_t *le)
       if (itl_g_full_screen && itl_g_minibuffer_paths != NULL) {
         /* The picker uses the rows below the query instead of the document. */
         view_rows = ITL_MIN(view_rows, m.cursor_row + 1);
-        view_top = m.cursor_row + 1 - view_rows;
+        view_top  = m.cursor_row + 1 - view_rows;
       } else {
         view_top = itl_g_view_top_row;
       }
@@ -9462,26 +9473,27 @@ itl_le_tty_refresh_frame(itl_le_t *le)
     itl_g_serialized_line_ready = false;
     if (itl_g_menu_search_input || itl_g_minibuffer_paths != NULL) {
       size_t start = itl_g_minibuffer_paths != NULL ? itl_g_picker_color_start
-                                                   : itl_g_menu_search_start;
-      size_t end = itl_g_minibuffer_paths != NULL ? itl_g_picker_color_end
-                                                 : itl_g_menu_search_end;
-      size_t syntax_count = !(itl_g_menu_search_input && start == 0 &&
-                              end == le->line->length) &&
-                            have_cur_render && itl_should_run_highlight()
-          ? itl_le_collect_highlight(itl_cur_render, itl_syntax_spans,
-                                     le->line->length, itl_le_cursor_byte_offset(le))
-          : 0;
+                                                    : itl_g_menu_search_start;
+      size_t end   = itl_g_minibuffer_paths != NULL ? itl_g_picker_color_end
+                                                    : itl_g_menu_search_end;
+      size_t syntax_count =
+          !(itl_g_menu_search_input && start == 0 && end == le->line->length) &&
+                  have_cur_render && itl_should_run_highlight()
+              ? itl_le_collect_highlight(itl_cur_render, itl_syntax_spans,
+                                         le->line->length,
+                                         itl_le_cursor_byte_offset(le))
+              : 0;
       tl_highlight_span input_span = {start, end, ITL_MINIBUFFER_SGR};
-      span_count = itl_merge_visual_spans(
+      span_count                   = itl_merge_visual_spans(
           itl_syntax_spans, syntax_count, &input_span,
           itl_g_colors_enabled && start < end ? 1 : 0, le->line->length,
           itl_spans, ITL_HIGHLIGHT_MAX_SPANS);
     } else if (itl_g_search_spans_active &&
-        (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
-         itl_g_multicursor_active || itl_g_emacs_selection_active ||
-         itl_g_minibuffer_row_start > 0 || itl_g_minibuffer_label != NULL ||
-         itl_g_is_finding) &&
-        have_cur_render && itl_should_run_highlight())
+               (itl_g_edit_mode == TL_EDIT_MODE_VI_VISUAL ||
+                itl_g_multicursor_active || itl_g_emacs_selection_active ||
+                itl_g_minibuffer_row_start > 0 ||
+                itl_g_minibuffer_label != NULL || itl_g_is_finding) &&
+               have_cur_render && itl_should_run_highlight())
     {
       size_t syntax_count = itl_le_collect_highlight(
           itl_cur_render, itl_syntax_spans, le->line->length,
@@ -9930,7 +9942,8 @@ itl_le_tty_refresh_frame(itl_le_t *le)
     {
       itl_char_buf_append_shaded_cell(b);
     }
-    bool picker_ghost = itl_g_minibuffer_paths != NULL && row < view_end &&
+    bool picker_ghost =
+        itl_g_minibuffer_paths != NULL && row < view_end &&
         itl_le_tty_draw_ghost(b, le->cursor_position == le->line->length, col,
                               cols);
 
@@ -9953,8 +9966,8 @@ itl_le_tty_refresh_frame(itl_le_t *le)
     bool   was_ghost_drawn =
         picker_ghost ||
         (itl_g_minibuffer_paths == NULL && !is_view_active &&
-         itl_le_tty_draw_ghost(b, le->cursor_position == le->line->length,
-                               col, cols));
+         itl_le_tty_draw_ghost(b, le->cursor_position == le->line->length, col,
+                               cols));
     /* The rows are complete here. When only the changed ones are redrawn, the
        hint rows on screen stay, and each is drawn again only when it
        changed. */
@@ -10116,7 +10129,7 @@ tl_last_control_sequence(void)
 /* The host completion callback, or NULL when completion is disabled. Only the
    interactive host registers one. */
 ITL_DEF ITL_THREAD_LOCAL tl_complete_fn itl_g_complete_callback = NULL;
-ITL_DEF ITL_THREAD_LOCAL void (*itl_g_close_path_search)(void) = NULL;
+ITL_DEF ITL_THREAD_LOCAL void (*itl_g_close_path_search)(void)  = NULL;
 ITL_DEF ITL_THREAD_LOCAL bool (*itl_g_directory_identity)(
     const char *word, char *out, size_t capacity) = NULL;
 ITL_DEF ITL_THREAD_LOCAL bool (*itl_g_same_directory_identity)(
@@ -10139,10 +10152,8 @@ tl_set_history_select_callback(tl_history_select_fn callback)
   itl_g_history_select_callback = callback;
 }
 
-/* The host callback for completing paths in the file picker. */
 ITL_DEF ITL_THREAD_LOCAL tl_path_complete_fn itl_g_path_complete_callback =
     NULL;
-
 TL_DEF void
 tl_set_open_file_callback(tl_open_file_fn callback)
 {
@@ -10915,9 +10926,9 @@ itl_ghost_extends_completion_miss_plainly(const char *line_cstr,
   {
     unsigned char byte     = (unsigned char) line_cstr[position];
     bool          is_plain = (byte >= 'a' && byte <= 'z') ||
-                    (byte >= 'A' && byte <= 'Z') ||
-                    (byte >= '0' && byte <= '9') || byte == '_' ||
-                    byte == '-' || byte == '.' || byte >= 0x80;
+                             (byte >= 'A' && byte <= 'Z') ||
+                             (byte >= '0' && byte <= '9') || byte == '_' ||
+                             byte == '-' || byte == '.' || byte >= 0x80;
     if (!is_plain) {
       return false;
     }
@@ -11014,7 +11025,7 @@ itl_ghost_fill_from_token_text(itl_le_t   *le,
   }
 
   typed_byte_len = line_byte_len - token_start_bytes;
-  differs        = skip_offset != typed_byte_len ||
+  differs = skip_offset != typed_byte_len ||
             memcmp(text, line_cstr + token_start_bytes, typed_byte_len) != 0;
   if (differs &&
       token_start_bytes + text_byte_len < sizeof(itl_g_ghost_sticky_target))
@@ -11502,6 +11513,35 @@ itl_byte_is_path_separator(uint8_t byte)
   return byte == '/';
 }
 
+ITL_DEF size_t
+itl_path_component_start(const char *text, size_t position)
+{
+  while (position > 0 &&
+         itl_byte_is_path_separator((uint8_t) text[position - 1]))
+  {
+    --position;
+  }
+  while (position > 0 &&
+         !itl_byte_is_path_separator((uint8_t) text[position - 1]))
+  {
+    --position;
+  }
+  return position;
+}
+
+ITL_DEF bool
+itl_menu_is_directory_name(const char *name);
+
+/* The option policy for the row just accepted; OFF is handled by
+   itl_completion_append_space(). */
+ITL_DEF bool
+itl_completion_space_follows(const char *name)
+{
+  return itl_g_space_after_completion !=
+             TL_SPACE_AFTER_COMPLETION_EXCEPT_AFTER_SLASH ||
+         !itl_menu_is_directory_name(name);
+}
+
 /* Append the space the option asks for after a completed word. The space
    joins the undo step of the completion it follows. */
 ITL_DEF void
@@ -11532,8 +11572,8 @@ itl_completion_append_space(itl_le_t *le)
 ITL_DEF void
 itl_menu_advance_word(itl_le_t *le, bool should_insert_space)
 {
-  size_t cursor = le->cursor_position;
-  const itl_utf8_t *chars = le->line->chars;
+  size_t            cursor = le->cursor_position;
+  const itl_utf8_t *chars  = le->line->chars;
 
   if (cursor > 0 && chars[cursor - 1].size == 1 &&
       ITL_CHAR_IS_SPACE(chars[cursor - 1].bytes[0]))
@@ -11558,9 +11598,9 @@ itl_menu_advance_word(itl_le_t *le, bool should_insert_space)
 /* The selectable candidate menu drawn under the input block. Its rows sit
    outside the rows the line editor tracks. The menu clears them itself before
    every repaint and before it returns. */
-#define ITL_MENU_MAX_ROWS         16
-#define ITL_MENU_ROW_PREFIX       "  "
-#define ITL_MENU_ROW_PREFIX_WIDTH 2
+#define ITL_MENU_MAX_ROWS          16
+#define ITL_MENU_ROW_PREFIX        "  "
+#define ITL_MENU_ROW_PREFIX_WIDTH  2
 #define ITL_HISTORY_MENU_MAX_LINES 3
 
 /* The width of the row prefix, which shrinks below ITL_MENU_ROW_PREFIX_WIDTH
@@ -11777,15 +11817,15 @@ itl_history_menu_window(const tl_completion *result,
                         size_t              *start,
                         size_t              *row_count)
 {
-  size_t end = selected;
+  size_t end            = selected;
   size_t previous_start = *start;
 
-  *start = selected;
+  *start     = selected;
   *row_count = 0;
   if (selected >= result->count) return result->count;
 
-  *row_count = ITL_MIN(budget,
-                       itl_history_menu_row_count(result->candidates[selected]));
+  *row_count =
+      ITL_MIN(budget, itl_history_menu_row_count(result->candidates[selected]));
   while (*start > previous_start) {
     size_t rows = itl_history_menu_row_count(result->candidates[*start - 1]);
 
@@ -12073,8 +12113,8 @@ itl_menu_append_row(itl_char_buf_t *b,
 
 /* Format the count shown while part of the list is out of view. */
 ITL_DEF size_t
-itl_menu_format_summary(char *text, size_t capacity, size_t first, size_t last,
-                         size_t count)
+itl_menu_format_summary(
+    char *text, size_t capacity, size_t first, size_t last, size_t count)
 {
   itl_char_buf_t summary = {text, 0, capacity};
 
@@ -12102,11 +12142,13 @@ itl_menu_append_dimmed_row(itl_char_buf_t *b, const char *text, size_t width)
 /* Picker rows use the native menu palette and clipping, but belong to the
    minibuffer's hint area so resizing and erasing follow the editor frame. */
 ITL_DEF void
-itl_picker_append_row(itl_char_buf_t *row, const char *text, const char *sgr,
-                      size_t width)
+itl_picker_append_row(itl_char_buf_t *row,
+                      const char     *text,
+                      const char     *sgr,
+                      size_t          width)
 {
   size_t length = strlen(text);
-  size_t fit = itl_menu_cell_text_width(text, length, width);
+  size_t fit    = itl_menu_cell_text_width(text, length, width);
 
   ITL_CHAR_BUF_CLEAR(row);
   if (itl_g_hint_next_rows > 0) itl_char_buf_append_byte(row, '\n');
@@ -12124,13 +12166,14 @@ itl_picker_append_row(itl_char_buf_t *row, const char *text, const char *sgr,
 ITL_DEF void
 itl_picker_layout(size_t cols, size_t row_budget)
 {
-  const tl_completion *paths = itl_g_minibuffer_paths;
-  size_t selected = itl_g_minibuffer_path_selected;
-  size_t width = cols > itl_g_picker_anchor + 1 ? cols - itl_g_picker_anchor - 1 : 0;
+  const tl_completion *paths    = itl_g_minibuffer_paths;
+  size_t               selected = itl_g_minibuffer_path_selected;
+  size_t               width =
+      cols > itl_g_picker_anchor + 1 ? cols - itl_g_picker_anchor - 1 : 0;
   itl_char_buf_t *row;
-  size_t end, index;
-  bool show_help, show_summary;
-  char count[sizeof("showing - of ") + 9 * sizeof(size_t)];
+  size_t          end, index;
+  bool            show_help, show_summary;
+  char            count[sizeof("showing - of ") + 9 * sizeof(size_t)];
 
   row_budget = ITL_MIN(row_budget, (size_t) ITL_PICKER_MAX_ROWS);
   if (width == 0 || row_budget == 0) return;
@@ -12138,7 +12181,8 @@ itl_picker_layout(size_t cols, size_t row_budget)
   row = itl_char_buf_alloc();
 
   show_help = row_budget > 1;
-  show_summary = row_budget > 1 && paths->count > 0 &&
+  show_summary =
+      row_budget > 1 && paths->count > 0 &&
       (paths->has_more_paths || paths->count > row_budget - show_help);
   if (show_help && show_summary && row_budget == 2) show_help = false;
   row_budget -= show_help + show_summary;
@@ -12151,7 +12195,7 @@ itl_picker_layout(size_t cols, size_t row_budget)
           ITL_MIN(row_budget, paths->count - itl_g_picker_window_start);
   } else {
     itl_g_picker_window_start = 0;
-    end = 0;
+    end                       = 0;
   }
 
   if (show_help) {
@@ -12160,9 +12204,10 @@ itl_picker_layout(size_t cols, size_t row_budget)
   }
   for (index = itl_g_picker_window_start; index < end; ++index) {
     const char *name = itl_picker_row_name(paths, index);
-    const char *sgr = index == selected ? itl_menu_selected_sgr()
-        : itl_menu_is_directory_name(name)
-            ? itl_color_sequence(itl_menu_directory_sgr()) : "";
+    const char *sgr  = index == selected ? itl_menu_selected_sgr()
+                       : itl_menu_is_directory_name(name)
+                           ? itl_color_sequence(itl_menu_directory_sgr())
+                           : "";
 
     itl_picker_append_row(row, name, sgr, width);
   }
@@ -12170,8 +12215,9 @@ itl_picker_layout(size_t cols, size_t row_budget)
   if (show_summary || (row_budget != 0 && paths->count == 0)) {
     const char *summary = paths->has_more_paths ? "searching..." : "no matches";
     if (paths->count != 0 && !paths->has_more_paths) {
-      itl_menu_format_summary(count, sizeof(count), itl_g_picker_window_start + 1,
-                             index, paths->count);
+      itl_menu_format_summary(count, sizeof(count),
+                              itl_g_picker_window_start + 1, index,
+                              paths->count);
       summary = count;
     }
     itl_picker_append_row(row, summary, itl_color_sequence(ITL_DIM_SGR), width);
@@ -12370,8 +12416,10 @@ itl_menu_candidate_name(const tl_completion *result, size_t row)
 }
 
 ITL_DEF size_t
-itl_menu_name_width_of(const tl_completion *result, bool is_history,
-                       size_t first, size_t count)
+itl_menu_name_width_of(const tl_completion *result,
+                       bool                 is_history,
+                       size_t               first,
+                       size_t               count)
 {
   char   display_name_storage[ITL_STRING_MAX_LEN + 1];
   size_t widest = 0;
@@ -12386,8 +12434,8 @@ itl_menu_name_width_of(const tl_completion *result, bool is_history,
       size_t line;
 
       for (line = 1; line <= ITL_HISTORY_MENU_MAX_LINES; ++line) {
-        const char *end = strchr(name, '\n');
-        size_t bytes = end != NULL ? (size_t) (end - name) : strlen(name);
+        const char *end   = strchr(name, '\n');
+        size_t      bytes = end != NULL ? (size_t) (end - name) : strlen(name);
 
         width = itl_visible_width(name, bytes);
         if (end != NULL && line == ITL_HISTORY_MENU_MAX_LINES) {
@@ -12400,8 +12448,8 @@ itl_menu_name_width_of(const tl_completion *result, bool is_history,
       continue;
     }
 
-    name = itl_menu_display_name(name, display_name_storage,
-                                 sizeof(display_name_storage));
+    name  = itl_menu_display_name(name, display_name_storage,
+                                  sizeof(display_name_storage));
     width = itl_visible_width(name, strlen(name));
 
     if (width > widest) {
@@ -12545,7 +12593,7 @@ itl_menu_geometry_of(const tl_completion *result,
       result->count == 0 ? 0 : itl_menu_description_width(result);
   size_t needed_cols = itl_g_menu_prefix_width;
   size_t help_cols   = itl_g_menu_prefix_width +
-                     itl_menu_widest_help_item(help_title, help_keys);
+                       itl_menu_widest_help_item(help_title, help_keys);
   size_t empty_width = result->count == 0
                            ? itl_visible_width(empty_text, strlen(empty_text))
                            : 0;
@@ -12633,6 +12681,20 @@ itl_menu_paint_box_row(itl_char_buf_t *b,
   ITL_TTY_MOVE_TO_COLUMN(b, anchor + 1);
 }
 
+ITL_DEF void
+itl_menu_begin_row(itl_char_buf_t *b,
+                   size_t          anchor,
+                   size_t          width,
+                   size_t          row_cols,
+                   bool            should_start_next_row)
+{
+  if (should_start_next_row) {
+    itl_char_buf_append_cstr(b, ITL_LF);
+    itl_menu_move_to_anchor(b, anchor);
+  }
+  itl_menu_paint_box_row(b, anchor, width, row_cols);
+}
+
 /* Repaint the menu rows under the input block. The rows are written from the
    first row below the block downward, and the caret returns to the line. The
    editor's own render path never sees them. The layout owns which rows exist,
@@ -12655,10 +12717,10 @@ itl_menu_draw(const tl_completion     *result,
   char name_storage[ITL_STRING_MAX_LEN + ITL_MENU_CUT_MARK_WIDTH + 1];
   char preview_summary[sizeof("previewing  out of ") + 6 * sizeof(size_t)];
   char count_text[sizeof("showing - of ") + 9 * sizeof(size_t)];
-  itl_char_buf_t *b            = &itl_g_char_buffer;
-  size_t          anchor       = geometry->anchor;
-  size_t          text_width   = geometry->text_width;
-  size_t          row_cols     = geometry->row_cols;
+  itl_char_buf_t *b          = &itl_g_char_buffer;
+  size_t          anchor     = geometry->anchor;
+  size_t          text_width = geometry->text_width;
+  size_t          row_cols   = geometry->row_cols;
   size_t          window_end;
   size_t          body_row_count;
   size_t          drawn_rows   = 0;
@@ -12667,14 +12729,14 @@ itl_menu_draw(const tl_completion     *result,
   size_t          move_down;
   size_t          i;
   size_t          detail_column;
-  size_t          detail_width  = 0;
-  const char     *detail        = NULL;
+  size_t          detail_width   = 0;
+  const char     *detail         = NULL;
   const char     *detail_heading = NULL;
-  const char     *detail_footer = NULL;
+  const char     *detail_footer  = NULL;
   bool            has_count_row;
-  const char     *detail_marker = NULL;
+  const char     *detail_marker       = NULL;
   size_t          detail_overflow_row = (size_t) -1;
-  size_t          detail_summary_row = (size_t) -1;
+  size_t          detail_summary_row  = (size_t) -1;
   int             is_file_description = 0;
 
   if (layout.candidate_rows == 0) {
@@ -12683,9 +12745,9 @@ itl_menu_draw(const tl_completion     *result,
   itl_frame_batch_begin();
 
   if (is_history) {
-    size_t available = ITL_MIN(layout.body_rows + layout.has_count_row +
-                                  layout.help_row_count,
-                              ITL_MENU_MAX_ROWS);
+    size_t available =
+        ITL_MIN(layout.body_rows + layout.has_count_row + layout.help_row_count,
+                ITL_MENU_MAX_ROWS);
 
     if (layout.candidate_rows < available && result->count <= available) {
       size_t rows = 0;
@@ -12698,28 +12760,29 @@ itl_menu_draw(const tl_completion     *result,
           layout.has_help_row = false;
         }
         layout.candidate_rows = rows;
-        window_start = 0;
+        window_start          = 0;
       }
     }
 
-    window_end = itl_history_menu_window(result, selected, layout.candidate_rows,
-                                         &window_start, &body_row_count);
+    window_end =
+        itl_history_menu_window(result, selected, layout.candidate_rows,
+                                &window_start, &body_row_count);
   } else {
     window_start = itl_menu_window_start(result->count, selected, window_start,
                                          layout.candidate_rows);
-    window_end = ITL_MIN(window_start + layout.candidate_rows, result->count);
+    window_end   = ITL_MIN(window_start + layout.candidate_rows, result->count);
     body_row_count = window_end - window_start;
   }
-  bool has_loading_footer = result->has_more_paths && result->count > 0 &&
-                            layout.has_count_row;
+  bool has_loading_footer =
+      result->has_more_paths && result->count > 0 && layout.has_count_row;
   has_count_row = !has_loading_footer && layout.has_count_row &&
-                 (window_start > 0 || window_end < result->count);
+                  (window_start > 0 || window_end < result->count);
   if (!is_history && has_count_row) ++body_row_count;
   detail_column = anchor + box_cols + ITL_MENU_SELECTED_MARGIN_WIDTH;
   if (has_count_row) {
-    size_t count_width = itl_menu_format_summary(
-        count_text, sizeof(count_text), window_start + 1, window_end,
-        result->count);
+    size_t count_width =
+        itl_menu_format_summary(count_text, sizeof(count_text),
+                                window_start + 1, window_end, result->count);
     size_t count_edge = anchor + itl_g_menu_prefix_width + count_width + 1;
 
     if (count_edge + 20 <= anchor + row_cols) {
@@ -12747,7 +12810,7 @@ itl_menu_draw(const tl_completion     *result,
       size_t preview_rows;
 
       if (shown < entry_count && available > 1) {
-        size_t summary_shown = ITL_MIN(shown, available - 1);
+        size_t         summary_shown = ITL_MIN(shown, available - 1);
         itl_char_buf_t summary = {preview_summary, 0, sizeof(preview_summary)};
 
         itl_char_buf_append_cstr(&summary, "previewing ");
@@ -12756,11 +12819,11 @@ itl_menu_draw(const tl_completion     *result,
         itl_char_buf_append_size_t(&summary, entry_count);
         if (summary.size <= detail_width) {
           itl_char_buf_append_byte(&summary, '\0');
-          shown = summary_shown;
+          shown              = summary_shown;
           detail_summary_row = window_start + heading_rows + shown;
         }
       }
-      preview_rows = shown + (detail_summary_row != (size_t) -1);
+      preview_rows        = shown + (detail_summary_row != (size_t) -1);
       detail_overflow_row = window_start + heading_rows + shown;
       if (detail_footer != NULL && preview_rows < available) {
         ++preview_rows;
@@ -12777,12 +12840,13 @@ itl_menu_draw(const tl_completion     *result,
         detail_footer = NULL;
       }
       if (available == 0) {
-        detail = NULL;
+        detail        = NULL;
         detail_marker = NULL;
       }
       body_row_count = ITL_MAX(body_row_count,
                                heading_rows + ITL_MIN(detail_rows, available));
-    } else if (detail_marker != NULL && detail_footer != NULL && available > 1) {
+    } else if (detail_marker != NULL && detail_footer != NULL && available > 1)
+    {
       body_row_count = ITL_MAX(body_row_count, 2);
     } else if (body_row_count < 2) {
       detail_footer = NULL;
@@ -12830,11 +12894,7 @@ itl_menu_draw(const tl_completion     *result,
   }
 
   if (result->count == 0) {
-    if (drawn_rows > 0) {
-      itl_char_buf_append_cstr(b, ITL_LF);
-      itl_menu_move_to_anchor(b, anchor);
-    }
-    itl_menu_paint_box_row(b, anchor, box_cols, row_cols);
+    itl_menu_begin_row(b, anchor, box_cols, row_cols, drawn_rows > 0);
     itl_menu_append_dimmed_row(b, empty_text, text_width);
     drawn_rows += 1;
   }
@@ -12843,12 +12903,12 @@ itl_menu_draw(const tl_completion     *result,
   for (i = window_start; i < draw_end; ++i) {
     if (is_history) {
       const char *name = result->candidates[i];
-      size_t line_count = ITL_MIN(ITL_HISTORY_MENU_MAX_LINES,
-                                  layout.candidate_rows);
+      size_t      line_count =
+          ITL_MIN(ITL_HISTORY_MENU_MAX_LINES, layout.candidate_rows);
       size_t line;
 
       for (line = 1; line <= line_count; ++line) {
-        const char *end = strchr(name, '\n');
+        const char *end          = strchr(name, '\n');
         const char *display_name = name;
 
         if (end != NULL) {
@@ -12863,11 +12923,7 @@ itl_menu_draw(const tl_completion     *result,
           }
           display_name = name_storage;
         }
-        if (drawn_rows > 0) {
-          itl_char_buf_append_cstr(b, ITL_LF);
-          itl_menu_move_to_anchor(b, anchor);
-        }
-        itl_menu_paint_box_row(b, anchor, box_cols, row_cols);
+        itl_menu_begin_row(b, anchor, box_cols, row_cols, drawn_rows > 0);
         itl_menu_append_row(b, display_name, NULL, geometry->name_width, 0,
                             i == selected, should_highlight);
         ++drawn_rows;
@@ -12881,32 +12937,29 @@ itl_menu_draw(const tl_completion     *result,
       detail = NULL;
     }
 
-    bool has_body = detail != NULL && *detail != '\0';
+    bool has_body   = detail != NULL && *detail != '\0';
     bool is_heading = i == window_start && detail_heading != NULL;
     bool is_summary = i == detail_summary_row;
-    bool is_footer = !is_heading && !is_summary && detail_footer != NULL &&
-                     ((!has_body && detail_marker == NULL) ||
-                      i + 1 == draw_end);
+    bool is_footer =
+        !is_heading && !is_summary && detail_footer != NULL &&
+        ((!has_body && detail_marker == NULL) || i + 1 == draw_end);
     bool is_marker = !is_heading && !is_summary && !is_footer && !has_body &&
                      detail_marker != NULL;
-    bool has_detail = is_heading || is_summary || is_footer || is_marker ||
-                      has_body;
+    bool has_detail =
+        is_heading || is_summary || is_footer || is_marker || has_body;
 
-    if (drawn_rows > 0) {
-      itl_char_buf_append_cstr(b, ITL_LF);
-      itl_menu_move_to_anchor(b, anchor);
-    }
-    itl_menu_paint_box_row(b, anchor, has_detail ? row_cols : box_cols,
-                          row_cols);
+    itl_menu_begin_row(b, anchor, has_detail ? row_cols : box_cols, row_cols,
+                       drawn_rows > 0);
     if (i < window_end) {
       const char *name = itl_menu_candidate_name(result, i);
       name = itl_menu_display_name(name != NULL ? name : "", name_storage,
-                                  sizeof(name_storage));
+                                   sizeof(name_storage));
       const char *desc =
           result->descriptions != NULL ? result->descriptions[i] : NULL;
 
       itl_menu_append_row(b, name, desc, geometry->name_width,
-                          geometry->desc_width, i == selected, should_highlight);
+                          geometry->desc_width, i == selected,
+                          should_highlight);
     } else if (has_count_row && i == window_end) {
       size_t count_width = has_detail ? detail_column - anchor - 1 : row_cols;
 
@@ -12927,15 +12980,14 @@ itl_menu_draw(const tl_completion     *result,
       }
 
       const char *detail_row = is_heading ? detail_heading : detail;
-      const char *line_end = strchr(detail_row, '\n');
+      const char *line_end   = strchr(detail_row, '\n');
       size_t      length = line_end != NULL ? (size_t) (line_end - detail_row)
                                             : strlen(detail_row);
-      bool is_directory = !is_heading && length > 0 &&
-                          itl_byte_is_path_separator(
-                              (uint8_t) detail_row[length - 1]);
-      bool is_description = is_heading ||
-                            (is_file_description && !is_footer &&
-                             !is_summary && !is_marker);
+      bool        is_directory =
+          !is_heading && length > 0 &&
+          itl_byte_is_path_separator((uint8_t) detail_row[length - 1]);
+      bool is_description = is_heading || (is_file_description && !is_footer &&
+                                           !is_summary && !is_marker);
 
       ITL_TTY_MOVE_TO_COLUMN(b, detail_column + 1);
       if (is_footer || is_summary || is_marker) {
@@ -12954,7 +13006,8 @@ itl_menu_draw(const tl_completion     *result,
         itl_menu_append_elided(b, detail_row, length, detail_width);
       }
       if (is_directory || is_footer || is_summary || is_marker ||
-          is_description) {
+          is_description)
+      {
         itl_char_buf_append_cstr(b, itl_color_sequence(ITL_HIGHLIGHT_RESET));
       }
       if (!is_heading) detail = line_end != NULL ? line_end + 1 : NULL;
@@ -12963,27 +13016,19 @@ itl_menu_draw(const tl_completion     *result,
   }
 
   if (is_history && has_count_row) {
-    if (drawn_rows > 0) {
-      itl_char_buf_append_cstr(b, ITL_LF);
-      itl_menu_move_to_anchor(b, anchor);
-    }
-    itl_menu_paint_box_row(b, anchor, box_cols, row_cols);
+    itl_menu_begin_row(b, anchor, box_cols, row_cols, drawn_rows > 0);
     itl_menu_append_dimmed_row(b, count_text, text_width);
     drawn_rows += 1;
   }
 
   if (has_loading_footer) {
-    itl_char_buf_append_cstr(b, ITL_LF);
-    itl_menu_move_to_anchor(b, anchor);
-    itl_menu_paint_box_row(b, anchor, box_cols, row_cols);
+    itl_menu_begin_row(b, anchor, box_cols, row_cols, true);
     itl_menu_append_dimmed_row(b, ITL_MENU_LOADING_TEXT, text_width);
     drawn_rows += 1;
   }
 
   if (itl_g_full_screen) {
-    itl_char_buf_append_cstr(b, ITL_LF);
-    itl_menu_move_to_anchor(b, anchor);
-    itl_menu_paint_box_row(b, anchor, box_cols, row_cols);
+    itl_menu_begin_row(b, anchor, box_cols, row_cols, true);
     drawn_rows += 1;
     itl_menu_close_overlay(b, overlay_rows, drawn_rows);
   } else {
@@ -13369,12 +13414,12 @@ itl_loading_frame_draw(itl_le_t *le)
       itl_g_loading_is_menu_reload && !source->should_anchor_to_token
           ? 0
           : itl_menu_anchor_column_of(le, itl_le_shell_word_start(le));
-  itl_g_menu_prefix_width = itl_menu_prefix_width_for(le);
-  const char *help_keys = itl_menu_help_keys_of(source);
-  itl_menu_geometry geometry = itl_menu_geometry_of(
+  itl_g_menu_prefix_width     = itl_menu_prefix_width_for(le);
+  const char       *help_keys = itl_menu_help_keys_of(source);
+  itl_menu_geometry geometry  = itl_menu_geometry_of(
       &loading, 0, ITL_MENU_LOADING_TEXT, source->help_title, help_keys);
-  layout = itl_menu_measure_for(&geometry, tty_rows, source->help_title,
-                               help_keys);
+  layout =
+      itl_menu_measure_for(&geometry, tty_rows, source->help_title, help_keys);
   itl_menu_draw(&loading, 0, 0, layout, source->help_title, help_keys,
                 source->should_highlight, false, &geometry,
                 ITL_MENU_LOADING_TEXT);
@@ -13493,12 +13538,12 @@ itl_menu_regather(itl_le_t *le, tl_completion *result)
   tl_completion fresh;
 
   memset(&fresh, 0, sizeof(fresh));
-  fresh.token_start = result->token_start;
-  fresh.token_end   = result->token_end;
-  fresh.is_path_search   = result->is_path_search;
-  fresh.path_query_start = result->path_query_start;
+  fresh.token_start            = result->token_start;
+  fresh.token_end              = result->token_end;
+  fresh.is_path_search         = result->is_path_search;
+  fresh.path_query_start       = result->path_query_start;
   fresh.should_search_siblings = result->should_search_siblings;
-  itl_g_regather_is_drawn = false;
+  itl_g_regather_is_drawn      = false;
 
   if (itl_g_complete_callback == NULL) {
     return false;
@@ -13517,11 +13562,11 @@ itl_menu_regather(itl_le_t *le, tl_completion *result)
     return true;
   }
   if (!handled || fresh.count == 0) {
-    result->token_start = fresh.token_start;
-    result->token_end   = fresh.token_end;
+    result->token_start      = fresh.token_start;
+    result->token_end        = fresh.token_end;
     result->can_search_paths = fresh.can_search_paths;
     result->path_query_start = fresh.path_query_start;
-    result->has_more_paths = fresh.has_more_paths;
+    result->has_more_paths   = fresh.has_more_paths;
     return false;
   }
 
@@ -13885,7 +13930,7 @@ itl_menu_ghost_preview(itl_le_t            *le,
   name = itl_menu_candidate_name(result, selected);
   if (name == NULL) return;
   name = itl_menu_display_name(name, display_name_storage,
-                              sizeof(display_name_storage));
+                               sizeof(display_name_storage));
   if (!itl_menu_name_extends_token(le, line_cstr, result->token_start, name)) {
     return;
   }
@@ -14340,12 +14385,12 @@ itl_menu_best_tier(const tl_completion *base,
 /* Copy a span from the start of the token to end, in codepoints. Returns
    false when the span is off the line or the bytes do not fit. */
 ITL_DEF bool
-itl_menu_token_text(const itl_le_t     *le,
-                    size_t              token_start,
-                    size_t              token_end,
-                    char               *out,
-                    size_t              out_size,
-                    size_t             *out_len)
+itl_menu_token_text(const itl_le_t *le,
+                    size_t          token_start,
+                    size_t          token_end,
+                    char           *out,
+                    size_t          out_size,
+                    size_t         *out_len)
 {
   size_t position;
   size_t used = 0;
@@ -14535,9 +14580,9 @@ itl_menu_cache_store(const itl_le_t              *le,
   size_t               bytes;
   size_t               index;
   size_t               slot = ITL_MENU_CACHE_MAX;
-  bool has_descriptions     = base->descriptions != NULL && base->count > 0;
-  bool has_detail_keys       = base->detail_keys != NULL && base->count > 0;
-  size_t pointer_count       = base->count * (has_detail_keys ? 3 : 2);
+  bool   has_descriptions   = base->descriptions != NULL && base->count > 0;
+  bool   has_detail_keys    = base->detail_keys != NULL && base->count > 0;
+  size_t pointer_count      = base->count * (has_detail_keys ? 3 : 2);
   itl_menu_cache_entry fresh;
   char                *cursor;
 
@@ -14677,9 +14722,10 @@ itl_menu_cache_store(const itl_le_t              *le,
 
   fresh.base.candidates   = fresh.rows;
   fresh.base.descriptions = has_descriptions ? fresh.rows + base->count : NULL;
-  fresh.base.detail_keys = has_detail_keys ? fresh.rows + 2 * base->count : NULL;
-  fresh.base_tier         = state->base_tier;
-  fresh.name_width        = state->name_width;
+  fresh.base.detail_keys =
+      has_detail_keys ? fresh.rows + 2 * base->count : NULL;
+  fresh.base_tier  = state->base_tier;
+  fresh.name_width = state->name_width;
   itl_g_menu_cache_tick += 1;
   fresh.tick = itl_g_menu_cache_tick;
 
@@ -14701,7 +14747,7 @@ itl_menu_cache_apply(const itl_le_t        *le,
 {
   tl_completion answer   = entry->base;
   bool          is_exact = typed_len == entry->query_len &&
-                  memcmp(typed, entry->query, typed_len) == 0;
+                           memcmp(typed, entry->query, typed_len) == 0;
 
   answer.token_end = le->cursor_position;
   if (!is_exact &&
@@ -14916,7 +14962,7 @@ itl_menu_rebase(itl_le_t              *le,
   }
 
   if (result->is_path_search) {
-    bool is_gathered = source->gather(le, result);
+    bool is_gathered  = source->gather(le, result);
     state->name_width = 0;
     return is_gathered;
   }
@@ -15126,7 +15172,8 @@ itl_menu_parent_path(itl_le_t *le, const tl_completion *result, bool can_ascend)
   size_t end, root_start = 0, root_end;
 
   if (!itl_menu_token_text(le, result->token_start, result->token_end, path,
-                           sizeof(path), &end) || end == 0)
+                           sizeof(path), &end) ||
+      end == 0)
   {
     return ITL_MENU_PARENT_UNUSED;
   }
@@ -15157,12 +15204,7 @@ itl_menu_parent_path(itl_le_t *le, const tl_completion *result, bool can_ascend)
   if (!can_ascend) {
     return ITL_MENU_PARENT_UNUSED;
   }
-  while (end > 0 && itl_byte_is_path_separator((uint8_t) path[end - 1])) {
-    --end;
-  }
-  while (end > 0 && !itl_byte_is_path_separator((uint8_t) path[end - 1])) {
-    --end;
-  }
+  end = itl_path_component_start(path, end);
 #if defined ITL_WIN32
   if (path[1] == ':' && (end == 0 || (end == 3 && path[end] == '\0'))) {
     return ITL_MENU_PARENT_UNUSED;
@@ -15201,38 +15243,34 @@ itl_menu_candidate_changes_token(const itl_le_t      *le,
   return length != 0;
 }
 
-/* Restore a selected row by its insertion text after the host regathers. */
+/* A missing candidate falls back to row 0 and a missing detail key to the
+   caller's current selection. */
 ITL_DEF size_t
-itl_menu_find_candidate(const tl_completion *result, const char *candidate)
-{
-  size_t i;
-  for (i = 0; i < result->count; ++i) {
-    if (strcmp(result->candidates[i], candidate) == 0) return i;
-  }
-  return 0;
-}
-
-/* A missing detail key leaves the caller's fallback selection intact. */
-ITL_DEF size_t
-itl_menu_find_detail_key(const tl_completion *result, const char *key)
+itl_menu_find_row(const tl_completion *result, const char *key, bool is_detail)
 {
   size_t row;
-  if (result->detail_keys == NULL) return result->count;
+
+  if (is_detail && result->detail_keys == NULL) return result->count;
+
   for (row = 0; row < result->count; ++row) {
-    if (result->detail_keys[row] != NULL &&
-        strcmp(key, result->detail_keys[row]) == 0)
-    {
-      break;
-    }
+    const char *value = is_detail ? result->detail_keys[row]
+                                  : itl_menu_candidate_name(result, row);
+
+    if (value != NULL && strcmp(value, key) == 0) break;
   }
-  return row;
+
+  return is_detail ? row : (row < result->count ? row : 0);
 }
 
 ITL_DEF size_t
-itl_menu_render(itl_le_t *le, const itl_menu_source *source,
-                const itl_menu_filter_state *state, const tl_completion *result,
-                bool is_path_search, size_t selected, size_t window_start,
-                size_t *previewed)
+itl_menu_render(itl_le_t                    *le,
+                const itl_menu_source       *source,
+                const itl_menu_filter_state *state,
+                const tl_completion         *result,
+                bool                         is_path_search,
+                size_t                       selected,
+                size_t                       window_start,
+                size_t                      *previewed)
 {
   /* A resize invalidates the block the rows are measured against. */
   if (itl_g_tty_changed_size != 0) {
@@ -15253,19 +15291,19 @@ itl_menu_render(itl_le_t *le, const itl_menu_source *source,
           ? itl_menu_anchor_column_of(le, itl_le_shell_word_start(le))
           : itl_menu_anchor_column_of(le, result->token_start);
   itl_g_menu_prefix_width = itl_menu_prefix_width_for(le);
-  size_t name_width = state->name_width;
+  size_t name_width       = state->name_width;
   if (is_path_search && result->count > 0) {
     size_t count = ITL_MIN(result->count, ITL_MENU_MAX_ROWS);
     size_t first = ITL_MIN(window_start, result->count - count);
-    name_width = itl_menu_name_width_of(result, false, first, count);
+    name_width   = itl_menu_name_width_of(result, false, first, count);
   }
   const char *empty_text = (state->is_regather_armed || result->has_more_paths)
                                ? ITL_MENU_LOADING_TEXT
                            : result->can_search_paths && !is_path_search &&
-                                     source->should_submit_on_enter
+                                   source->should_submit_on_enter
                                ? "no matches. tab to fuzzy search"
                                : ITL_MENU_EMPTY_TEXT;
-  const char *help_keys = itl_menu_help_keys_of(source);
+  const char *help_keys  = itl_menu_help_keys_of(source);
   const char *help_title =
       is_path_search ? "fuzzy path search" : source->help_title;
   itl_menu_geometry geometry = itl_menu_geometry_of(
@@ -15282,14 +15320,15 @@ itl_menu_render(itl_le_t *le, const itl_menu_source *source,
 }
 
 ITL_DEF bool
-itl_menu_accept_fuzzy_path(itl_le_t *le, tl_completion *result,
-                           const char *candidate)
+itl_menu_accept_fuzzy_path(itl_le_t      *le,
+                           tl_completion *result,
+                           const char    *candidate)
 {
-  char query[ITL_STRING_MAX_LEN];
+  char   query[ITL_STRING_MAX_LEN];
   size_t query_size;
-  size_t start = result->token_start;
-  size_t end = ITL_MIN(result->token_end, le->line->length);
-  size_t before = ITL_MIN(le->cursor_position, end);
+  size_t start        = result->token_start;
+  size_t end          = ITL_MIN(result->token_end, le->line->length);
+  size_t before       = ITL_MIN(le->cursor_position, end);
   size_t query_offset = result->path_query_start - start;
   size_t suffix_count = end - before;
 
@@ -15305,9 +15344,42 @@ itl_menu_accept_fuzzy_path(itl_le_t *le, tl_completion *result,
   itl_le_insert_cstr(le, query);
   result->token_end = le->cursor_position;
   le->cursor_position -= suffix_count;
-  result->path_query_start = result->token_start + query_offset;
+  result->path_query_start   = result->token_start + query_offset;
   itl_g_undo_insert_run_open = false;
   return true;
+}
+
+typedef enum
+{
+  ITL_MENU_REFILL_NARROW,
+  ITL_MENU_REFILL_REGATHER,
+  ITL_MENU_REFILL_REBASE,
+} itl_menu_refill_kind;
+
+ITL_DEF bool
+itl_menu_refill(itl_le_t              *le,
+                const itl_menu_source *source,
+                itl_menu_filter_state *state,
+                tl_completion         *result,
+                itl_menu_refill_kind   kind)
+{
+  bool is_refilled = kind == ITL_MENU_REFILL_NARROW
+                         ? itl_menu_narrow(le, source, state, result)
+                     : kind == ITL_MENU_REFILL_REGATHER
+                         ? itl_menu_regather_soon(le, source, state, result)
+                         : itl_menu_rebase(le, source, state, result);
+
+  if (!is_refilled) itl_menu_empty_candidates(result);
+
+  return is_refilled;
+}
+
+ITL_DEF void
+itl_menu_restart_rows(size_t *selected, size_t *window_start, size_t *previewed)
+{
+  *selected     = 0;
+  *window_start = 0;
+  *previewed    = (size_t) -1;
 }
 
 /* Run the candidate menu until the user accepts a candidate, dismisses it, or
@@ -15330,8 +15402,8 @@ itl_completion_menu_loop(itl_le_t              *le,
 {
   tl_completion         result = *initial;
   itl_menu_filter_state state;
-  size_t                selected     = 0;
-  size_t                window_start = 0;
+  size_t                selected                = 0;
+  size_t                window_start            = 0;
   bool                  is_directory_navigation = false;
   /* Only contiguous Ctrl-Right acceptances can be removed with Ctrl-Left. */
   size_t accepted_starts[ITL_UNDO_STACK_DEPTH];
@@ -15347,7 +15419,7 @@ itl_completion_menu_loop(itl_le_t              *le,
   size_t original_line_size = le->line->size;
   size_t original_cursor    = le->cursor_position;
   bool   has_original_line  = original_line != NULL;
-  bool   is_path_search      = false;
+  bool   is_path_search     = false;
 
   state.is_debounced = false;
   itl_menu_adopt_base(le, source, &state, &result);
@@ -15361,17 +15433,18 @@ itl_completion_menu_loop(itl_le_t              *le,
     bool             should_continue_completion;
     bool             should_take_candidate;
     bool             should_accept_word = false;
-    bool             is_directory = false;
-    bool             should_walk  = false;
-    const char      *candidate    = NULL;
+    bool             is_directory       = false;
+    bool             should_walk        = false;
+    const char      *candidate          = NULL;
     itl_wait_outcome wait_outcome;
 
     bool search_input = is_path_search || source->should_show_history_lines;
     itl_g_menu_search_start = is_path_search ? result.path_query_start : 0;
-    itl_g_menu_search_end = is_path_search ? result.token_end : le->line->length;
+    itl_g_menu_search_end =
+        is_path_search ? result.token_end : le->line->length;
     if (search_input != itl_g_menu_search_input) {
       itl_g_menu_search_input = search_input;
-      previewed = (size_t) -1;
+      previewed               = (size_t) -1;
     }
     window_start = itl_menu_render(le, source, &state, &result, is_path_search,
                                    selected, window_start, &previewed);
@@ -15393,9 +15466,8 @@ itl_completion_menu_loop(itl_le_t              *le,
     }
     if (wait_outcome == ITL_WAIT_IDLE) {
       if (is_path_search && result.has_more_paths) {
-        uint32_t held_id = result.path_row_id != NULL
-                               ? result.path_row_id(selected)
-                               : 0;
+        uint32_t held_id =
+            result.path_row_id != NULL ? result.path_row_id(selected) : 0;
         if (!itl_menu_rebase(le, source, &state, &result)) {
           result.has_more_paths = false;
           itl_menu_empty_candidates(&result);
@@ -15404,17 +15476,15 @@ itl_completion_menu_loop(itl_le_t              *le,
         if (held_id == 0 || result.path_row_id == NULL ||
             result.path_row_id(selected) != held_id)
         {
-          selected = result.path_row_of != NULL
-                         ? result.path_row_of(held_id, selected)
-                         : 0;
+          selected  = result.path_row_of != NULL
+                          ? result.path_row_of(held_id, selected)
+                          : 0;
           previewed = (size_t) -1;
         }
         continue;
       }
       itl_menu_gather_due(le, source, &state, &result);
-      selected     = 0;
-      window_start = 0;
-      previewed    = (size_t) -1;
+      itl_menu_restart_rows(&selected, &window_start, &previewed);
       continue;
     }
 
@@ -15429,9 +15499,9 @@ itl_completion_menu_loop(itl_le_t              *le,
     key       = itl_esc_parse(byte);
     /* In fuzzy mode plain Enter takes a candidate, never the submit path. */
     if (is_path_search && key == TL_KEY_ENTER) key = TL_KEY_TAB;
-    kind      = (tl_key_kind) (key & TL_MASK_KEY);
-    bool is_ctrl_enter = source->should_submit_on_enter &&
-                         key == (TL_KEY_ENTER | TL_MOD_CTRL);
+    kind = (tl_key_kind) (key & TL_MASK_KEY);
+    bool is_ctrl_enter =
+        source->should_submit_on_enter && key == (TL_KEY_ENTER | TL_MOD_CTRL);
     should_continue_completion =
         source->should_submit_on_enter &&
         (key == TL_KEY_RIGHT ||
@@ -15440,8 +15510,7 @@ itl_completion_menu_loop(itl_le_t              *le,
            result.detail_keys != NULL || result.path_row_id != NULL ||
            result.is_spec_completion)));
     should_take_candidate =
-        is_ctrl_enter ||
-        kind == TL_KEY_TAB ||
+        is_ctrl_enter || kind == TL_KEY_TAB ||
         (kind == TL_KEY_ENTER && !source->should_submit_on_enter);
 
     /* The rows on screen while a gather is put off belong to the line before
@@ -15453,9 +15522,7 @@ itl_completion_menu_loop(itl_le_t              *le,
          should_continue_completion))
     {
       itl_menu_gather_due(le, source, &state, &result);
-      selected     = 0;
-      window_start = 0;
-      previewed    = (size_t) -1;
+      itl_menu_restart_rows(&selected, &window_start, &previewed);
       if (kind == TL_KEY_TAB || kind == TL_KEY_DOWN || kind == TL_KEY_UP) {
         continue;
       }
@@ -15473,17 +15540,17 @@ itl_completion_menu_loop(itl_le_t              *le,
           itl_byte_is_path_separator((uint8_t) candidate[candidate_length - 1]);
       should_accept_word = key == (TL_KEY_RIGHT | TL_MOD_CTRL) &&
                            result.is_spec_completion && !is_directory;
-      should_walk = should_continue_completion && is_directory &&
-                    (result.path_row_id != NULL ||
-                     (result.detail_keys != NULL &&
-                      result.detail_keys[selected] != NULL));
+      should_walk        = should_continue_completion && is_directory &&
+                           (result.path_row_id != NULL ||
+                            (result.detail_keys != NULL &&
+                             result.detail_keys[selected] != NULL));
       should_continue_completion =
-          should_walk || (should_continue_completion &&
-                          (key == TL_KEY_RIGHT || is_directory_navigation ||
-                           result.detail_keys != NULL ||
-                           result.path_row_id != NULL) &&
-                          itl_menu_candidate_changes_token(
-                              le, &result, candidate, candidate_length));
+          should_walk ||
+          (should_continue_completion &&
+           (key == TL_KEY_RIGHT || is_directory_navigation ||
+            result.detail_keys != NULL || result.path_row_id != NULL) &&
+           itl_menu_candidate_changes_token(le, &result, candidate,
+                                            candidate_length));
     } else {
       should_continue_completion = false;
     }
@@ -15495,18 +15562,17 @@ itl_completion_menu_loop(itl_le_t              *le,
     if (!is_path_search && !should_remove_word &&
         key == (TL_KEY_LEFT | TL_MOD_CTRL) && source->can_descend)
     {
-      char exited[ITL_STRING_MAX_LEN];
+      char   exited[ITL_STRING_MAX_LEN];
       size_t exited_size;
-      if (!itl_menu_token_text(le, result.token_start, result.token_end,
-                              exited, sizeof(exited), &exited_size))
+      if (!itl_menu_token_text(le, result.token_start, result.token_end, exited,
+                               sizeof(exited), &exited_size))
       {
         exited[0] = '\0';
       }
       char identity[ITL_STRING_MAX_LEN];
-      bool has_identity = exited[0] != '\0' &&
-                          itl_g_directory_identity != NULL &&
-                          itl_g_directory_identity(exited, identity,
-                                                   sizeof(identity));
+      bool has_identity =
+          exited[0] != '\0' && itl_g_directory_identity != NULL &&
+          itl_g_directory_identity(exited, identity, sizeof(identity));
       itl_menu_parent_action parent = itl_menu_parent_path(
           le, &result, is_directory_navigation || result.detail_keys != NULL);
 
@@ -15518,17 +15584,16 @@ itl_completion_menu_loop(itl_le_t              *le,
         is_directory_navigation = true;
         result.token_end        = le->cursor_position;
         itl_menu_start_word(&state);
-        if (!itl_menu_rebase(le, source, &state, &result)) {
-          itl_menu_empty_candidates(&result);
-        }
-        selected = itl_menu_find_candidate(&result, exited);
+        itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_REBASE);
+        selected = itl_menu_find_row(&result, exited, false);
         if (has_identity && result.detail_keys != NULL) {
-          size_t row = itl_menu_find_detail_key(&result, identity);
+          size_t row = itl_menu_find_row(&result, identity, true);
           if (row != result.count) selected = row;
           if (row == result.count && itl_g_same_directory_identity != NULL) {
             for (row = 0; row < result.count; ++row) {
               if (result.detail_keys[row] != NULL &&
-                  itl_g_same_directory_identity(identity, result.detail_keys[row]))
+                  itl_g_same_directory_identity(identity,
+                                                result.detail_keys[row]))
               {
                 selected = row;
                 break;
@@ -15567,9 +15632,7 @@ itl_completion_menu_loop(itl_le_t              *le,
         itl_menu_start_word(&state);
         result.is_path_search   = true;
         result.path_query_start = 0;
-        if (!itl_menu_rebase(le, source, &state, &result)) {
-          itl_menu_empty_candidates(&result);
-        }
+        itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_REBASE);
         is_path_search        = result.path_query_start != 0;
         result.is_path_search = is_path_search;
         selected              = 0;
@@ -15589,13 +15652,11 @@ itl_completion_menu_loop(itl_le_t              *le,
         itl_le_key_handle(le, TL_KEY_BACKSPACE);
         result.token_end -= before - le->cursor_position;
       }
-      if (!itl_menu_rebase(le, source, &state, &result)) {
-        itl_menu_empty_candidates(&result);
+      if (!itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_REBASE))
+      {
         itl_g_menu_due_ms = 0;
       }
-      selected     = 0;
-      window_start = 0;
-      previewed    = (size_t) -1;
+      itl_menu_restart_rows(&selected, &window_start, &previewed);
       continue;
     }
 
@@ -15633,13 +15694,9 @@ itl_completion_menu_loop(itl_le_t              *le,
         itl_menu_start_word(&state);
         result.token_start = itl_le_shell_word_start(le);
         result.token_end   = le->cursor_position;
-        if (!itl_menu_rebase(le, source, &state, &result)) {
-          itl_menu_empty_candidates(&result);
-        }
-        selected     = 0;
-        window_start = 0;
+        itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_REBASE);
+        itl_menu_restart_rows(&selected, &window_start, &previewed);
       }
-      previewed                     = (size_t) -1;
       itl_g_tty_should_refresh_text = true;
       continue;
     }
@@ -15653,15 +15710,15 @@ itl_completion_menu_loop(itl_le_t              *le,
 
       if (is_path_search && is_ctrl_enter) {
         if (!itl_menu_accept_fuzzy_path(le, &result, candidate)) continue;
-        accepted_count = 0;
+        accepted_count                = 0;
         itl_g_tty_should_refresh_text = true;
-        previewed = (size_t) -1;
+        previewed                     = (size_t) -1;
         continue;
       }
 
-      size_t token_start = result.token_start;
-      const char *parent = NULL;
-      const char *path_key = NULL;
+      size_t      token_start       = result.token_start;
+      const char *parent            = NULL;
+      const char *path_key          = NULL;
       char       *accepted_path_key = NULL;
 
       if (is_ctrl_enter && !is_directory && !result.is_space_suppressed &&
@@ -15691,7 +15748,7 @@ itl_completion_menu_loop(itl_le_t              *le,
         result.path_row_name    = NULL;
         result.path_row_id      = NULL;
         result.path_row_of      = NULL;
-        itl_g_menu_due_ms      = 0;
+        itl_g_menu_due_ms       = 0;
       }
 
       if (!should_accept_word) {
@@ -15703,22 +15760,16 @@ itl_completion_menu_loop(itl_le_t              *le,
         itl_menu_start_word(&state);
         result.token_start = token_start;
         result.token_end   = le->cursor_position;
-        if (!itl_menu_rebase(le, source, &state, &result)) {
-          itl_menu_empty_candidates(&result);
-        }
-        selected     = 0;
-        window_start = 0;
-        previewed    = (size_t) -1;
+        itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_REBASE);
+        itl_menu_restart_rows(&selected, &window_start, &previewed);
         continue;
       }
 
       if (!is_ctrl_enter && !should_accept_word &&
           (should_continue_completion || should_descend) &&
-          itl_menu_rebase(le, source, &state, &result))
+          itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_REBASE))
       {
-        selected     = 0;
-        window_start = 0;
-        previewed    = (size_t) -1;
+        itl_menu_restart_rows(&selected, &window_start, &previewed);
         continue;
       }
 
@@ -15750,7 +15801,7 @@ itl_completion_menu_loop(itl_le_t              *le,
         if (parent != NULL &&
             strlen(parent) < le->out_size - le->line->size - 1)
         {
-          size_t key_size = strlen(path_key) + 1;
+          size_t key_size   = strlen(path_key) + 1;
           accepted_path_key = (char *) itl_malloc(key_size);
           memcpy(accepted_path_key, path_key, key_size);
           itl_g_undo_insert_run_open = true;
@@ -15767,14 +15818,14 @@ itl_completion_menu_loop(itl_le_t              *le,
             itl_le_insert(le, itl_utf8_parse(' '));
             le->cursor_position = cursor;
           }
-          itl_g_undo_insert_run_open = false;
+          itl_g_undo_insert_run_open    = false;
           result.should_search_siblings = true;
         }
         if (!result.should_search_siblings && !should_descend &&
             !result.is_space_suppressed)
         {
-          itl_menu_advance_word(
-              le, itl_g_space_after_completion != TL_SPACE_AFTER_COMPLETION_OFF);
+          itl_menu_advance_word(le, itl_g_space_after_completion !=
+                                        TL_SPACE_AFTER_COMPLETION_OFF);
         }
         is_directory_navigation = should_descend;
         if (result.should_search_siblings) result.token_start = next_word;
@@ -15794,20 +15845,18 @@ itl_completion_menu_loop(itl_le_t              *le,
         if (!result.should_search_siblings) {
           result.token_start = le->cursor_position;
         }
-        result.token_end   = le->cursor_position;
-        if (!itl_menu_rebase(le, source, &state, &result)) {
-          itl_menu_empty_candidates(&result);
-        }
+        result.token_end = le->cursor_position;
+        itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_REBASE);
         itl_g_menu_is_next_word = true;
         selected                = 0;
         if (accepted_path_key != NULL) {
-          size_t row = itl_menu_find_detail_key(&result, accepted_path_key);
+          size_t row = itl_menu_find_row(&result, accepted_path_key, true);
           if (row != result.count) selected = row;
           ITL_FREE(accepted_path_key);
         }
         result.should_search_siblings = false;
-        window_start            = 0;
-        previewed               = (size_t) -1;
+        window_start                  = 0;
+        previewed                     = (size_t) -1;
         continue;
       }
 
@@ -15835,10 +15884,8 @@ itl_completion_menu_loop(itl_le_t              *le,
       accepted_count = 0;
       itl_le_insert(le, itl_utf8_parse(byte));
       if (source->should_regather_on_edit) {
-        itl_menu_rebase(le, source, &state, &result);
-        selected     = 0;
-        window_start = 0;
-        previewed    = (size_t) -1;
+        itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_REBASE);
+        itl_menu_restart_rows(&selected, &window_start, &previewed);
         continue;
       }
       result.token_end += 1;
@@ -15853,16 +15900,12 @@ itl_completion_menu_loop(itl_le_t              *le,
       if (should_regather ||
           (source->can_descend && itl_byte_is_path_separator(byte)))
       {
-        if (!itl_menu_regather_soon(le, source, &state, &result)) {
-          itl_menu_empty_candidates(&result);
-        }
-      } else if (!itl_menu_narrow(le, source, &state, &result)) {
-        itl_menu_empty_candidates(&result);
+        itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_REGATHER);
+      } else {
+        itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_NARROW);
       }
 
-      selected     = 0;
-      window_start = 0;
-      previewed    = (size_t) -1;
+      itl_menu_restart_rows(&selected, &window_start, &previewed);
       continue;
     }
 
@@ -15879,18 +15922,16 @@ itl_completion_menu_loop(itl_le_t              *le,
       }
 
       accepted_count = 0;
-      cursor_before = le->cursor_position;
-      erase_code    = itl_le_key_handle(le, key);
+      cursor_before  = le->cursor_position;
+      erase_code     = itl_le_key_handle(le, key);
 
       if (erase_code != TL_SUCCESS) {
         return erase_code;
       }
 
       if (source->should_regather_on_edit) {
-        itl_menu_rebase(le, source, &state, &result);
-        selected     = 0;
-        window_start = 0;
-        previewed    = (size_t) -1;
+        itl_menu_refill(le, source, &state, &result, ITL_MENU_REFILL_REBASE);
+        itl_menu_restart_rows(&selected, &window_start, &previewed);
         continue;
       }
 
@@ -15915,9 +15956,7 @@ itl_completion_menu_loop(itl_le_t              *le,
         }
       }
 
-      selected     = 0;
-      window_start = 0;
-      previewed    = (size_t) -1;
+      itl_menu_restart_rows(&selected, &window_start, &previewed);
       continue;
     }
 
@@ -15950,7 +15989,7 @@ itl_completion_menu_run(itl_le_t              *le,
   itl_frame_batch_begin();
   status = itl_completion_menu_loop(le, initial, source, original_line);
   if (itl_g_menu_search_input) {
-    itl_g_menu_search_input = false;
+    itl_g_menu_search_input       = false;
     itl_g_tty_should_refresh_text = true;
   }
   if (source->should_submit_on_enter && itl_g_close_path_search != NULL) {
@@ -16183,12 +16222,13 @@ itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
     return true;
   }
 
-  token_len = !result.is_initial_insert && result.token_end >= result.token_start
-                  ? result.token_end - result.token_start
-                  : 0;
-  lcp_len   = result.longest_common_prefix != NULL
-                  ? tl_utf8_strlen(result.longest_common_prefix)
-                  : 0;
+  token_len =
+      !result.is_initial_insert && result.token_end >= result.token_start
+          ? result.token_end - result.token_start
+          : 0;
+  lcp_len = result.longest_common_prefix != NULL
+                ? tl_utf8_strlen(result.longest_common_prefix)
+                : 0;
 
   /* Replace the token with the common prefix when that prefix is longer than
      the token, which grows the token toward the candidates. The menu then
@@ -16196,9 +16236,9 @@ itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
      asks the host again otherwise. */
   if (lcp_len > token_len) {
     tl_completion replacement = result;
-    char   replaced[ITL_STRING_MAX_LEN];
-    size_t replaced_len = 0;
-    bool   is_list_kept =
+    char          replaced[ITL_STRING_MAX_LEN];
+    size_t        replaced_len = 0;
+    bool          is_list_kept =
         result.is_initial_insert ||
         (itl_menu_token_text(le, result.token_start, result.token_end, replaced,
                              sizeof(replaced), &replaced_len) &&
@@ -16220,10 +16260,10 @@ itl_completion_handle_tab(itl_le_t *le, tl_status_code *out_code)
       tl_completion remaining = ITL_ZERO_INIT;
 
       if (is_list_kept) {
-        remaining           = result;
-        remaining.token_end = result.is_initial_insert
-                                  ? result.token_end + lcp_len
-                                  : le->cursor_position;
+        remaining                   = result;
+        remaining.token_end         = result.is_initial_insert
+                                          ? result.token_end + lcp_len
+                                          : le->cursor_position;
         remaining.is_initial_insert = false;
       } else if (!itl_completion_gather_following(le, &completion_source,
                                                   &remaining))
@@ -17526,7 +17566,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
     break;
 
   case TL_KEY_EDIT_EXTERNAL: itl_le_edit_external(le); break;
-  case TL_KEY_FIND_FILE: return itl_emacs_pick_file(le, -1);
+  case TL_KEY_FIND_FILE:     return itl_emacs_pick_file(le, -1);
 
   case TL_KEY_SUSPEND: {
 #if defined ITL_SUSPEND
@@ -17995,8 +18035,8 @@ itl_history_narrow_match(const char   *query,
   return itl_history_find_match(query, query_size, from, out);
 }
 
-#define ITL_SEARCH_SGR_GREEN  "\x1b[32m"
-#define ITL_SEARCH_SGR_BOLD   "\x1b[1m"
+#define ITL_SEARCH_SGR_GREEN "\x1b[32m"
+#define ITL_SEARCH_SGR_BOLD  "\x1b[1m"
 
 /* Records one highlight span for the reverse search block, dropped once the
    span array is full. The start and end are codepoint indices into the display
@@ -18118,12 +18158,12 @@ itl_history_search(itl_le_t *le)
   bool is_narrowable = false;
 
   /* Reuse the clipped preview while the match and terminal width stay put. */
-  char              match_render[ITL_STRING_MAX_LEN];
-  size_t            match_bytes  = 0;
-  size_t            match_length = 0;
-  size_t            rendered_match       = ITL_HISTORY_NONE;
-  size_t            rendered_cols        = 0;
-  bool              has_rendered_preview = false;
+  char   match_render[ITL_STRING_MAX_LEN];
+  size_t match_bytes          = 0;
+  size_t match_length         = 0;
+  size_t rendered_match       = ITL_HISTORY_NONE;
+  size_t rendered_cols        = 0;
+  bool   has_rendered_preview = false;
 
   size_t saved_prompt_width = le->prompt_width;
   size_t original_cursor    = le->cursor_position;
@@ -18331,8 +18371,8 @@ itl_history_search(itl_le_t *le)
           /* A shorter query can match entries its longer form rejected, so the
              scan restarts from the newest entry. */
           if (query.length > 0) {
-            match         = itl_history_find_match(query_bytes, query_size,
-                                                   ITL_HISTORY_NEWEST(), &match_str);
+            match = itl_history_find_match(query_bytes, query_size,
+                                           ITL_HISTORY_NEWEST(), &match_str);
             is_narrowable = true;
           } else {
             match         = ITL_HISTORY_NONE;
@@ -21013,19 +21053,26 @@ itl_picker_insert_at(itl_le_t *le, const char *path, size_t start, size_t end);
 
 /* Render the live query without changing the buffer or the search text. */
 ITL_DEF void
-itl_picker_preview(itl_le_t *le, const itl_string_t *original,
-                   itl_string_t *display, itl_string_t *query,
-                   itl_char_buf_t *scratch, size_t position, size_t end,
-                   const char *text, size_t text_length, size_t caret,
-                   size_t root_length, const tl_completion *paths)
+itl_picker_preview(itl_le_t            *le,
+                   const itl_string_t  *original,
+                   itl_string_t        *display,
+                   itl_string_t        *query,
+                   itl_char_buf_t      *scratch,
+                   size_t               position,
+                   size_t               end,
+                   const char          *text,
+                   size_t               text_length,
+                   size_t               caret,
+                   size_t               root_length,
+                   const tl_completion *paths)
 {
   size_t cols = itl_g_tty_prev_cols, rows = itl_g_tty_prev_rows;
   size_t row = 0, column, indent, room, fit, drawn;
-  bool gap = !itl_g_full_screen && position > 0 && text_length != 0 &&
-             itl_picker_needs_separator(original->chars[position - 1]);
+  bool   gap = !itl_g_full_screen && position > 0 && text_length != 0 &&
+               itl_picker_needs_separator(original->chars[position - 1]);
 
   if (itl_g_tty_changed_size) (void) itl_tty_get_size(&rows, &cols);
-  cols = ITL_MAX(cols, 1);
+  cols   = ITL_MAX(cols, 1);
   column = itl_le_prompt_indent(le, cols);
   indent = ITL_LE_INDENT(le, cols);
   itl_wrap_walk_range(original, 0, position, cols, indent, &row, &column);
@@ -21046,20 +21093,79 @@ itl_picker_preview(itl_le_t *le, const itl_string_t *original,
   if (query->length != 0 || end != position)
     itl_undo_splice(display, position, end - position, query);
   le->line = display;
-  le->cursor_position = position + ITL_MIN(query->length,
-      gap + tl_utf8_strnlen(text, caret));
+  le->cursor_position =
+      position + ITL_MIN(query->length, gap + tl_utf8_strnlen(text, caret));
   itl_g_picker_query_start = position + gap;
-  itl_g_picker_color_end = position + query->length;
-  itl_g_picker_color_start = position + ITL_MIN(query->length,
-      gap + tl_utf8_strnlen(text, root_length));
+  itl_g_picker_color_end   = position + query->length;
+  itl_g_picker_color_start =
+      position +
+      ITL_MIN(query->length, gap + tl_utf8_strnlen(text, root_length));
 
   if (fit == room && drawn == itl_visible_width(text, text_length)) {
     tl_completion typed = *paths;
-    typed.token_start = itl_g_picker_query_start;
+    typed.token_start   = itl_g_picker_query_start;
     itl_menu_ghost_preview(le, &typed, itl_g_minibuffer_path_selected);
   } else {
     itl_ghost_clear();
   }
+}
+
+ITL_DEF size_t
+previous_codepoint_position(const char *text, size_t position)
+{
+  do {
+    --position;
+  } while (position > 0 && ((uint8_t) text[position] & 0xC0) == 0x80);
+  return position;
+}
+
+ITL_DEF bool
+insert_minibuffer_byte(char   *text,
+                       size_t  text_size,
+                       size_t *text_length,
+                       size_t *caret,
+                       size_t *root_length,
+                       uint8_t byte,
+                       bool    is_path)
+{
+  const itl_utf8_t character = itl_utf8_parse(byte);
+
+  if (character.size == 0 || character.size >= text_size - *text_length) {
+    return false;
+  }
+
+  memmove(text + *caret + character.size, text + *caret,
+          *text_length - *caret + 1);
+  memcpy(text + *caret, character.bytes, character.size);
+  if (is_path && *caret < *root_length) *root_length += character.size;
+  *caret += character.size;
+  if (caret != text_length) *text_length += character.size;
+  return true;
+}
+
+ITL_DEF bool
+erase_minibuffer_codepoint(char   *text,
+                           size_t *text_length,
+                           size_t *caret,
+                           size_t *root_length,
+                           bool    is_path)
+{
+  size_t end = *caret;
+
+  if (end == 0) return false;
+
+  size_t start = previous_codepoint_position(text, end);
+
+  memmove(text + start, text + end, *text_length - end + 1);
+  *text_length -= end - start;
+  if (is_path && start < *root_length) {
+    *root_length -= ITL_MIN(*root_length, end) - start;
+    while (*root_length > 0 &&
+           !itl_byte_is_path_separator((uint8_t) text[*root_length - 1]))
+      --*root_length;
+  }
+  *caret = start;
+  return true;
 }
 
 /* Takes a line of text into text on a row under the buffer, after label, as
@@ -21086,26 +21192,29 @@ itl_minibuffer_read(itl_le_t       *le,
   itl_string_t *saved_line         = le->line;
   size_t        saved_cursor       = le->cursor_position;
 
-  size_t       text_length    = 0;
-  size_t       query_caret    = 0;
-  size_t       label_length   = strlen(label);
-  bool         is_accepted    = false;
-  bool         is_done        = false;
-  bool         is_in_rows     = itl_g_full_screen;
-  bool         has_overflowed = false;
-  tl_completion paths = ITL_ZERO_INIT;
-  bool should_gather_paths = itl_g_minibuffer_completes_paths;
+  size_t        text_length         = 0;
+  size_t        query_caret         = 0;
+  size_t        label_length        = strlen(label);
+  bool          is_accepted         = false;
+  bool          is_done             = false;
+  bool          is_in_rows          = itl_g_full_screen;
+  bool          has_overflowed      = false;
+  tl_completion paths               = ITL_ZERO_INIT;
+  bool          should_gather_paths = itl_g_minibuffer_completes_paths;
   bool is_shell_picker = should_gather_paths && itl_g_file_picker_quote != NULL;
   bool can_insert_path = true;
-  bool is_streamed_picker  = should_gather_paths && itl_g_file_picker_gather != NULL;
-  bool is_file_browser    = should_gather_paths && (is_in_rows || is_streamed_picker);
-  size_t picker_position = should_gather_paths ? itl_picker_insertion_position(le) : 0;
-  size_t picker_end = picker_position;
-  size_t root_length      = 0;
-  uint64_t saved_menu_due = itl_g_menu_due_ms;
-  bool has_selected_path   = false;
-  bool has_completed_path_prefix = false;
-  uint8_t      byte;
+  bool is_streamed_picker =
+      should_gather_paths && itl_g_file_picker_gather != NULL;
+  bool is_file_browser =
+      should_gather_paths && (is_in_rows || is_streamed_picker);
+  size_t picker_position =
+      should_gather_paths ? itl_picker_insertion_position(le) : 0;
+  size_t   picker_end                = picker_position;
+  size_t   root_length               = 0;
+  uint64_t saved_menu_due            = itl_g_menu_due_ms;
+  bool     has_selected_path         = false;
+  bool     has_completed_path_prefix = false;
+  uint8_t  byte;
 
   text[0] = '\0';
   if (is_file_browser && text_size >= sizeof("./")) {
@@ -21115,11 +21224,12 @@ itl_minibuffer_read(itl_le_t       *le,
     root_length = text_length;
   }
   if (is_shell_picker && itl_g_file_picker_seed != NULL) {
-    char storage[ITL_STRING_MAX_LEN];
+    char  storage[ITL_STRING_MAX_LEN];
     char *line = itl_string_acquire_cstr(le->line, storage, sizeof(storage));
-    can_insert_path = line != NULL && itl_g_file_picker_seed(
-        line, picker_position, text, text_size, &root_length,
-        &picker_position, &picker_end);
+    can_insert_path =
+        line != NULL &&
+        itl_g_file_picker_seed(line, picker_position, text, text_size,
+                               &root_length, &picker_position, &picker_end);
     if (line != NULL) {
       text_length = query_caret = strlen(text);
     }
@@ -21136,9 +21246,10 @@ itl_minibuffer_read(itl_le_t       *le,
   while (!is_done) {
     int key, key_kind;
     if (should_gather_paths) {
-      size_t selected = itl_g_minibuffer_path_selected;
-      uint32_t held_id = has_selected_path && paths.path_row_id != NULL
-                             ? paths.path_row_id(selected) : 0;
+      size_t   selected = itl_g_minibuffer_path_selected;
+      uint32_t held_id  = has_selected_path && paths.path_row_id != NULL
+                              ? paths.path_row_id(selected)
+                              : 0;
       memset(&paths, 0, sizeof(paths));
       if (is_streamed_picker) {
         itl_g_file_picker_gather(text, root_length, &paths);
@@ -21146,16 +21257,17 @@ itl_minibuffer_read(itl_le_t       *le,
         itl_g_path_complete_callback(text, &paths);
       }
       itl_g_minibuffer_paths = &paths;
-      itl_g_minibuffer_path_selected = held_id != 0 && paths.path_row_of != NULL
-                                          ? paths.path_row_of(held_id, selected)
-                                          : 0;
+      itl_g_minibuffer_path_selected =
+          held_id != 0 && paths.path_row_of != NULL
+              ? paths.path_row_of(held_id, selected)
+              : 0;
       should_gather_paths = false;
     }
 
     if (itl_g_minibuffer_completes_paths) {
-      itl_picker_preview(le, saved_line, display, preview, status, picker_position,
-                         picker_end, text, text_length, query_caret, root_length,
-                         &paths);
+      itl_picker_preview(le, saved_line, display, preview, status,
+                         picker_position, picker_end, text, text_length,
+                         query_caret, root_length, &paths);
       itl_g_tty_should_refresh_text = true;
       itl_le_tty_refresh(le);
       if (is_streamed_picker) {
@@ -21198,7 +21310,8 @@ itl_minibuffer_read(itl_le_t       *le,
                                         itl_le_view_rows(itl_g_tty_prev_rows));
       itl_char_buf_append_byte(b, ';');
       itl_char_buf_append_size_t(b, 1 + itl_g_hint_indent_width +
-          itl_visible_width(label, label_length) + itl_visible_width(text, text_length));
+                                        itl_visible_width(label, label_length) +
+                                        itl_visible_width(text, text_length));
       itl_char_buf_append_byte(b, 'H');
       ITL_CHAR_BUF_DUMP(b);
       ITL_CHAR_BUF_CLEAR(b);
@@ -21281,12 +21394,7 @@ itl_minibuffer_read(itl_le_t       *le,
         continue;
       }
       if (key == (TL_KEY_LEFT | TL_MOD_CTRL)) {
-        while (query_caret > 0 &&
-               itl_byte_is_path_separator((uint8_t) text[query_caret - 1]))
-          --query_caret;
-        while (query_caret > 0 &&
-               !itl_byte_is_path_separator((uint8_t) text[query_caret - 1]))
-          --query_caret;
+        query_caret = itl_path_component_start(text, query_caret);
         continue;
       }
       if (key == (TL_KEY_RIGHT | TL_MOD_CTRL)) {
@@ -21309,8 +21417,9 @@ itl_minibuffer_read(itl_le_t       *le,
           itl_le_flash(le);
           continue;
         }
-        const char *path = itl_picker_row_name(&paths, itl_g_minibuffer_path_selected);
-        le->line = saved_line;
+        const char *path =
+            itl_picker_row_name(&paths, itl_g_minibuffer_path_selected);
+        le->line            = saved_line;
         le->cursor_position = saved_cursor;
         if (path[0] != '\0' &&
             itl_picker_insert_at(le, path, picker_position, picker_end))
@@ -21327,8 +21436,8 @@ itl_minibuffer_read(itl_le_t       *le,
         (key_kind == TL_KEY_KILL_LINE_BEFORE || key_kind == TL_KEY_BACKSPACE ||
          key == TL_KEY_CHAR))
     {
-      should_gather_paths = true;
-      has_selected_path = false;
+      should_gather_paths       = true;
+      has_selected_path         = false;
       has_completed_path_prefix = false;
     }
 
@@ -21342,13 +21451,14 @@ itl_minibuffer_read(itl_le_t       *le,
         itl_le_flash(le);
         break;
       }
-      if (paths.count > 0 &&
-          (key_kind == TL_KEY_RIGHT || has_selected_path ||
-           ((is_file_browser || text_length > 0) && !has_completed_path_prefix)))
+      if (paths.count > 0 && (key_kind == TL_KEY_RIGHT || has_selected_path ||
+                              ((is_file_browser || text_length > 0) &&
+                               !has_completed_path_prefix)))
       {
-        const char *path = itl_picker_row_name(&paths, itl_g_minibuffer_path_selected);
-        size_t      size = strlen(path);
-        bool        is_directory =
+        const char *path =
+            itl_picker_row_name(&paths, itl_g_minibuffer_path_selected);
+        size_t size = strlen(path);
+        bool   is_directory =
             size > 0 && itl_byte_is_path_separator((uint8_t) path[size - 1]);
 
         if (key_kind == TL_KEY_RIGHT && !is_directory) break;
@@ -21361,10 +21471,10 @@ itl_minibuffer_read(itl_le_t       *le,
         text_length = size;
         query_caret = text_length;
         if (is_directory && (key_kind == TL_KEY_RIGHT || !is_file_browser)) {
-          root_length = size;
-          has_selected_path = false;
+          root_length               = size;
+          has_selected_path         = false;
           has_completed_path_prefix = false;
-          should_gather_paths = true;
+          should_gather_paths       = true;
           break;
         }
       }
@@ -21387,7 +21497,8 @@ itl_minibuffer_read(itl_le_t       *le,
         size_t index = itl_g_minibuffer_path_selected;
         itl_g_minibuffer_path_selected =
             key_kind == TL_KEY_UP ? (index == 0 ? paths.count - 1 : index - 1)
-            : index + 1 == paths.count ? 0 : index + 1;
+            : index + 1 == paths.count ? 0
+                                       : index + 1;
         has_selected_path = true;
       }
       break;
@@ -21404,7 +21515,7 @@ itl_minibuffer_read(itl_le_t       *le,
               strlen(prefix) > text_length &&
               memcmp(prefix, text, text_length) == 0)
           {
-            replacement = prefix;
+            replacement               = prefix;
             has_completed_path_prefix = true;
           } else if (paths.count == 1 && !paths.has_more_paths) {
             replacement = itl_picker_row_name(&paths, 0);
@@ -21425,7 +21536,7 @@ itl_minibuffer_read(itl_le_t       *le,
 
           if (length < text_size) {
             memcpy(text, replacement, length + 1);
-            text_length         = length;
+            text_length = length;
             query_caret = text_length;
             if (is_streamed_picker && length > 0 &&
                 itl_byte_is_path_separator((uint8_t) text[length - 1]))
@@ -21464,45 +21575,20 @@ itl_minibuffer_read(itl_le_t       *le,
       has_overflowed = false;
       break;
 
-    case TL_KEY_BACKSPACE:
-      if (itl_g_minibuffer_completes_paths && text_length > 0) {
-        size_t end = query_caret;
-        if (end == 0) break;
-        do {
-          --query_caret;
-        } while (query_caret > 0 && ((uint8_t) text[query_caret] & 0xC0) == 0x80);
-        memmove(text + query_caret, text + end, text_length - end + 1);
-        text_length -= end - query_caret;
-        if (query_caret < root_length) {
-          root_length -= ITL_MIN(root_length, end) - query_caret;
-          while (root_length > 0 &&
-                 !itl_byte_is_path_separator((uint8_t) text[root_length - 1]))
-            --root_length;
-        }
-        has_overflowed = false;
+    case TL_KEY_BACKSPACE: {
+      const bool is_path = itl_g_minibuffer_completes_paths;
+      size_t    *caret   = is_path ? &query_caret : &text_length;
+
+      if (!erase_minibuffer_codepoint(text, &text_length, caret, &root_length,
+                                      is_path))
+      {
+        if (!is_path) is_done = true;
         break;
       }
-      if (text_length > 0) {
-        /* The whole last UTF-8 character goes, with its continuation bytes. */
-        do {
-          text_length -= 1;
-        } while (text_length > 0 &&
-                 ((unsigned char) text[text_length] & 0xC0) == 0x80);
-        text[text_length] = '\0';
-        if (root_length > text_length) {
-          while (root_length > 0 &&
-                 (root_length > text_length ||
-                  !itl_byte_is_path_separator((uint8_t) text[root_length - 1])))
-            --root_length;
-        }
-        if (text_length == 0) has_overflowed = false;
-        if (itl_g_is_finding) {
-          itl_find_refresh(original, text);
-        }
-      } else {
-        is_done = true;
-      }
+      if (is_path || text_length == 0) has_overflowed = false;
+      if (!is_path && itl_g_is_finding) itl_find_refresh(original, text);
       break;
+    }
 
     case TL_KEY_CHAR:
       /* An Alt-modified key arrives with its escape byte, which is not text. */
@@ -21515,7 +21601,7 @@ itl_minibuffer_read(itl_le_t       *le,
             text_length = 0;
             root_length = 0;
             query_caret = 0;
-            text[0] = '\0';
+            text[0]     = '\0';
           }
 #if defined ITL_WIN32
           if (text_length == 3 && memcmp(text, "./", 2) == 0 &&
@@ -21525,41 +21611,30 @@ itl_minibuffer_read(itl_le_t       *le,
             text_length = 1;
             root_length = 0;
             query_caret = 1;
-            text[1] = '\0';
+            text[1]     = '\0';
           }
 #endif
         }
-        if (itl_g_minibuffer_completes_paths) {
-          itl_utf8_t ch = itl_utf8_parse(byte);
-          if (ch.size == 0) break;
-          if (ch.size >= text_size - text_length) {
-            has_overflowed = true;
-            itl_le_flash(le);
-            break;
-          }
-          memmove(text + query_caret + ch.size, text + query_caret,
-                  text_length - query_caret + 1);
-          memcpy(text + query_caret, ch.bytes, ch.size);
-          if (query_caret < root_length) root_length += ch.size;
-          query_caret += ch.size;
-          text_length += ch.size;
-        } else {
-          if (text_length >= text_size - 1) {
-            has_overflowed = true;
-            itl_le_flash(le);
-            break;
-          }
-          text[text_length++] = (char) byte;
-          text[text_length]   = '\0';
+        const bool is_path = itl_g_minibuffer_completes_paths;
+        size_t    *caret   = is_path ? &query_caret : &text_length;
+
+        if (!insert_minibuffer_byte(text, text_size, &text_length, caret,
+                                    &root_length, byte, is_path))
+        {
+          has_overflowed = true;
+          itl_le_flash(le);
+          break;
         }
         if (is_streamed_picker && query_caret == text_length &&
             itl_byte_is_path_separator(byte) &&
-            (text_length == 1 || itl_byte_is_path_separator((uint8_t) text[0]) ||
+            (text_length == 1 ||
+             itl_byte_is_path_separator((uint8_t) text[0]) ||
 #if defined ITL_WIN32
              (text_length >= 3 && text[1] == ':') ||
 #endif
              (text_length == 5 && memcmp(text, "./../", 5) == 0) ||
-             (root_length == 0 && text_length == 3 && memcmp(text, "../", 3) == 0)))
+             (root_length == 0 && text_length == 3 &&
+              memcmp(text, "../", 3) == 0)))
           root_length = text_length;
         if (itl_g_is_finding) {
           itl_find_refresh(original, text);
@@ -21584,21 +21659,21 @@ itl_minibuffer_read(itl_le_t       *le,
     }
   }
 
-  itl_g_minibuffer_paths      = NULL;
+  itl_g_minibuffer_paths = NULL;
   if (itl_g_minibuffer_completes_paths) itl_ghost_clear();
   if (is_streamed_picker) itl_g_menu_due_ms = saved_menu_due;
   if (is_streamed_picker && itl_g_file_picker_close != NULL)
     itl_g_file_picker_close();
-  itl_g_prefix_kind           = ITL_PREFIX_NONE;
-  itl_g_minibuffer_text       = "";
-  itl_g_minibuffer_label      = NULL;
-  itl_g_minibuffer_row_start  = 0;
-  le->prompt                  = saved_prompt;
-  le->prompt_size             = saved_prompt_size;
-  le->prompt_width            = saved_prompt_width;
-  le->prompt_rows             = saved_prompt_rows;
-  le->line                    = saved_line;
-  le->cursor_position         = saved_cursor;
+  itl_g_prefix_kind          = ITL_PREFIX_NONE;
+  itl_g_minibuffer_text      = "";
+  itl_g_minibuffer_label     = NULL;
+  itl_g_minibuffer_row_start = 0;
+  le->prompt                 = saved_prompt;
+  le->prompt_size            = saved_prompt_size;
+  le->prompt_width           = saved_prompt_width;
+  le->prompt_rows            = saved_prompt_rows;
+  le->line                   = saved_line;
+  le->cursor_position        = saved_cursor;
   itl_search_spans_clear();
   itl_g_tty_should_refresh_text = true;
 
@@ -21795,7 +21870,8 @@ itl_vi_ex_command(itl_le_t *le)
     {
       result = itl_emacs_find_file(le, strchr(command, ' ') + 1);
     } else if (strcmp(command, "fzf") == 0 &&
-               (itl_g_open_file_callback != NULL || itl_g_file_picker_quote != NULL))
+               (itl_g_open_file_callback != NULL ||
+                itl_g_file_picker_quote != NULL))
     {
       result = itl_emacs_pick_file(le, -1);
     } else if (strcmp(command, "e") == 0 || strcmp(command, "edit") == 0) {
@@ -21916,12 +21992,12 @@ itl_emacs_find_file(itl_le_t *le, const char *path)
 ITL_DEF bool
 itl_picker_insert_at(itl_le_t *le, const char *path, size_t start, size_t end)
 {
-  tl_completion span = ITL_ZERO_INIT;
-  const char *quoted = itl_g_file_picker_quote(path);
-  bool inserted = false;
+  tl_completion span     = ITL_ZERO_INIT;
+  const char   *quoted   = itl_g_file_picker_quote(path);
+  bool          inserted = false;
 
   span.token_start = start;
-  span.token_end = end;
+  span.token_end   = end;
   if (quoted != NULL) {
     bool before = false, after = false;
 
@@ -21935,7 +22011,7 @@ itl_picker_insert_at(itl_le_t *le, const char *path, size_t start, size_t end)
       inserted = itl_completion_replace_token(le, &span, quoted);
     } else {
       size_t length = strlen(quoted);
-      size_t size = length + before + after;
+      size_t size   = length + before + after;
 
       if (size < le->out_size) {
         char *word = (char *) itl_malloc(size + 1);
@@ -21943,19 +22019,14 @@ itl_picker_insert_at(itl_le_t *le, const char *path, size_t start, size_t end)
         memcpy(word + before, quoted, length);
         if (after) word[size - 1] = ' ';
         word[size] = '\0';
-        inserted = itl_completion_replace_token(le, &span, word);
+        inserted   = itl_completion_replace_token(le, &span, word);
         ITL_FREE(word);
         if (inserted && after) --le->cursor_position;
       }
     }
   }
   if (inserted) {
-    if (itl_g_space_after_completion !=
-            TL_SPACE_AFTER_COMPLETION_EXCEPT_AFTER_SLASH ||
-        !itl_menu_is_directory_name(path))
-    {
-      itl_completion_append_space(le);
-    }
+    if (itl_completion_space_follows(path)) itl_completion_append_space(le);
     itl_g_tty_should_refresh_text = true;
     return true;
   }
@@ -21968,18 +22039,18 @@ itl_emacs_pick_file(itl_le_t *le, int command_index)
 {
   char          *path;
   bool           is_read;
-  bool is_shell = itl_g_open_file_callback == NULL;
+  bool           is_shell = itl_g_open_file_callback == NULL;
   tl_status_code status;
 
   if (itl_g_open_file_callback == NULL && itl_g_file_picker_quote == NULL)
     return itl_emacs_find_file(le, NULL);
   path = (char *) itl_malloc(itl_g_line_max + 1);
-  itl_g_minibuffer_hint = is_shell
-      ? "fuzzy file search, tab or enter to insert, right to descend"
-      : "fuzzy file search, tab or enter to open, right to descend";
+  itl_g_minibuffer_hint =
+      is_shell ? "fuzzy file search, tab or enter to insert, right to descend"
+               : "fuzzy file search, tab or enter to open, right to descend";
   itl_g_minibuffer_completes_paths = true;
-  is_read = itl_minibuffer_read(le, "", ITL_PREFIX_MINIBUFFER,
-                               path, itl_g_line_max + 1);
+  is_read = itl_minibuffer_read(le, "", ITL_PREFIX_MINIBUFFER, path,
+                                itl_g_line_max + 1);
   itl_g_minibuffer_completes_paths = false;
   if (is_shell) {
     ITL_FREE(path);
@@ -22014,7 +22085,8 @@ itl_emacs_run_command(itl_le_t *le, size_t index)
   if (action == ITL_EMACS_FIND_FILE) {
     if (itl_g_open_file_callback != NULL)
       return itl_emacs_find_file(le, itl_g_emacs_last_path);
-    if (itl_g_file_picker_quote != NULL) return itl_emacs_pick_file(le, (int) index);
+    if (itl_g_file_picker_quote != NULL)
+      return itl_emacs_pick_file(le, (int) index);
     return TL_SUCCESS;
   }
   if (action == ITL_EMACS_SAVE_AND_QUIT) {
@@ -22540,9 +22612,9 @@ itl_vi_command_dispatch(itl_le_t *le, uint8_t byte, int key)
   if (itl_g_vi_pending_operator != ITL_VI_OP_NONE) {
     itl_vi_operator_kind op         = itl_g_vi_pending_operator;
     bool                 is_doubled = (op == ITL_VI_OP_DELETE && byte == 'd') ||
-                      (op == ITL_VI_OP_CHANGE && byte == 'c') ||
-                      (op == ITL_VI_OP_YANK && byte == 'y') ||
-                      (op == ITL_VI_OP_WRAP && byte == 'q');
+                                      (op == ITL_VI_OP_CHANGE && byte == 'c') ||
+                                      (op == ITL_VI_OP_YANK && byte == 'y') ||
+                                      (op == ITL_VI_OP_WRAP && byte == 'q');
 
     if (is_doubled) {
       itl_vi_operator_line(le, op, (int) byte, count);
