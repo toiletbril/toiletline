@@ -12187,6 +12187,7 @@ itl_picker_layout(size_t cols, size_t row_budget)
   bool            show_help, show_summary;
   char            count[sizeof("showing - of ") + 9 * sizeof(size_t)];
 
+  size_t available_rows = row_budget;
   row_budget = ITL_MIN(row_budget, (size_t) ITL_PICKER_MAX_ROWS);
   if (width == 0 || row_budget == 0) return;
 
@@ -12241,17 +12242,18 @@ itl_picker_layout(size_t cols, size_t row_budget)
   {
     size_t built_len  = itl_g_hint_next_len - start_len;
     size_t built_rows = itl_g_hint_next_rows - start_rows;
-    size_t first_row  = itl_g_le_prev_total_rows;
-    size_t target_row =
-        itl_g_tty_prev_rows > built_rows ? itl_g_tty_prev_rows - built_rows : 0;
-    size_t prefix = target_row > first_row ? target_row - first_row : 0;
+    size_t prefix     = available_rows - built_rows;
+    const char clear[] = "\x1b[J";
+    size_t clear_len   = sizeof(clear) - 1;
 
-    memmove(itl_g_hint_next + start_len + prefix + 4,
-            itl_g_hint_next + start_len, built_len);
-    memcpy(itl_g_hint_next + start_len, "\x1b[J", 4);
-    memset(itl_g_hint_next + start_len + 4, '\n', prefix);
-    itl_g_hint_next_len += prefix + 4;
-    itl_g_hint_next_rows += prefix;
+    if (built_len + prefix + clear_len < sizeof(itl_g_hint_next) - start_len) {
+      memmove(itl_g_hint_next + start_len + prefix + clear_len,
+              itl_g_hint_next + start_len, built_len);
+      memcpy(itl_g_hint_next + start_len, clear, clear_len);
+      memset(itl_g_hint_next + start_len + clear_len, '\n', prefix);
+      itl_g_hint_next_len += prefix + clear_len;
+      itl_g_hint_next_rows += prefix;
+    }
   }
   itl_g_hint_next[itl_g_hint_next_len] = '\0';
   ITL_CHAR_BUF_FREE(row);
@@ -21482,9 +21484,12 @@ itl_minibuffer_read(itl_le_t       *le,
     key_kind = key & TL_MASK_KEY;
     if (itl_g_minibuffer_completes_paths) {
       if (key == TL_KEY_HOME || key == TL_KEY_END) {
-        query_caret = key == TL_KEY_HOME
-                          ? (itl_g_minibuffer_completes_paths ? root_length : 0)
-                          : text_length;
+        query_caret = key == TL_KEY_HOME ? root_length : text_length;
+        continue;
+      }
+      if (key == TL_KEY_LEFT) {
+        if (query_caret > 0)
+          query_caret = previous_codepoint_position(text, query_caret);
         continue;
       }
       if (key == (TL_KEY_LEFT | TL_MOD_CTRL)) {
