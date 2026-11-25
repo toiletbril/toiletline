@@ -114,6 +114,8 @@ typedef enum
   TL_PRESSED_SUSPEND          = 4,
   TL_PRESSED_CONTROL_SEQUENCE = 5,
   TL_PRESSED_TAB              = 6,
+  /* Ctrl-X Ctrl-C, M-x kill-kosh, :q, and Ctrl-D on an empty buffer leave
+     without saving, and copy the buffer out as Enter does. */
   TL_PRESSED_QUIT             = 7,
   /* :wq, :wq!, :x, :wqa, and :wqa! ask to save and leave. */
   TL_PRESSED_WRITE_QUIT = 8,
@@ -1476,7 +1478,15 @@ itl_tty_input_is_pending(void)
 {
 #if defined ITL_WIN32
   return _kbhit() != 0;
-#else  /* ITL_WIN32 */
+#elif defined __APPLE__
+  /* On Darwin, poll reports POLLNVAL for /dev/tty even when read works. */
+  fd_set         readable;
+  struct timeval timeout = ITL_ZERO_INIT;
+
+  FD_ZERO(&readable);
+  FD_SET(STDIN_FILENO, &readable);
+  return select(STDIN_FILENO + 1, &readable, NULL, NULL, &timeout) > 0;
+#else
   struct pollfd pfd;
   pfd.fd      = STDIN_FILENO;
   pfd.events  = POLLIN;
@@ -17849,6 +17859,7 @@ itl_le_key_handle(itl_le_t *le, int esc)
       break;
     }
     if (itl_le_confirm_discard(le, TL_KEY_QUIT, "ctrl-x ctrl-c")) {
+      ITL_TRY(itl_le_copy_out(le), return TL_ERROR_SIZE);
       return TL_PRESSED_QUIT;
     }
     break;
@@ -22125,7 +22136,7 @@ itl_vi_ex_command(itl_le_t *le)
       strcpy(itl_g_editor_message, "unsaved changes\n:q! to discard them");
       itl_g_tty_should_refresh_text = true;
     } else if (itl_vi_ex_is_quit(command)) {
-      result = TL_PRESSED_QUIT;
+      result = itl_le_copy_out(le) ? TL_PRESSED_QUIT : TL_ERROR_SIZE;
     } else if (itl_vi_ex_is_write(command) && itl_g_save_callback != NULL) {
       itl_le_save(le);
     } else if (itl_vi_ex_is_write_quit(command)) {
