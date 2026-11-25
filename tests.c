@@ -10715,6 +10715,36 @@ test_menu_help_drops_items_past_the_last_row(void)
   return ok;
 }
 
+static bool
+test_picker_search_status_follows_visible_matches(void)
+{
+  static const char *names[] = {"./match"};
+  tl_completion      paths   = ITL_ZERO_INIT;
+  const char        *saved_hint = itl_g_minibuffer_hint;
+  int                saved_colors = itl_g_colors_enabled;
+  bool               ok;
+
+  paths.candidates       = names;
+  paths.has_more_paths   = true;
+  itl_g_minibuffer_paths = &paths;
+  itl_g_minibuffer_hint  = "fuzzy file search";
+  tl_set_colors_enabled(0);
+
+  itl_hint_layout(80, 18);
+  ok = strcmp(itl_g_hint_next, "fuzzy file search\nsearching...") == 0;
+
+  paths.count = 1;
+  itl_hint_layout(80, 18);
+  ok &= strcmp(itl_g_hint_next,
+               "fuzzy file search\n./match\nsearching...") == 0;
+
+  itl_g_minibuffer_paths = NULL;
+  itl_g_minibuffer_hint  = saved_hint;
+  tl_set_colors_enabled(saved_colors);
+  itl_hint_layout(80, 0);
+  return ok;
+}
+
 #if defined ITL_POSIX && !defined NDEBUG
 /* The line renderer draws control bytes as notation on a full render and on
    the append path, and the caret column counts the notation. */
@@ -10964,6 +10994,7 @@ static test_case_t test_cases[] = {
     DEFINE_TEST_CASE(test_right_prompt_rejects_controls),
     DEFINE_TEST_CASE(test_last_argument_skips_invalid_words),
     DEFINE_TEST_CASE(test_menu_help_drops_items_past_the_last_row),
+    DEFINE_TEST_CASE(test_picker_search_status_follows_visible_matches),
 };
 
 int

@@ -12247,11 +12247,13 @@ itl_picker_layout(size_t cols, size_t row_budget)
   size_t start_rows = itl_g_hint_next_rows;
 
   show_help = row_budget >= 3;
-  bool has_footer = row_budget >= 2;
-  row_budget -= show_help + has_footer;
+  row_budget -= show_help;
+  show_summary = row_budget >= 2 &&
+                 (paths->has_more_paths ||
+                  paths->count > ITL_MIN(row_budget,
+                                         (size_t) ITL_PICKER_MAX_CANDIDATES));
+  row_budget -= show_summary;
   row_budget = ITL_MIN(row_budget, (size_t) ITL_PICKER_MAX_CANDIDATES);
-  show_summary =
-      has_footer && (paths->has_more_paths || paths->count > row_budget);
 
   if (row_budget != 0 && paths->count != 0) {
     itl_g_picker_window_start = itl_menu_window_start(
@@ -12281,22 +12283,15 @@ itl_picker_layout(size_t cols, size_t row_budget)
     itl_picker_append_row(row, name, sgr, width);
   }
 
-  size_t body_rows = end - itl_g_picker_window_start;
   if (row_budget != 0 && paths->count == 0 && !show_summary) {
     const char *empty = paths->has_more_paths ? "searching..." : "no matches";
 
     itl_picker_append_row(row, empty, itl_color_sequence(ITL_DIM_SGR), width);
-    ++body_rows;
   }
 
-  while (body_rows < row_budget) {
-    itl_picker_append_row(row, "", "", width);
-    ++body_rows;
-  }
-
-  if (has_footer) {
-    const char *summary = !show_summary ? "" : "searching...";
-    if (show_summary && !paths->has_more_paths) {
+  if (show_summary) {
+    const char *summary = "searching...";
+    if (!paths->has_more_paths) {
       itl_menu_format_summary(count, sizeof(count),
                               itl_g_picker_window_start + 1, index,
                               paths->count);
