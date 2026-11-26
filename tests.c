@@ -10718,16 +10718,20 @@ test_menu_help_drops_items_past_the_last_row(void)
 static bool
 test_picker_search_status_follows_visible_matches(void)
 {
-  static const char *names[] = {"./match"};
-  tl_completion      paths   = ITL_ZERO_INIT;
-  const char        *saved_hint = itl_g_minibuffer_hint;
+  static const char *names[]       = {"./match"};
+  tl_completion      paths        = ITL_ZERO_INIT;
+  const char        *saved_hint   = itl_g_minibuffer_hint;
+  size_t             saved_anchor = itl_g_picker_anchor;
+  size_t             saved_row    = itl_g_minibuffer_path_selected;
   int                saved_colors = itl_g_colors_enabled;
   bool               ok;
 
-  paths.candidates       = names;
-  paths.has_more_paths   = true;
-  itl_g_minibuffer_paths = &paths;
-  itl_g_minibuffer_hint  = "fuzzy file search";
+  paths.candidates                 = names;
+  paths.has_more_paths             = true;
+  itl_g_minibuffer_paths           = &paths;
+  itl_g_minibuffer_hint            = "fuzzy file search";
+  itl_g_picker_anchor              = 0;
+  itl_g_minibuffer_path_selected   = 0;
   tl_set_colors_enabled(0);
 
   itl_hint_layout(80, 18);
@@ -10736,10 +10740,16 @@ test_picker_search_status_follows_visible_matches(void)
   paths.count = 1;
   itl_hint_layout(80, 18);
   ok &= strcmp(itl_g_hint_next,
-               "fuzzy file search\n./match\nsearching...") == 0;
+               "fuzzy file search\n" ITL_MENU_SELECTED_SGR
+               " ./match " ITL_HIGHLIGHT_RESET "\nsearching...") == 0;
+  if (!ok) {
+    TEST_PRINTF("picker rows: %s\n", itl_g_hint_next);
+  }
 
-  itl_g_minibuffer_paths = NULL;
-  itl_g_minibuffer_hint  = saved_hint;
+  itl_g_minibuffer_paths         = NULL;
+  itl_g_minibuffer_hint          = saved_hint;
+  itl_g_picker_anchor            = saved_anchor;
+  itl_g_minibuffer_path_selected = saved_row;
   tl_set_colors_enabled(saved_colors);
   itl_hint_layout(80, 0);
   return ok;

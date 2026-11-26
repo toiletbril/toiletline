@@ -12162,17 +12162,25 @@ ITL_DEF void
 itl_picker_append_row(itl_char_buf_t *row,
                       const char     *text,
                       const char     *sgr,
-                      size_t          width)
+                      size_t          width,
+                      bool            is_candidate,
+                      bool            is_selected)
 {
-  size_t length = strlen(text);
-  size_t fit    = itl_menu_cell_text_width(text, length, width);
+  bool has_padding = is_candidate && width > 2 * ITL_MENU_SELECTED_MARGIN_WIDTH;
 
   ITL_CHAR_BUF_CLEAR(row);
   if (itl_g_hint_next_rows > 0) itl_char_buf_append_byte(row, '\n');
   itl_char_buf_append_spaces(row, itl_g_picker_anchor);
   itl_char_buf_append_cstr(row, sgr);
-  itl_char_buf_append_visible(row, text, length, fit, false);
-  if (fit < width) itl_char_buf_append_cstr(row, ITL_MENU_CUT_MARK);
+  if (has_padding) {
+    itl_char_buf_append_cstr(row, is_selected ? itl_menu_selected_inner_margin()
+                                               : ITL_MENU_SELECTED_MARGIN);
+    width -= 2 * ITL_MENU_SELECTED_MARGIN_WIDTH;
+  }
+  itl_menu_append_colored_cell(row, text, width, NULL, 0, false);
+  if (has_padding && is_selected) {
+    itl_char_buf_append_cstr(row, itl_menu_selected_inner_margin());
+  }
   if (*sgr != '\0') itl_char_buf_append_cstr(row, ITL_HIGHLIGHT_RESET);
   if (row->size >= sizeof(itl_g_hint_next) - itl_g_hint_next_len) return;
   memcpy(itl_g_hint_next + itl_g_hint_next_len, row->data, row->size);
@@ -12267,26 +12275,28 @@ itl_picker_layout(size_t cols, size_t row_budget)
 
   if (show_help) {
     itl_picker_append_row(row, itl_g_minibuffer_hint,
-                          itl_color_sequence(ITL_DIM_SGR), width);
+                          itl_color_sequence(ITL_DIM_SGR), width, false, false);
   }
   if (has_query) {
     itl_picker_append_query_row(row, width);
   }
 
   for (index = itl_g_picker_window_start; index < end; ++index) {
-    const char *name = itl_picker_row_name(paths, index);
-    const char *sgr  = index == selected ? itl_menu_selected_sgr()
-                       : itl_menu_is_directory_name(name)
-                           ? itl_color_sequence(itl_menu_directory_sgr())
-                           : "";
+    const char *name        = itl_picker_row_name(paths, index);
+    bool        is_selected = index == selected;
+    const char *sgr         = is_selected ? itl_menu_selected_sgr()
+                              : itl_menu_is_directory_name(name)
+                                  ? itl_color_sequence(itl_menu_directory_sgr())
+                                  : "";
 
-    itl_picker_append_row(row, name, sgr, width);
+    itl_picker_append_row(row, name, sgr, width, true, is_selected);
   }
 
   if (row_budget != 0 && paths->count == 0 && !show_summary) {
     const char *empty = paths->has_more_paths ? "searching..." : "no matches";
 
-    itl_picker_append_row(row, empty, itl_color_sequence(ITL_DIM_SGR), width);
+    itl_picker_append_row(row, empty, itl_color_sequence(ITL_DIM_SGR), width,
+                          false, false);
   }
 
   if (show_summary) {
@@ -12298,7 +12308,8 @@ itl_picker_layout(size_t cols, size_t row_budget)
 
       summary = count;
     }
-    itl_picker_append_row(row, summary, itl_color_sequence(ITL_DIM_SGR), width);
+    itl_picker_append_row(row, summary, itl_color_sequence(ITL_DIM_SGR), width,
+                          false, false);
   }
 
   if (itl_g_open_file_callback != NULL && itl_g_full_screen &&
@@ -15436,7 +15447,18 @@ itl_menu_render(itl_le_t                    *le,
                                    source->should_submit_on_enter
                                ? "no matches. tab to fuzzy search"
                                : ITL_MENU_EMPTY_TEXT;
-  const char *help_keys  = itl_menu_help_keys_of(source);
+  const char *help_keys = itl_menu_help_keys_of(source);
+  if (source->can_descend) {
+    if (is_path_search) {
+      help_keys = "tab or enter to accept, esc to close, "
+                  "ctrl-left/right to navigate";
+    } else if (result->detail_keys != NULL || result->can_search_paths) {
+      help_keys = itl_g_full_screen
+                      ? "tab to accept, esc to close, ctrl-left/right to navigate"
+                      : "enter to run, tab to accept, esc to close, "
+                        "ctrl-left/right to navigate";
+    }
+  }
   const char *help_title =
       is_path_search ? "fuzzy path search" : source->help_title;
   itl_menu_geometry geometry = itl_menu_geometry_of(
