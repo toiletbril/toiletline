@@ -6012,6 +6012,7 @@ next:
   return true;
 #else
   ITL_TRY(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0, return false);
+  if (window.ws_row == 0 || window.ws_col == 0) return false;
 
   ITL_PTR_ASSIGN(rows, (size_t) window.ws_row);
   ITL_PTR_ASSIGN(cols, (size_t) window.ws_col);
